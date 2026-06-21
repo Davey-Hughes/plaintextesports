@@ -61,10 +61,14 @@ cargo test --features ssr # tiering + deserialization tests
 
 ```sh
 docker build -t plaintextesports .
-docker run -p 8080:8080 -e PANDASCORE_TOKEN=xxxx plaintextesports
+docker run -p 8080:8080 -e PANDASCORE_TOKEN=xxxx -v pte-data:/app/data plaintextesports
 ```
 
 Serves on `:8080`.
+
+Mount a volume at `/app/data` (as above) so the SQLite cache survives container
+recreation. Without it the cache is ephemeral — the container still works, but
+it rebuilds the cache from scratch on the first poll after each redeploy.
 
 ## Limitations
 
