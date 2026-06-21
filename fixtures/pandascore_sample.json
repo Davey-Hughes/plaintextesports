@@ -1,0 +1,40 @@
+[
+  {
+    "id": 1001,
+    "status": "finished",
+    "begin_at": "2026-06-21T10:00:00Z",
+    "scheduled_at": "2026-06-21T10:00:00Z",
+    "number_of_games": 3,
+    "league": { "name": "LCK", "slug": "league-of-legends-lck" },
+    "serie": { "slug": "league-of-legends-lck-2026-summer" },
+    "tournament": { "slug": "league-of-legends-lck-2026-summer-playoffs", "tier": "a" },
+    "results": [
+      { "team_id": 10, "score": 2 },
+      { "team_id": 11, "score": 1 }
+    ],
+    "opponents": [
+      { "opponent": { "id": 10, "name": "T1", "acronym": "T1" } },
+      { "opponent": { "id": 11, "name": "Gen.G", "acronym": "GEN" } }
+    ],
+    "streams_list": [
+      { "main": true, "raw_url": "https://www.twitch.tv/lck" },
+      { "main": false, "raw_url": "https://www.youtube.com/lck" }
+    ]
+  },
+  {
+    "id": 1002,
+    "status": "not_started",
+    "begin_at": "2026-06-22T09:00:00Z",
+    "scheduled_at": "2026-06-22T09:00:00Z",
+    "number_of_games": 1,
+    "league": { "name": "LCK Challengers", "slug": "league-of-legends-lck-challengers" },
+    "serie": { "slug": "league-of-legends-lck-challengers-2026-summer" },
+    "tournament": { "slug": "league-of-legends-lck-challengers-2026-summer", "tier": "a" },
+    "results": [],
+    "opponents": [
+      { "opponent": { "id": 20, "name": "T1 Esports Academy", "acronym": "T1A" } },
+      { "opponent": { "id": 21, "name": "Gen.G Global Academy", "acronym": "GENA" } }
+    ],
+    "streams_list": []
+  }
+]
