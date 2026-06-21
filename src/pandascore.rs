@@ -14,6 +14,9 @@ const BASE_URL: &str = "https://api.pandascore.co";
 
 type DynError = Box<dyn std::error::Error + Send + Sync>;
 
+/// Result of fetching one game's tier-1 matches.
+pub type FetchResult = Result<Vec<NormalizedMatch>, DynError>;
+
 /// A match after deserialization, normalization, and tier-1 filtering.
 #[derive(Debug, Clone)]
 pub struct NormalizedMatch {
@@ -254,11 +257,7 @@ async fn get_segment(
 /// Fetch tier-1 matches for one game: upcoming (required) plus best-effort
 /// running and recent finished. Errors on the optional segments are logged and
 /// swallowed so a free-tier 403 on `/running` or `/past` doesn't sink the poll.
-pub async fn fetch_game(
-    client: &reqwest::Client,
-    token: &str,
-    game: Game,
-) -> Result<Vec<NormalizedMatch>, DynError> {
+pub async fn fetch_game(client: &reqwest::Client, token: &str, game: Game) -> FetchResult {
     use std::collections::HashMap;
 
     let mut by_id: HashMap<i64, NormalizedMatch> = HashMap::new();

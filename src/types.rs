@@ -49,6 +49,28 @@ pub enum MatchStatus {
     Canceled,
 }
 
+impl MatchStatus {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Upcoming => "upcoming",
+            Self::Live => "live",
+            Self::Finished => "finished",
+            Self::Canceled => "canceled",
+        }
+    }
+
+    #[must_use]
+    pub fn from_str(s: &str) -> Self {
+        match s {
+            "live" => Self::Live,
+            "finished" => Self::Finished,
+            "canceled" => Self::Canceled,
+            _ => Self::Upcoming,
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TeamView {
     /// Short label shown in the box (acronym if available, else name).

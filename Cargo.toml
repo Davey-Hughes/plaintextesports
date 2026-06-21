@@ -41,6 +41,7 @@ chrono = { version = "0.4", features = ["serde"], optional = true }
 chrono-tz = { version = "0.10", optional = true }
 once_cell = { version = "1.21", optional = true }
 dotenvy = { version = "0.15", optional = true }
+rusqlite = { version = "0.40.1", features = ["bundled"], optional = true }
 
 [features]
 hydrate = [
@@ -62,6 +63,7 @@ ssr = [
   "dep:serde_json",
   "dep:chrono",
   "dep:chrono-tz",
+  "dep:rusqlite",
   "leptos/ssr",
   "leptos_meta/ssr",
   "leptos_router/ssr",

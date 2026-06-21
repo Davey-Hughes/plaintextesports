@@ -9,6 +9,8 @@ pub mod config;
 #[cfg(feature = "ssr")]
 pub mod pandascore;
 #[cfg(feature = "ssr")]
+pub mod store;
+#[cfg(feature = "ssr")]
 pub mod tiering;
 
 #[cfg(feature = "hydrate")]
