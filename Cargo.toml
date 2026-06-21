@@ -1,0 +1,91 @@
+[package]
+name = "plaintextesports"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+leptos = { version = "0.8.19", features = ["nightly"] }
+leptos_router = { version = "0.8.13", features = ["nightly"] }
+leptos_meta = { version = "0.8.6" }
+axum = { version = "0.8.9", optional = true }
+leptos_axum = { version = "0.8.9", optional = true }
+console_error_panic_hook = { version = "0.1", optional = true }
+tokio = { version = "1", features = ["rt-multi-thread", "time"], optional = true }
+tower = { version = "0.5", optional = true }
+tower-http = { version = "0.6", features = [
+  "fs",
+  "set-header",
+  "compression-gzip",
+], optional = true }
+wasm-bindgen = { version = "0.2", optional = true }
+js-sys = { version = "0.3", optional = true }
+web-sys = { version = "0.3", features = [
+  "Window",
+  "Document",
+  "Storage",
+  "Element",
+  "HtmlElement",
+  "DomTokenList",
+  "MediaQueryList",
+], optional = true }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = { version = "1.0", optional = true }
+reqwest = { version = "0.12", default-features = false, features = [
+  "json",
+  "rustls-tls",
+], optional = true }
+chrono = { version = "0.4", features = ["serde"], optional = true }
+chrono-tz = { version = "0.10", optional = true }
+once_cell = { version = "1.21", optional = true }
+dotenvy = { version = "0.15", optional = true }
+
+[features]
+hydrate = [
+  "leptos/hydrate",
+  "dep:console_error_panic_hook",
+  "dep:wasm-bindgen",
+  "dep:js-sys",
+  "dep:web-sys",
+]
+ssr = [
+  "dep:axum",
+  "dep:tokio",
+  "dep:tower",
+  "dep:tower-http",
+  "dep:leptos_axum",
+  "dep:dotenvy",
+  "dep:once_cell",
+  "dep:reqwest",
+  "dep:serde_json",
+  "dep:chrono",
+  "dep:chrono-tz",
+  "leptos/ssr",
+  "leptos_meta/ssr",
+  "leptos_router/ssr",
+]
+
+[profile.wasm-release]
+inherits = "release"
+opt-level = 'z'
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
+
+[package.metadata.leptos]
+output-name = "plaintextesports"
+site-root = "target/site"
+site-pkg-dir = "pkg"
+style-file = "style/main.scss"
+site-addr = "127.0.0.1:4000"
+reload-port = 4001
+browserquery = "defaults"
+env = "DEV"
+bin-features = ["ssr"]
+bin-default-features = false
+lib-features = ["hydrate"]
+lib-default-features = false
+lib-profile-release = "wasm-release"
