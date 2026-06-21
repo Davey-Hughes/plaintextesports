@@ -13,6 +13,8 @@ pub struct Config {
     pub poll_interval: Duration,
     /// Days ahead shown on the homepage "upcoming" view.
     pub upcoming_days: i64,
+    /// Path to the SQLite cache file. Empty string disables persistence.
+    pub db_path: String,
 }
 
 impl Config {
@@ -42,11 +44,14 @@ impl Config {
             .filter(|&n| n >= 1 && n <= 31)
             .unwrap_or(7);
 
+        let db_path = std::env::var("DB_PATH").unwrap_or_else(|_| "data/cache.db".to_string());
+
         Self {
             token,
             tz,
             poll_interval,
             upcoming_days,
+            db_path,
         }
     }
 }

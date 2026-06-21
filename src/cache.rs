@@ -7,7 +7,7 @@
 //! demo fixture (relative to "now") so the UI is always usable.
 
 use crate::config::Config;
-use crate::pandascore::{fetch_game, NormTeam, NormalizedMatch};
+use crate::pandascore::{fetch_game, FetchResult, NormTeam, NormalizedMatch};
 use crate::types::{DayGroup, Game, MatchStatus, MatchView, ScheduleView, TeamView};
 use chrono::{DateTime, Datelike, Duration, NaiveDate, TimeZone, Timelike, Utc};
 use chrono_tz::Tz;
@@ -30,22 +30,61 @@ static SNAPSHOT: Lazy<RwLock<Snapshot>> = Lazy::new(|| {
     })
 });
 
-/// Start the background poller. If no token is configured, loads demo data once
-/// and returns without spawning a polling loop.
+/// Keep matches whose start is within this many days of "now" in the DB; older
+/// ones are pruned after each poll.
+const RETENTION_DAYS: i64 = 2;
+
+/// Start the background poller. Loads any persisted matches first (so a restart
+/// serves data immediately), then either polls PandaScore or, with no token,
+/// falls back to demo data.
 pub fn spawn_poller() {
     let cfg = Config::from_env();
 
+    // Open the persistent cache (best-effort; degrade to memory-only on error).
+    let mut store = if cfg.db_path.is_empty() {
+        None
+    } else {
+        match crate::store::open(&cfg.db_path) {
+            Ok(conn) => Some(conn),
+            Err(e) => {
+                leptos::logging::log!("cache db open failed ({e}); running memory-only");
+                None
+            }
+        }
+    };
+
+    // Serve persisted data immediately on boot.
+    if let Some(conn) = store.as_ref() {
+        if let Ok(stored) = crate::store::load_all(conn) {
+            if !stored.is_empty() {
+                let fetched = crate::store::load_fetched_at(conn)
+                    .and_then(DateTime::from_timestamp_millis)
+                    .unwrap_or_else(Utc::now);
+                let mut snap = SNAPSHOT.write().unwrap();
+                let n = stored.len();
+                snap.matches = stored;
+                snap.fetched_at = fetched;
+                snap.stale = true; // refreshed by the first live poll
+                snap.using_fixture = false;
+                leptos::logging::log!("loaded {n} matches from cache db");
+            }
+        }
+    }
+
     let Some(token) = cfg.token.clone() else {
         leptos::logging::log!("PANDASCORE_TOKEN not set — serving demo fixture data");
-        let now = Utc::now();
         let mut snap = SNAPSHOT.write().unwrap();
-        snap.matches = demo_matches(now);
-        snap.fetched_at = now;
-        snap.stale = false;
-        snap.using_fixture = true;
+        if snap.matches.is_empty() {
+            let now = Utc::now();
+            snap.matches = demo_matches(now);
+            snap.fetched_at = now;
+            snap.stale = false;
+            snap.using_fixture = true;
+        }
         return;
     };
 
+    let interval = cfg.poll_interval;
     tokio::spawn(async move {
         let client = match reqwest::Client::builder()
             .user_agent("plaintextesports/0.1 (+https://github.com/ralphpotato/plaintextesports)")
@@ -59,53 +98,93 @@ pub fn spawn_poller() {
         };
 
         loop {
-            poll_once(&client, &token).await;
-            tokio::time::sleep(cfg.poll_interval).await;
+            // Fetch (network) first, then apply synchronously so we never hold
+            // the (non-Sync) DB connection across an await point.
+            let (cs_res, lol_res) = tokio::join!(
+                fetch_game(&client, &token, Game::Cs2),
+                fetch_game(&client, &token, Game::Lol),
+            );
+            apply_poll(cs_res, lol_res, store.as_mut());
+            tokio::time::sleep(interval).await;
         }
     });
 }
 
-async fn poll_once(client: &reqwest::Client, token: &str) {
-    let (cs_res, lol_res) = tokio::join!(
-        fetch_game(client, token, Game::Cs2),
-        fetch_game(client, token, Game::Lol),
-    );
-
-    let mut merged: Vec<NormalizedMatch> = Vec::new();
+/// Persist freshly polled matches (if a store is present) and refresh the
+/// in-memory snapshot. Synchronous — no `.await` while touching the DB.
+fn apply_poll(cs_res: FetchResult, lol_res: FetchResult, store: Option<&mut rusqlite::Connection>) {
+    let now = Utc::now();
+    let mut fresh: Vec<NormalizedMatch> = Vec::new();
+    let mut errored: Vec<Game> = Vec::new();
     let mut any_ok = false;
-    let mut any_err = false;
 
     for (game, res) in [(Game::Cs2, cs_res), (Game::Lol, lol_res)] {
         match res {
             Ok(mut v) => {
                 any_ok = true;
-                merged.append(&mut v);
+                fresh.append(&mut v);
             }
             Err(e) => {
-                any_err = true;
+                errored.push(game);
                 leptos::logging::log!("poll failed for {}: {e}", game.slug());
-                // Keep the previous snapshot's matches for this game.
-                let prev = SNAPSHOT.read().unwrap();
-                merged.extend(prev.matches.iter().filter(|m| m.game == game).cloned());
             }
         }
     }
+    let any_err = !errored.is_empty();
 
-    merged.sort_by_key(|m| m.begin_at);
+    if let Some(conn) = store {
+        // Upsert successes; matches for an errored game stay in the DB (we only
+        // prune by age), so the reload below preserves them.
+        if any_ok {
+            let cutoff = (now - Duration::days(RETENTION_DAYS)).timestamp_millis();
+            if let Err(e) = crate::store::upsert_and_prune(conn, &fresh, now.timestamp_millis(), cutoff)
+            {
+                leptos::logging::log!("cache db write failed: {e}");
+            }
+        }
+        match crate::store::load_all(conn) {
+            Ok(mut all) => {
+                all.sort_by_key(|m| m.begin_at);
+                let mut snap = SNAPSHOT.write().unwrap();
+                let n = all.len();
+                snap.matches = all;
+                snap.using_fixture = false;
+                snap.stale = any_err;
+                if any_ok {
+                    snap.fetched_at = now;
+                }
+                leptos::logging::log!("poll complete: {n} matches in cache (stale={any_err})");
+            }
+            Err(e) => {
+                leptos::logging::log!("cache db read failed: {e}");
+                merge_in_memory(fresh, &errored, any_ok, any_err, now);
+            }
+        }
+    } else {
+        merge_in_memory(fresh, &errored, any_ok, any_err, now);
+    }
+}
 
-    let now = Utc::now();
+/// Memory-only update path (no DB): replace successful games' matches and keep
+/// the previous snapshot's matches for any game that failed this round.
+fn merge_in_memory(
+    mut matches: Vec<NormalizedMatch>,
+    errored: &[Game],
+    any_ok: bool,
+    any_err: bool,
+    now: DateTime<Utc>,
+) {
     let mut snap = SNAPSHOT.write().unwrap();
-    snap.matches = merged;
-    snap.stale = any_err;
+    for &game in errored {
+        matches.extend(snap.matches.iter().filter(|m| m.game == game).cloned());
+    }
+    matches.sort_by_key(|m| m.begin_at);
+    snap.matches = matches;
     snap.using_fixture = false;
+    snap.stale = any_err;
     if any_ok {
         snap.fetched_at = now;
     }
-    leptos::logging::log!(
-        "poll complete: {} tier-1 matches (stale={})",
-        snap.matches.len(),
-        snap.stale
-    );
 }
 
 // ----- View building -------------------------------------------------------
