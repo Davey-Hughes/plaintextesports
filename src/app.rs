@@ -750,7 +750,23 @@ fn render_schedule(s: ScheduleView, show_nav: bool, push: bool) -> impl IntoView
                 .map(|lg| {
                     let lc = league_color_class(&lg.league);
                     let show_bo = lg.bo.is_none();
-                    let header = match &lg.bo {
+                    // Header best-of: the single format when the event is uniform,
+                    // else the distinct formats joined (e.g. "Bo1 | Bo3"). Per-row
+                    // bo still shows for mixed events so you can tell which is which.
+                    let bo_label = match &lg.bo {
+                        Some(bo) => Some(bo.clone()),
+                        None => {
+                            let mut bos: Vec<String> = Vec::new();
+                            for m in &lg.matches {
+                                if !m.best_of.is_empty() && !bos.contains(&m.best_of) {
+                                    bos.push(m.best_of.clone());
+                                }
+                            }
+                            bos.sort();
+                            (!bos.is_empty()).then(|| bos.join(" | "))
+                        }
+                    };
+                    let header = match &bo_label {
                         Some(bo) => format!("{} · {}", lg.league, bo),
                         None => lg.league.clone(),
                     };
