@@ -1,5 +1,8 @@
-use crate::server::{get_day, get_schedule, get_site};
-use crate::types::{Game, MatchStatus, MatchView, ScheduleView};
+use crate::server::{get_day, get_event_info, get_match_detail, get_schedule, get_site};
+use crate::types::{
+    BracketRound, EventInfo, Game, MatchDetail, MatchStatus, MatchView, ScheduleView, StandingRow,
+    StreamView,
+};
 use leptos::prelude::*;
 use std::collections::HashSet;
 use leptos_meta::{provide_meta_context, MetaTags, Stylesheet, Title};
@@ -123,6 +126,7 @@ pub fn App() -> impl IntoView {
                     <Routes fallback=|| view! { <p class="empty">"Page not found."</p> }>
                         <Route path=StaticSegment("") view=HomePage />
                         <Route path=(StaticSegment("day"), ParamSegment("date")) view=DayPage />
+                        <Route path=(StaticSegment("match"), ParamSegment("id")) view=MatchDetailPage />
                         <Route path=StaticSegment("about") view=AboutPage />
                     </Routes>
                 </main>
@@ -256,6 +260,254 @@ fn AboutPage() -> impl IntoView {
                 <A href="/">"← back to the schedule"</A>
             </p>
         </article>
+    }
+}
+
+#[derive(Params, PartialEq, Clone)]
+struct DetailParams {
+    id: String,
+}
+
+#[component]
+fn MatchDetailPage() -> impl IntoView {
+    let params = use_params::<DetailParams>();
+    let id = move || {
+        params
+            .get()
+            .ok()
+            .and_then(|p| p.id.parse::<i64>().ok())
+            .unwrap_or(0)
+    };
+    let hour24 = use_context::<RwSignal<bool>>().expect("hour24 context");
+    let tz = use_context::<RwSignal<String>>().expect("tz context");
+    let detail = Resource::new(
+        move || (id(), tz.get(), hour24.get()),
+        |(id, tz, h)| async move { get_match_detail(id, tz, h).await },
+    );
+    view! {
+        <Suspense fallback=|| view! { <p class="loading">"loading…"</p> }>
+            {move || {
+                detail
+                    .get()
+                    .map(|res| match res {
+                        Ok(d) if d.found => detail_view(d).into_any(),
+                        _ => view! { <p class="empty">"Match not found."</p> }.into_any(),
+                    })
+            }}
+        </Suspense>
+    }
+}
+
+fn detail_view(d: MatchDetail) -> impl IntoView {
+    let MatchDetail {
+        match_view,
+        streams,
+        event,
+        ..
+    } = d;
+    let m = match_view.expect("found implies match_view");
+    let score = match (m.team_a.score, m.team_b.score) {
+        (Some(a), Some(b)) => format!("{a} – {b}"),
+        _ => "vs".to_string(),
+    };
+    let status_label = match m.status {
+        MatchStatus::Live => "LIVE",
+        MatchStatus::Finished => "Final",
+        MatchStatus::Canceled => "Canceled",
+        MatchStatus::Upcoming => "",
+    };
+    let meta = [
+        m.league.clone(),
+        m.clock_label.clone(),
+        m.best_of.clone(),
+        status_label.to_string(),
+    ]
+    .into_iter()
+    .filter(|s| !s.is_empty())
+    .collect::<Vec<_>>()
+    .join(" · ");
+    let win_a = m.team_a.winner;
+    let win_b = m.team_b.winner;
+    view! {
+        <article class="detail">
+            <A href="/">"← schedule"</A>
+            <h1 class="detail-title">
+                <span class="detail-team" class:winner=win_a>{m.team_a.label}</span>
+                <span class="detail-score">{score}</span>
+                <span class="detail-team" class:winner=win_b>{m.team_b.label}</span>
+            </h1>
+            <div class="detail-meta">{meta}</div>
+            <StreamsList streams=streams />
+            <StandingsTable rows=event.standings />
+            <Bracket rounds=event.rounds />
+        </article>
+    }
+}
+
+/// Build a readable label for a broadcast (host + language/role tags).
+fn stream_label(s: &StreamView) -> String {
+    let host = s
+        .url
+        .split_once("//")
+        .map_or(s.url.as_str(), |(_, rest)| rest)
+        .trim_end_matches('/');
+    let mut tags = Vec::new();
+    if !s.language.is_empty() {
+        tags.push(s.language.to_uppercase());
+    }
+    if s.main {
+        tags.push("main".to_string());
+    } else if s.official {
+        tags.push("official".to_string());
+    }
+    if tags.is_empty() {
+        host.to_string()
+    } else {
+        format!("{host} · {}", tags.join(", "))
+    }
+}
+
+#[component]
+fn StreamsList(streams: Vec<StreamView>) -> impl IntoView {
+    if streams.is_empty() {
+        return ().into_any();
+    }
+    let items = streams
+        .into_iter()
+        .map(|s| {
+            let label = stream_label(&s);
+            let cls = if s.official { "stream official" } else { "stream" };
+            view! {
+                <li class=cls>
+                    <a href=s.url target="_blank" rel="noreferrer">
+                        {label}
+                    </a>
+                </li>
+            }
+        })
+        .collect_view();
+    view! {
+        <section class="detail-section">
+            <h2 class="section-title">"Streams"</h2>
+            <ul class="streams">{items}</ul>
+        </section>
+    }
+    .into_any()
+}
+
+#[component]
+fn StandingsTable(rows: Vec<StandingRow>) -> impl IntoView {
+    if rows.is_empty() {
+        return ().into_any();
+    }
+    let body = rows
+        .into_iter()
+        .map(|r| {
+            view! {
+                <tr>
+                    <td class="st-rank">{r.rank}</td>
+                    <td class="st-team">{r.team}</td>
+                    <td class="st-wl">{format!("{}-{}", r.wins, r.losses)}</td>
+                    <td class="st-diff">{format!("{}-{}", r.game_wins, r.game_losses)}</td>
+                </tr>
+            }
+        })
+        .collect_view();
+    view! {
+        <section class="detail-section">
+            <h2 class="section-title">"Standings"</h2>
+            <table class="standings">
+                <thead>
+                    <tr>
+                        <th></th>
+                        <th class="st-team">"Team"</th>
+                        <th>"W-L"</th>
+                        <th>"Maps"</th>
+                    </tr>
+                </thead>
+                <tbody>{body}</tbody>
+            </table>
+        </section>
+    }
+    .into_any()
+}
+
+#[component]
+fn Bracket(rounds: Vec<BracketRound>) -> impl IntoView {
+    if rounds.is_empty() {
+        return ().into_any();
+    }
+    let cols = rounds
+        .into_iter()
+        .map(|r| {
+            let ms = r
+                .matches
+                .into_iter()
+                .map(|m| {
+                    let cls_a = if m.winner == "a" { "bk-row win" } else { "bk-row" };
+                    let cls_b = if m.winner == "b" { "bk-row win" } else { "bk-row" };
+                    let sa = m.score_a.map(|s| s.to_string()).unwrap_or_default();
+                    let sb = m.score_b.map(|s| s.to_string()).unwrap_or_default();
+                    view! {
+                        <div class="bk-match">
+                            <div class=cls_a>
+                                <span class="bk-team">{m.team_a}</span>
+                                <span class="bk-score">{sa}</span>
+                            </div>
+                            <div class=cls_b>
+                                <span class="bk-team">{m.team_b}</span>
+                                <span class="bk-score">{sb}</span>
+                            </div>
+                        </div>
+                    }
+                })
+                .collect_view();
+            view! {
+                <div class="bk-round">
+                    <div class="bk-round-title">{r.title}</div>
+                    <div class="bk-matches">{ms}</div>
+                </div>
+            }
+        })
+        .collect_view();
+    view! {
+        <section class="detail-section">
+            <h2 class="section-title">"Bracket"</h2>
+            <div class="bracket">{cols}</div>
+        </section>
+    }
+    .into_any()
+}
+
+/// Standings + bracket shown beneath the schedule when one event is filtered.
+#[component]
+fn EventSection(league: ReadSignal<String>) -> impl IntoView {
+    let info = Resource::new(
+        move || league.get(),
+        |lg| async move {
+            if lg.is_empty() {
+                Ok(EventInfo::default())
+            } else {
+                get_event_info(lg).await
+            }
+        },
+    );
+    view! {
+        <Suspense>
+            {move || {
+                info.get()
+                    .and_then(Result::ok)
+                    .filter(|e| !e.is_empty())
+                    .map(|e| {
+                        view! {
+                            <div class="event-extra">
+                                <StandingsTable rows=e.standings />
+                                <Bracket rounds=e.rounds />
+                            </div>
+                        }
+                    })
+            }}
+        </Suspense>
     }
 }
 
@@ -670,6 +922,8 @@ fn ScheduleSection(
                     })
             }}
         </Suspense>
+        // When a single event is filtered, show its standings/bracket below.
+        <EventSection league=league />
     }
 }
 
@@ -923,16 +1177,13 @@ fn MatchRow(m: MatchView, show_bo: bool, push: bool) -> impl IntoView {
         {meta_view}
     };
 
-    // The body is the (optional) stream link; `display: contents` lets its
-    // children participate in the row grid alongside the ★ button.
-    let body = match m.stream_url {
-        Some(url) => view! {
-            <a class="row-body" href=url target="_blank" rel="noreferrer">
-                {inner}
-            </a>
-        }
-        .into_any(),
-        None => view! { <span class="row-body">{inner}</span> }.into_any(),
+    // The whole row links to the match detail page; `display: contents` lets its
+    // children participate in the row grid alongside the ★ button. The score
+    // reveal inside (`reveal-meta`) prevents this navigation when clicked.
+    let body = view! {
+        <a class="row-body" href=format!("/match/{}", m.id)>
+            {inner}
+        </a>
     };
 
     if push {
