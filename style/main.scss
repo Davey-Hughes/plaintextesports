@@ -94,9 +94,6 @@ a {
 .header {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  padding-bottom: 0.5rem;
-  border-bottom: 1px dashed var(--border);
 
   .brand a {
     color: var(--fg);
@@ -105,11 +102,21 @@ a {
   }
 }
 
+// The toggle bar sticks to the top of the viewport while scrolling (the brand
+// above it scrolls away). The background occludes content sliding underneath.
 .toggles {
+  position: sticky;
+  top: 0;
+  z-index: 20;
   display: flex;
   flex-wrap: wrap;
   justify-content: flex-end;
+  align-items: center;
   gap: 0.4rem;
+  padding: 0.5rem 0;
+  margin-bottom: 0.4rem;
+  background: var(--bg);
+  border-bottom: 1px dashed var(--border);
 }
 
 .toggle {
