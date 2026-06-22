@@ -1072,17 +1072,26 @@ fn Bracket(rounds: Vec<BracketRound>, tournament_id: i64, bracket_only: bool) ->
     let tid = tournament_id;
 
     // Build the reveal grid (keys/max/feeders, for stage computation + clicks)
-    // and the parallel render data, once.
+    // and the parallel render data, once. `winners` holds each match's advancing
+    // team so a fed match can show a single feeder's winner before its other
+    // feeder is revealed (and before PandaScore has seeded that slot).
     let mut grid: Vec<Vec<BkCell>> = Vec::with_capacity(rounds.len());
     let mut render: Vec<(String, String, Vec<BkRender>)> = Vec::with_capacity(rounds.len());
+    let mut winners: Vec<Vec<String>> = Vec::with_capacity(rounds.len());
     for (r, round) in rounds.into_iter().enumerate() {
         let mut cells = Vec::with_capacity(round.matches.len());
         let mut sres = Vec::with_capacity(round.matches.len());
+        let mut wins = Vec::with_capacity(round.matches.len());
         for (i, m) in round.matches.into_iter().enumerate() {
             let max = bm_max_stage(&m);
             // For a bracket-only event, keep first-round matchups (no feeders)
             // visible by default — only their scores are a spoiler.
             let floor = u8::from(bracket_only && m.feeders.is_empty() && max >= 1);
+            wins.push(match m.winner.as_str() {
+                "a" => m.team_a.clone(),
+                "b" => m.team_b.clone(),
+                _ => String::new(),
+            });
             cells.push(BkCell {
                 bn: format!("bn:{tid}:{r}:{i}"),
                 bs: format!("bs:{tid}:{r}:{i}"),
@@ -1103,7 +1112,9 @@ fn Bracket(rounds: Vec<BracketRound>, tournament_id: i64, bracket_only: bool) ->
         }
         grid.push(cells);
         render.push((round.section, round.title, sres));
+        winners.push(wins);
     }
+    let winners_sv = StoredValue::new(winners);
 
     // Effective stages for the whole bracket, recomputed when the shared reveal
     // set or the global toggle changes.
@@ -1164,6 +1175,29 @@ fn Bracket(rounds: Vec<BracketRound>, tournament_id: i64, bracket_only: bool) ->
                             view! { <span class="bk-team">{name}</span> }.into_any()
                         }
                     };
+                    // Per-slot reveal: each side of a fed match shows its feeder's
+                    // winner as soon as that feeder's score is revealed, independent
+                    // of the other feeder. So one finished feeder reveals one team
+                    // here, and hiding a feeder hides only its slot. `feeders[k]`
+                    // maps to side k (verified against the PandaScore bracket).
+                    let feeders = grid_sv.with_value(|g| g[r][i].feeders.clone());
+                    let (f0, f1) = (feeders.first().copied(), feeders.get(1).copied());
+                    let is_real = |s: &str| !s.is_empty() && s != "TBD";
+                    // A slot's label is the match's own opponent, falling back to
+                    // the feeder's winner when PandaScore hasn't seeded it yet.
+                    let label_for = move |own: &str, f: Option<(usize, usize)>| {
+                        if is_real(own) {
+                            own.to_string()
+                        } else {
+                            f.map(|(fr, fi)| winners_sv.with_value(|w| w[fr][fi].clone()))
+                                .unwrap_or_default()
+                        }
+                    };
+                    let label_a = label_for(&ta, f0);
+                    let label_b = label_for(&tb, f1);
+                    let fed_shown = move |f: Option<(usize, usize)>| {
+                        f.is_some_and(|(fr, fi)| eff.with(|e| e[fr][fi] >= 2))
+                    };
                     view! {
                         <div
                             // Only a TBD match (no participants at all) is locked;
@@ -1174,57 +1208,72 @@ fn Bracket(rounds: Vec<BracketRound>, tournament_id: i64, bracket_only: bool) ->
                             on:click=move |_| do_op(BkOp::Series(r, i))
                         >
                             <div class="bk-box">
-                                {move || match stage() {
-                                    0 => {
-                                        view! {
-                                            <div class="bk-row bk-hidden">
-                                                <span class="bk-team">"—"</span>
-                                            </div>
-                                            <div class="bk-row bk-hidden">
-                                                <span class="bk-team">"—"</span>
-                                            </div>
-                                        }
-                                            .into_any()
-                                    }
-                                    1 => {
-                                        view! {
-                                            <div class="bk-row">
-                                                {team_cell(ta.clone())}
-                                                <span class="bk-score">{dash}</span>
-                                            </div>
-                                            <div class="bk-row">
-                                                {team_cell(tb.clone())}
-                                                <span class="bk-score">{dash}</span>
-                                            </div>
-                                        }
-                                            .into_any()
-                                    }
-                                    _ => {
-                                        let cls_a = match winner.as_str() {
-                                            "a" => "bk-row win",
-                                            "b" => "bk-row lose",
-                                            _ => "bk-row",
-                                        };
-                                        let cls_b = match winner.as_str() {
-                                            "b" => "bk-row win",
-                                            "a" => "bk-row lose",
-                                            _ => "bk-row",
-                                        };
+                                {move || {
+                                    let st = stage();
+                                    let scores = st >= 2;
+                                    // A slot shows when the match itself is revealed
+                                    // to names, or its feeder's score is revealed.
+                                    let show_a = is_real(&label_a) && (st >= 1 || fed_shown(f0));
+                                    let show_b = is_real(&label_b) && (st >= 1 || fed_shown(f1));
+                                    let cls_a = if scores && winner == "a" {
+                                        "bk-row win"
+                                    } else if scores && winner == "b" {
+                                        "bk-row lose"
+                                    } else {
+                                        "bk-row"
+                                    };
+                                    let cls_b = if scores && winner == "b" {
+                                        "bk-row win"
+                                    } else if scores && winner == "a" {
+                                        "bk-row lose"
+                                    } else {
+                                        "bk-row"
+                                    };
+                                    let sa_txt = if scores {
+                                        sa.map(|s| s.to_string()).unwrap_or_default()
+                                    } else {
+                                        dash.to_string()
+                                    };
+                                    let sb_txt = if scores {
+                                        sb.map(|s| s.to_string()).unwrap_or_default()
+                                    } else {
+                                        dash.to_string()
+                                    };
+                                    let row_a = if show_a {
                                         view! {
                                             <div class=cls_a>
-                                                {team_cell(ta.clone())}
-                                                <span class="bk-score">
-                                                    {sa.map(|s| s.to_string()).unwrap_or_default()}
-                                                </span>
-                                            </div>
-                                            <div class=cls_b>
-                                                {team_cell(tb.clone())}
-                                                <span class="bk-score">
-                                                    {sb.map(|s| s.to_string()).unwrap_or_default()}
-                                                </span>
+                                                {team_cell(label_a.clone())}
+                                                <span class="bk-score">{sa_txt}</span>
                                             </div>
                                         }
-                                            .into_any()
+                                        .into_any()
+                                    } else {
+                                        view! {
+                                            <div class="bk-row bk-hidden">
+                                                <span class="bk-team">"—"</span>
+                                            </div>
+                                        }
+                                        .into_any()
+                                    };
+                                    let row_b = if show_b {
+                                        view! {
+                                            <div class=cls_b>
+                                                {team_cell(label_b.clone())}
+                                                <span class="bk-score">{sb_txt}</span>
+                                            </div>
+                                        }
+                                        .into_any()
+                                    } else {
+                                        view! {
+                                            <div class="bk-row bk-hidden">
+                                                <span class="bk-team">"—"</span>
+                                            </div>
+                                        }
+                                        .into_any()
+                                    };
+                                    view! {
+                                        {row_a}
+                                        {row_b}
                                     }
                                 }}
                             </div>
