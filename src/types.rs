@@ -90,6 +90,11 @@ pub struct MatchView {
     pub game: Game,
     /// Short league name, e.g. "LCK" or "IEM".
     pub league: String,
+    /// The serie/edition name within the league (e.g. "Cologne Major"), empty
+    /// when the league name is already the full event name. Combined with
+    /// `league` to title the event/match pages (e.g. "IEM Cologne Major").
+    #[serde(default)]
+    pub serie_name: String,
     pub tier: String,
     pub status: MatchStatus,
     /// Start time in the display tz, e.g. "6:00 PM" (always the clock time; the

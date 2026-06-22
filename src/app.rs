@@ -463,6 +463,17 @@ fn EventPage() -> impl IntoView {
                 let lg_name = league();
                 match sched {
                     Some(Ok(s)) => {
+                        // The full event name (league + edition), taking the
+                        // serie from any of the event's cached matches.
+                        let serie = s
+                            .days
+                            .iter()
+                            .flat_map(|d| &d.leagues)
+                            .flat_map(|lg| &lg.matches)
+                            .map(|m| m.serie_name.clone())
+                            .find(|n| !n.is_empty())
+                            .unwrap_or_default();
+                        let title = event_full_name(&lg_name, &serie);
                         // The event's external (Liquipedia/official) link, pulled
                         // from any of its league groups.
                         let url = s
@@ -502,7 +513,7 @@ fn EventPage() -> impl IntoView {
                         view! {
                             <article class="detail">
                                 <A href="/">"← schedule"</A>
-                                <h1 class="detail-title">{lg_name}</h1>
+                                <h1 class="detail-title">{title}</h1>
                                 {link}
                                 {render_schedule(s, false, push, true)}
                                 {extra}
@@ -555,6 +566,17 @@ fn MatchDetailPage() -> impl IntoView {
     }
 }
 
+/// Combine a league with its serie/edition for an event/match-page title, e.g.
+/// ("IEM", "Cologne Major") -> "IEM Cologne Major". An empty serie -> the league
+/// alone (league seasons already name themselves).
+fn event_full_name(league: &str, serie: &str) -> String {
+    if serie.is_empty() {
+        league.to_string()
+    } else {
+        format!("{league} {serie}")
+    }
+}
+
 fn detail_view(d: MatchDetail) -> impl IntoView {
     let MatchDetail {
         match_view,
@@ -570,7 +592,7 @@ fn detail_view(d: MatchDetail) -> impl IntoView {
         MatchStatus::Upcoming => "",
     };
     let meta = [
-        m.league.clone(),
+        event_full_name(&m.league, &m.serie_name),
         m.clock_label.clone(),
         m.best_of.clone(),
         status_label.to_string(),
@@ -2738,6 +2760,7 @@ mod tests {
             id: 1,
             game: Game::Lol,
             league: league.into(),
+            serie_name: String::new(),
             tier: "S".into(),
             status: MatchStatus::Upcoming,
             clock_label: String::new(),
