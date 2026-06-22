@@ -225,6 +225,35 @@ a {
   margin: 0.2rem 0 1rem;
 }
 
+// "Show earlier days" / active-range bar above the schedule.
+.history-bar {
+  display: flex;
+  align-items: baseline;
+  gap: 0.8rem;
+  margin: 0.2rem 0 0.4rem;
+  font-size: 12px;
+
+  .history-label {
+    color: var(--muted);
+  }
+}
+
+// A link-styled inline button (no border/background).
+.linkish {
+  background: none;
+  border: none;
+  padding: 0;
+  margin: 0;
+  font: inherit;
+  font-size: 12px;
+  color: var(--link);
+  cursor: pointer;
+
+  &:hover {
+    text-decoration: underline;
+  }
+}
+
 .day-nav {
   display: flex;
   align-items: center;

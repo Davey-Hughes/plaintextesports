@@ -1,4 +1,6 @@
-use crate::server::{get_day, get_event_info, get_match_detail, get_schedule, get_site};
+use crate::server::{
+    get_day, get_event_info, get_match_detail, get_range, get_schedule, get_site,
+};
 use crate::types::{
     BracketRound, EventInfo, Game, MatchDetail, MatchStatus, MatchView, ScheduleView, StandingRow,
     StreamView,
@@ -68,6 +70,14 @@ struct RevealedMatches(RwSignal<HashSet<i64>>);
 #[derive(Clone, Copy)]
 struct Subscribed(RwSignal<HashSet<String>>);
 
+/// Calendar-selected date range (start, end ISO dates); `None` = default view.
+#[derive(Clone, Copy)]
+struct DateRange(RwSignal<Option<(String, String)>>);
+
+/// How many extra past days the "‹ show earlier days" control has revealed.
+#[derive(Clone, Copy)]
+struct EarlierDays(RwSignal<i64>);
+
 #[component]
 #[must_use]
 pub fn App() -> impl IntoView {
@@ -85,6 +95,9 @@ pub fn App() -> impl IntoView {
     let show_scores = RwSignal::new(false);
     let revealed = RwSignal::new(HashSet::<i64>::new());
     let subscribed = RwSignal::new(HashSet::<String>::new());
+    // History views: a calendar-selected range, and the "earlier days" expansion.
+    let range = RwSignal::new(None::<(String, String)>);
+    let earlier = RwSignal::new(0i64);
     provide_context(hour24);
     provide_context(tz);
     provide_context(starred);
@@ -92,6 +105,8 @@ pub fn App() -> impl IntoView {
     provide_context(ShowScores(show_scores));
     provide_context(RevealedMatches(revealed));
     provide_context(Subscribed(subscribed));
+    provide_context(DateRange(range));
+    provide_context(EarlierDays(earlier));
 
     // After hydration, pick up the browser's timezone + saved preferences and
     // the push key. (Client-side only; the initial render uses the defaults
@@ -108,6 +123,7 @@ pub fn App() -> impl IntoView {
             show_scores.set(load_scores_pref());
             starred.set(load_starred());
             subscribed.set(load_subs());
+            range.set(load_range());
             leptos::task::spawn_local(async move {
                 if let Ok(k) = crate::server::get_vapid_key().await {
                     vapid.set(k);
@@ -716,6 +732,43 @@ fn load_subs() -> HashSet<String> {
     out
 }
 
+/// `YYYY-MM-DD` for today plus `offset_days` (browser-local date).
+#[cfg(feature = "hydrate")]
+fn iso_from_today(offset_days: i64) -> String {
+    let ms = js_sys::Date::now() + (offset_days as f64) * 86_400_000.0;
+    let d = js_sys::Date::new(&wasm_bindgen::JsValue::from_f64(ms));
+    format!(
+        "{:04}-{:02}-{:02}",
+        d.get_full_year() as i32,
+        d.get_month() as u32 + 1,
+        d.get_date() as u32
+    )
+}
+
+#[cfg(feature = "hydrate")]
+fn save_range(range: Option<(String, String)>) {
+    if let Some(win) = web_sys::window() {
+        if let Ok(Some(storage)) = win.local_storage() {
+            match range {
+                Some((s, e)) => {
+                    let _ = storage.set_item("range", &format!("{s}|{e}"));
+                }
+                None => {
+                    let _ = storage.remove_item("range");
+                }
+            }
+        }
+    }
+}
+
+#[cfg(feature = "hydrate")]
+fn load_range() -> Option<(String, String)> {
+    let storage = web_sys::window()?.local_storage().ok().flatten()?;
+    let v = storage.get_item("range").ok().flatten()?;
+    let (s, e) = v.split_once('|')?;
+    (!s.is_empty() && !e.is_empty()).then(|| (s.to_string(), e.to_string()))
+}
+
 /// Persist the subscribed set and (un)register the game/event subscription.
 #[cfg(feature = "hydrate")]
 fn subscribe_scope(kind: String, value: String, subscribing: bool, keys: Vec<String>, vapid: Option<String>) {
@@ -768,15 +821,86 @@ fn HomePage() -> impl IntoView {
     let (league, set_league) = signal(String::new());
     let hour24 = use_context::<RwSignal<bool>>().expect("hour24 context");
     let tz = use_context::<RwSignal<String>>().expect("tz context");
+    let range = use_context::<DateRange>().expect("range context").0;
+    let earlier = use_context::<EarlierDays>().expect("earlier context").0;
+    // Default = today + future (get_schedule). A calendar range, else an
+    // "earlier days" expansion, switches to the range view.
     let schedule = Resource::new(
-        move || (game.get(), tz.get(), hour24.get()),
-        |(g, z, h)| async move { get_schedule(g, z, h).await },
+        move || (range.get(), earlier.get(), game.get(), tz.get(), hour24.get()),
+        |(r, e, g, z, h)| async move {
+            match r {
+                Some((start, end)) => get_range(start, end, g, z, h).await,
+                None if e > 0 => {
+                    let (start, end) = earlier_window(e);
+                    get_range(start, end, g, z, h).await
+                }
+                None => get_schedule(g, z, h).await,
+            }
+        },
     );
     setup_autorefresh(schedule);
 
     view! {
         <GameTabs game set_game set_league />
+        <EarlierControl />
         <ScheduleSection resource=schedule league set_league show_nav=false />
+    }
+}
+
+/// The start/end date window for the "earlier days" view: `days_back` days ago
+/// through past the upcoming horizon (so all future matches stay visible).
+/// Computed client-side; SSR never reaches this branch (earlier starts at 0).
+fn earlier_window(days_back: i64) -> (String, String) {
+    #[cfg(feature = "hydrate")]
+    {
+        (iso_from_today(-days_back), iso_from_today(366))
+    }
+    #[cfg(not(feature = "hydrate"))]
+    {
+        let _ = days_back;
+        (String::new(), String::new())
+    }
+}
+
+/// Top-of-schedule control: a "‹ show earlier days" expander by default, or the
+/// active calendar range with a "clear" when one is selected.
+#[component]
+fn EarlierControl() -> impl IntoView {
+    let range = use_context::<DateRange>().expect("range context").0;
+    let earlier = use_context::<EarlierDays>().expect("earlier context").0;
+
+    let on_earlier = move |_| earlier.update(|n| *n += 3);
+    let on_reset = move |_| earlier.set(0);
+    let on_clear = move |_| {
+        earlier.set(0);
+        range.set(None);
+        #[cfg(feature = "hydrate")]
+        save_range(None);
+    };
+
+    view! {
+        <div class="history-bar">
+            {move || {
+                if let Some((s, e)) = range.get() {
+                    view! {
+                        <span class="history-label">{format!("{s} → {e}")}</span>
+                        <button class="linkish" on:click=on_clear>"clear"</button>
+                    }
+                        .into_any()
+                } else if earlier.get() > 0 {
+                    view! {
+                        <button class="linkish" on:click=on_earlier>"‹ show earlier days"</button>
+                        <button class="linkish" on:click=on_reset>"reset"</button>
+                    }
+                        .into_any()
+                } else {
+                    view! {
+                        <button class="linkish" on:click=on_earlier>"‹ show earlier days"</button>
+                    }
+                        .into_any()
+                }
+            }}
+        </div>
     }
 }
 
