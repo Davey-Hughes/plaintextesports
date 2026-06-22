@@ -1059,6 +1059,7 @@ struct BkRender {
     sb: Option<i32>,
     winner: String,
     max: u8,
+    mid: i64,
 }
 
 #[component]
@@ -1097,6 +1098,7 @@ fn Bracket(rounds: Vec<BracketRound>, tournament_id: i64, bracket_only: bool) ->
                 sb: m.score_b,
                 winner: m.winner,
                 max,
+                mid: m.match_id,
             });
         }
         grid.push(cells);
@@ -1132,11 +1134,33 @@ fn Bracket(rounds: Vec<BracketRound>, tournament_id: i64, bracket_only: bool) ->
                     let (ta, tb) = (s.ta, s.tb);
                     let (sa, sb) = (s.sa, s.sb);
                     let winner = s.winner;
+                    let mid = s.mid;
                     // At the names stage show "-" for the score (a played match's
                     // hidden score, or an unplayed match that has none).
                     let dash = "-";
                     let match_title = if max == 0 { "Not decided yet" } else { "Reveal this match" };
                     let stage = move || eff.with(|e| e.get(r).and_then(|row| row.get(i)).copied().unwrap_or(0));
+                    // A revealed team name links to its match page; the rest of
+                    // the box still reveals on click (the link stops that
+                    // propagation). The detail page gates its own score, so this
+                    // never spoils. TBD/demo matches (no id) stay plain text.
+                    let team_cell = move |name: String| {
+                        if mid > 0 {
+                            view! {
+                                <a
+                                    class="bk-team bk-team-link"
+                                    href=format!("/match/{mid}")
+                                    title="Open match page"
+                                    on:click=move |e: leptos::ev::MouseEvent| e.stop_propagation()
+                                >
+                                    {name}
+                                </a>
+                            }
+                            .into_any()
+                        } else {
+                            view! { <span class="bk-team">{name}</span> }.into_any()
+                        }
+                    };
                     view! {
                         <div
                             // Only a TBD match (no participants at all) is locked;
@@ -1162,11 +1186,11 @@ fn Bracket(rounds: Vec<BracketRound>, tournament_id: i64, bracket_only: bool) ->
                                     1 => {
                                         view! {
                                             <div class="bk-row">
-                                                <span class="bk-team">{ta.clone()}</span>
+                                                {team_cell(ta.clone())}
                                                 <span class="bk-score">{dash}</span>
                                             </div>
                                             <div class="bk-row">
-                                                <span class="bk-team">{tb.clone()}</span>
+                                                {team_cell(tb.clone())}
                                                 <span class="bk-score">{dash}</span>
                                             </div>
                                         }
@@ -1185,13 +1209,13 @@ fn Bracket(rounds: Vec<BracketRound>, tournament_id: i64, bracket_only: bool) ->
                                         };
                                         view! {
                                             <div class=cls_a>
-                                                <span class="bk-team">{ta.clone()}</span>
+                                                {team_cell(ta.clone())}
                                                 <span class="bk-score">
                                                     {sa.map(|s| s.to_string()).unwrap_or_default()}
                                                 </span>
                                             </div>
                                             <div class=cls_b>
-                                                <span class="bk-team">{tb.clone()}</span>
+                                                {team_cell(tb.clone())}
                                                 <span class="bk-score">
                                                     {sb.map(|s| s.to_string()).unwrap_or_default()}
                                                 </span>

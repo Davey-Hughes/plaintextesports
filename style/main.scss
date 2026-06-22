@@ -1128,6 +1128,19 @@ a {
   border-color: var(--muted);
 }
 
+// A revealed team name links to its match page. It inherits the row's colour
+// (so winner/loser emphasis still reads) and only underlines on hover, so the
+// link is unobtrusive until you reach for it. Clicking elsewhere in the box
+// still toggles the reveal.
+a.bk-team-link {
+  color: inherit;
+  text-decoration: none;
+
+  &:hover {
+    text-decoration: underline;
+  }
+}
+
 // Bracket connectors. A feeding match sends a line out to the gutter; the two
 // feeders of a pair also drop/raise a vertical line so they join before the next
 // round, where the fed match receives a flat line. A lone feeder (no pair) just

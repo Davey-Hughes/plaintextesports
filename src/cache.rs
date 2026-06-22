@@ -1170,6 +1170,7 @@ fn demo_event_info(league: &str) -> EventInfo {
         score_a: sa,
         score_b: sb,
         winner: w.to_string(),
+        match_id: 0,
         feeders,
     };
     // LoL events demo a single-elimination playoff (also showing the
@@ -1258,6 +1259,7 @@ fn dbm(a: &str, b: &str, sa: Option<i32>, sb: Option<i32>, w: &str, feeders: &[(
         score_a: sa,
         score_b: sb,
         winner: w.to_string(),
+        match_id: 0,
         feeders: feeders.to_vec(),
     }
 }
