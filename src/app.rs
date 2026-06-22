@@ -1,6 +1,6 @@
 use crate::server::{
-    get_day, get_event_info, get_event_schedule, get_match_detail, get_range, get_schedule,
-    get_site,
+    get_day, get_event_info, get_event_schedule, get_event_stages, get_match_detail, get_range,
+    get_schedule, get_site,
 };
 use crate::types::{
     BracketMatch, BracketRound, EventInfo, Game, MatchDetail, MatchStatus, MatchView, ScheduleView,
@@ -421,11 +421,11 @@ fn EventPage() -> impl IntoView {
         move || (league(), tz.get(), hour24.get()),
         |(lg, z, h)| async move { get_event_schedule(lg, z, h).await },
     );
-    let info = Resource::new(league, |lg| async move {
+    let stages = Resource::new(league, |lg| async move {
         if lg.is_empty() {
-            Ok(EventInfo::default())
+            Ok(Vec::new())
         } else {
-            get_event_info(lg).await
+            get_event_stages(lg).await
         }
     });
     setup_autorefresh(schedule);
@@ -445,7 +445,7 @@ fn EventPage() -> impl IntoView {
         }>
             {move || {
                 let sched = schedule.get();
-                let inf = info.get();
+                let stage_list = stages.get().and_then(Result::ok).unwrap_or_default();
                 let lg_name = league();
                 match sched {
                     Some(Ok(s)) => {
@@ -467,19 +467,24 @@ fn EventPage() -> impl IntoView {
                                     </p>
                                 }
                             });
-                        let extra = inf
-                            .and_then(Result::ok)
-                            .filter(|e| !e.is_empty())
+                        // One section per stage: a Swiss/group stage shows its
+                        // standings, the playoffs its bracket — each labelled.
+                        let extra = stage_list
+                            .into_iter()
                             .map(|e| {
-                                let EventInfo { tournament_id, game, standings, rounds, .. } = e;
+                                let EventInfo { tournament_id, stage, game, standings, rounds, .. } = e;
                                 let bracket_only = standings.is_empty();
+                                let label = (!stage.is_empty())
+                                    .then(|| view! { <h2 class="stage-head">{stage}</h2> });
                                 view! {
                                     <div class="event-extra">
+                                        {label}
                                         <StandingsTable rows=standings tournament_id game />
                                         <Bracket rounds=rounds tournament_id bracket_only />
                                     </div>
                                 }
-                            });
+                            })
+                            .collect_view();
                         view! {
                             <article class="detail">
                                 <A href="/">"← schedule"</A>

@@ -227,6 +227,10 @@ pub struct EventInfo {
     /// PandaScore tournament id — the stable key for sharing per-round reveal
     /// state across the pages that show this same bracket.
     pub tournament_id: i64,
+    /// The stage/tournament name within the event (e.g. "Stage 1", "Playoffs"),
+    /// so a multi-stage event can label each stage. Empty for single-stage events.
+    #[serde(default)]
+    pub stage: String,
     /// Which game this event is, so standings can use game-appropriate labels.
     pub game: Game,
     pub standings: Vec<StandingRow>,

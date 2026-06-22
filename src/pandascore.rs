@@ -453,6 +453,32 @@ fn begin_at_range(from: DateTime<Utc>, to: DateTime<Utc>) -> String {
     format!("{},{}", from.to_rfc3339(), to.to_rfc3339())
 }
 
+/// All tier-1 past matches in `[from, to]`, paging through results so a busy
+/// range isn't truncated at one page. Returns the matches and the last-seen
+/// remaining-budget header.
+pub async fn fetch_past_range_all(
+    client: &reqwest::Client,
+    token: &str,
+    game: Game,
+    from: DateTime<Utc>,
+    to: DateTime<Utc>,
+) -> Result<(Vec<NormalizedMatch>, Option<u64>), DynError> {
+    const PER_PAGE: u32 = 100;
+    let mut out = Vec::new();
+    let mut rate = None;
+    let mut page = 1u32;
+    loop {
+        let r = fetch_past_range(client, token, game, from, to, page, PER_PAGE).await?;
+        rate = r.rate_remaining.or(rate);
+        out.extend(r.matches);
+        if r.reached_end || page >= 20 {
+            break;
+        }
+        page += 1;
+    }
+    Ok((out, rate))
+}
+
 /// Fetch one page of tier-1 past matches whose `begin_at` is in `[from, to]`,
 /// sorted ascending. Used to refresh recent past days and to backfill history.
 pub async fn fetch_past_range(
@@ -490,6 +516,28 @@ pub async fn fetch_past_range(
 }
 
 // ----- Standings + brackets (per tournament) -------------------------------
+
+#[derive(Debug, Deserialize)]
+struct RawTournamentDetail {
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    has_bracket: Option<bool>,
+}
+
+/// A tournament's stage name (e.g. "Stage 1", "Playoffs") and whether it's an
+/// elimination bracket (vs a Swiss/group stage represented by standings).
+pub async fn fetch_tournament_meta(
+    client: &reqwest::Client,
+    token: &str,
+    tournament_id: i64,
+) -> Result<(String, bool), DynError> {
+    let url = format!("{BASE_URL}/tournaments/{tournament_id}");
+    let query: [(&str, &str); 0] = [];
+    let (body, _) = get_text(client, token, &url, &query).await?;
+    let d: RawTournamentDetail = serde_json::from_str(&body)?;
+    Ok((d.name.unwrap_or_default(), d.has_bracket.unwrap_or(false)))
+}
 
 #[derive(Debug, Deserialize)]
 struct RawStanding {
