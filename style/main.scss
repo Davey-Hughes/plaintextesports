@@ -1108,28 +1108,52 @@ a {
   border-top: 1px solid var(--border);
 }
 
-// Link the winner's-bracket final and loser's-bracket final to the grand final:
-// a vertical rail in the gap (clear of the section-title lines), with a flat stub
-// from each final and from the grand final joining it. The rail spans the full
-// height so it always reaches both finals, whatever their sizes.
-.bk-de-left::after {
-  content: "";
-  position: absolute;
-  right: -0.75rem;
-  top: 0;
-  bottom: 0;
-  border-left: 1px solid var(--border);
+// Link the winner's-bracket final and loser's-bracket final to the grand final
+// along a rail in the gap (right of the section-title lines, so it never touches
+// them). The vertical is assembled from pieces anchored to the actual finals, so
+// it spans exactly final-to-final with no stray tail, plus a fixed bridge across
+// the gap+label between the two stacked brackets. Because the per-final pieces
+// follow each bracket's own height, it stays correct at any bracket size.
+.bk-bracket-group {
+  position: relative;
 }
 
-.bk-de-left .bracket .bk-round:last-child .bk-match::after {
+// Winner's final: flat stub to the rail + a line down to its bracket's bottom
+// (the final fills its column, so the box bottom is the bracket bottom).
+.bk-de-left .bk-bracket-group:first-child .bracket .bk-round:last-child .bk-match::after {
   content: "";
   position: absolute;
   right: -1.55rem;
-  top: 50%;
   width: 1.55rem;
+  top: 50%;
+  bottom: 0;
   border-top: 1px solid var(--border);
+  border-right: 1px solid var(--border);
 }
 
+// Loser's final: flat stub to the rail + a line up to its bracket's top.
+.bk-de-left .bk-bracket-group:last-child .bracket .bk-round:last-child .bk-match::after {
+  content: "";
+  position: absolute;
+  right: -1.55rem;
+  width: 1.55rem;
+  top: 0;
+  bottom: 50%;
+  border-bottom: 1px solid var(--border);
+  border-right: 1px solid var(--border);
+}
+
+// Bridge the (fixed) gap + loser's-bracket label between the two brackets.
+.bk-de-left .bk-bracket-group:last-child::before {
+  content: "";
+  position: absolute;
+  right: -0.75rem;
+  top: -1.2rem;
+  height: 3rem;
+  border-left: 1px solid var(--border);
+}
+
+// Grand final: flat stub left to the rail.
 .bracket-de > .bk-bracket-group:last-child .bk-match::before {
   content: "";
   position: absolute;
