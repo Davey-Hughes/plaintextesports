@@ -801,6 +801,21 @@ a {
   margin: 0;
 }
 
+// A section heading that's clickable to reveal (dotted underline → solid when on).
+.section-toggle {
+  background: none;
+  border: none;
+  padding: 0;
+  font: inherit;
+  cursor: pointer;
+  text-decoration: underline dotted;
+  text-underline-offset: 3px;
+
+  &.on {
+    text-decoration-style: solid;
+  }
+}
+
 // Placeholder shown when a section's results are hidden.
 .section-hidden {
   color: var(--muted);
@@ -886,11 +901,30 @@ a {
   display: flex;
   align-items: baseline;
   justify-content: center;
-  gap: 0.5rem;
+  margin-bottom: 0.3rem;
+}
+
+// Clickable round heading (cycles the round's reveal stage).
+.bk-round-toggle {
+  background: none;
+  border: none;
+  padding: 0;
+  font: inherit;
   color: var(--muted);
   font-size: 11px;
   text-transform: uppercase;
-  margin-bottom: 0.3rem;
+  cursor: pointer;
+  text-decoration: underline dotted;
+  text-underline-offset: 2px;
+
+  &:hover {
+    color: var(--fg);
+  }
+
+  &.on {
+    color: var(--fg);
+    text-decoration-style: solid;
+  }
 }
 
 .bk-matches {
@@ -905,6 +939,11 @@ a {
   margin: 0.35rem 0.8rem;
   border: 1px solid var(--border);
   background: var(--card-bg);
+  cursor: pointer;
+
+  &:hover {
+    border-color: var(--muted);
+  }
 
   // Horizontal connector stubs toward the neighbouring rounds.
   .bk-round:not(:last-child) & {
