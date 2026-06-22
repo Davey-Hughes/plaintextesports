@@ -284,7 +284,9 @@ a {
 
 .row {
   display: grid;
-  grid-template-columns: 5.2em minmax(0, 1fr) auto minmax(0, 1fr) auto;
+  // Fixed leading (time) + trailing (meta) columns so the centered "vs"/score
+  // lines up across every row regardless of star/badge/bo content.
+  grid-template-columns: 5.2em minmax(0, 1fr) auto minmax(0, 1fr) 5.2em;
   align-items: baseline;
   gap: 0.5rem;
   padding: 0.22rem 0.3rem;
@@ -300,9 +302,10 @@ a {
     border-left-color: var(--accent);
   }
 
-  // With a ★ button, prepend a column for it.
+  // With a ★ button, prepend a fixed column for it (same width whether it's a
+  // button or the empty placeholder, so rows stay aligned).
   &.has-star {
-    grid-template-columns: auto 5.2em minmax(0, 1fr) auto minmax(0, 1fr) auto;
+    grid-template-columns: 1.3em 5.2em minmax(0, 1fr) auto minmax(0, 1fr) 5.2em;
   }
 }
 
