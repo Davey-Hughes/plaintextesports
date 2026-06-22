@@ -404,6 +404,12 @@ a {
   padding-left: 0.6rem;
 }
 
+// On the event page every group is the same event, so drop the colour bar.
+.league.league-plain {
+  border-left: none;
+  padding-left: 0;
+}
+
 .league-head {
   display: flex;
   align-items: baseline;

@@ -2077,9 +2077,14 @@ fn render_schedule(s: ScheduleView, show_nav: bool, push: bool, event_mode: bool
                 .leagues
                 .into_iter()
                 .map(|lg| {
-                    let lc = league_color_class(&lg.league);
-                    // On the event page the page title already names the event, so
-                    // we drop the per-day league header and show the best-of per row.
+                    // On the event page the page title already names the event, so we
+                    // drop the per-day league header, the colour-coded bar, and show
+                    // the best-of per row instead.
+                    let league_class = if event_mode {
+                        "league league-plain".to_string()
+                    } else {
+                        format!("league {}", league_color_class(&lg.league))
+                    };
                     let show_bo = event_mode || lg.bo.is_none();
                     // Header best-of: the single format when the event is uniform,
                     // else the distinct formats joined (e.g. "Bo1 | Bo3"). Per-row
@@ -2120,7 +2125,7 @@ fn render_schedule(s: ScheduleView, show_nav: bool, push: bool, event_mode: bool
                         .map(|m| view! { <MatchRow m=m show_bo=show_bo push=push /> })
                         .collect_view();
                     view! {
-                        <div class=format!("league {lc}")>
+                        <div class=league_class>
                             {head}
                             <div class="rows">{rows}</div>
                         </div>
