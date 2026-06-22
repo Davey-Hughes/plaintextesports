@@ -775,6 +775,7 @@ fn to_bracket_match(m: &RawBracketMatch, pos: &HashMap<i64, (usize, usize)>) -> 
         score_a: score_for(&m.results, id_a).map(|s| s as i32),
         score_b: score_for(&m.results, id_b).map(|s| s as i32),
         winner: winner.to_string(),
+        match_id: m.id,
         feeders,
     }
 }

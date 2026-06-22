@@ -200,6 +200,10 @@ pub struct BracketMatch {
     pub score_b: Option<i32>,
     /// Which side won, if decided: "a", "b", or empty.
     pub winner: String,
+    /// PandaScore match id, for linking to the match detail page. 0 when unknown
+    /// (e.g. demo data); the bracket suppresses the link in that case.
+    #[serde(default)]
+    pub match_id: i64,
     /// The `(round_index, match_index)` of the matches whose winners/losers feed
     /// this one (0 entries = a first-round match). Used to auto-reveal a series'
     /// lineup once its feeders' scores are revealed — works for single- and
