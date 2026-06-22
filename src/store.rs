@@ -47,6 +47,7 @@ pub fn open(path: &str) -> rusqlite::Result<Connection> {
             game         TEXT    NOT NULL,
             league       TEXT    NOT NULL,
             league_url   TEXT,
+            serie_name   TEXT,
             tier         TEXT    NOT NULL,
             begin_at_ms  INTEGER NOT NULL,
             status       TEXT    NOT NULL,
@@ -96,6 +97,7 @@ pub fn open(path: &str) -> rusqlite::Result<Connection> {
     // Migrate older DBs (ignored if the column already exists).
     let _ = conn.execute("ALTER TABLE matches ADD COLUMN league_url TEXT", []);
     let _ = conn.execute("ALTER TABLE matches ADD COLUMN tournament_id INTEGER", []);
+    let _ = conn.execute("ALTER TABLE matches ADD COLUMN serie_name TEXT", []);
     let _ = conn.execute("ALTER TABLE reminders ADD COLUMN game TEXT NOT NULL DEFAULT ''", []);
     let _ = conn.execute("ALTER TABLE reminders ADD COLUMN league TEXT NOT NULL DEFAULT ''", []);
     Ok(conn)
@@ -110,6 +112,7 @@ fn row_to_match(row: &rusqlite::Row) -> rusqlite::Result<NormalizedMatch> {
         game: Game::from_filter(&game).unwrap_or(Game::Cs2),
         league: row.get("league")?,
         league_url: row.get("league_url")?,
+        serie_name: row.get::<_, Option<String>>("serie_name")?.unwrap_or_default(),
         tier: row.get("tier")?,
         begin_at: DateTime::from_timestamp_millis(begin_ms).unwrap_or_else(Utc::now),
         status: MatchStatus::from_db(&status),
@@ -177,8 +180,8 @@ pub fn upsert_and_prune(
             "INSERT INTO matches
                 (id, game, league, tier, begin_at_ms, status, best_of,
                  team_a_label, team_a_score, team_b_label, team_b_score, stream_url,
-                 league_url, tournament_id)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
+                 league_url, tournament_id, serie_name)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
              ON CONFLICT(id, game) DO UPDATE SET
                 league=excluded.league, tier=excluded.tier,
                 begin_at_ms=excluded.begin_at_ms, status=excluded.status,
@@ -186,7 +189,7 @@ pub fn upsert_and_prune(
                 team_a_label=excluded.team_a_label, team_a_score=excluded.team_a_score,
                 team_b_label=excluded.team_b_label, team_b_score=excluded.team_b_score,
                 stream_url=excluded.stream_url, league_url=excluded.league_url,
-                tournament_id=excluded.tournament_id",
+                tournament_id=excluded.tournament_id, serie_name=excluded.serie_name",
         )?;
         for m in matches {
             up.execute(params![
@@ -204,6 +207,7 @@ pub fn upsert_and_prune(
                 m.stream_url,
                 m.league_url,
                 m.tournament_id,
+                m.serie_name,
             ])?;
         }
         tx.execute(
@@ -444,6 +448,7 @@ mod tests {
             game: Game::Lol,
             league: "LCK".into(),
             league_url: None,
+            serie_name: String::new(),
             tier: "A".into(),
             begin_at,
             status: MatchStatus::Upcoming,

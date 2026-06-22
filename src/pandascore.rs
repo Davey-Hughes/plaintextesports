@@ -26,6 +26,9 @@ pub struct NormalizedMatch {
     pub league: String,
     /// Official league/event site from the API, if any (often absent).
     pub league_url: Option<String>,
+    /// The serie/edition name within the league (e.g. "Cologne Major"); empty
+    /// when absent or the league already names the event. Persisted.
+    pub serie_name: String,
     pub tier: String,
     pub begin_at: DateTime<Utc>,
     pub status: MatchStatus,
@@ -87,6 +90,10 @@ struct RawLeague {
 struct RawSerie {
     #[serde(default)]
     slug: Option<String>,
+    /// The edition/location name (e.g. "Cologne Major"); empty for league
+    /// seasons where the league name already names the event.
+    #[serde(default)]
+    name: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -206,6 +213,16 @@ fn normalize(game: Game, raw: &RawMatch) -> Option<NormalizedMatch> {
         .as_ref()
         .and_then(|l| l.url.clone())
         .filter(|u| !u.trim().is_empty());
+    // The edition name (e.g. "Cologne Major"); dropped when empty or identical
+    // to the league, so combining league + serie never doubles up.
+    let serie_name = raw
+        .serie
+        .as_ref()
+        .and_then(|s| s.name.as_deref())
+        .map(str::trim)
+        .filter(|s| !s.is_empty() && !s.eq_ignore_ascii_case(&league))
+        .unwrap_or_default()
+        .to_string();
 
     let (label_a, id_a) = team_label(raw.opponents.first().and_then(|o| o.opponent.as_ref()));
     let (label_b, id_b) = team_label(raw.opponents.get(1).and_then(|o| o.opponent.as_ref()));
@@ -230,6 +247,7 @@ fn normalize(game: Game, raw: &RawMatch) -> Option<NormalizedMatch> {
         game,
         league,
         league_url,
+        serie_name,
         tier,
         begin_at,
         status: map_status(raw.status.as_deref()),
