@@ -531,10 +531,10 @@ a {
 }
 
 .row {
+  // Star column (optional) + the link body. The content grid lives on the body
+  // (.row-body) so the whole body — gaps included — is clickable.
   display: grid;
-  // Fixed leading (time) + trailing (meta) columns so the centered "vs"/score
-  // lines up across every row regardless of star/badge/bo content.
-  grid-template-columns: 5.2em minmax(0, 1fr) auto minmax(0, 1fr) 5.2em;
+  grid-template-columns: 1fr;
   align-items: baseline;
   gap: 0.5rem;
   padding: 0.22rem 0.3rem;
@@ -554,7 +554,7 @@ a {
   // shares this column (see .row-bar) since a row never has both. The column is
   // kept narrow so the centered ★/bar sits close to the left edge.
   &.has-star {
-    grid-template-columns: 0.9em 5.2em minmax(0, 1fr) auto minmax(0, 1fr) 5.2em;
+    grid-template-columns: 0.9em 1fr;
   }
 
   // Non-star rows (push disabled) have no leading column, so the live/final
@@ -593,9 +593,15 @@ a {
   }
 }
 
-// The stream link; display:contents lets its cells join the row grid.
+// The link to the match page. It's a real grid (not display:contents) holding
+// the content columns, so the whole body — including the gaps between the teams
+// and the "vs" — is clickable. Fixed leading (time) + trailing (meta) columns
+// keep the centered "vs"/score lined up across every row.
 .row-body {
-  display: contents;
+  display: grid;
+  grid-template-columns: 5.2em minmax(0, 1fr) auto minmax(0, 1fr) 5.2em;
+  align-items: baseline;
+  gap: 0.5rem;
   color: var(--fg);
   text-decoration: none;
 }
