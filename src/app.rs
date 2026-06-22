@@ -1,5 +1,5 @@
 use crate::server::{get_day, get_schedule};
-use crate::types::{MatchStatus, MatchView, ScheduleView, TeamView};
+use crate::types::{MatchStatus, MatchView, ScheduleView};
 use leptos::prelude::*;
 use leptos_meta::{provide_meta_context, MetaTags, Stylesheet, Title};
 use leptos_router::{
@@ -219,7 +219,6 @@ fn ScheduleSection(
 
 fn render_schedule(s: ScheduleView, show_nav: bool) -> impl IntoView {
     let ScheduleView {
-        live,
         days,
         fetched_label,
         stale,
@@ -230,7 +229,7 @@ fn render_schedule(s: ScheduleView, show_nav: bool) -> impl IntoView {
         ..
     } = s;
 
-    let empty = live.is_empty() && days.iter().all(|d| d.matches.is_empty());
+    let empty = days.iter().all(|d| d.leagues.is_empty());
 
     let nav = show_nav.then(|| {
         let prev = prev_date.unwrap_or_default();
@@ -245,22 +244,35 @@ fn render_schedule(s: ScheduleView, show_nav: bool) -> impl IntoView {
         }
     });
 
-    let live_section = (!live.is_empty()).then(|| {
-        view! {
-            <section class="group">
-                <h2 class="group-title live-title">"Live now"</h2>
-                <div class="cards">{cards(live)}</div>
-            </section>
-        }
-    });
-
     let day_sections = days
         .into_iter()
         .map(|d| {
+            let leagues = d
+                .leagues
+                .into_iter()
+                .map(|lg| {
+                    let show_bo = lg.bo.is_none();
+                    let header = match &lg.bo {
+                        Some(bo) => format!("{} · {}", lg.league, bo),
+                        None => lg.league.clone(),
+                    };
+                    let rows = lg
+                        .matches
+                        .into_iter()
+                        .map(|m| view! { <MatchRow m=m show_bo=show_bo /> })
+                        .collect_view();
+                    view! {
+                        <div class="league">
+                            <h3 class="league-title">{header}</h3>
+                            <div class="rows">{rows}</div>
+                        </div>
+                    }
+                })
+                .collect_view();
             view! {
-                <section class="group">
-                    <h2 class="group-title">{d.day_label}</h2>
-                    <div class="cards">{cards(d.matches)}</div>
+                <section class="day">
+                    <h2 class="day-title">{d.day_label}</h2>
+                    {leagues}
                 </section>
             }
         })
@@ -276,61 +288,52 @@ fn render_schedule(s: ScheduleView, show_nav: bool) -> impl IntoView {
     view! {
         {nav}
         <div class="status-line">{fixture_note}{stale_note} "loaded " {fetched_label}</div>
-        {live_section}
         {day_sections}
         {empty.then(|| view! { <p class="empty">"No tier-1 matches in this window."</p> })}
     }
 }
 
-fn cards(matches: Vec<MatchView>) -> impl IntoView {
-    matches
-        .into_iter()
-        .map(|m| view! { <MatchCard m=m /> })
-        .collect_view()
-}
-
 #[component]
-fn MatchCard(m: MatchView) -> impl IntoView {
+fn MatchRow(m: MatchView, show_bo: bool) -> impl IntoView {
     let status_class = match m.status {
         MatchStatus::Live => "live",
         MatchStatus::Finished => "final",
         MatchStatus::Canceled => "canceled",
         MatchStatus::Upcoming => "upcoming",
     };
-
-    let meta = if m.best_of.is_empty() {
-        format!("{} · {}", m.game.label(), m.league)
-    } else {
-        format!("{} · {} · {}", m.game.label(), m.league, m.best_of)
+    let badge = match m.status {
+        MatchStatus::Live => "LIVE",
+        MatchStatus::Finished => "Final",
+        MatchStatus::Canceled => "Canc.",
+        MatchStatus::Upcoming => "",
     };
 
+    let scored = matches!((m.team_a.score, m.team_b.score), (Some(_), Some(_)));
+    let mid = match (m.team_a.score, m.team_b.score) {
+        (Some(a), Some(b)) => format!("{a} – {b}"),
+        _ => "vs".to_string(),
+    };
+    let mid_class = if scored { "row-mid scored" } else { "row-mid" };
+    let bo = if show_bo { m.best_of } else { String::new() };
+
     let inner = view! {
-        <div class="card-top">
-            <span class="card-league">{meta}</span>
-            <span class=format!("card-status {status_class}")>{m.time_label}</span>
-        </div>
-        <TeamRow team=m.team_a />
-        <TeamRow team=m.team_b />
+        <span class="row-time">{m.clock_label}</span>
+        <span class="row-team row-a" class:winner=m.team_a.winner>{m.team_a.label}</span>
+        <span class=mid_class>{mid}</span>
+        <span class="row-team row-b" class:winner=m.team_b.winner>{m.team_b.label}</span>
+        <span class="row-meta">
+            <span class=format!("row-badge {status_class}")>{badge}</span>
+            <span class="row-bo">{bo}</span>
+        </span>
     };
 
     match m.stream_url {
         Some(url) => view! {
-            <a class=format!("card {status_class}") href=url target="_blank" rel="noreferrer">
+            <a class=format!("row {status_class}") href=url target="_blank" rel="noreferrer">
                 {inner}
             </a>
         }
         .into_any(),
-        None => view! { <div class=format!("card {status_class}")>{inner}</div> }.into_any(),
-    }
-}
-
-#[component]
-fn TeamRow(team: TeamView) -> impl IntoView {
-    let score = team.score.map(|s| s.to_string()).unwrap_or_default();
-    view! {
-        <div class="team" class:winner=team.winner>
-            <span class="team-name">{team.label}</span>
-            <span class="team-score">{score}</span>
-        </div>
+        None => view! { <div class=format!("row {status_class}")>{inner}</div> }.into_any(),
     }
 }
