@@ -1,6 +1,7 @@
 //! Runtime configuration, loaded from `config.toml` with env-var overrides
 //! (server-only).
 
+use crate::types::SiteLink;
 use chrono_tz::Tz;
 use once_cell::sync::Lazy;
 use serde::Deserialize;
@@ -20,6 +21,7 @@ struct FileConfig {
     db_path: Option<String>,
     resolve_links: Option<bool>,
     vapid: Option<VapidFile>,
+    site: Option<SiteFile>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -27,6 +29,13 @@ struct VapidFile {
     public: Option<String>,
     private: Option<String>,
     subject: Option<String>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct SiteFile {
+    copyright: Option<String>,
+    #[serde(default)]
+    links: Vec<SiteLink>,
 }
 
 impl FileConfig {
@@ -81,6 +90,10 @@ pub struct Config {
     pub vapid_public: String,
     pub vapid_private: String,
     pub vapid_subject: String,
+    /// Footer copyright line (optional).
+    pub copyright: Option<String>,
+    /// Footer links (GitHub, social, …).
+    pub links: Vec<SiteLink>,
 }
 
 impl Config {
@@ -117,12 +130,18 @@ impl Config {
             })
             .unwrap_or_default();
         let map = file.to_map();
-        Self::from_vars(|k| {
+        let mut cfg = Self::from_vars(|k| {
             std::env::var(k)
                 .ok()
                 .filter(|s| !s.trim().is_empty())
                 .or_else(|| map.get(k).cloned())
-        })
+        });
+        // Site/footer settings aren't string-flat, so apply them directly.
+        if let Some(site) = file.site {
+            cfg.copyright = site.copyright;
+            cfg.links = site.links;
+        }
+        cfg
     }
 
     /// Build from an arbitrary key→value lookup. Keeps the parsing/clamping
@@ -179,6 +198,8 @@ impl Config {
             vapid_public,
             vapid_private,
             vapid_subject,
+            copyright: None,
+            links: Vec::new(),
         }
     }
 }
