@@ -875,16 +875,21 @@ fn MatchRow(m: MatchView, show_bo: bool, push: bool) -> impl IntoView {
     let show_title = format!("Show the {score_noun}");
     let hide_title = format!("Hide the {score_noun}");
     let badge_cls = format!("row-badge {status_class}");
+    // Only render the bo when present, so the reveal underline doesn't extend
+    // past the badge into an empty cell on uniform events.
+    let bo_span = (!bo.is_empty()).then(|| view! { <span class="row-bo">{bo}</span> });
     let meta_view = if has {
         view! {
-            <span
-                class="row-meta reveal-meta"
-                class:on=move || reveal.get()
-                title=move || if reveal.get() { hide_title.clone() } else { show_title.clone() }
-                on:click=toggle_reveal
-            >
-                <span class=badge_cls>{badge}</span>
-                <span class="row-bo">{bo}</span>
+            <span class="row-meta">
+                <span
+                    class="reveal-meta"
+                    class:on=move || reveal.get()
+                    title=move || if reveal.get() { hide_title.clone() } else { show_title.clone() }
+                    on:click=toggle_reveal
+                >
+                    <span class=badge_cls>{badge}</span>
+                    {bo_span}
+                </span>
             </span>
         }
         .into_any()
@@ -892,7 +897,7 @@ fn MatchRow(m: MatchView, show_bo: bool, push: bool) -> impl IntoView {
         view! {
             <span class="row-meta">
                 <span class=badge_cls>{badge}</span>
-                <span class="row-bo">{bo}</span>
+                {bo_span}
             </span>
         }
         .into_any()
@@ -931,16 +936,20 @@ fn MatchRow(m: MatchView, show_bo: bool, push: bool) -> impl IntoView {
     };
 
     if push {
-        // Only upcoming matches are remindable; others get an empty placeholder
-        // so the grid columns stay aligned.
-        let star = if matches!(m.status, MatchStatus::Upcoming) {
-            view! { <StarButton id=m.id game=m.game league=m.league.clone() /> }.into_any()
-        } else {
-            view! { <span class="star star-empty"></span> }.into_any()
+        // The leading column holds either the reminder ★ (upcoming) or the
+        // live/final side bar — never both — so they share one slot and live/
+        // final rows don't waste an empty star cell.
+        let lead = match m.status {
+            MatchStatus::Upcoming => {
+                view! { <StarButton id=m.id game=m.game league=m.league.clone() /> }.into_any()
+            }
+            MatchStatus::Live => view! { <span class="row-bar live"></span> }.into_any(),
+            MatchStatus::Finished => view! { <span class="row-bar final"></span> }.into_any(),
+            MatchStatus::Canceled => view! { <span class="star star-empty"></span> }.into_any(),
         };
         view! {
             <div class=format!("row has-star {status_class}")>
-                {star}
+                {lead}
                 {body}
             </div>
         }

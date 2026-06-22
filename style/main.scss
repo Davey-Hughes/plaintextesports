@@ -287,6 +287,13 @@ a {
   }
 }
 
+// The event-level ★ (in a league header) is larger/bolder than the per-match ★
+// so "follow this whole event" reads as a bigger scope than a single match.
+.league-head .sub-star {
+  font-size: 17px;
+  font-weight: 700;
+}
+
 // Map each hashed league class to its palette color.
 .lc-0 { --lc: var(--c0); }
 .lc-1 { --lc: var(--c1); }
@@ -313,31 +320,52 @@ a {
   gap: 0.5rem;
   padding: 0.22rem 0.3rem;
   color: var(--fg);
-  border-left: 2px solid transparent;
 
   &:hover {
     background: var(--card-bg);
     text-decoration: none;
   }
 
-  &.live {
-    border-left-color: var(--accent);
+  // Finished matches dim their time/teams slightly since the match is over.
+  &.final .row-time {
+    opacity: 0.75;
   }
 
-  // Finished matches get a muted side bar (distinct from the green live bar),
-  // and their time/teams dim slightly since the match is over.
-  &.final {
-    border-left-color: var(--muted);
-
-    .row-time {
-      opacity: 0.75;
-    }
-  }
-
-  // With a ★ button, prepend a fixed column for it (same width whether it's a
-  // button or the empty placeholder, so rows stay aligned).
+  // With a ★ button, prepend a fixed column for it. The live/final side bar
+  // shares this column (see .row-bar) since a row never has both.
   &.has-star {
     grid-template-columns: 1.3em 5.2em minmax(0, 1fr) auto minmax(0, 1fr) 5.2em;
+  }
+
+  // Non-star rows (push disabled) have no leading column, so the live/final
+  // indicator stays a colored left border instead.
+  &:not(.has-star) {
+    border-left: 2px solid transparent;
+
+    &.live {
+      border-left-color: var(--accent);
+    }
+
+    &.final {
+      border-left-color: var(--muted);
+    }
+  }
+}
+
+// Live/final indicator that lives in the leading (★) column of push-enabled
+// rows — same slot as the ☆, which only ever appears on upcoming matches.
+.row-bar {
+  align-self: stretch;
+  justify-self: start;
+  width: 2px;
+  border-radius: 1px;
+
+  &.live {
+    background: var(--accent);
+  }
+
+  &.final {
+    background: var(--muted);
   }
 }
 
@@ -413,23 +441,25 @@ a {
   align-items: baseline;
   white-space: nowrap;
   min-width: 3.2em;
+}
 
-  // The whole "Final · Bo3" (or "LIVE") cluster reveals this match's score when
-  // clicked. The dotted underline hints it's interactive; the title gives the
-  // full behavior; a solid underline marks it revealed. Status colors are kept
-  // (so LIVE stays green) by underlining rather than recoloring.
-  &.reveal-meta {
-    cursor: pointer;
-    text-decoration: underline dotted;
-    text-underline-offset: 2px;
+// The whole "Final · Bo3" (or "LIVE") cluster reveals this match's score when
+// clicked. A dotted bottom border (rather than text-decoration) draws one
+// continuous line spanning the gap between the badge and the best-of; it goes
+// solid when revealed. Status colors are kept (so LIVE stays green).
+.reveal-meta {
+  display: inline-flex;
+  gap: 0.45rem;
+  align-items: baseline;
+  cursor: pointer;
+  border-bottom: 1px dotted var(--muted);
 
-    &:hover {
-      text-decoration-color: var(--fg);
-    }
+  &:hover {
+    border-bottom-color: var(--fg);
+  }
 
-    &.on {
-      text-decoration-style: solid;
-    }
+  &.on {
+    border-bottom-style: solid;
   }
 }
 
