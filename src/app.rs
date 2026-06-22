@@ -596,7 +596,11 @@ fn detail_view(d: MatchDetail) -> impl IntoView {
         <article class="detail">
             <A href="/">"← schedule"</A>
             <h1 class="detail-title">
-                <span class="detail-team" class:winner=move || reveal.get() && win_a>
+                <span
+                    class="detail-team"
+                    class:winner=move || reveal.get() && win_a
+                    class:loser=move || reveal.get() && win_b
+                >
                     {team_a}
                 </span>
                 <span class="detail-score">
@@ -608,7 +612,11 @@ fn detail_view(d: MatchDetail) -> impl IntoView {
                         }
                     }}
                 </span>
-                <span class="detail-team" class:winner=move || reveal.get() && win_b>
+                <span
+                    class="detail-team"
+                    class:winner=move || reveal.get() && win_b
+                    class:loser=move || reveal.get() && win_a
+                >
                     {team_b}
                 </span>
             </h1>
@@ -1124,8 +1132,16 @@ fn Bracket(rounds: Vec<BracketRound>, tournament_id: i64) -> impl IntoView {
                                             .into_any()
                                     }
                                     _ => {
-                                        let cls_a = if winner == "a" { "bk-row win" } else { "bk-row" };
-                                        let cls_b = if winner == "b" { "bk-row win" } else { "bk-row" };
+                                        let cls_a = match winner.as_str() {
+                                            "a" => "bk-row win",
+                                            "b" => "bk-row lose",
+                                            _ => "bk-row",
+                                        };
+                                        let cls_b = match winner.as_str() {
+                                            "b" => "bk-row win",
+                                            "a" => "bk-row lose",
+                                            _ => "bk-row",
+                                        };
                                         view! {
                                             <div class=cls_a>
                                                 <span class="bk-team">{ta.clone()}</span>
@@ -2307,7 +2323,11 @@ fn MatchRow(m: MatchView, show_bo: bool, push: bool) -> impl IntoView {
 
     let inner = view! {
         <span class="row-time">{m.clock_label}</span>
-        <span class="row-team row-a" class:winner=move || reveal.get() && win_a>
+        <span
+            class="row-team row-a"
+            class:winner=move || reveal.get() && win_a
+            class:loser=move || reveal.get() && win_b
+        >
             {m.team_a.label}
         </span>
         <span class="row-mid" class:scored=move || reveal.get() && has>
@@ -2319,7 +2339,11 @@ fn MatchRow(m: MatchView, show_bo: bool, push: bool) -> impl IntoView {
                 }
             }}
         </span>
-        <span class="row-team row-b" class:winner=move || reveal.get() && win_b>
+        <span
+            class="row-team row-b"
+            class:winner=move || reveal.get() && win_b
+            class:loser=move || reveal.get() && win_a
+        >
             {m.team_b.label}
         </span>
         {meta_view}
