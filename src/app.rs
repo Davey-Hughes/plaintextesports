@@ -289,10 +289,11 @@ fn EventScoreToggle(league: String) -> impl IntoView {
     }
 }
 
-/// Bell toggle to subscribe to a whole game (`kind="game"`, value "cs2"/"lol")
-/// or event (`kind="league"`, value = league name). Hidden unless push is on.
+/// ★ toggle to subscribe to a whole game (`kind="game"`, value "cs2"/"lol") or
+/// event (`kind="league"`, value = league name). Used inside a game filter tab
+/// and in event headers. Hidden unless push is on.
 #[component]
-fn SubscribeButton(kind: &'static str, value: String) -> impl IntoView {
+fn SubscribeStar(kind: &'static str, value: String) -> impl IntoView {
     let subscribed = use_context::<Subscribed>().expect("subscribed context").0;
     let vapid = use_context::<RwSignal<Option<String>>>().expect("vapid context");
     let key = format!("{kind}|{value}");
@@ -322,14 +323,14 @@ fn SubscribeButton(kind: &'static str, value: String) -> impl IntoView {
 
     view! {
         <button
-            class="bell"
+            class="sub-star"
             class:on=move || is_on.get()
             class:event-hidden=hidden
             on:click=on_click
             title="Notify me about this"
             aria-label="Subscribe to notifications"
         >
-            {move || if is_on.get() { "notifying" } else { "notify" }}
+            {move || if is_on.get() { "★" } else { "☆" }}
         </button>
     }
 }
@@ -497,7 +498,8 @@ fn GameTabs(
     set_game: WriteSignal<String>,
     set_league: WriteSignal<String>,
 ) -> impl IntoView {
-    let mk = move |label: &'static str, value: &'static str| {
+    // A plain filter tab (used for "All", which has no game to subscribe to).
+    let plain = move |label: &'static str, value: &'static str| {
         view! {
             <button
                 class="tab"
@@ -512,14 +514,30 @@ fn GameTabs(
             </button>
         }
     };
+    // A game filter tab with an embedded ★ that subscribes to the whole game.
+    // The label clicks to filter; the ★ clicks to (un)subscribe.
+    let with_star = move |label: &'static str, value: &'static str| {
+        view! {
+            <span class="tab tab-with-star" class:active=move || game.get() == value>
+                <button
+                    class="tab-label"
+                    on:click=move |_| {
+                        set_game.set(value.to_string());
+                        set_league.set(String::new());
+                    }
+                >
+                    {label}
+                </button>
+                <SubscribeStar kind="game" value=value.to_string() />
+            </span>
+        }
+    };
 
     view! {
         <div class="tabs">
-            {mk("All", "all")}
-            {mk("CS2", "cs2")}
-            <SubscribeButton kind="game" value="cs2".to_string() />
-            {mk("LoL", "lol")}
-            <SubscribeButton kind="game" value="lol".to_string() />
+            {plain("All", "all")}
+            {with_star("CS2", "cs2")}
+            {with_star("LoL", "lol")}
         </div>
     }
 }
@@ -712,7 +730,7 @@ fn render_schedule(s: ScheduleView, show_nav: bool, push: bool) -> impl IntoView
                                     <a href=event_url target="_blank" rel="noreferrer">{header}</a>
                                 </h3>
                                 <span class="event-controls">
-                                    <SubscribeButton kind="league" value=sub_value />
+                                    <SubscribeStar kind="league" value=sub_value />
                                     {score_toggle}
                                 </span>
                             </div>

@@ -143,6 +143,32 @@ a {
   }
 }
 
+// A game filter tab that embeds a subscribe ★. The label and the ★ split the
+// box so each part of it is clickable (filter vs. subscribe).
+.tab-with-star {
+  display: inline-flex;
+  align-items: center;
+  padding: 0;
+
+  .tab-label {
+    background: none;
+    border: none;
+    color: inherit;
+    font: inherit;
+    padding: 0.2rem 0.25rem 0.2rem 0.6rem;
+    cursor: pointer;
+  }
+
+  .sub-star {
+    padding: 0.2rem 0.5rem 0.2rem 0.15rem;
+  }
+
+  // Keep the ★ legible against the inverted fill when the tab is active.
+  &.active .sub-star {
+    color: var(--bg);
+  }
+}
+
 .chips {
   display: flex;
   flex-wrap: wrap;
@@ -244,8 +270,7 @@ a {
   align-items: baseline;
 }
 
-.event-score,
-.bell {
+.event-score {
   background: none;
   border: 1px solid var(--border);
   color: var(--muted);
@@ -273,11 +298,29 @@ a {
   border-color: var(--lc, var(--fg));
 }
 
-// Subscribed bell uses the live/accent color.
-.bell.on {
-  color: var(--bg);
-  background: var(--accent);
-  border-color: var(--accent);
+// Subscribe ★ — shared by the game filter tabs and the event headers. Matches
+// the per-match ★ (same gold when active) so "follow this" reads consistently.
+.sub-star {
+  background: none;
+  border: none;
+  padding: 0;
+  margin: 0;
+  cursor: pointer;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1;
+
+  &:hover {
+    color: var(--fg);
+  }
+
+  &.on {
+    color: var(--c2);
+  }
+
+  &.event-hidden {
+    display: none;
+  }
 }
 
 // Map each hashed league class to its palette color.
