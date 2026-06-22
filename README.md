@@ -29,7 +29,10 @@ with an allowlist/denylist) are shown.
   and sent to the server, which formats + groups by day accordingly). `DISPLAY_TZ`
   is the fallback used for the first server render / non-JS clients.
 - Time format is toggleable **24h / 12h** (default 24h), remembered in
-  `localStorage`. Each league/event gets a stable color for quick scanning.
+  `localStorage`. Each league/event gets a stable color, and can be filtered.
+- Each event header links to its official site when PandaScore provides one,
+  otherwise a game-specific Liquipedia search; match rows link to the official
+  stream.
 - With no API token configured, the app serves built-in demo data so the UI is
   fully usable for development.
 

@@ -440,6 +440,7 @@ fn render_schedule(s: ScheduleView, show_nav: bool) -> impl IntoView {
                         Some(bo) => format!("{} · {}", lg.league, bo),
                         None => lg.league.clone(),
                     };
+                    let event_url = lg.event_url;
                     let rows = lg
                         .matches
                         .into_iter()
@@ -447,7 +448,9 @@ fn render_schedule(s: ScheduleView, show_nav: bool) -> impl IntoView {
                         .collect_view();
                     view! {
                         <div class=format!("league {lc}")>
-                            <h3 class="league-title">{header}</h3>
+                            <h3 class="league-title">
+                                <a href=event_url target="_blank" rel="noreferrer">{header}</a>
+                            </h3>
                             <div class="rows">{rows}</div>
                         </div>
                     }
@@ -547,6 +550,7 @@ mod tests {
                 winner: false,
             },
             stream_url: None,
+            event_url: String::new(),
             begin_at_ms: 0,
         }
     }
@@ -562,6 +566,7 @@ mod tests {
                     .into_iter()
                     .map(|l| LeagueGroup {
                         league: l.into(),
+                        event_url: String::new(),
                         bo: None,
                         matches: vec![mv(l)],
                     })

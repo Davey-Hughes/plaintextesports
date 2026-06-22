@@ -96,6 +96,8 @@ pub struct MatchView {
     pub team_a: TeamView,
     pub team_b: TeamView,
     pub stream_url: Option<String>,
+    /// Link to the event page: official site when known, else a Liquipedia search.
+    pub event_url: String,
     pub begin_at_ms: i64,
 }
 
@@ -103,6 +105,8 @@ pub struct MatchView {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LeagueGroup {
     pub league: String,
+    /// Event-page link shown on the league header (see `MatchView::event_url`).
+    pub event_url: String,
     /// Best-of label shown in the header when uniform across the group (e.g.
     /// "Bo3"); `None` when matches mix formats (then shown per-row).
     pub bo: Option<String>,
