@@ -154,6 +154,8 @@ pub struct ScheduleView {
     pub stale: bool,
     /// True when no API token is configured and demo data is shown.
     pub using_fixture: bool,
+    /// True when demo data was explicitly forced via `DEMO=1`.
+    pub demo_forced: bool,
     /// Populated only for the single-day view: ISO dates for prev/next nav.
     pub date_label: Option<String>,
     pub prev_date: Option<String>,
