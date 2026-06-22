@@ -263,6 +263,8 @@ a {
   font-weight: 600;
   color: var(--lc, var(--muted));
   margin: 0;
+  // Track the event ★'s left shift so the gap to it stays tight.
+  transform: translateX(-4px);
 
   a {
     color: inherit;
@@ -428,6 +430,9 @@ a {
   color: var(--muted);
   font-size: 13px;
   white-space: nowrap;
+  // Track the ★/bar's left shift so the time stays tight against it (the time is
+  // in a fixed left column; the teams sit far right, so this just trims the gap).
+  transform: translateX(-7.5px);
 }
 
 .row-team {
