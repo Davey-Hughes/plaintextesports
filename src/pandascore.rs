@@ -276,6 +276,37 @@ const fn game_path(game: Game) -> &'static str {
     }
 }
 
+/// The API's remaining hourly request budget, from the rate-limit header (best
+/// effort; PandaScore spells it `X-Rate-Limit-Remaining`, but accept the
+/// no-dash variant too).
+fn rate_remaining(headers: &reqwest::header::HeaderMap) -> Option<u64> {
+    ["x-rate-limit-remaining", "x-ratelimit-remaining"]
+        .iter()
+        .find_map(|name| headers.get(*name))
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.parse::<u64>().ok())
+}
+
+/// GET returning the body text plus the rate-limit-remaining header. Reads the
+/// header off the `Response` before consuming it with `.text()`.
+async fn get_text<Q: serde::Serialize + ?Sized>(
+    client: &reqwest::Client,
+    token: &str,
+    url: &str,
+    query: &Q,
+) -> Result<(String, Option<u64>), DynError> {
+    let resp = client
+        .get(url)
+        .bearer_auth(token)
+        .query(query)
+        .send()
+        .await?
+        .error_for_status()?;
+    let remaining = rate_remaining(resp.headers());
+    let body = resp.text().await?;
+    Ok((body, remaining))
+}
+
 async fn get_segment(
     client: &reqwest::Client,
     token: &str,
@@ -284,15 +315,7 @@ async fn get_segment(
     query: &[(&str, &str)],
 ) -> Result<Vec<NormalizedMatch>, DynError> {
     let url = format!("{BASE_URL}/{}/matches/{segment}", game_path(game));
-    let body = client
-        .get(&url)
-        .bearer_auth(token)
-        .query(query)
-        .send()
-        .await?
-        .error_for_status()?
-        .text()
-        .await?;
+    let (body, _) = get_text(client, token, &url, query).await?;
     Ok(parse_and_filter(game, &body)?)
 }
 
@@ -312,19 +335,17 @@ async fn get_upcoming_page(
 ) -> Result<Vec<RawMatch>, DynError> {
     let url = format!("{BASE_URL}/{}/matches/upcoming", game_path(game));
     let page = page.to_string();
-    let body = client
-        .get(&url)
-        .bearer_auth(token)
-        .query(&[
+    let (body, _) = get_text(
+        client,
+        token,
+        &url,
+        &[
             ("per_page", "100"),
             ("sort", "begin_at"),
             ("page", page.as_str()),
-        ])
-        .send()
-        .await?
-        .error_for_status()?
-        .text()
-        .await?;
+        ],
+    )
+    .await?;
     Ok(serde_json::from_str(&body)?)
 }
 
@@ -414,6 +435,58 @@ pub async fn fetch_game(
     }
 
     Ok(by_id.into_values().collect())
+}
+
+// ----- Past date-range fetch (history backfill + refresh) ------------------
+
+/// One page of tier-1 past matches in a date range, plus the API's remaining
+/// budget so the caller can throttle, and whether the range is exhausted.
+pub struct RangeFetch {
+    pub matches: Vec<NormalizedMatch>,
+    pub rate_remaining: Option<u64>,
+    /// True when the page was short — no more matches for this range/page.
+    pub reached_end: bool,
+}
+
+/// The `range[begin_at]` filter value: "<from_rfc3339>,<to_rfc3339>".
+fn begin_at_range(from: DateTime<Utc>, to: DateTime<Utc>) -> String {
+    format!("{},{}", from.to_rfc3339(), to.to_rfc3339())
+}
+
+/// Fetch one page of tier-1 past matches whose `begin_at` is in `[from, to]`,
+/// sorted ascending. Used to refresh recent past days and to backfill history.
+pub async fn fetch_past_range(
+    client: &reqwest::Client,
+    token: &str,
+    game: Game,
+    from: DateTime<Utc>,
+    to: DateTime<Utc>,
+    page: u32,
+    per_page: u32,
+) -> Result<RangeFetch, DynError> {
+    let url = format!("{BASE_URL}/{}/matches/past", game_path(game));
+    let range = begin_at_range(from, to);
+    let page_s = page.to_string();
+    let per_page_s = per_page.to_string();
+    let query: [(&str, &str); 4] = [
+        ("range[begin_at]", range.as_str()),
+        ("sort", "begin_at"),
+        ("per_page", per_page_s.as_str()),
+        ("page", page_s.as_str()),
+    ];
+    let (body, rate_remaining) = get_text(client, token, &url, &query).await?;
+    let raw: Vec<RawMatch> = serde_json::from_str(&body)?;
+    let reached_end = raw.len() < per_page as usize;
+    let matches = raw
+        .iter()
+        .filter(|m| is_tier_one(game, &tier_input(m)))
+        .filter_map(|m| normalize(game, m))
+        .collect();
+    Ok(RangeFetch {
+        matches,
+        rate_remaining,
+        reached_end,
+    })
 }
 
 // ----- Standings + brackets (per tournament) -------------------------------
@@ -615,6 +688,16 @@ mod tests {
         assert_eq!(m.team_b.score, Some(1));
         assert_eq!(m.status, MatchStatus::Finished);
         assert!(m.stream_url.as_deref().unwrap().contains("twitch"));
+    }
+
+    #[test]
+    fn begin_at_range_formats_iso_pair() {
+        let from = chrono::TimeZone::with_ymd_and_hms(&Utc, 2026, 5, 1, 0, 0, 0).unwrap();
+        let to = chrono::TimeZone::with_ymd_and_hms(&Utc, 2026, 5, 8, 0, 0, 0).unwrap();
+        assert_eq!(
+            begin_at_range(from, to),
+            "2026-05-01T00:00:00+00:00,2026-05-08T00:00:00+00:00"
+        );
     }
 
     #[test]
