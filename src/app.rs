@@ -796,17 +796,25 @@ fn GameTabs(
     set_game: WriteSignal<String>,
     set_league: WriteSignal<String>,
 ) -> impl IntoView {
-    // A plain filter tab (used for "All", which has no game to subscribe to).
+    // Select a game, or toggle back to "all" if it's already the active filter.
+    let pick = move |value: &'static str| {
+        let next = if game.get_untracked() == value {
+            "all"
+        } else {
+            value
+        };
+        set_game.set(next.to_string());
+        // Reset the event filter: leagues differ per game.
+        set_league.set(String::new());
+    };
+    // The "All" tab (no game to subscribe to). `.tab-all` lines its trailing
+    // items up with the chips row below.
     let plain = move |label: &'static str, value: &'static str| {
         view! {
             <button
-                class="tab"
+                class="tab tab-all"
                 class:active=move || game.get() == value
-                on:click=move |_| {
-                    set_game.set(value.to_string());
-                    // Reset the event filter: leagues differ per game.
-                    set_league.set(String::new());
-                }
+                on:click=move |_| pick(value)
             >
                 {label}
             </button>
@@ -817,13 +825,7 @@ fn GameTabs(
     let with_star = move |label: &'static str, value: &'static str| {
         view! {
             <span class="tab tab-with-star" class:active=move || game.get() == value>
-                <button
-                    class="tab-label"
-                    on:click=move |_| {
-                        set_game.set(value.to_string());
-                        set_league.set(String::new());
-                    }
-                >
+                <button class="tab-label" on:click=move |_| pick(value)>
                     {label}
                 </button>
                 <SubscribeStar kind="game" value=value.to_string() />
@@ -858,7 +860,14 @@ fn LeagueChips(
                 <button
                     class=format!("chip {lc}")
                     class:active=is_active
-                    on:click=move |_| set_league.set(click_name.clone())
+                    on:click=move |_| {
+                        // Click the active event again to clear back to all events.
+                        if selected.get_untracked() == click_name {
+                            set_league.set(String::new());
+                        } else {
+                            set_league.set(click_name.clone());
+                        }
+                    }
                 >
                     {name}
                 </button>
@@ -869,7 +878,7 @@ fn LeagueChips(
     view! {
         <div class="chips">
             <button
-                class="chip"
+                class="chip chip-all"
                 class:active=all_active
                 on:click=move |_| set_league.set(String::new())
             >

@@ -120,7 +120,7 @@ a {
 
 .tabs {
   display: flex;
-  gap: 0.4rem;
+  gap: 0.35rem;
   margin: 0.8rem 0 0.4rem;
 }
 
@@ -141,6 +141,15 @@ a {
     background: var(--fg);
     border-color: var(--fg);
   }
+}
+
+// "All" / "All events" lead each filter row. Give them a shared width + a wider
+// trailing gap so the first real filter (CS2 / IEM) lines up across both rows.
+.tab-all,
+.chip-all {
+  min-width: 5.75rem;
+  margin-right: 0.35rem;
+  text-align: left;
 }
 
 // A game filter tab that embeds a subscribe ★. The label and the ★ split the
@@ -332,9 +341,10 @@ a {
   }
 
   // With a ★ button, prepend a fixed column for it. The live/final side bar
-  // shares this column (see .row-bar) since a row never has both.
+  // shares this column (see .row-bar) since a row never has both. The column is
+  // kept narrow so the centered ★/bar sits close to the left edge.
   &.has-star {
-    grid-template-columns: 1.3em 5.2em minmax(0, 1fr) auto minmax(0, 1fr) 5.2em;
+    grid-template-columns: 0.9em 5.2em minmax(0, 1fr) auto minmax(0, 1fr) 5.2em;
   }
 
   // Non-star rows (push disabled) have no leading column, so the live/final
