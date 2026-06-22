@@ -639,6 +639,16 @@ fn build_rounds(raw: &[RawBracketMatch]) -> Vec<BracketRound> {
     if raw.is_empty() {
         return Vec::new();
     }
+    // A Swiss/group stage comes back from the brackets endpoint as a flat set of
+    // matches with no feeder links (no tree). It isn't an elimination bracket —
+    // its standings table represents it — so don't render it as one (which would
+    // otherwise collapse into a single nonsensical "Round of N" column).
+    let is_tree = raw
+        .iter()
+        .any(|m| m.previous_matches.iter().any(|p| p.match_id.is_some()));
+    if raw.len() > 1 && !is_tree {
+        return Vec::new();
+    }
     let by_id: HashMap<i64, &RawBracketMatch> = raw.iter().map(|m| (m.id, m)).collect();
     let mut cache = HashMap::new();
     let mut visiting = std::collections::HashSet::new();
