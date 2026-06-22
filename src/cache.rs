@@ -204,19 +204,30 @@ fn apply_poll(cs_res: FetchResult, lol_res: FetchResult, store: Option<&mut rusq
 
 /// Memory-only update path (no DB): replace successful games' matches and keep
 /// the previous snapshot's matches for any game that failed this round.
+/// Merge freshly fetched matches with the previous set, keeping the previous
+/// matches for any game that failed this round. Sorted by start time.
+fn merge_matches(
+    prev: &[NormalizedMatch],
+    mut fresh: Vec<NormalizedMatch>,
+    errored: &[Game],
+) -> Vec<NormalizedMatch> {
+    for &game in errored {
+        fresh.extend(prev.iter().filter(|m| m.game == game).cloned());
+    }
+    fresh.sort_by_key(|m| m.begin_at);
+    fresh
+}
+
 fn merge_in_memory(
-    mut matches: Vec<NormalizedMatch>,
+    matches: Vec<NormalizedMatch>,
     errored: &[Game],
     any_ok: bool,
     any_err: bool,
     now: DateTime<Utc>,
 ) {
     let mut snap = SNAPSHOT.write().unwrap();
-    for &game in errored {
-        matches.extend(snap.matches.iter().filter(|m| m.game == game).cloned());
-    }
-    matches.sort_by_key(|m| m.begin_at);
-    snap.matches = matches;
+    let merged = merge_matches(&snap.matches, matches, errored);
+    snap.matches = merged;
     snap.using_fixture = false;
     snap.stale = any_err;
     if any_ok {
@@ -748,5 +759,22 @@ mod tests {
         let cs = event_link(Game::Cs2, "BLAST Premier", Some("  "));
         assert!(cs.starts_with("https://liquipedia.net/counterstrike/index.php?search="));
         assert!(cs.contains("BLAST%20Premier"));
+    }
+
+    #[test]
+    fn merge_matches_replaces_ok_games_keeps_errored() {
+        let now = Utc::now();
+        let mk = |id, game, h| {
+            let mut m = at(now + Duration::hours(h), MatchStatus::Upcoming);
+            m.id = id;
+            m.game = game;
+            m
+        };
+        let prev = vec![mk(1, Game::Cs2, 1), mk(2, Game::Lol, 2)];
+        let fresh = vec![mk(3, Game::Cs2, 3)]; // cs2 refetched; lol failed this round
+        let merged = merge_matches(&prev, fresh, &[Game::Lol]);
+        // Old cs2 (id 1) replaced by fresh (id 3); lol (id 2) retained; sorted.
+        assert_eq!(merged.iter().map(|m| m.id).collect::<Vec<_>>(), vec![2, 3]);
+        assert!(!merged.iter().any(|m| m.id == 1));
     }
 }
