@@ -56,6 +56,7 @@ pub fn open(path: &str) -> rusqlite::Result<Connection> {
             team_b_label TEXT    NOT NULL,
             team_b_score INTEGER,
             stream_url   TEXT,
+            tournament_id INTEGER,
             PRIMARY KEY (id, game)
         );
         CREATE INDEX IF NOT EXISTS idx_matches_begin ON matches (begin_at_ms);
@@ -94,6 +95,7 @@ pub fn open(path: &str) -> rusqlite::Result<Connection> {
     )?;
     // Migrate older DBs (ignored if the column already exists).
     let _ = conn.execute("ALTER TABLE matches ADD COLUMN league_url TEXT", []);
+    let _ = conn.execute("ALTER TABLE matches ADD COLUMN tournament_id INTEGER", []);
     let _ = conn.execute("ALTER TABLE reminders ADD COLUMN game TEXT NOT NULL DEFAULT ''", []);
     let _ = conn.execute("ALTER TABLE reminders ADD COLUMN league TEXT NOT NULL DEFAULT ''", []);
     Ok(conn)
@@ -121,6 +123,9 @@ fn row_to_match(row: &rusqlite::Row) -> rusqlite::Result<NormalizedMatch> {
             score: row.get("team_b_score")?,
         },
         stream_url: row.get("stream_url")?,
+        tournament_id: row.get("tournament_id")?,
+        // Streams aren't persisted (in-memory only); repopulated on next poll.
+        streams: Vec::new(),
     })
 }
 
@@ -156,15 +161,16 @@ pub fn upsert_and_prune(
             "INSERT INTO matches
                 (id, game, league, tier, begin_at_ms, status, best_of,
                  team_a_label, team_a_score, team_b_label, team_b_score, stream_url,
-                 league_url)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
+                 league_url, tournament_id)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
              ON CONFLICT(id, game) DO UPDATE SET
                 league=excluded.league, tier=excluded.tier,
                 begin_at_ms=excluded.begin_at_ms, status=excluded.status,
                 best_of=excluded.best_of,
                 team_a_label=excluded.team_a_label, team_a_score=excluded.team_a_score,
                 team_b_label=excluded.team_b_label, team_b_score=excluded.team_b_score,
-                stream_url=excluded.stream_url, league_url=excluded.league_url",
+                stream_url=excluded.stream_url, league_url=excluded.league_url,
+                tournament_id=excluded.tournament_id",
         )?;
         for m in matches {
             up.execute(params![
@@ -181,6 +187,7 @@ pub fn upsert_and_prune(
                 m.team_b.score,
                 m.stream_url,
                 m.league_url,
+                m.tournament_id,
             ])?;
         }
         tx.execute(
@@ -434,6 +441,8 @@ mod tests {
                 score: Some(1),
             },
             stream_url: Some("https://twitch.tv/lck".into()),
+            tournament_id: Some(42),
+            streams: Vec::new(),
         }
     }
 
