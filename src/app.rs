@@ -1857,6 +1857,22 @@ fn CalendarPicker() -> impl IntoView {
         let (y, m) = ym.get();
         let start = sel_start.get();
         let end = sel_end.get();
+        // With no explicit selection, mirror the "‹ show earlier days" expansion:
+        // highlight the revealed lookback span [today - earlier, today].
+        let earlier_span: Option<(String, String)> = {
+            #[cfg(feature = "hydrate")]
+            {
+                match (start.is_none() && end.is_none()).then(|| earlier.get()) {
+                    Some(n) if n > 0 => Some((iso_from_today(-n), iso_from_today(0))),
+                    _ => None,
+                }
+            }
+            #[cfg(not(feature = "hydrate"))]
+            {
+                let _ = earlier;
+                None
+            }
+        };
         let lead = weekday(y, m, 1);
         let mut cells: Vec<_> = (0..lead)
             .map(|_| view! { <span class="cal-cell cal-blank"></span> }.into_any())
@@ -1866,7 +1882,9 @@ fn CalendarPicker() -> impl IntoView {
             let in_range = match (&start, &end) {
                 (Some(s), Some(e)) => iso.as_str() >= s.as_str() && iso.as_str() <= e.as_str(),
                 (Some(s), None) => iso.as_str() == s.as_str(),
-                _ => false,
+                _ => earlier_span
+                    .as_ref()
+                    .is_some_and(|(s, e)| iso.as_str() >= s.as_str() && iso.as_str() <= e.as_str()),
             };
             let mut cls = String::from("cal-cell");
             if in_range {
