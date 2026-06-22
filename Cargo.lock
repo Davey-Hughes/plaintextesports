@@ -2231,6 +2231,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tokio",
+ "toml",
  "tower",
  "tower-http",
  "wasm-bindgen",

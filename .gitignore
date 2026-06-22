@@ -9,7 +9,8 @@ target/
 
 *.pdb
 
-# Environment variables (contains the PandaScore token)
+# Config + secrets (PandaScore token, VAPID keys)
+config.toml
 .env
 .envrc
 

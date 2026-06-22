@@ -1,7 +1,60 @@
-//! Runtime configuration from environment variables (server-only).
+//! Runtime configuration, loaded from `config.toml` with env-var overrides
+//! (server-only).
 
 use chrono_tz::Tz;
+use once_cell::sync::Lazy;
+use serde::Deserialize;
+use std::collections::HashMap;
 use std::time::Duration;
+
+/// `config.toml` shape. Everything is optional; missing values fall back to
+/// defaults (or a matching env var, which takes precedence).
+#[derive(Debug, Default, Deserialize)]
+struct FileConfig {
+    pandascore_token: Option<String>,
+    demo: Option<bool>,
+    display_tz: Option<String>,
+    upcoming_days: Option<i64>,
+    idle_poll_secs: Option<u64>,
+    active_poll_secs: Option<u64>,
+    db_path: Option<String>,
+    resolve_links: Option<bool>,
+    vapid: Option<VapidFile>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct VapidFile {
+    public: Option<String>,
+    private: Option<String>,
+    subject: Option<String>,
+}
+
+impl FileConfig {
+    /// Flatten into the same string keys the env-based parser uses, so both
+    /// sources share one code path.
+    fn to_map(&self) -> HashMap<String, String> {
+        let mut m = HashMap::new();
+        let mut put = |k: &str, v: Option<String>| {
+            if let Some(v) = v {
+                m.insert(k.to_string(), v);
+            }
+        };
+        put("PANDASCORE_TOKEN", self.pandascore_token.clone());
+        put("DEMO", self.demo.map(|b| b.to_string()));
+        put("DISPLAY_TZ", self.display_tz.clone());
+        put("UPCOMING_DAYS", self.upcoming_days.map(|n| n.to_string()));
+        put("POLL_INTERVAL_SECS", self.idle_poll_secs.map(|n| n.to_string()));
+        put("POLL_ACTIVE_SECS", self.active_poll_secs.map(|n| n.to_string()));
+        put("DB_PATH", self.db_path.clone());
+        put("ENABLE_LIQUIPEDIA", self.resolve_links.map(|b| b.to_string()));
+        if let Some(v) = &self.vapid {
+            put("VAPID_PUBLIC_KEY", v.public.clone());
+            put("VAPID_PRIVATE_KEY", v.private.clone());
+            put("VAPID_SUBJECT", v.subject.clone());
+        }
+        m
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct Config {
@@ -41,13 +94,39 @@ impl Config {
 }
 
 impl Config {
+    /// Load once (reads `config.toml` on first access) and reuse.
     #[must_use]
     pub fn from_env() -> Self {
-        Self::from_vars(|k| std::env::var(k).ok())
+        static CACHE: Lazy<Config> = Lazy::new(Config::load);
+        CACHE.clone()
+    }
+
+    /// Load from `config.toml` (path overridable via `CONFIG_PATH`); any matching
+    /// env var wins, so `DEMO=1 cargo leptos watch` and container `-e` overrides
+    /// still work.
+    fn load() -> Self {
+        let path = std::env::var("CONFIG_PATH").unwrap_or_else(|_| "config.toml".to_string());
+        let file: FileConfig = std::fs::read_to_string(&path)
+            .ok()
+            .and_then(|s| match toml::from_str::<FileConfig>(&s) {
+                Ok(f) => Some(f),
+                Err(e) => {
+                    eprintln!("config: failed to parse {path}: {e}");
+                    None
+                }
+            })
+            .unwrap_or_default();
+        let map = file.to_map();
+        Self::from_vars(|k| {
+            std::env::var(k)
+                .ok()
+                .filter(|s| !s.trim().is_empty())
+                .or_else(|| map.get(k).cloned())
+        })
     }
 
     /// Build from an arbitrary key→value lookup. Keeps the parsing/clamping
-    /// logic pure and testable, separate from process env access.
+    /// logic pure and testable, separate from the config source.
     fn from_vars(get: impl Fn(&str) -> Option<String>) -> Self {
         // Seconds value, clamped to at least `min`, else `default`.
         let secs = |key: &str, default: u64, min: u64| -> u64 {
@@ -174,5 +253,31 @@ mod tests {
     #[test]
     fn blank_token_is_none() {
         assert!(cfg(&[("PANDASCORE_TOKEN", "   ")]).token.is_none());
+    }
+
+    #[test]
+    fn toml_parses_and_feeds_the_parser() {
+        let src = r#"
+            pandascore_token = "tok"
+            demo = true
+            display_tz = "Europe/London"
+            upcoming_days = 14
+            [vapid]
+            public = "pub"
+            private = "priv"
+            subject = "mailto:x@example.com"
+        "#;
+        let fc: FileConfig = toml::from_str(src).unwrap();
+        let m = fc.to_map();
+        assert_eq!(m.get("DEMO").map(String::as_str), Some("true"));
+        assert_eq!(m.get("UPCOMING_DAYS").map(String::as_str), Some("14"));
+        assert_eq!(m.get("VAPID_PUBLIC_KEY").map(String::as_str), Some("pub"));
+
+        let c = Config::from_vars(|k| m.get(k).cloned());
+        assert!(c.demo);
+        assert_eq!(c.upcoming_days, 14);
+        assert_eq!(c.tz, chrono_tz::Europe::London);
+        assert_eq!(c.token.as_deref(), Some("tok"));
+        assert!(c.push_enabled());
     }
 }

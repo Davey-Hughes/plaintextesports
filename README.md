@@ -54,10 +54,10 @@ Edit the allowlist/denylist in [`src/tiering.rs`](src/tiering.rs):
 ## Setup
 
 1. Get a free PandaScore token (no card): https://pandascore.co
-2. Create `.env` from the example and add your token:
+2. Create `config.toml` from the example and add your token:
    ```sh
-   cp .env.example .env
-   # edit .env, set PANDASCORE_TOKEN=...
+   cp config.toml.example config.toml
+   # edit config.toml, set pandascore_token = "..."
    ```
 
 ## Develop
@@ -68,30 +68,35 @@ DEMO=1 cargo leptos watch # force fixture data (ignores token + cache db)
 cargo test --features ssr # tiering + deserialization tests
 ```
 
-## Configuration (env vars)
+## Configuration (`config.toml`)
 
-| Var | Default | Purpose |
-|---|---|---|
-| `PANDASCORE_TOKEN` | _(none)_ | API token; unset = demo data |
-| `DEMO` | _(off)_ | `1`/`true` forces fixture data even with a token/DB |
-| `DISPLAY_TZ` | `America/Los_Angeles` | Fallback tz (viewers' own tz is auto-detected) |
-| `POLL_INTERVAL_SECS` | `1200` | Idle poll interval, seconds (min 60) |
-| `POLL_ACTIVE_SECS` | `60` | Poll interval while live/imminent, seconds (min 30) |
-| `UPCOMING_DAYS` | `30` | Days ahead on the homepage (1–60) |
-| `DB_PATH` | `data/cache.db` | SQLite cache path; empty = memory-only |
-| `ENABLE_LIQUIPEDIA` | `true` | Resolve exact event pages via Liquipedia |
-| `VAPID_PUBLIC_KEY` / `VAPID_PRIVATE_KEY` / `VAPID_SUBJECT` | _(none)_ | Web Push reminder keys; all three enable reminders |
+Settings live in `config.toml` (see `config.toml.example`). The path is
+overridable with `CONFIG_PATH`, and any setting can be overridden by the
+matching env var shown below — handy for `DEMO=1 cargo leptos watch` or
+container `-e` flags.
+
+| `config.toml` key | env override | Default | Purpose |
+|---|---|---|---|
+| `pandascore_token` | `PANDASCORE_TOKEN` | _(none)_ | API token; unset = demo data |
+| `demo` | `DEMO` | `false` | `true` forces fixture data even with a token/DB |
+| `display_tz` | `DISPLAY_TZ` | `America/Los_Angeles` | Fallback tz (viewers' own is auto-detected) |
+| `idle_poll_secs` | `POLL_INTERVAL_SECS` | `1200` | Idle poll interval (min 60) |
+| `active_poll_secs` | `POLL_ACTIVE_SECS` | `60` | Poll interval while live/imminent (min 30) |
+| `upcoming_days` | `UPCOMING_DAYS` | `30` | Days ahead on the homepage (1–60) |
+| `db_path` | `DB_PATH` | `data/cache.db` | SQLite cache path; empty = memory-only |
+| `resolve_links` | `ENABLE_LIQUIPEDIA` | `true` | Resolve exact event pages via Liquipedia |
+| `[vapid] public/private/subject` | `VAPID_*` | _(none)_ | Web Push reminder keys; all three enable reminders |
 
 ## Reminders (Web Push)
 
 Star (★) any upcoming match to get a browser notification ~10 minutes before it
 starts — delivered even if the site is closed, via a service worker + Web Push.
 
-Enable it by generating a VAPID keypair once and setting the env vars. Use the
-built-in generator (no extra tooling), or `npx` if you prefer:
+Enable it by generating a VAPID keypair once and putting it in the `[vapid]`
+table of `config.toml`. Use the built-in generator (no extra tooling), or `npx`:
 
 ```sh
-cargo run --example gen_vapid --features ssr   # prints VAPID_* lines for .env
+cargo run --example gen_vapid --features ssr   # prints keys for config.toml
 # or: npx web-push generate-vapid-keys
 ```
 
