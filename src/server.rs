@@ -82,7 +82,7 @@ pub async fn add_reminder(req: ReminderReq) -> Result<(), ServerFnError> {
         if !cfg.push_enabled() || cfg.db_path.is_empty() {
             return Err(ServerFnError::new("reminders are not available"));
         }
-        let conn = crate::store::open(&cfg.db_path)
+        let conn = crate::store::shared(&cfg.db_path)
             .map_err(|e| ServerFnError::new(format!("db: {e}")))?;
         let r = crate::store::Reminder {
             endpoint: req.sub.endpoint,
@@ -115,7 +115,7 @@ pub async fn add_subscription(req: SubscribeReq) -> Result<(), ServerFnError> {
         if !cfg.push_enabled() || cfg.db_path.is_empty() {
             return Err(ServerFnError::new("subscriptions are not available"));
         }
-        let conn = crate::store::open(&cfg.db_path)
+        let conn = crate::store::shared(&cfg.db_path)
             .map_err(|e| ServerFnError::new(format!("db: {e}")))?;
         let s = crate::store::Subscription {
             endpoint: req.sub.endpoint,
@@ -149,7 +149,7 @@ pub async fn remove_subscription(
         if cfg.db_path.is_empty() {
             return Ok(());
         }
-        let conn = crate::store::open(&cfg.db_path)
+        let conn = crate::store::shared(&cfg.db_path)
             .map_err(|e| ServerFnError::new(format!("db: {e}")))?;
         crate::store::remove_subscription(&conn, &endpoint, &kind, &value)
             .map_err(|e| ServerFnError::new(format!("db: {e}")))?;
@@ -173,7 +173,7 @@ pub async fn remove_reminder(endpoint: String, match_id: i64) -> Result<(), Serv
         if cfg.db_path.is_empty() {
             return Ok(());
         }
-        let conn = crate::store::open(&cfg.db_path)
+        let conn = crate::store::shared(&cfg.db_path)
             .map_err(|e| ServerFnError::new(format!("db: {e}")))?;
         crate::store::remove_reminder(&conn, &endpoint, match_id)
             .map_err(|e| ServerFnError::new(format!("db: {e}")))?;
