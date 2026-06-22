@@ -9,7 +9,7 @@
   --accent: #6ad36a; // live
   --link: #7aa2f7;
   --card-bg: #131313;
-  --win: #e8e8e8;
+  --win: #ffffff;
 
   // League/event palette (tuned for the dark background).
   --c0: #e06c75;
@@ -661,6 +661,11 @@ a {
     color: var(--win);
     font-weight: 700;
   }
+
+  // Dim the losing team so the (bold) winner stands out clearly once revealed.
+  &.loser {
+    color: var(--muted);
+  }
 }
 
 .row-mid {
@@ -814,6 +819,12 @@ a {
 
   &.winner {
     color: var(--win);
+  }
+
+  // Dim and un-bold the loser so the winner is unmistakable.
+  &.loser {
+    color: var(--muted);
+    font-weight: 400;
   }
 }
 
@@ -1209,6 +1220,12 @@ a {
   &.win .bk-team {
     color: var(--win);
     font-weight: 700;
+  }
+
+  // Dim the beaten team so the winner reads clearly.
+  &.lose .bk-team,
+  &.lose .bk-score {
+    color: var(--muted);
   }
 
   // A round whose results are still hidden.
