@@ -4,30 +4,40 @@
 use crate::types::ScheduleView;
 use leptos::prelude::*;
 
-/// Homepage schedule: live matches + upcoming days. `game` is "all"/"cs2"/"lol".
+/// Homepage schedule. `game` is "all"/"cs2"/"lol"; `tz` is an IANA name (empty
+/// = server default); `hour24` selects 24h vs 12h time formatting.
 #[server(GetSchedule, "/api")]
-pub async fn get_schedule(game: String) -> Result<ScheduleView, ServerFnError> {
+pub async fn get_schedule(
+    game: String,
+    tz: String,
+    hour24: bool,
+) -> Result<ScheduleView, ServerFnError> {
     #[cfg(feature = "ssr")]
     {
-        Ok(crate::cache::homepage_view(&game))
+        Ok(crate::cache::homepage_view(&game, &tz, hour24))
     }
     #[cfg(not(feature = "ssr"))]
     {
-        let _ = game;
+        let _ = (game, tz, hour24);
         Ok(ScheduleView::default())
     }
 }
 
-/// Single-day schedule for `date` ("YYYY-MM-DD"), filtered by `game`.
+/// Single-day schedule for `date` ("YYYY-MM-DD").
 #[server(GetDay, "/api")]
-pub async fn get_day(date: String, game: String) -> Result<ScheduleView, ServerFnError> {
+pub async fn get_day(
+    date: String,
+    game: String,
+    tz: String,
+    hour24: bool,
+) -> Result<ScheduleView, ServerFnError> {
     #[cfg(feature = "ssr")]
     {
-        Ok(crate::cache::day_view(&date, &game))
+        Ok(crate::cache::day_view(&date, &game, &tz, hour24))
     }
     #[cfg(not(feature = "ssr"))]
     {
-        let _ = (date, game);
+        let _ = (date, game, tz, hour24);
         Ok(ScheduleView::default())
     }
 }
