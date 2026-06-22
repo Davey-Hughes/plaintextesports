@@ -404,4 +404,55 @@ mod tests {
         let matches = parse_and_filter(Game::Cs2, "[]").expect("empty array");
         assert!(matches.is_empty());
     }
+
+    #[test]
+    fn team_label_prefers_acronym_then_name_then_tbd() {
+        let full = RawTeam {
+            id: Some(1),
+            name: Some("Team Liquid".into()),
+            acronym: Some("TL".into()),
+        };
+        assert_eq!(team_label(Some(&full)).0, "TL");
+        let no_acr = RawTeam {
+            id: Some(2),
+            name: Some("Team Liquid".into()),
+            acronym: None,
+        };
+        assert_eq!(team_label(Some(&no_acr)).0, "Team Liquid");
+        let blank = RawTeam {
+            id: Some(3),
+            name: None,
+            acronym: Some("   ".into()),
+        };
+        assert_eq!(team_label(Some(&blank)).0, "TBD");
+        assert_eq!(team_label(None).0, "TBD");
+    }
+
+    #[test]
+    fn map_status_covers_known_states() {
+        assert_eq!(map_status(Some("running")), MatchStatus::Live);
+        assert_eq!(map_status(Some("finished")), MatchStatus::Finished);
+        assert_eq!(map_status(Some("canceled")), MatchStatus::Canceled);
+        assert_eq!(map_status(Some("postponed")), MatchStatus::Canceled);
+        assert_eq!(map_status(Some("not_started")), MatchStatus::Upcoming);
+        assert_eq!(map_status(None), MatchStatus::Upcoming);
+    }
+
+    #[test]
+    fn score_for_matches_by_team_id() {
+        let results = vec![
+            RawResult {
+                team_id: Some(10),
+                score: Some(2),
+            },
+            RawResult {
+                team_id: Some(11),
+                score: Some(1),
+            },
+        ];
+        assert_eq!(score_for(&results, Some(10)), Some(2));
+        assert_eq!(score_for(&results, Some(11)), Some(1));
+        assert_eq!(score_for(&results, Some(99)), None);
+        assert_eq!(score_for(&results, None), None);
+    }
 }
