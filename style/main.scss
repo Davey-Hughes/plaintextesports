@@ -129,8 +129,30 @@ a {
 
 .tabs {
   display: flex;
+  align-items: center;
+  justify-content: space-between;
   gap: 0.35rem;
   margin: 0.8rem 0 0.4rem;
+}
+
+// The game tabs sit on the left; the "clear" sits right-aligned opposite them.
+.tabs-list {
+  display: flex;
+  gap: 0.35rem;
+}
+
+// Appears only when a filter is active; resets all filters.
+.filter-clear {
+  background: none;
+  border: none;
+  color: var(--link);
+  font: inherit;
+  padding: 0.2rem 0.2rem;
+  cursor: pointer;
+
+  &:hover {
+    text-decoration: underline;
+  }
 }
 
 .tab {

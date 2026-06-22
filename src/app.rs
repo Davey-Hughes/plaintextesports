@@ -938,11 +938,20 @@ fn Bracket(rounds: Vec<BracketRound>, tournament_id: i64) -> impl IntoView {
     .into_any()
 }
 
-/// Standings + bracket shown beneath the schedule when one event is filtered.
+/// Standings + bracket shown beneath the schedule when exactly one event is
+/// selected (ambiguous for multiple, so only a single selection shows it).
 #[component]
-fn EventSection(league: ReadSignal<String>) -> impl IntoView {
+fn EventSection(leagues: RwSignal<HashSet<String>>) -> impl IntoView {
     let info = Resource::new(
-        move || league.get(),
+        move || {
+            leagues.with(|s| {
+                if s.len() == 1 {
+                    s.iter().next().cloned().unwrap_or_default()
+                } else {
+                    String::new()
+                }
+            })
+        },
         |lg| async move {
             if lg.is_empty() {
                 Ok(EventInfo::default())
@@ -1267,8 +1276,10 @@ fn setup_autorefresh(resource: Resource<Result<ScheduleView, ServerFnError>>) {
 
 #[component]
 fn HomePage() -> impl IntoView {
-    let (game, set_game) = signal(String::from("all"));
-    let (league, set_league) = signal(String::new());
+    // Game/event filters are multi-select and applied client-side (the server
+    // always returns all games), so the data is fetched once regardless.
+    let games = RwSignal::new(HashSet::<String>::new());
+    let leagues = RwSignal::new(HashSet::<String>::new());
     let hour24 = use_context::<RwSignal<bool>>().expect("hour24 context");
     let tz = use_context::<RwSignal<String>>().expect("tz context");
     let range = use_context::<DateRange>().expect("range context").0;
@@ -1276,23 +1287,23 @@ fn HomePage() -> impl IntoView {
     // Default = today + future (get_schedule). A calendar range, else an
     // "earlier days" expansion, switches to the range view.
     let schedule = Resource::new(
-        move || (range.get(), earlier.get(), game.get(), tz.get(), hour24.get()),
-        |(r, e, g, z, h)| async move {
+        move || (range.get(), earlier.get(), tz.get(), hour24.get()),
+        |(r, e, z, h)| async move {
             match r {
-                Some((start, end)) => get_range(start, end, g, z, h).await,
+                Some((start, end)) => get_range(start, end, "all".into(), z, h).await,
                 None if e > 0 => {
                     let (start, end) = earlier_window(e);
-                    get_range(start, end, g, z, h).await
+                    get_range(start, end, "all".into(), z, h).await
                 }
-                None => get_schedule(g, z, h).await,
+                None => get_schedule("all".into(), z, h).await,
             }
         },
     );
     setup_autorefresh(schedule);
 
     view! {
-        <GameTabs game set_game set_league />
-        <ScheduleSection resource=schedule league set_league show_nav=false />
+        <GameTabs games leagues />
+        <ScheduleSection resource=schedule games leagues show_nav=false />
     }
 }
 
@@ -1575,46 +1586,42 @@ struct DayParams {
 fn DayPage() -> impl IntoView {
     let params = use_params::<DayParams>();
     let date = move || params.get().ok().map(|p| p.date).unwrap_or_default();
-    let (game, set_game) = signal(String::from("all"));
-    let (league, set_league) = signal(String::new());
+    let games = RwSignal::new(HashSet::<String>::new());
+    let leagues = RwSignal::new(HashSet::<String>::new());
     let hour24 = use_context::<RwSignal<bool>>().expect("hour24 context");
     let tz = use_context::<RwSignal<String>>().expect("tz context");
     let schedule = Resource::new(
-        move || (date(), game.get(), tz.get(), hour24.get()),
-        |(d, g, z, h)| async move { get_day(d, g, z, h).await },
+        move || (date(), tz.get(), hour24.get()),
+        |(d, z, h)| async move { get_day(d, "all".into(), z, h).await },
     );
     setup_autorefresh(schedule);
 
     view! {
-        <GameTabs game set_game set_league />
-        <ScheduleSection resource=schedule league set_league show_nav=true />
+        <GameTabs games leagues />
+        <ScheduleSection resource=schedule games leagues show_nav=true />
     }
 }
 
 #[component]
 fn GameTabs(
-    game: ReadSignal<String>,
-    set_game: WriteSignal<String>,
-    set_league: WriteSignal<String>,
+    games: RwSignal<HashSet<String>>,
+    leagues: RwSignal<HashSet<String>>,
 ) -> impl IntoView {
-    // "all" is implicit: no active tab means all games. Click a game to filter;
-    // click the active one again to clear back to all.
-    let pick = move |value: &'static str| {
-        let next = if game.get_untracked() == value {
-            "all"
-        } else {
-            value
-        };
-        set_game.set(next.to_string());
-        // Reset the event filter: leagues differ per game.
-        set_league.set(String::new());
+    // Filters are multi-select and additive: no selection means "all". Click a
+    // game to include it; click again to drop it.
+    let toggle = move |value: &'static str| {
+        games.update(|g| {
+            if !g.remove(value) {
+                g.insert(value.to_string());
+            }
+        });
     };
     // A game filter tab with an embedded ★ that subscribes to the whole game.
     // The label clicks to filter; the ★ clicks to (un)subscribe.
     let with_star = move |label: &'static str, value: &'static str| {
         view! {
-            <span class="tab tab-with-star" class:active=move || game.get() == value>
-                <button class="tab-label" on:click=move |_| pick(value)>
+            <span class="tab tab-with-star" class:active=move || games.with(|g| g.contains(value))>
+                <button class="tab-label" on:click=move |_| toggle(value)>
                     {label}
                 </button>
                 <SubscribeStar kind="game" value=value.to_string() />
@@ -1622,39 +1629,48 @@ fn GameTabs(
         }
     };
 
+    // A "clear" appears once any game/event filter is active and resets them all.
+    let any_active = move || games.with(|g| !g.is_empty()) || leagues.with(|l| !l.is_empty());
+    let clear = move |_| {
+        games.update(HashSet::clear);
+        leagues.update(HashSet::clear);
+    };
     view! {
         <div class="tabs">
-            {with_star("CS2", "cs2")}
-            {with_star("LoL", "lol")}
+            <div class="tabs-list">
+                {with_star("CS2", "cs2")}
+                {with_star("LoL", "lol")}
+            </div>
+            {move || {
+                any_active()
+                    .then(|| view! { <button class="filter-clear" on:click=clear>"clear"</button> })
+            }}
         </div>
     }
 }
 
 #[component]
-fn LeagueChips(
-    leagues: Vec<String>,
-    selected: ReadSignal<String>,
-    set_league: WriteSignal<String>,
-) -> impl IntoView {
-    // No active chip means all events (implicit). Click an event to filter; click
-    // the active one again to clear back to all.
+fn LeagueChips(leagues: Vec<String>, selected: RwSignal<HashSet<String>>) -> impl IntoView {
+    // Multi-select: no active chip means all events. Click an event to include it;
+    // click again to drop it.
     let chips = leagues
         .into_iter()
         .map(|name| {
             let lc = league_color_class(&name);
             let sel_name = name.clone();
             let click_name = name.clone();
-            let is_active = move || selected.get() == sel_name;
+            let is_active = move || selected.with(|s| s.contains(&sel_name));
             view! {
                 <button
                     class=format!("chip {lc}")
                     class:active=is_active
                     on:click=move |_| {
-                        if selected.get_untracked() == click_name {
-                            set_league.set(String::new());
-                        } else {
-                            set_league.set(click_name.clone());
-                        }
+                        selected
+                            .update(|s| {
+                                if !s.remove(&click_name) {
+                                    s.insert(click_name.clone());
+                                }
+                            });
                     }
                 >
                     {name}
@@ -1669,8 +1685,8 @@ fn LeagueChips(
 #[component]
 fn ScheduleSection(
     resource: Resource<Result<ScheduleView, ServerFnError>>,
-    league: ReadSignal<String>,
-    set_league: WriteSignal<String>,
+    games: RwSignal<HashSet<String>>,
+    leagues: RwSignal<HashSet<String>>,
     show_nav: bool,
 ) -> impl IntoView {
     view! {
@@ -1680,21 +1696,17 @@ fn ScheduleSection(
                     .get()
                     .map(|res| match res {
                         Ok(s) => {
-                            let leagues = distinct_leagues(&s);
-                            let filtered = filter_by_league(s, &league.get());
+                            // Event chips reflect the selected games; the schedule
+                            // is then narrowed by both games and events.
+                            let available = leagues_for_games(&s, &games.get());
+                            let filtered = filter_schedule(s, &games.get(), &leagues.get());
                             // Show ★ reminder buttons only when Web Push is configured.
                             let push = use_context::<RwSignal<Option<String>>>()
                                 .is_some_and(|v| v.get().is_some());
                             // Only offer event chips when there's more than one.
-                            let chips = (leagues.len() > 1)
+                            let chips = (available.len() > 1)
                                 .then(move || {
-                                    view! {
-                                        <LeagueChips
-                                            leagues=leagues
-                                            selected=league
-                                            set_league=set_league
-                                        />
-                                    }
+                                    view! { <LeagueChips leagues=available selected=leagues /> }
                                 });
                             view! {
                                 {chips}
@@ -1708,17 +1720,21 @@ fn ScheduleSection(
                     })
             }}
         </Suspense>
-        // When a single event is filtered, show its standings/bracket below.
-        <EventSection league=league />
+        // When exactly one event is selected, show its standings/bracket below.
+        <EventSection leagues=leagues />
     }
 }
 
-/// Distinct league names across all days, in first-appearance order.
-fn distinct_leagues(s: &ScheduleView) -> Vec<String> {
+/// Distinct league names among groups whose game passes the filter (empty set =
+/// all games), in first-appearance order. Drives the event chip list, so the
+/// chips reflect the selected games.
+fn leagues_for_games(s: &ScheduleView, games: &HashSet<String>) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     for day in &s.days {
         for lg in &day.leagues {
-            if !out.iter().any(|l| l == &lg.league) {
+            let game_ok = games.is_empty()
+                || lg.matches.first().is_some_and(|m| games.contains(m.game.slug()));
+            if game_ok && !out.iter().any(|l| l == &lg.league) {
                 out.push(lg.league.clone());
             }
         }
@@ -1726,13 +1742,23 @@ fn distinct_leagues(s: &ScheduleView) -> Vec<String> {
     out
 }
 
-/// Keep only the named league (empty = keep all); drop days left empty.
-fn filter_by_league(mut s: ScheduleView, league: &str) -> ScheduleView {
-    if league.is_empty() {
+/// Keep only groups matching the selected games AND events (empty set = no
+/// constraint on that axis); drop days left empty.
+fn filter_schedule(
+    mut s: ScheduleView,
+    games: &HashSet<String>,
+    leagues: &HashSet<String>,
+) -> ScheduleView {
+    if games.is_empty() && leagues.is_empty() {
         return s;
     }
     for day in &mut s.days {
-        day.leagues.retain(|lg| lg.league == league);
+        day.leagues.retain(|lg| {
+            let game_ok = games.is_empty()
+                || lg.matches.first().is_some_and(|m| games.contains(m.game.slug()));
+            let league_ok = leagues.is_empty() || leagues.contains(&lg.league);
+            game_ok && league_ok
+        });
     }
     s.days.retain(|d| !d.leagues.is_empty());
     s
@@ -2326,25 +2352,43 @@ mod tests {
         assert!(set.is_empty());
     }
 
-    #[test]
-    fn distinct_leagues_in_first_appearance_order() {
-        let s = sched(vec![vec!["LCK", "LEC"], vec!["LCK", "LPL"]]);
-        assert_eq!(distinct_leagues(&s), vec!["LCK", "LEC", "LPL"]);
+    fn names(items: &[&str]) -> HashSet<String> {
+        items.iter().map(|s| (*s).to_string()).collect()
     }
 
     #[test]
-    fn filter_by_league_keeps_only_match_and_drops_empty_days() {
+    fn leagues_for_games_first_appearance_order() {
+        let s = sched(vec![vec!["LCK", "LEC"], vec!["LCK", "LPL"]]);
+        assert_eq!(leagues_for_games(&s, &HashSet::new()), vec!["LCK", "LEC", "LPL"]);
+        // `mv` matches are LoL, so the cs2 game filter hides them all.
+        assert!(leagues_for_games(&s, &names(&["cs2"])).is_empty());
+        assert_eq!(leagues_for_games(&s, &names(&["lol"])), vec!["LCK", "LEC", "LPL"]);
+    }
+
+    #[test]
+    fn filter_schedule_keeps_selected_events_and_drops_empty_days() {
         let s = sched(vec![vec!["LCK", "LEC"], vec!["LPL"]]);
-        let f = filter_by_league(s, "LCK");
+        let f = filter_schedule(s, &HashSet::new(), &names(&["LCK", "LEC"]));
         assert_eq!(f.days.len(), 1);
+        assert_eq!(f.days[0].leagues.len(), 2);
+    }
+
+    #[test]
+    fn filter_schedule_empty_keeps_everything() {
+        let s = sched(vec![vec!["LCK", "LEC"]]);
+        let f = filter_schedule(s, &HashSet::new(), &HashSet::new());
+        assert_eq!(f.days[0].leagues.len(), 2);
+    }
+
+    #[test]
+    fn filter_schedule_games_and_events_are_anded() {
+        let s = sched(vec![vec!["LCK", "LEC"]]);
+        // LoL game keeps both; cs2 drops everything (mv matches are LoL).
+        assert_eq!(filter_schedule(s.clone(), &names(&["lol"]), &HashSet::new()).days.len(), 1);
+        assert!(filter_schedule(s.clone(), &names(&["cs2"]), &HashSet::new()).days.is_empty());
+        // lol AND only the LCK event → one group.
+        let f = filter_schedule(s, &names(&["lol"]), &names(&["LCK"]));
         assert_eq!(f.days[0].leagues.len(), 1);
         assert_eq!(f.days[0].leagues[0].league, "LCK");
-    }
-
-    #[test]
-    fn filter_by_league_empty_keeps_everything() {
-        let s = sched(vec![vec!["LCK", "LEC"]]);
-        let f = filter_by_league(s, "");
-        assert_eq!(f.days[0].leagues.len(), 2);
     }
 }
