@@ -6,9 +6,10 @@
 //! `/lol/`. Docs: https://developers.pandascore.co
 
 use crate::tiering::{is_tier_one, TierInput};
-use crate::types::{Game, MatchStatus};
+use crate::types::{BracketMatch, BracketRound, Game, MatchStatus, StandingRow, StreamView};
 use chrono::{DateTime, Utc};
 use serde::Deserialize;
+use std::collections::HashMap;
 
 const BASE_URL: &str = "https://api.pandascore.co";
 
@@ -32,6 +33,11 @@ pub struct NormalizedMatch {
     pub team_a: NormTeam,
     pub team_b: NormTeam,
     pub stream_url: Option<String>,
+    /// PandaScore tournament id (used to fetch standings/brackets). Persisted.
+    pub tournament_id: Option<i64>,
+    /// All broadcasts for the match (from `streams_list`). In-memory only —
+    /// repopulated each poll, not persisted, and only used on the detail page.
+    pub streams: Vec<StreamView>,
 }
 
 #[derive(Debug, Clone)]
@@ -86,6 +92,8 @@ struct RawSerie {
 #[derive(Debug, Deserialize)]
 struct RawTournament {
     #[serde(default)]
+    id: Option<i64>,
+    #[serde(default)]
     slug: Option<String>,
     #[serde(default)]
     tier: Option<String>,
@@ -120,7 +128,29 @@ struct RawStream {
     #[serde(default)]
     main: Option<bool>,
     #[serde(default)]
+    official: Option<bool>,
+    #[serde(default)]
+    language: Option<String>,
+    #[serde(default)]
     raw_url: Option<String>,
+}
+
+fn streams(raw: &[RawStream]) -> Vec<StreamView> {
+    let mut out: Vec<StreamView> = raw
+        .iter()
+        .filter_map(|s| {
+            let url = s.raw_url.clone().filter(|u| !u.trim().is_empty())?;
+            Some(StreamView {
+                url,
+                language: s.language.clone().unwrap_or_default(),
+                official: s.official.unwrap_or(false),
+                main: s.main.unwrap_or(false),
+            })
+        })
+        .collect();
+    // Main/official first, then the rest, so the primary broadcast leads.
+    out.sort_by_key(|s| (!s.main, !s.official));
+    out
 }
 
 // ----- Parsing / normalization ---------------------------------------------
@@ -213,6 +243,8 @@ fn normalize(game: Game, raw: &RawMatch) -> Option<NormalizedMatch> {
             score: score_for(&raw.results, id_b),
         },
         stream_url,
+        tournament_id: raw.tournament.as_ref().and_then(|t| t.id),
+        streams: streams(&raw.streams_list),
     })
 }
 
@@ -382,6 +414,182 @@ pub async fn fetch_game(
     }
 
     Ok(by_id.into_values().collect())
+}
+
+// ----- Standings + brackets (per tournament) -------------------------------
+
+#[derive(Debug, Deserialize)]
+struct RawStanding {
+    #[serde(default)]
+    rank: Option<i32>,
+    #[serde(default)]
+    team: Option<RawTeam>,
+    #[serde(default)]
+    wins: Option<i32>,
+    #[serde(default)]
+    losses: Option<i32>,
+    #[serde(default)]
+    ties: Option<i32>,
+    #[serde(default)]
+    game_wins: Option<i32>,
+    #[serde(default)]
+    game_losses: Option<i32>,
+}
+
+/// Fetch a tournament's standings (group/Swiss table). Bracket-only tournaments
+/// return rows without W-L; those are dropped (the bracket carries that info).
+pub async fn fetch_standings(
+    client: &reqwest::Client,
+    token: &str,
+    tournament_id: i64,
+) -> Result<Vec<StandingRow>, DynError> {
+    let url = format!("{BASE_URL}/tournaments/{tournament_id}/standings");
+    let body = client
+        .get(&url)
+        .bearer_auth(token)
+        .send()
+        .await?
+        .error_for_status()?
+        .text()
+        .await?;
+    let raw: Vec<RawStanding> = serde_json::from_str(&body)?;
+    Ok(raw
+        .iter()
+        .filter(|r| r.team.is_some() && (r.wins.is_some() || r.losses.is_some()))
+        .map(|r| StandingRow {
+            rank: r.rank.unwrap_or(0),
+            team: team_label(r.team.as_ref()).0,
+            wins: r.wins.unwrap_or(0),
+            losses: r.losses.unwrap_or(0),
+            ties: r.ties.unwrap_or(0),
+            game_wins: r.game_wins.unwrap_or(0),
+            game_losses: r.game_losses.unwrap_or(0),
+        })
+        .collect())
+}
+
+#[derive(Debug, Deserialize)]
+struct RawBracketMatch {
+    id: i64,
+    #[serde(default)]
+    opponents: Vec<RawOpponent>,
+    #[serde(default)]
+    results: Vec<RawResult>,
+    #[serde(default)]
+    winner_id: Option<i64>,
+    #[serde(default)]
+    previous_matches: Vec<RawPrevMatch>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RawPrevMatch {
+    #[serde(default)]
+    match_id: Option<i64>,
+}
+
+/// Fetch a tournament's bracket and reconstruct it as ordered rounds (columns).
+pub async fn fetch_bracket(
+    client: &reqwest::Client,
+    token: &str,
+    tournament_id: i64,
+) -> Result<Vec<BracketRound>, DynError> {
+    let url = format!("{BASE_URL}/tournaments/{tournament_id}/brackets");
+    let body = client
+        .get(&url)
+        .bearer_auth(token)
+        .send()
+        .await?
+        .error_for_status()?
+        .text()
+        .await?;
+    let raw: Vec<RawBracketMatch> = serde_json::from_str(&body)?;
+    Ok(build_rounds(&raw))
+}
+
+/// Depth of a bracket match = rounds of feeders beneath it (0 for first-round
+/// matches). Memoized, with a cycle guard.
+fn bracket_depth(
+    id: i64,
+    by_id: &HashMap<i64, &RawBracketMatch>,
+    cache: &mut HashMap<i64, i32>,
+    visiting: &mut std::collections::HashSet<i64>,
+) -> i32 {
+    if let Some(&d) = cache.get(&id) {
+        return d;
+    }
+    if !visiting.insert(id) {
+        return 0; // cycle / dangling — treat as a leaf
+    }
+    let depth = by_id.get(&id).map_or(0, |m| {
+        m.previous_matches
+            .iter()
+            .filter_map(|p| p.match_id)
+            .filter(|pid| by_id.contains_key(pid))
+            .map(|pid| 1 + bracket_depth(pid, by_id, cache, visiting))
+            .max()
+            .unwrap_or(0)
+    });
+    visiting.remove(&id);
+    cache.insert(id, depth);
+    depth
+}
+
+/// Name a round by how many matches it has (1 = Final, 2 = Semifinals, …).
+fn round_title(n_matches: usize) -> String {
+    match n_matches {
+        1 => "Final".to_string(),
+        2 => "Semifinals".to_string(),
+        4 => "Quarterfinals".to_string(),
+        8 => "Round of 16".to_string(),
+        16 => "Round of 32".to_string(),
+        n => format!("Round of {}", n * 2),
+    }
+}
+
+fn build_rounds(raw: &[RawBracketMatch]) -> Vec<BracketRound> {
+    if raw.is_empty() {
+        return Vec::new();
+    }
+    let by_id: HashMap<i64, &RawBracketMatch> = raw.iter().map(|m| (m.id, m)).collect();
+    let mut cache = HashMap::new();
+    let mut visiting = std::collections::HashSet::new();
+
+    // Group matches by depth (column), preserving input order within a column.
+    let mut by_depth: HashMap<i32, Vec<&RawBracketMatch>> = HashMap::new();
+    let mut max_depth = 0;
+    for m in raw {
+        let d = bracket_depth(m.id, &by_id, &mut cache, &mut visiting);
+        max_depth = max_depth.max(d);
+        by_depth.entry(d).or_default().push(m);
+    }
+
+    (0..=max_depth)
+        .filter_map(|d| by_depth.remove(&d).map(|ms| (d, ms)))
+        .map(|(_, ms)| {
+            let matches = ms.iter().map(|m| to_bracket_match(m)).collect::<Vec<_>>();
+            BracketRound {
+                title: round_title(matches.len()),
+                matches,
+            }
+        })
+        .collect()
+}
+
+fn to_bracket_match(m: &RawBracketMatch) -> BracketMatch {
+    let (label_a, id_a) = team_label(m.opponents.first().and_then(|o| o.opponent.as_ref()));
+    let (label_b, id_b) = team_label(m.opponents.get(1).and_then(|o| o.opponent.as_ref()));
+    let winner = match m.winner_id {
+        w if w.is_some() && w == id_a => "a",
+        w if w.is_some() && w == id_b => "b",
+        _ => "",
+    };
+    BracketMatch {
+        team_a: label_a,
+        team_b: label_b,
+        score_a: score_for(&m.results, id_a).map(|s| s as i32),
+        score_b: score_for(&m.results, id_b).map(|s| s as i32),
+        winner: winner.to_string(),
+    }
 }
 
 #[cfg(test)]

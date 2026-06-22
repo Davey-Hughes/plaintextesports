@@ -8,7 +8,10 @@
 
 use crate::config::Config;
 use crate::pandascore::{fetch_game, FetchResult, NormTeam, NormalizedMatch};
-use crate::types::{DayGroup, Game, LeagueGroup, MatchStatus, MatchView, ScheduleView, TeamView};
+use crate::types::{
+    BracketMatch, BracketRound, DayGroup, EventInfo, Game, LeagueGroup, MatchStatus, MatchView,
+    ScheduleView, StandingRow, StreamView, TeamView,
+};
 use chrono::{DateTime, Datelike, Duration, NaiveDate, TimeZone, Timelike, Utc};
 use chrono_tz::Tz;
 use once_cell::sync::Lazy;
@@ -54,6 +57,26 @@ fn event_key(game: Game, league: &str, year: i32) -> String {
     format!("{}|{}|{}", game.slug(), league, year)
 }
 
+/// Per-tournament standings + bracket, fetched on demand and cached with a TTL.
+static EVENTS: Lazy<RwLock<HashMap<i64, CachedEvent>>> =
+    Lazy::new(|| RwLock::new(HashMap::new()));
+
+struct CachedEvent {
+    info: EventInfo,
+    fetched_at: DateTime<Utc>,
+}
+
+/// Re-fetch a tournament's standings/bracket at most this often.
+const EVENT_TTL_MIN: i64 = 15;
+
+/// Shared HTTP client for on-demand standings/bracket fetches.
+static HTTP: Lazy<reqwest::Client> = Lazy::new(|| {
+    reqwest::Client::builder()
+        .user_agent("plaintextesports/0.1 (+https://github.com/ralphpotato/plaintextesports)")
+        .build()
+        .unwrap_or_default()
+});
+
 /// Keep matches whose start is within this many days of "now" in the DB; older
 /// ones are pruned after each poll.
 const RETENTION_DAYS: i64 = 2;
@@ -68,8 +91,10 @@ pub fn spawn_poller() {
     if cfg.demo {
         leptos::logging::log!("DEMO mode — serving fixture data (ignoring token + cache db)");
         let now = Utc::now();
+        let demo = demo_matches(now);
+        seed_demo_events(&demo, now);
         let mut snap = SNAPSHOT.write().unwrap_or_else(PoisonError::into_inner);
-        snap.matches = demo_matches(now);
+        snap.matches = demo;
         snap.fetched_at = now;
         snap.stale = false;
         snap.using_fixture = true;
@@ -121,7 +146,9 @@ pub fn spawn_poller() {
         let mut snap = SNAPSHOT.write().unwrap_or_else(PoisonError::into_inner);
         if snap.matches.is_empty() {
             let now = Utc::now();
-            snap.matches = demo_matches(now);
+            let demo = demo_matches(now);
+            seed_demo_events(&demo, now);
+            snap.matches = demo;
             snap.fetched_at = now;
             snap.stale = false;
             snap.using_fixture = true;
@@ -707,6 +734,171 @@ pub fn reminder_seed_for_match(match_id: i64, lead_ms: i64) -> Option<ReminderSe
         .map(|m| reminder_seed(m, lead_ms, &cfg.tz))
 }
 
+// ----- Match detail + event standings/bracket ------------------------------
+
+/// Basics for the match detail page: the formatted view, its streams, the
+/// tournament id, and league name. `None` when the match isn't in the window.
+#[must_use]
+pub fn match_basics(
+    match_id: i64,
+    tz_name: &str,
+    hour24: bool,
+) -> Option<(MatchView, Vec<StreamView>, Option<i64>, String)> {
+    let cfg = Config::from_env();
+    let tz = resolve_tz(tz_name, cfg.tz);
+    let now = Utc::now();
+    let snap = SNAPSHOT.read().unwrap_or_else(PoisonError::into_inner);
+    let m = snap.matches.iter().find(|m| m.id == match_id)?;
+    Some((
+        to_view(m, &tz, now, hour24),
+        m.streams.clone(),
+        m.tournament_id,
+        m.league.clone(),
+    ))
+}
+
+/// The tournament id backing a league filter (the first match in that league).
+#[must_use]
+pub fn league_tournament(league: &str) -> Option<i64> {
+    let snap = SNAPSHOT.read().unwrap_or_else(PoisonError::into_inner);
+    snap.matches
+        .iter()
+        .find(|m| m.league == league)
+        .and_then(|m| m.tournament_id)
+}
+
+/// Standings + bracket for a tournament, cached with a TTL. Fetches live when a
+/// token is configured; in demo mode returns the pre-seeded fixture.
+pub async fn event_info(tournament_id: i64) -> EventInfo {
+    let now = Utc::now();
+    {
+        let cache = EVENTS.read().unwrap_or_else(PoisonError::into_inner);
+        if let Some(c) = cache.get(&tournament_id) {
+            if now - c.fetched_at < Duration::minutes(EVENT_TTL_MIN) {
+                return c.info.clone();
+            }
+        }
+    }
+    let Some(token) = Config::from_env().token.clone() else {
+        // No token (demo / unconfigured): serve whatever's seeded, else nothing.
+        return EVENTS
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(&tournament_id)
+            .map(|c| c.info.clone())
+            .unwrap_or_default();
+    };
+    // Fetch live (best-effort; an endpoint failure just yields an empty section).
+    let standings = crate::pandascore::fetch_standings(&HTTP, &token, tournament_id)
+        .await
+        .unwrap_or_else(|e| {
+            leptos::logging::log!("standings fetch failed (tournament {tournament_id}): {e}");
+            Vec::new()
+        });
+    let rounds = crate::pandascore::fetch_bracket(&HTTP, &token, tournament_id)
+        .await
+        .unwrap_or_else(|e| {
+            leptos::logging::log!("bracket fetch failed (tournament {tournament_id}): {e}");
+            Vec::new()
+        });
+    let info = EventInfo {
+        event: String::new(),
+        standings,
+        rounds,
+    };
+    EVENTS.write().unwrap_or_else(PoisonError::into_inner).insert(
+        tournament_id,
+        CachedEvent {
+            info: info.clone(),
+            fetched_at: now,
+        },
+    );
+    info
+}
+
+/// Seed the EVENTS cache with demo standings/brackets for the demo tournaments.
+fn seed_demo_events(matches: &[NormalizedMatch], now: DateTime<Utc>) {
+    let mut ev = EVENTS.write().unwrap_or_else(PoisonError::into_inner);
+    let mut seen = std::collections::HashSet::new();
+    for m in matches {
+        if let Some(tid) = m.tournament_id {
+            if seen.insert(tid) {
+                ev.insert(
+                    tid,
+                    CachedEvent {
+                        info: demo_event_info(&m.league),
+                        fetched_at: now,
+                    },
+                );
+            }
+        }
+    }
+}
+
+/// A demo standings table + single-elimination bracket for one event.
+fn demo_event_info(league: &str) -> EventInfo {
+    let lol = matches!(
+        league,
+        "LCK" | "LEC" | "LPL" | "MSI" | "Worlds" | "LTA" | "First Stand"
+    );
+    let t: [&str; 8] = if lol {
+        ["T1", "GEN", "HLE", "DK", "BLG", "TES", "G2", "FNC"]
+    } else {
+        ["NAVI", "VIT", "FaZe", "MOUZ", "G2", "SPIRIT", "BIG", "NIP"]
+    };
+    let bm = |a: &str, b: &str, sa, sb, w: &str| BracketMatch {
+        team_a: a.to_string(),
+        team_b: b.to_string(),
+        score_a: sa,
+        score_b: sb,
+        winner: w.to_string(),
+    };
+    let rounds = vec![
+        BracketRound {
+            title: "Quarterfinals".to_string(),
+            matches: vec![
+                bm(t[0], t[1], Some(2), Some(0), "a"),
+                bm(t[2], t[3], Some(2), Some(1), "a"),
+                bm(t[4], t[5], Some(1), Some(2), "b"),
+                bm(t[6], t[7], Some(2), Some(0), "a"),
+            ],
+        },
+        BracketRound {
+            title: "Semifinals".to_string(),
+            matches: vec![
+                bm(t[0], t[2], Some(1), Some(2), "b"),
+                bm(t[5], t[6], Some(2), Some(1), "a"),
+            ],
+        },
+        BracketRound {
+            title: "Final".to_string(),
+            matches: vec![bm(t[2], t[5], None, None, "")],
+        },
+    ];
+    let row = |rank, team: &str, w, l, gw, gl| StandingRow {
+        rank,
+        team: team.to_string(),
+        wins: w,
+        losses: l,
+        ties: 0,
+        game_wins: gw,
+        game_losses: gl,
+    };
+    let standings = vec![
+        row(1, t[2], 3, 0, 9, 3),
+        row(2, t[5], 2, 1, 7, 5),
+        row(3, t[0], 2, 1, 6, 4),
+        row(4, t[6], 1, 2, 5, 6),
+        row(5, t[3], 1, 2, 4, 6),
+        row(6, t[1], 0, 3, 2, 9),
+    ];
+    EventInfo {
+        event: league.to_string(),
+        standings,
+        rounds,
+    }
+}
+
 // ----- Demo fixture (no token) ---------------------------------------------
 
 fn demo_team(label: &str, score: Option<i64>) -> NormTeam {
@@ -740,7 +932,31 @@ fn demo_match(
         team_a: a,
         team_b: b,
         stream_url: Some("https://www.twitch.tv/".to_string()),
+        tournament_id: Some(demo_tournament_id(league)),
+        streams: demo_streams(),
     }
+}
+
+/// Stable per-league tournament id for the demo, so all of an event's matches
+/// share one tournament (and thus one standings/bracket).
+fn demo_tournament_id(league: &str) -> i64 {
+    9000 + i64::from(league.bytes().map(u32::from).sum::<u32>() % 900)
+}
+
+/// A handful of demo broadcasts (official + a language variant + a co-streamer).
+fn demo_streams() -> Vec<StreamView> {
+    let s = |url: &str, language: &str, official: bool, main: bool| StreamView {
+        url: url.to_string(),
+        language: language.to_string(),
+        official,
+        main,
+    };
+    vec![
+        s("https://www.twitch.tv/esl_csgo", "en", true, true),
+        s("https://www.twitch.tv/esl_csgob", "en", true, false),
+        s("https://www.twitch.tv/ru_esl", "ru", true, false),
+        s("https://www.twitch.tv/ohnepixel", "en", false, false),
+    ]
 }
 
 /// Demo data anchored to `now` so the page is populated without a token.
@@ -815,6 +1031,8 @@ mod tests {
                 score: None,
             },
             stream_url: None,
+            tournament_id: None,
+            streams: Vec::new(),
         }
     }
 

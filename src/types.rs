@@ -167,6 +167,71 @@ pub struct SubscribeReq {
     pub value: String,
 }
 
+/// One broadcast/stream for a match (from PandaScore `streams_list`).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StreamView {
+    pub url: String,
+    /// ISO-639-1 language code (e.g. "en"), or empty if unknown.
+    pub language: String,
+    pub official: bool,
+    pub main: bool,
+}
+
+/// One row of a group-stage / Swiss standings table.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StandingRow {
+    pub rank: i32,
+    pub team: String,
+    pub wins: i32,
+    pub losses: i32,
+    pub ties: i32,
+    /// Maps/games won and lost (the "map diff"); zeroed when unavailable.
+    pub game_wins: i32,
+    pub game_losses: i32,
+}
+
+/// One match within a bracket round.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BracketMatch {
+    pub team_a: String,
+    pub team_b: String,
+    pub score_a: Option<i32>,
+    pub score_b: Option<i32>,
+    /// Which side won, if decided: "a", "b", or empty.
+    pub winner: String,
+}
+
+/// A column of the elimination bracket (e.g. "Quarterfinals").
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BracketRound {
+    pub title: String,
+    pub matches: Vec<BracketMatch>,
+}
+
+/// Standings + bracket for one event/tournament.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EventInfo {
+    pub event: String,
+    pub standings: Vec<StandingRow>,
+    pub rounds: Vec<BracketRound>,
+}
+
+impl EventInfo {
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.standings.is_empty() && self.rounds.is_empty()
+    }
+}
+
+/// Everything the per-match detail page shows.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MatchDetail {
+    pub found: bool,
+    pub match_view: Option<MatchView>,
+    pub streams: Vec<StreamView>,
+    pub event: EventInfo,
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ScheduleView {
     pub days: Vec<DayGroup>,

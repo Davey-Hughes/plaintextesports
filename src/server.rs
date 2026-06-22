@@ -1,7 +1,7 @@
 //! Leptos server functions. The bodies read the in-memory cache on the server;
 //! on the client the `#[server]` macro replaces them with a network call.
 
-use crate::types::{ReminderReq, ScheduleView, SiteInfo, SubscribeReq};
+use crate::types::{EventInfo, MatchDetail, ReminderReq, ScheduleView, SiteInfo, SubscribeReq};
 use leptos::prelude::*;
 
 /// Homepage schedule. `game` is "all"/"cs2"/"lol"; `tz` is an IANA name (empty
@@ -39,6 +39,58 @@ pub async fn get_day(
     {
         let _ = (date, game, tz, hour24);
         Ok(ScheduleView::default())
+    }
+}
+
+/// Per-match detail: the match, its broadcasts, and its event's standings/bracket.
+#[server(GetMatchDetail, "/api")]
+pub async fn get_match_detail(
+    id: i64,
+    tz: String,
+    hour24: bool,
+) -> Result<MatchDetail, ServerFnError> {
+    #[cfg(feature = "ssr")]
+    {
+        let Some((match_view, streams, tournament_id, league)) =
+            crate::cache::match_basics(id, &tz, hour24)
+        else {
+            return Ok(MatchDetail::default());
+        };
+        let mut event = match tournament_id {
+            Some(tid) => crate::cache::event_info(tid).await,
+            None => EventInfo::default(),
+        };
+        event.event = league;
+        Ok(MatchDetail {
+            found: true,
+            match_view: Some(match_view),
+            streams,
+            event,
+        })
+    }
+    #[cfg(not(feature = "ssr"))]
+    {
+        let _ = (id, tz, hour24);
+        Ok(MatchDetail::default())
+    }
+}
+
+/// Standings + bracket for an event (by league name), for the event-filter view.
+#[server(GetEventInfo, "/api")]
+pub async fn get_event_info(league: String) -> Result<EventInfo, ServerFnError> {
+    #[cfg(feature = "ssr")]
+    {
+        let Some(tid) = crate::cache::league_tournament(&league) else {
+            return Ok(EventInfo::default());
+        };
+        let mut event = crate::cache::event_info(tid).await;
+        event.event = league;
+        Ok(event)
+    }
+    #[cfg(not(feature = "ssr"))]
+    {
+        let _ = league;
+        Ok(EventInfo::default())
     }
 }
 
