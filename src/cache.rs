@@ -658,6 +658,22 @@ pub struct ReminderSeed {
     pub url: String,
 }
 
+/// Build a reminder seed for one upcoming match. Centralizes the time/title/
+/// body/url derivation so every reminder (single-match ★ and game/event
+/// subscription) is produced server-side from the same snapshot data.
+fn reminder_seed(m: &NormalizedMatch, lead_ms: i64, tz: &Tz) -> ReminderSeed {
+    let local = m.begin_at.with_timezone(tz);
+    ReminderSeed {
+        match_id: m.id,
+        game: m.game.slug().to_string(),
+        league: m.league.clone(),
+        notify_at_ms: m.begin_at.timestamp_millis() - lead_ms,
+        title: format!("{} vs {}", m.team_a.label, m.team_b.label),
+        body: format!("{} · {}", m.league, time_label(local, false)),
+        url: resolved_event_url(m.game, &m.league, m.begin_at, m.league_url.as_deref()),
+    }
+}
+
 /// Upcoming matches matching a subscription scope, as reminder seeds. `kind` is
 /// "game" (value = "cs2"/"lol") or "league" (value = league name).
 #[must_use]
@@ -673,19 +689,22 @@ pub fn scope_reminder_seeds(kind: &str, value: &str, lead_ms: i64) -> Vec<Remind
             "league" => m.league == value,
             _ => false,
         })
-        .map(|m| {
-            let local = m.begin_at.with_timezone(&cfg.tz);
-            ReminderSeed {
-                match_id: m.id,
-                game: m.game.slug().to_string(),
-                league: m.league.clone(),
-                notify_at_ms: m.begin_at.timestamp_millis() - lead_ms,
-                title: format!("{} vs {}", m.team_a.label, m.team_b.label),
-                body: format!("{} · {}", m.league, time_label(local, false)),
-                url: resolved_event_url(m.game, &m.league, m.begin_at, m.league_url.as_deref()),
-            }
-        })
+        .map(|m| reminder_seed(m, lead_ms, &cfg.tz))
         .collect()
+}
+
+/// A reminder seed for a single upcoming match by id — `None` if it's unknown,
+/// already started, or canceled. Lets the server (not the client) decide the
+/// notification's time/title/body/url for a starred match.
+#[must_use]
+pub fn reminder_seed_for_match(match_id: i64, lead_ms: i64) -> Option<ReminderSeed> {
+    let cfg = Config::from_env();
+    let now = Utc::now();
+    let snap = SNAPSHOT.read().unwrap_or_else(PoisonError::into_inner);
+    snap.matches
+        .iter()
+        .find(|m| m.id == match_id && m.status != MatchStatus::Canceled && m.begin_at > now)
+        .map(|m| reminder_seed(m, lead_ms, &cfg.tz))
 }
 
 // ----- Demo fixture (no token) ---------------------------------------------

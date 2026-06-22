@@ -82,19 +82,23 @@ pub async fn add_reminder(req: ReminderReq) -> Result<(), ServerFnError> {
         if !cfg.push_enabled() || cfg.db_path.is_empty() {
             return Err(ServerFnError::new("reminders are not available"));
         }
+        // Derive time/title/body/url from the snapshot so a client can't forge an
+        // arbitrary notification (it only supplies its push subscription + a match id).
+        let seed = crate::cache::reminder_seed_for_match(req.match_id, cfg.reminder_lead_ms)
+            .ok_or_else(|| ServerFnError::new("match not found or already started"))?;
         let conn = crate::store::shared(&cfg.db_path)
             .map_err(|e| ServerFnError::new(format!("db: {e}")))?;
         let r = crate::store::Reminder {
             endpoint: req.sub.endpoint,
             p256dh: req.sub.p256dh,
             auth: req.sub.auth,
-            match_id: req.match_id,
-            notify_at_ms: req.begin_at_ms - cfg.reminder_lead_ms,
-            title: req.title,
-            body: req.body,
-            url: req.url,
-            game: req.game.slug().to_string(),
-            league: req.league,
+            match_id: seed.match_id,
+            notify_at_ms: seed.notify_at_ms,
+            title: seed.title,
+            body: seed.body,
+            url: seed.url,
+            game: seed.game,
+            league: seed.league,
         };
         crate::store::add_reminder(&conn, &r).map_err(|e| ServerFnError::new(format!("db: {e}")))?;
         Ok(())
