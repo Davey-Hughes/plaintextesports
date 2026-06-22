@@ -1082,14 +1082,14 @@ a {
 
 .bracket .bk-round:not(:last-child) .bk-match:nth-child(odd):not(:last-child)::after {
   top: 50%;
-  height: 50%;
+  bottom: -0.35rem;
   border-top: 1px solid var(--border);
   border-right: 1px solid var(--border);
 }
 
 .bracket .bk-round:not(:last-child) .bk-match:nth-child(even)::after {
-  top: 0;
-  height: 50%;
+  top: -0.35rem;
+  bottom: 50%;
   border-bottom: 1px solid var(--border);
   border-right: 1px solid var(--border);
 }
@@ -1118,38 +1118,39 @@ a {
   position: relative;
 }
 
-// Winner's final: flat stub to the rail + a line down to its bracket's bottom
-// (the final fills its column, so the box bottom is the bracket bottom).
+// Winner's final: flat stub to the rail + a line down to its column's bottom edge
+// (the -0.35rem reaches past the match's margin to the slice edge).
 .bk-de-left .bk-bracket-group:first-child .bracket .bk-round:last-child .bk-match::after {
   content: "";
   position: absolute;
   right: -1.55rem;
   width: 1.55rem;
   top: 50%;
-  bottom: 0;
+  bottom: -0.35rem;
   border-top: 1px solid var(--border);
   border-right: 1px solid var(--border);
 }
 
-// Loser's final: flat stub to the rail + a line up to its bracket's top.
+// Loser's final: flat stub to the rail + a line up to its column's top edge.
 .bk-de-left .bk-bracket-group:last-child .bracket .bk-round:last-child .bk-match::after {
   content: "";
   position: absolute;
   right: -1.55rem;
   width: 1.55rem;
-  top: 0;
+  top: -0.35rem;
   bottom: 50%;
   border-bottom: 1px solid var(--border);
   border-right: 1px solid var(--border);
 }
 
-// Bridge the (fixed) gap + loser's-bracket label between the two brackets.
+// Bridge the (fixed) gap + loser's label + loser's final-round title between the
+// two brackets — a constant distance, so it holds at any bracket size.
 .bk-de-left .bk-bracket-group:last-child::before {
   content: "";
   position: absolute;
   right: -0.75rem;
   top: -1.2rem;
-  height: 3rem;
+  height: 4.32rem;
   border-left: 1px solid var(--border);
 }
 
