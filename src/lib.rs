@@ -11,6 +11,8 @@ pub mod liquipedia;
 #[cfg(feature = "ssr")]
 pub mod pandascore;
 #[cfg(feature = "ssr")]
+pub mod push;
+#[cfg(feature = "ssr")]
 pub mod store;
 #[cfg(feature = "ssr")]
 pub mod tiering;

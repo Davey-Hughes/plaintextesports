@@ -1,6 +1,7 @@
 use crate::server::{get_day, get_schedule};
-use crate::types::{MatchStatus, MatchView, ScheduleView};
+use crate::types::{Game, MatchStatus, MatchView, ScheduleView};
 use leptos::prelude::*;
+use std::collections::HashSet;
 use leptos_meta::{provide_meta_context, MetaTags, Stylesheet, Title};
 use leptos_router::{
     components::{Route, Router, Routes, A},
@@ -26,6 +27,22 @@ pub fn shell(options: LeptosOptions) -> impl IntoView {
                 <script>
                     r#"(function(){try{var t=localStorage.getItem('theme')||'dark';document.documentElement.setAttribute('data-theme',t);}catch(e){document.documentElement.setAttribute('data-theme','dark');}})();"#
                 </script>
+                // Web Push helper used by the reminder ★ buttons.
+                <script>
+                    r#"
+                    function pteB64ToUint8(b64){var p='='.repeat((4-b64.length%4)%4);var s=(b64+p).replace(/-/g,'+').replace(/_/g,'/');var raw=atob(s);var a=new Uint8Array(raw.length);for(var i=0;i<raw.length;i++)a[i]=raw.charCodeAt(i);return a;}
+                    window.pteSubscribe=async function(vapid){
+                      if(!('serviceWorker' in navigator)||!('PushManager' in window)) throw new Error('unsupported');
+                      var reg=await navigator.serviceWorker.register('/sw.js');
+                      var perm=await Notification.requestPermission();
+                      if(perm!=='granted') throw new Error('denied');
+                      var sub=await reg.pushManager.getSubscription();
+                      if(!sub){sub=await reg.pushManager.subscribe({userVisibleOnly:true,applicationServerKey:pteB64ToUint8(vapid)});}
+                      var j=sub.toJSON();
+                      return {endpoint:j.endpoint,p256dh:j.keys.p256dh,auth:j.keys.auth};
+                    };
+                    "#
+                </script>
             </head>
             <body>
                 <App />
@@ -43,11 +60,17 @@ pub fn App() -> impl IntoView {
     // timezone ("" => server default until the browser reports one).
     let hour24 = RwSignal::new(true);
     let tz = RwSignal::new(String::new());
+    // Reminder state: starred match ids, and the VAPID public key (None until
+    // fetched / if Web Push isn't configured).
+    let starred = RwSignal::new(HashSet::<i64>::new());
+    let vapid = RwSignal::new(None::<String>);
     provide_context(hour24);
     provide_context(tz);
+    provide_context(starred);
+    provide_context(vapid);
 
-    // After hydration, pick up the browser's timezone + saved hour preference.
-    // (Runs client-side only; the initial SSR/hydrate render uses the defaults
+    // After hydration, pick up the browser's timezone + saved preferences and
+    // the push key. (Client-side only; the initial render uses the defaults
     // above, so there's no hydration mismatch.)
     Effect::new(move |_| {
         #[cfg(feature = "hydrate")]
@@ -58,6 +81,12 @@ pub fn App() -> impl IntoView {
             if let Some(h) = load_hour24_pref() {
                 hour24.set(h);
             }
+            starred.set(load_starred());
+            leptos::task::spawn_local(async move {
+                if let Ok(k) = crate::server::get_vapid_key().await {
+                    vapid.set(k);
+                }
+            });
         }
     });
 
@@ -334,6 +363,9 @@ fn ScheduleSection(
                         Ok(s) => {
                             let leagues = distinct_leagues(&s);
                             let filtered = filter_by_league(s, &league.get());
+                            // Show ★ reminder buttons only when Web Push is configured.
+                            let push = use_context::<RwSignal<Option<String>>>()
+                                .is_some_and(|v| v.get().is_some());
                             // Only offer event chips when there's more than one.
                             let chips = (leagues.len() > 1)
                                 .then(move || {
@@ -347,7 +379,7 @@ fn ScheduleSection(
                                 });
                             view! {
                                 {chips}
-                                {render_schedule(filtered, show_nav)}
+                                {render_schedule(filtered, show_nav, push)}
                             }
                                 .into_any()
                         }
@@ -400,7 +432,7 @@ fn league_color_class(name: &str) -> String {
     format!("lc-{}", h % LEAGUE_COLORS)
 }
 
-fn render_schedule(s: ScheduleView, show_nav: bool) -> impl IntoView {
+fn render_schedule(s: ScheduleView, show_nav: bool, push: bool) -> impl IntoView {
     let ScheduleView {
         days,
         fetched_label,
@@ -444,7 +476,7 @@ fn render_schedule(s: ScheduleView, show_nav: bool) -> impl IntoView {
                     let rows = lg
                         .matches
                         .into_iter()
-                        .map(|m| view! { <MatchRow m=m show_bo=show_bo /> })
+                        .map(|m| view! { <MatchRow m=m show_bo=show_bo push=push /> })
                         .collect_view();
                     view! {
                         <div class=format!("league {lc}")>
@@ -480,8 +512,24 @@ fn render_schedule(s: ScheduleView, show_nav: bool) -> impl IntoView {
     }
 }
 
+/// Lead time before a match start to fire its reminder.
+const REMIND_LEAD_MS: i64 = 10 * 60 * 1000;
+
+/// Everything the reminder for a match needs (built from a `MatchView`).
+/// Fields are consumed only in the `hydrate` build (the ★ click handler).
+#[derive(Clone)]
+#[cfg_attr(not(feature = "hydrate"), allow(dead_code))]
+struct ReminderInfo {
+    id: i64,
+    game: Game,
+    notify_at_ms: i64,
+    title: String,
+    body: String,
+    url: String,
+}
+
 #[component]
-fn MatchRow(m: MatchView, show_bo: bool) -> impl IntoView {
+fn MatchRow(m: MatchView, show_bo: bool, push: bool) -> impl IntoView {
     let status_class = match m.status {
         MatchStatus::Live => "live",
         MatchStatus::Finished => "final",
@@ -503,6 +551,19 @@ fn MatchRow(m: MatchView, show_bo: bool) -> impl IntoView {
     let mid_class = if scored { "row-mid scored" } else { "row-mid" };
     let bo = if show_bo { m.best_of } else { String::new() };
 
+    let info = ReminderInfo {
+        id: m.id,
+        game: m.game,
+        notify_at_ms: m.begin_at_ms - REMIND_LEAD_MS,
+        title: format!("{} vs {}", m.team_a.label, m.team_b.label),
+        body: format!("{} · {}", m.league, m.clock_label),
+        url: if m.event_url.is_empty() {
+            "/".to_string()
+        } else {
+            m.event_url.clone()
+        },
+    };
+
     let inner = view! {
         <span class="row-time">{m.clock_label}</span>
         <span class="row-team row-a" class:winner=m.team_a.winner>{m.team_a.label}</span>
@@ -514,15 +575,150 @@ fn MatchRow(m: MatchView, show_bo: bool) -> impl IntoView {
         </span>
     };
 
-    match m.stream_url {
+    // The body is the (optional) stream link; `display: contents` lets its
+    // children participate in the row grid alongside the ★ button.
+    let body = match m.stream_url {
         Some(url) => view! {
-            <a class=format!("row {status_class}") href=url target="_blank" rel="noreferrer">
+            <a class="row-body" href=url target="_blank" rel="noreferrer">
                 {inner}
             </a>
         }
         .into_any(),
-        None => view! { <div class=format!("row {status_class}")>{inner}</div> }.into_any(),
+        None => view! { <span class="row-body">{inner}</span> }.into_any(),
+    };
+
+    if push {
+        // Only upcoming matches are remindable; others get an empty placeholder
+        // so the grid columns stay aligned.
+        let star = if matches!(m.status, MatchStatus::Upcoming) {
+            view! { <StarButton id=m.id info=info /> }.into_any()
+        } else {
+            view! { <span class="star star-empty"></span> }.into_any()
+        };
+        view! {
+            <div class=format!("row has-star {status_class}")>
+                {star}
+                {body}
+            </div>
+        }
+        .into_any()
+    } else {
+        view! { <div class=format!("row {status_class}")>{body}</div> }.into_any()
     }
+}
+
+#[component]
+fn StarButton(id: i64, info: ReminderInfo) -> impl IntoView {
+    let starred = use_context::<RwSignal<HashSet<i64>>>().expect("starred context");
+    let vapid = use_context::<RwSignal<Option<String>>>().expect("vapid context");
+    let is_on = move || starred.get().contains(&id);
+
+    let on_click = move |_| {
+        let now_on = starred.get_untracked().contains(&id);
+        starred.update(|s| {
+            if now_on {
+                s.remove(&id);
+            } else {
+                s.insert(id);
+            }
+        });
+        #[cfg(feature = "hydrate")]
+        {
+            let ids: Vec<i64> = starred.get_untracked().iter().copied().collect();
+            persist_and_sync(info.clone(), !now_on, ids, vapid.get_untracked());
+        }
+        #[cfg(not(feature = "hydrate"))]
+        {
+            let _ = (now_on, &info, vapid);
+        }
+    };
+
+    view! {
+        <button class="star" class:on=is_on on:click=on_click aria-label="Toggle reminder">
+            {move || if is_on() { "★" } else { "☆" }}
+        </button>
+    }
+}
+
+#[cfg(feature = "hydrate")]
+#[wasm_bindgen::prelude::wasm_bindgen]
+extern "C" {
+    // Defined in the shell <script>: registers the SW, requests permission,
+    // subscribes, and returns `{ endpoint, p256dh, auth }`.
+    #[wasm_bindgen(catch, js_name = pteSubscribe)]
+    async fn pte_subscribe(vapid: &str) -> Result<wasm_bindgen::JsValue, wasm_bindgen::JsValue>;
+}
+
+#[cfg(feature = "hydrate")]
+fn reflect_str(obj: &wasm_bindgen::JsValue, key: &str) -> Option<String> {
+    js_sys::Reflect::get(obj, &wasm_bindgen::JsValue::from_str(key))
+        .ok()?
+        .as_string()
+}
+
+#[cfg(feature = "hydrate")]
+fn save_starred(ids: &[i64]) {
+    if let Some(win) = web_sys::window() {
+        if let Ok(Some(storage)) = win.local_storage() {
+            let csv = ids.iter().map(i64::to_string).collect::<Vec<_>>().join(",");
+            let _ = storage.set_item("starred", &csv);
+        }
+    }
+}
+
+#[cfg(feature = "hydrate")]
+fn load_starred() -> HashSet<i64> {
+    let mut out = HashSet::new();
+    if let Some(win) = web_sys::window() {
+        if let Ok(Some(storage)) = win.local_storage() {
+            if let Ok(Some(csv)) = storage.get_item("starred") {
+                for part in csv.split(',') {
+                    if let Ok(id) = part.trim().parse::<i64>() {
+                        out.insert(id);
+                    }
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Persist the starred set and (un)register the reminder on the server.
+#[cfg(feature = "hydrate")]
+fn persist_and_sync(info: ReminderInfo, starring: bool, ids: Vec<i64>, vapid: Option<String>) {
+    save_starred(&ids);
+    let Some(vapid) = vapid else { return };
+    leptos::task::spawn_local(async move {
+        let sub = match pte_subscribe(&vapid).await {
+            Ok(s) => s,
+            Err(_) => return,
+        };
+        let (Some(endpoint), Some(p256dh), Some(auth)) = (
+            reflect_str(&sub, "endpoint"),
+            reflect_str(&sub, "p256dh"),
+            reflect_str(&sub, "auth"),
+        ) else {
+            return;
+        };
+        if starring {
+            let req = crate::types::ReminderReq {
+                sub: crate::types::PushSub {
+                    endpoint,
+                    p256dh,
+                    auth,
+                },
+                match_id: info.id,
+                game: info.game,
+                notify_at_ms: info.notify_at_ms,
+                title: info.title,
+                body: info.body,
+                url: info.url,
+            };
+            let _ = crate::server::add_reminder(req).await;
+        } else {
+            let _ = crate::server::remove_reminder(endpoint, info.id).await;
+        }
+    });
 }
 
 #[cfg(test)]

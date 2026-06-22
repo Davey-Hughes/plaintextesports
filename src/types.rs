@@ -122,6 +122,27 @@ pub struct DayGroup {
     pub leagues: Vec<LeagueGroup>,
 }
 
+/// A browser Web Push subscription (from `PushSubscription.toJSON()`).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PushSub {
+    pub endpoint: String,
+    pub p256dh: String,
+    pub auth: String,
+}
+
+/// A request to be reminded about a match (sent from the browser when starred).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReminderReq {
+    pub sub: PushSub,
+    pub match_id: i64,
+    pub game: Game,
+    /// When to notify (unix ms) — typically match start minus the lead time.
+    pub notify_at_ms: i64,
+    pub title: String,
+    pub body: String,
+    pub url: String,
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ScheduleView {
     pub days: Vec<DayGroup>,
