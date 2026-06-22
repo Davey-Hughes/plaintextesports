@@ -888,8 +888,17 @@ fn MatchRow(m: MatchView, show_bo: bool, push: bool) -> impl IntoView {
 #[component]
 fn StarButton(id: i64, info: ReminderInfo) -> impl IntoView {
     let starred = use_context::<RwSignal<HashSet<i64>>>().expect("starred context");
+    let subscribed = use_context::<Subscribed>().expect("subscribed context").0;
     let vapid = use_context::<RwSignal<Option<String>>>().expect("vapid context");
-    let is_on = move || starred.get().contains(&id);
+    // The ★ lights up if this match is starred individually *or* a higher-level
+    // subscription (the whole game, or this event) already covers it — so the
+    // star reflects everything you'll be notified about.
+    let game_key = format!("game|{}", info.game.slug());
+    let league_key = format!("league|{}", info.league);
+    let is_on = Memo::new(move |_| {
+        starred.with(|s| s.contains(&id))
+            || subscribed.with(|s| s.contains(&game_key) || s.contains(&league_key))
+    });
 
     let on_click = move |_| {
         let now_on = starred.get_untracked().contains(&id);
@@ -912,8 +921,13 @@ fn StarButton(id: i64, info: ReminderInfo) -> impl IntoView {
     };
 
     view! {
-        <button class="star" class:on=is_on on:click=on_click aria-label="Toggle reminder">
-            {move || if is_on() { "★" } else { "☆" }}
+        <button
+            class="star"
+            class:on=move || is_on.get()
+            on:click=on_click
+            aria-label="Toggle reminder"
+        >
+            {move || if is_on.get() { "★" } else { "☆" }}
         </button>
     }
 }
