@@ -86,14 +86,29 @@ a {
 }
 
 .page {
+  position: relative;
   max-width: 760px;
   margin: 0 auto;
   padding: 1rem 1rem 3rem;
 }
 
+// The brand shares the first line with the sticky toggle bar but is absolutely
+// placed (matching the bar's offsets), so it scrolls away with the page while the
+// buttons stay pinned. pointer-events let clicks reach the buttons beneath.
 .header {
+  position: absolute;
+  top: 1rem;
+  left: 1rem;
+  right: 1rem;
+  z-index: 21;
   display: flex;
   align-items: center;
+  padding: 0.5rem 0;
+  pointer-events: none;
+
+  .brand {
+    pointer-events: auto;
+  }
 
   .brand a {
     color: var(--fg);
@@ -102,8 +117,8 @@ a {
   }
 }
 
-// The toggle bar sticks to the top of the viewport while scrolling (the brand
-// above it scrolls away). The background occludes content sliding underneath.
+// The toggle bar sticks to the top of the viewport while scrolling. Its
+// background occludes content (and the brand) sliding underneath.
 .toggles {
   position: sticky;
   top: 0;
