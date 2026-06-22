@@ -842,6 +842,24 @@ enum BkOp {
     Cascade,
 }
 
+/// Reveal a series' contributing matches (recursively) up to their scores, so the
+/// series' own lineup becomes known. This is the "team reveal" step for a series
+/// whose participants aren't decided yet.
+fn reveal_feeders(set: &mut HashSet<String>, grid: &[Vec<BkCell>], r: usize, i: usize) {
+    for &(fr, fi) in &grid[r][i].feeders {
+        reveal_feeders(set, grid, fr, fi);
+        let fc = &grid[fr][fi];
+        apply_stage(set, &fc.bn, &fc.bs, fc.max);
+    }
+}
+
+/// Whether a series' teams are known: it's a first-round match, or all its
+/// feeders' scores are revealed.
+fn bk_teams_known(grid: &[Vec<BkCell>], eff: &[Vec<u8>], r: usize, i: usize) -> bool {
+    let c = &grid[r][i];
+    c.feeders.is_empty() || auto_stage(eff, &c.feeders) == 1
+}
+
 /// Apply a bracket reveal action to the shared set, respecting feeder gating so a
 /// later round's lineup can't be revealed before its feeders' scores are shown.
 fn apply_bracket_op(set: &mut HashSet<String>, grid: &[Vec<BkCell>], op: BkOp) {
@@ -856,20 +874,34 @@ fn apply_bracket_op(set: &mut HashSet<String>, grid: &[Vec<BkCell>], op: BkOp) {
     };
     match op {
         BkOp::Series(r, i) => {
-            if !bk_advanceable(grid, &eff, r, i) {
-                // At max already? Cycle back (hide score; auto may keep the names).
-                let c = &grid[r][i];
-                if c.max > 0 && eff[r][i] >= c.max {
-                    let auto = auto_stage(&eff, &c.feeders);
-                    apply_stage(set, &c.bn, &c.bs, auto);
-                }
-                return;
+            let c = &grid[r][i];
+            if c.max == 0 {
+                return; // TBD: never revealable
             }
-            advance(set, r, i);
+            if !bk_teams_known(grid, &eff, r, i) {
+                // First step: reveal the contributing matches' scores; the lineup
+                // then appears on its own (and you can't peek ahead unfairly).
+                reveal_feeders(set, grid, r, i);
+            } else if eff[r][i] >= c.max {
+                // Fully shown → step back (auto keeps the names for a fed series).
+                let auto = auto_stage(&eff, &c.feeders);
+                apply_stage(set, &c.bn, &c.bs, auto);
+            } else {
+                advance(set, r, i);
+            }
         }
         BkOp::Round(r) => {
             let n = grid[r].len();
-            if (0..n).any(|i| bk_advanceable(grid, &eff, r, i)) {
+            // If any series' teams aren't decided yet, the round's first step is to
+            // reveal the contributing matches that feed it.
+            let need_feeders: Vec<usize> = (0..n)
+                .filter(|&i| grid[r][i].max > 0 && !bk_teams_known(grid, &eff, r, i))
+                .collect();
+            if !need_feeders.is_empty() {
+                for i in need_feeders {
+                    reveal_feeders(set, grid, r, i);
+                }
+            } else if (0..n).any(|i| bk_advanceable(grid, &eff, r, i)) {
                 for i in 0..n {
                     if bk_advanceable(grid, &eff, r, i) {
                         advance(set, r, i);
@@ -971,7 +1003,6 @@ struct BkRender {
     sb: Option<i32>,
     winner: String,
     max: u8,
-    feeders: Vec<(usize, usize)>,
 }
 
 #[component]
@@ -992,12 +1023,11 @@ fn Bracket(rounds: Vec<BracketRound>, tournament_id: i64) -> impl IntoView {
         let mut sres = Vec::with_capacity(round.matches.len());
         for (i, m) in round.matches.into_iter().enumerate() {
             let max = bm_max_stage(&m);
-            let feeders = m.feeders;
             cells.push(BkCell {
                 bn: format!("bn:{tid}:{r}:{i}"),
                 bs: format!("bs:{tid}:{r}:{i}"),
                 max,
-                feeders: feeders.clone(),
+                feeders: m.feeders,
             });
             sres.push(BkRender {
                 i,
@@ -1007,7 +1037,6 @@ fn Bracket(rounds: Vec<BracketRound>, tournament_id: i64) -> impl IntoView {
                 sb: m.score_b,
                 winner: m.winner,
                 max,
-                feeders,
             });
         }
         grid.push(cells);
@@ -1043,23 +1072,14 @@ fn Bracket(rounds: Vec<BracketRound>, tournament_id: i64) -> impl IntoView {
                     let (ta, tb) = (s.ta, s.tb);
                     let (sa, sb) = (s.sa, s.sb);
                     let winner = s.winner;
-                    let feeders = s.feeders;
                     let dash = if max == 2 { "-" } else { "" };
-                    // Locked (not clickable) when undecided (TBD) or its feeders'
-                    // scores aren't shown yet, so the lineup is still unknown.
-                    let locked = {
-                        let feeders = feeders.clone();
-                        move || {
-                            max == 0
-                                || (!feeders.is_empty()
-                                    && eff.with(|e| auto_stage(e, &feeders) == 0))
-                        }
-                    };
                     let stage = move || eff.with(|e| e.get(r).and_then(|row| row.get(i)).copied().unwrap_or(0));
                     view! {
                         <div
+                            // Only a TBD match (no participants at all) is locked;
+                            // clicking a fed series reveals its contributing matches.
                             class="bk-match"
-                            class:bk-locked=locked
+                            class:bk-locked=max == 0
                             on:click=move |_| do_op(BkOp::Series(r, i))
                         >
                             {move || match stage() {
@@ -2604,12 +2624,16 @@ mod tests {
     }
 
     #[test]
-    fn bracket_locked_until_feeders_scored() {
+    fn bracket_series_click_reveals_contributing_matches_first() {
         let grid = semis_final_grid();
         let mut set = HashSet::new();
-        // Trying to reveal the final before its feeders are scored is a no-op.
+        // Clicking the final before its teams are known reveals the feeding semis'
+        // scores; the final's lineup then auto-appears (names, no score yet).
         apply_bracket_op(&mut set, &grid, BkOp::Series(1, 0));
-        assert_eq!(compute_effective(&grid, &set, false), vec![vec![0, 0], vec![0]]);
+        assert_eq!(compute_effective(&grid, &set, false), vec![vec![2, 2], vec![1]]);
+        // The next click reveals the final's own score.
+        apply_bracket_op(&mut set, &grid, BkOp::Series(1, 0));
+        assert_eq!(compute_effective(&grid, &set, false), vec![vec![2, 2], vec![2]]);
     }
 
     #[test]
