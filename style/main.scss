@@ -765,6 +765,11 @@ a {
   color: var(--muted);
 }
 
+.event-link {
+  font-size: 12px;
+  margin: 0.2rem 0 0.8rem;
+}
+
 .detail-meta {
   display: flex;
   align-items: center;
@@ -880,6 +885,7 @@ a {
     text-transform: uppercase;
     padding: 0.2rem 0.5rem;
     border-bottom: 1px solid var(--border);
+    white-space: nowrap;
   }
 
   td {
@@ -919,12 +925,27 @@ a {
   font-size: 12px;
 }
 
-// Double-elimination layout: stacked upper bracket, lower bracket, grand final,
-// each a labelled block so the lower bracket reads as its own bracket.
+// Double-elimination layout: the winner's and loser's brackets stack on the
+// left (each its own tree); the grand final sits to the right, vertically
+// centred between them — like a printed double-elim bracket.
 .bracket-de {
   display: flex;
+  align-items: center;
+  gap: 1.5rem;
+  overflow-x: auto;
+  padding: 0.3rem 0;
+}
+
+.bk-de-left {
+  display: flex;
   flex-direction: column;
-  gap: 0.9rem;
+  gap: 1.2rem;
+}
+
+// The inner brackets shouldn't scroll on their own — the outer wrapper does.
+.bracket-de .bracket {
+  overflow-x: visible;
+  padding: 0;
 }
 
 .bk-bracket-group .bracket {

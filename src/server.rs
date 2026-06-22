@@ -96,6 +96,24 @@ pub async fn get_match_detail(
     }
 }
 
+/// All cached matches for one event/league (past + upcoming), for the event page.
+#[server(GetEventSchedule, "/api")]
+pub async fn get_event_schedule(
+    league: String,
+    tz: String,
+    hour24: bool,
+) -> Result<ScheduleView, ServerFnError> {
+    #[cfg(feature = "ssr")]
+    {
+        Ok(crate::cache::event_view(&league, &tz, hour24))
+    }
+    #[cfg(not(feature = "ssr"))]
+    {
+        let _ = (league, tz, hour24);
+        Ok(ScheduleView::default())
+    }
+}
+
 /// Standings + bracket for an event (by league name), for the event-filter view.
 #[server(GetEventInfo, "/api")]
 pub async fn get_event_info(league: String) -> Result<EventInfo, ServerFnError> {

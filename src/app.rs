@@ -1,5 +1,6 @@
 use crate::server::{
-    get_day, get_event_info, get_match_detail, get_range, get_schedule, get_site,
+    get_day, get_event_info, get_event_schedule, get_match_detail, get_range, get_schedule,
+    get_site,
 };
 use crate::types::{
     BracketMatch, BracketRound, EventInfo, Game, MatchDetail, MatchStatus, MatchView, ScheduleView,
@@ -153,6 +154,7 @@ pub fn App() -> impl IntoView {
                         <Route path=StaticSegment("") view=HomePage />
                         <Route path=(StaticSegment("day"), ParamSegment("date")) view=DayPage />
                         <Route path=(StaticSegment("match"), ParamSegment("id")) view=MatchDetailPage />
+                        <Route path=(StaticSegment("event"), ParamSegment("league")) view=EventPage />
                         <Route path=StaticSegment("about") view=AboutPage />
                     </Routes>
                 </main>
@@ -293,6 +295,146 @@ fn AboutPage() -> impl IntoView {
 #[derive(Params, PartialEq, Clone)]
 struct DetailParams {
     id: String,
+}
+
+#[derive(Params, PartialEq, Clone)]
+struct EventParams {
+    league: String,
+}
+
+/// Percent-encode a league name for use as a URL path segment.
+fn enc_segment(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for b in s.bytes() {
+        if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b'~') {
+            out.push(b as char);
+        } else {
+            out.push_str(&format!("%{b:02X}"));
+        }
+    }
+    out
+}
+
+/// Decode a percent-encoded path segment back to a league name. Idempotent for
+/// already-decoded input (league names never contain a literal '%').
+fn dec_segment(s: &str) -> String {
+    let bytes = s.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            if let Ok(b) = u8::from_str_radix(&s[i + 1..i + 3], 16) {
+                out.push(b);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+/// Internal event page: the event's standings/bracket, its full schedule, and a
+/// link out to the event's Liquipedia/official page.
+#[component]
+fn EventPage() -> impl IntoView {
+    let params = use_params::<EventParams>();
+    let league = move || {
+        params
+            .get()
+            .ok()
+            .map(|p| dec_segment(&p.league))
+            .unwrap_or_default()
+    };
+    let hour24 = use_context::<RwSignal<bool>>().expect("hour24 context");
+    let tz = use_context::<RwSignal<String>>().expect("tz context");
+    let schedule = Resource::new(
+        move || (league(), tz.get(), hour24.get()),
+        |(lg, z, h)| async move { get_event_schedule(lg, z, h).await },
+    );
+    let info = Resource::new(league, |lg| async move {
+        if lg.is_empty() {
+            Ok(EventInfo::default())
+        } else {
+            get_event_info(lg).await
+        }
+    });
+    setup_autorefresh(schedule);
+    let push = use_context::<RwSignal<Option<String>>>().is_some_and(|v| v.get().is_some());
+
+    // Render the whole page from inside one Suspense (awaiting both resources),
+    // mirroring the match-detail page — so nothing reactive sits at the
+    // synchronous top level to throw off hydration.
+    view! {
+        <Suspense fallback=|| {
+            view! {
+                <article class="detail">
+                    <A href="/">"← schedule"</A>
+                    <p class="loading">"loading…"</p>
+                </article>
+            }
+        }>
+            {move || {
+                let sched = schedule.get();
+                let inf = info.get();
+                let lg_name = league();
+                match sched {
+                    Some(Ok(s)) => {
+                        // The event's external (Liquipedia/official) link, pulled
+                        // from any of its league groups.
+                        let url = s
+                            .days
+                            .iter()
+                            .flat_map(|d| &d.leagues)
+                            .map(|lg| lg.event_url.clone())
+                            .find(|u| !u.is_empty());
+                        let link = url
+                            .map(|u| {
+                                view! {
+                                    <p class="event-link">
+                                        <a href=u target="_blank" rel="noreferrer">
+                                            "event page ↗"
+                                        </a>
+                                    </p>
+                                }
+                            });
+                        let extra = inf
+                            .and_then(Result::ok)
+                            .filter(|e| !e.is_empty())
+                            .map(|e| {
+                                let EventInfo { tournament_id, standings, rounds, .. } = e;
+                                view! {
+                                    <div class="event-extra">
+                                        <StandingsTable rows=standings tournament_id />
+                                        <Bracket rounds=rounds tournament_id />
+                                    </div>
+                                }
+                            });
+                        view! {
+                            <article class="detail">
+                                <A href="/">"← schedule"</A>
+                                <h1 class="detail-title">{lg_name}</h1>
+                                {link}
+                                {render_schedule(s, false, push, true)}
+                                {extra}
+                            </article>
+                        }
+                            .into_any()
+                    }
+                    _ => {
+                        view! {
+                            <article class="detail">
+                                <A href="/">"← schedule"</A>
+                                <p class="error">"Failed to load event."</p>
+                            </article>
+                        }
+                            .into_any()
+                    }
+                }
+            }}
+        </Suspense>
+    }
 }
 
 #[component]
@@ -936,25 +1078,40 @@ fn Bracket(rounds: Vec<BracketRound>, tournament_id: i64) -> impl IntoView {
         let cols = groups.into_iter().next().map(|g| g.1).unwrap_or_default();
         view! { <div class="bracket">{cols}</div> }.into_any()
     } else {
-        let sects = groups
-            .into_iter()
-            .map(|(section, cols)| {
-                let label = match section.as_str() {
-                    "upper" => "Upper Bracket",
-                    "lower" => "Lower Bracket",
-                    "final" => "Grand Final",
-                    _ => "",
-                };
-                view! {
-                    <div class="bk-bracket-group">
-                        {(!label.is_empty())
-                            .then(|| view! { <div class="bk-group-label">{label}</div> })}
-                        <div class="bracket">{cols}</div>
-                    </div>
-                }
-            })
-            .collect_view();
-        view! { <div class="bracket-de">{sects}</div> }.into_any()
+        // Double-elimination: winner's bracket and loser's bracket stack on the
+        // left as their own trees; the grand final sits to the right, centred
+        // between them (like a printed double-elim bracket).
+        let group_view = |section: &str, cols: Vec<AnyView>| {
+            let label = match section {
+                "upper" => "Winner's Bracket",
+                "lower" => "Loser's Bracket",
+                "final" => "Grand Final",
+                _ => "",
+            };
+            view! {
+                <div class="bk-bracket-group">
+                    {(!label.is_empty())
+                        .then(|| view! { <div class="bk-group-label">{label}</div> })}
+                    <div class="bracket">{cols}</div>
+                </div>
+            }
+        };
+        let mut left: Vec<AnyView> = Vec::new();
+        let mut grand: Option<AnyView> = None;
+        for (section, cols) in groups {
+            if section == "final" {
+                grand = Some(group_view(&section, cols).into_any());
+            } else {
+                left.push(group_view(&section, cols).into_any());
+            }
+        }
+        view! {
+            <div class="bracket-de">
+                <div class="bk-de-left">{left}</div>
+                {grand}
+            </div>
+        }
+        .into_any()
     };
 
     // The "Bracket" title cascades the whole bracket: each click advances the
@@ -1750,7 +1907,7 @@ fn ScheduleSection(
                                 });
                             view! {
                                 {chips}
-                                {render_schedule(filtered, show_nav, push)}
+                                {render_schedule(filtered, show_nav, push, false)}
                             }
                                 .into_any()
                         }
@@ -1819,7 +1976,7 @@ fn league_color_class(name: &str) -> String {
     format!("lc-{}", h % LEAGUE_COLORS)
 }
 
-fn render_schedule(s: ScheduleView, show_nav: bool, push: bool) -> impl IntoView {
+fn render_schedule(s: ScheduleView, show_nav: bool, push: bool, event_mode: bool) -> impl IntoView {
     let ScheduleView {
         days,
         fetched_label,
@@ -1855,7 +2012,9 @@ fn render_schedule(s: ScheduleView, show_nav: bool, push: bool) -> impl IntoView
                 .into_iter()
                 .map(|lg| {
                     let lc = league_color_class(&lg.league);
-                    let show_bo = lg.bo.is_none();
+                    // On the event page the page title already names the event, so
+                    // we drop the per-day league header and show the best-of per row.
+                    let show_bo = event_mode || lg.bo.is_none();
                     // Header best-of: the single format when the event is uniform,
                     // else the distinct formats joined (e.g. "Bo1 | Bo3"). Per-row
                     // bo still shows for mixed events so you can tell which is which.
@@ -1872,12 +2031,23 @@ fn render_schedule(s: ScheduleView, show_nav: bool, push: bool) -> impl IntoView
                             (!bos.is_empty()).then(|| bos.join(" | "))
                         }
                     };
-                    let header = match &bo_label {
-                        Some(bo) => format!("{} · {}", lg.league, bo),
-                        None => lg.league.clone(),
-                    };
-                    let event_url = lg.event_url;
-                    let sub_value = lg.league.clone();
+                    let league_name = lg.league.clone();
+                    let head = (!event_mode).then(move || {
+                        let header = match &bo_label {
+                            Some(bo) => format!("{league_name} · {bo}"),
+                            None => league_name.clone(),
+                        };
+                        // The league name links to its internal event page.
+                        let event_href = format!("/event/{}", enc_segment(&league_name));
+                        view! {
+                            <div class="league-head">
+                                <SubscribeStar kind="league" value=league_name.clone() />
+                                <h3 class="league-title">
+                                    <A href=event_href>{header}</A>
+                                </h3>
+                            </div>
+                        }
+                    });
                     let rows = lg
                         .matches
                         .into_iter()
@@ -1885,12 +2055,7 @@ fn render_schedule(s: ScheduleView, show_nav: bool, push: bool) -> impl IntoView
                         .collect_view();
                     view! {
                         <div class=format!("league {lc}")>
-                            <div class="league-head">
-                                <SubscribeStar kind="league" value=sub_value />
-                                <h3 class="league-title">
-                                    <a href=event_url target="_blank" rel="noreferrer">{header}</a>
-                                </h3>
-                            </div>
+                            {head}
                             <div class="rows">{rows}</div>
                         </div>
                     }
@@ -1922,8 +2087,8 @@ fn render_schedule(s: ScheduleView, show_nav: bool, push: bool) -> impl IntoView
         {nav}
         <div class="status-line">{fixture_note}{stale_note} "loaded " {fetched_label}</div>
         // The "‹ show earlier days" control sits just above the first day (homepage
-        // only; the single-day view has its own prev/next nav instead).
-        {(!show_nav).then(|| view! { <EarlierControl /> })}
+        // only; the single-day view has prev/next nav, the event page its own list).
+        {(!show_nav && !event_mode).then(|| view! { <EarlierControl /> })}
         {day_sections}
         {empty.then(|| view! { <p class="empty">"No tier-1 matches in this window."</p> })}
     }
