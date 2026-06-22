@@ -9,8 +9,12 @@ pub struct Config {
     pub token: Option<String>,
     /// Timezone for formatting times and grouping by day.
     pub tz: Tz,
-    /// How often to poll PandaScore.
-    pub poll_interval: Duration,
+    /// Poll interval when nothing is live or about to start. Schedules change
+    /// slowly, so this can be generous.
+    pub idle_poll: Duration,
+    /// Poll interval while a match is live or starts soon, to catch final
+    /// scores/status promptly.
+    pub active_poll: Duration,
     /// Days ahead shown on the homepage "upcoming" view.
     pub upcoming_days: i64,
     /// Path to the SQLite cache file. Empty string disables persistence.
@@ -30,13 +34,11 @@ impl Config {
             .and_then(|s| s.parse::<Tz>().ok())
             .unwrap_or(chrono_tz::America::Los_Angeles);
 
-        let poll_interval = Duration::from_secs(
-            std::env::var("POLL_INTERVAL_SECS")
-                .ok()
-                .and_then(|s| s.parse().ok())
-                .filter(|&n| n >= 30)
-                .unwrap_or(120),
-        );
+        // Idle base: schedules barely change, and the free tier has no live
+        // feed, so polling fast around the clock buys nothing. Default 15 min.
+        let idle_poll = Duration::from_secs(secs_env("POLL_INTERVAL_SECS", 900, 60));
+        // Active burst when a match is live/imminent. Default 3 min.
+        let active_poll = Duration::from_secs(secs_env("POLL_ACTIVE_SECS", 180, 30));
 
         let upcoming_days = std::env::var("UPCOMING_DAYS")
             .ok()
@@ -49,9 +51,20 @@ impl Config {
         Self {
             token,
             tz,
-            poll_interval,
+            idle_poll,
+            active_poll,
             upcoming_days,
             db_path,
         }
     }
+}
+
+/// Read a positive seconds env var, clamping to at least `min` and falling back
+/// to `default` when unset/unparseable/too small.
+fn secs_env(key: &str, default: u64, min: u64) -> u64 {
+    std::env::var(key)
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .filter(|&n| n >= min)
+        .unwrap_or(default)
 }

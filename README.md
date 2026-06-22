@@ -9,9 +9,13 @@ with an allowlist/denylist) are shown.
 
 ## How it works
 
-- A background task polls the [PandaScore](https://pandascore.co) API every
-  ~2 minutes, normalizes matches, applies the tier-1 filter, and caches the
-  result in memory. Page requests read the cache — they never block on the API.
+- A background task polls the [PandaScore](https://pandascore.co) API,
+  normalizes matches, applies the tier-1 filter, and caches the result in
+  memory. Page requests read the cache — they never block on the API.
+- Polling is **adaptive**: schedules change slowly (and the free tier has no
+  live feed), so it idles at ~15 min and bursts to ~3 min only while a match is
+  live or starts within ~15 min, to catch final scores/status. This stays far
+  under the free tier's 1,000 req/hr limit.
 - Matches are also persisted to a small **SQLite** database (`DB_PATH`), keyed by
   `(id, game)` and upserted each poll with a 2-day retention window. On restart
   the app serves the last-known data instantly (no re-fetch burst), and a match
@@ -53,7 +57,8 @@ cargo test --features ssr # tiering + deserialization tests
 |---|---|---|
 | `PANDASCORE_TOKEN` | _(none)_ | API token; unset = demo data |
 | `DISPLAY_TZ` | `America/Los_Angeles` | IANA tz for times + day grouping |
-| `POLL_INTERVAL_SECS` | `120` | PandaScore poll interval (min 30) |
+| `POLL_INTERVAL_SECS` | `900` | Idle poll interval, seconds (min 60) |
+| `POLL_ACTIVE_SECS` | `180` | Poll interval while live/imminent, seconds (min 30) |
 | `UPCOMING_DAYS` | `7` | Days ahead on the homepage |
 | `DB_PATH` | `data/cache.db` | SQLite cache path; empty = memory-only |
 
