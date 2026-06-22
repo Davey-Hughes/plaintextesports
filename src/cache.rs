@@ -13,7 +13,7 @@ use chrono::{DateTime, Datelike, Duration, NaiveDate, TimeZone, Timelike, Utc};
 use chrono_tz::Tz;
 use once_cell::sync::Lazy;
 use std::collections::HashMap;
-use std::sync::RwLock;
+use std::sync::{PoisonError, RwLock};
 
 struct Snapshot {
     matches: Vec<NormalizedMatch>,
@@ -68,7 +68,7 @@ pub fn spawn_poller() {
     if cfg.demo {
         leptos::logging::log!("DEMO mode — serving fixture data (ignoring token + cache db)");
         let now = Utc::now();
-        let mut snap = SNAPSHOT.write().unwrap();
+        let mut snap = SNAPSHOT.write().unwrap_or_else(PoisonError::into_inner);
         snap.matches = demo_matches(now);
         snap.fetched_at = now;
         snap.stale = false;
@@ -96,7 +96,7 @@ pub fn spawn_poller() {
                 let fetched = crate::store::load_fetched_at(conn)
                     .and_then(DateTime::from_timestamp_millis)
                     .unwrap_or_else(Utc::now);
-                let mut snap = SNAPSHOT.write().unwrap();
+                let mut snap = SNAPSHOT.write().unwrap_or_else(PoisonError::into_inner);
                 let n = stored.len();
                 snap.matches = stored;
                 snap.fetched_at = fetched;
@@ -107,7 +107,7 @@ pub fn spawn_poller() {
         }
         // Load cached event-page links.
         if let Ok(rows) = crate::store::load_event_links(conn) {
-            let mut map = EVENT_LINKS.write().unwrap();
+            let mut map = EVENT_LINKS.write().unwrap_or_else(PoisonError::into_inner);
             for (key, url, checked_at_ms) in rows {
                 let checked_at =
                     DateTime::from_timestamp_millis(checked_at_ms).unwrap_or_else(Utc::now);
@@ -118,7 +118,7 @@ pub fn spawn_poller() {
 
     let Some(token) = cfg.token.clone() else {
         leptos::logging::log!("PANDASCORE_TOKEN not set — serving demo fixture data");
-        let mut snap = SNAPSHOT.write().unwrap();
+        let mut snap = SNAPSHOT.write().unwrap_or_else(PoisonError::into_inner);
         if snap.matches.is_empty() {
             let now = Utc::now();
             snap.matches = demo_matches(now);
@@ -145,7 +145,7 @@ pub fn spawn_poller() {
         loop {
             let now = Utc::now();
             let active = {
-                let snap = SNAPSHOT.read().unwrap();
+                let snap = SNAPSHOT.read().unwrap_or_else(PoisonError::into_inner);
                 is_active_window(&snap.matches, now, Duration::hours(5), Duration::minutes(15))
             };
             // Always deep-scan when idle; while active, deep-scan only every
@@ -252,7 +252,7 @@ fn apply_poll(cs_res: FetchResult, lol_res: FetchResult, store: Option<&mut rusq
         match crate::store::load_all(conn) {
             Ok(mut all) => {
                 all.sort_by_key(|m| m.begin_at);
-                let mut snap = SNAPSHOT.write().unwrap();
+                let mut snap = SNAPSHOT.write().unwrap_or_else(PoisonError::into_inner);
                 let n = all.len();
                 snap.matches = all;
                 snap.using_fixture = false;
@@ -295,7 +295,7 @@ fn merge_in_memory(
     any_err: bool,
     now: DateTime<Utc>,
 ) {
-    let mut snap = SNAPSHOT.write().unwrap();
+    let mut snap = SNAPSHOT.write().unwrap_or_else(PoisonError::into_inner);
     let merged = merge_matches(&snap.matches, matches, errored);
     snap.matches = merged;
     snap.using_fixture = false;
@@ -316,8 +316,8 @@ struct Candidate {
 /// or a stale "not found"). Pure read of SNAPSHOT + EVENT_LINKS.
 fn collect_resolution_candidates() -> Vec<Candidate> {
     let now = Utc::now();
-    let snap = SNAPSHOT.read().unwrap();
-    let links = EVENT_LINKS.read().unwrap();
+    let snap = SNAPSHOT.read().unwrap_or_else(PoisonError::into_inner);
+    let links = EVENT_LINKS.read().unwrap_or_else(PoisonError::into_inner);
     let mut seen = std::collections::HashSet::new();
     let mut out = Vec::new();
     for m in &snap.matches {
@@ -352,7 +352,7 @@ fn apply_resolutions(
         return;
     }
     {
-        let mut links = EVENT_LINKS.write().unwrap();
+        let mut links = EVENT_LINKS.write().unwrap_or_else(PoisonError::into_inner);
         for (key, url) in results {
             links.insert(
                 key.clone(),
@@ -474,7 +474,7 @@ fn resolved_event_url(
     official: Option<&str>,
 ) -> String {
     let key = event_key(game, league, begin_at.year());
-    if let Some(EventLink { url: Some(u), .. }) = EVENT_LINKS.read().unwrap().get(&key) {
+    if let Some(EventLink { url: Some(u), .. }) = EVENT_LINKS.read().unwrap_or_else(PoisonError::into_inner).get(&key) {
         return u.clone();
     }
     event_link(game, league, official)
@@ -595,7 +595,7 @@ pub fn homepage_view(game_filter: &str, tz_name: &str, hour24: bool) -> Schedule
     let start = local_day_start(&tz, now.with_timezone(&tz).date_naive());
     let end = now + Duration::days(cfg.upcoming_days);
 
-    let snap = SNAPSHOT.read().unwrap();
+    let snap = SNAPSHOT.read().unwrap_or_else(PoisonError::into_inner);
     let all = matches_in_window(&snap, game, start, end, &tz, now, hour24);
 
     ScheduleView {
@@ -624,7 +624,7 @@ pub fn day_view(date: &str, game_filter: &str, tz_name: &str, hour24: bool) -> S
     let start = local_day_start(&tz, day);
     let end = local_day_start(&tz, day + Duration::days(1));
 
-    let snap = SNAPSHOT.read().unwrap();
+    let snap = SNAPSHOT.read().unwrap_or_else(PoisonError::into_inner);
     let all = matches_in_window(&snap, game, start, end, &tz, now, hour24);
 
     let local_noon = tz
@@ -664,7 +664,7 @@ pub struct ReminderSeed {
 pub fn scope_reminder_seeds(kind: &str, value: &str, lead_ms: i64) -> Vec<ReminderSeed> {
     let cfg = Config::from_env();
     let now = Utc::now();
-    let snap = SNAPSHOT.read().unwrap();
+    let snap = SNAPSHOT.read().unwrap_or_else(PoisonError::into_inner);
     snap.matches
         .iter()
         .filter(|m| m.status != MatchStatus::Canceled && m.begin_at > now)
