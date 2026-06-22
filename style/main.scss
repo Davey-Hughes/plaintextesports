@@ -98,6 +98,8 @@ a {
 
 .toggles {
   display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
   gap: 0.4rem;
 }
 
@@ -211,11 +213,18 @@ a {
   padding-left: 0.6rem;
 }
 
+.league-head {
+  display: flex;
+  align-items: baseline;
+  gap: 0.6rem;
+  margin: 0 0 0.2rem;
+}
+
 .league-title {
   font-size: 12px;
   font-weight: 600;
   color: var(--lc, var(--muted));
-  margin: 0 0 0.2rem;
+  margin: 0;
 
   a {
     color: inherit;
@@ -224,6 +233,35 @@ a {
     &:hover {
       text-decoration: underline;
     }
+  }
+}
+
+.event-score {
+  margin-left: auto;
+  background: none;
+  border: 1px solid var(--border);
+  color: var(--muted);
+  font: inherit;
+  font-size: 11px;
+  line-height: 1.4;
+  padding: 0 0.4rem;
+  cursor: pointer;
+  white-space: nowrap;
+
+  &:hover {
+    color: var(--fg);
+    border-color: var(--fg);
+  }
+
+  // Active state uses the event's palette color.
+  &.on {
+    color: var(--bg);
+    background: var(--lc, var(--fg));
+    border-color: var(--lc, var(--fg));
+  }
+
+  &.event-hidden {
+    display: none;
   }
 }
 
