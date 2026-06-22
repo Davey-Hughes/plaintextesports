@@ -513,45 +513,60 @@ fn EventSection(league: ReadSignal<String>) -> impl IntoView {
 
 #[component]
 fn ThemeToggle() -> impl IntoView {
-    // Default to dark; sync to the real value after mount (client only).
-    let (dark, set_dark) = signal(true);
+    // Cycle dark → light → oled (pure black). Default to dark; sync to the saved
+    // value after mount (client only) — matches the pre-paint shell script.
+    let theme = RwSignal::new("dark".to_string());
 
     Effect::new(move |_| {
         #[cfg(feature = "hydrate")]
         {
-            if let Some(win) = web_sys::window() {
-                let is_dark = win
-                    .local_storage()
-                    .ok()
-                    .flatten()
-                    .and_then(|s| s.get_item("theme").ok().flatten())
-                    .is_none_or(|t| t != "light");
-                set_dark.set(is_dark);
+            if let Some(t) = saved_theme() {
+                theme.set(t);
             }
         }
     });
 
-    let toggle = move |_| {
-        let next = !dark.get_untracked();
-        set_dark.set(next);
+    let cycle = move |_| {
+        let next = match theme.get_untracked().as_str() {
+            "dark" => "light",
+            "light" => "oled",
+            _ => "dark",
+        };
+        theme.set(next.to_string());
         #[cfg(feature = "hydrate")]
-        {
-            let theme = if next { "dark" } else { "light" };
-            if let Some(win) = web_sys::window() {
-                if let Some(root) = win.document().and_then(|d| d.document_element()) {
-                    let _ = root.set_attribute("data-theme", theme);
-                }
-                if let Ok(Some(storage)) = win.local_storage() {
-                    let _ = storage.set_item("theme", theme);
-                }
-            }
-        }
+        apply_theme(next);
     };
 
     view! {
-        <button class="toggle" on:click=toggle>
-            {move || if dark.get() { "light mode" } else { "dark mode" }}
+        <button class="toggle" on:click=cycle>
+            {move || theme.get()}
         </button>
+    }
+}
+
+/// The saved theme ("dark"/"light"/"oled"), if a valid one is stored.
+#[cfg(feature = "hydrate")]
+fn saved_theme() -> Option<String> {
+    web_sys::window()?
+        .local_storage()
+        .ok()
+        .flatten()?
+        .get_item("theme")
+        .ok()
+        .flatten()
+        .filter(|t| matches!(t.as_str(), "dark" | "light" | "oled"))
+}
+
+/// Apply a theme: set `data-theme` on <html> and persist it.
+#[cfg(feature = "hydrate")]
+fn apply_theme(theme: &str) {
+    if let Some(win) = web_sys::window() {
+        if let Some(root) = win.document().and_then(|d| d.document_element()) {
+            let _ = root.set_attribute("data-theme", theme);
+        }
+        if let Ok(Some(storage)) = win.local_storage() {
+            let _ = storage.set_item("theme", theme);
+        }
     }
 }
 
