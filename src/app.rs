@@ -704,6 +704,33 @@ fn StandingsTable(rows: Vec<StandingRow>, tournament_id: i64) -> impl IntoView {
     }
     // Click the "Standings" title to reveal/hide the table.
     let (revealed, toggle) = section_reveal(format!("st:{tournament_id}"));
+    // Always render every row so the table reserves its height — when hidden, the
+    // team/record cells show blank placeholders so revealing doesn't shift the page.
+    let body = move || {
+        let show = revealed.get();
+        rows.clone()
+            .into_iter()
+            .map(|r| {
+                let (team, wl, maps) = if show {
+                    (
+                        r.team,
+                        format!("{}-{}", r.wins, r.losses),
+                        format!("{}-{}", r.game_wins, r.game_losses),
+                    )
+                } else {
+                    ("—".to_string(), "—".to_string(), "—".to_string())
+                };
+                view! {
+                    <tr>
+                        <td class="st-rank">{r.rank}</td>
+                        <td class="st-team">{team}</td>
+                        <td class="st-wl">{wl}</td>
+                        <td class="st-diff">{maps}</td>
+                    </tr>
+                }
+            })
+            .collect_view()
+    };
     view! {
         <section class="detail-section">
             <div class="section-head">
@@ -711,42 +738,17 @@ fn StandingsTable(rows: Vec<StandingRow>, tournament_id: i64) -> impl IntoView {
                     "Standings"
                 </button>
             </div>
-            {move || {
-                if revealed.get() {
-                    let body = rows
-                        .clone()
-                        .into_iter()
-                        .map(|r| {
-                            view! {
-                                <tr>
-                                    <td class="st-rank">{r.rank}</td>
-                                    <td class="st-team">{r.team}</td>
-                                    <td class="st-wl">{format!("{}-{}", r.wins, r.losses)}</td>
-                                    <td class="st-diff">
-                                        {format!("{}-{}", r.game_wins, r.game_losses)}
-                                    </td>
-                                </tr>
-                            }
-                        })
-                        .collect_view();
-                    view! {
-                        <table class="standings">
-                            <thead>
-                                <tr>
-                                    <th></th>
-                                    <th class="st-team">"Team"</th>
-                                    <th>"W-L"</th>
-                                    <th>"Maps"</th>
-                                </tr>
-                            </thead>
-                            <tbody>{body}</tbody>
-                        </table>
-                    }
-                        .into_any()
-                } else {
-                    view! { <p class="section-hidden">"hidden"</p> }.into_any()
-                }
-            }}
+            <table class="standings" class:placeholder=move || !revealed.get()>
+                <thead>
+                    <tr>
+                        <th></th>
+                        <th class="st-team">"Team"</th>
+                        <th>"W-L"</th>
+                        <th>"Maps"</th>
+                    </tr>
+                </thead>
+                <tbody>{body}</tbody>
+            </table>
         </section>
     }
     .into_any()
@@ -776,7 +778,7 @@ fn Bracket(rounds: Vec<BracketRound>, tournament_id: i64) -> impl IntoView {
     // Build the reveal grid (keys/max/feeders, for stage computation + clicks)
     // and the parallel render data, once.
     let mut grid: Vec<Vec<BkCell>> = Vec::with_capacity(rounds.len());
-    let mut render: Vec<(String, Vec<BkRender>)> = Vec::with_capacity(rounds.len());
+    let mut render: Vec<(String, String, Vec<BkRender>)> = Vec::with_capacity(rounds.len());
     for (r, round) in rounds.into_iter().enumerate() {
         let mut cells = Vec::with_capacity(round.matches.len());
         let mut sres = Vec::with_capacity(round.matches.len());
@@ -801,7 +803,7 @@ fn Bracket(rounds: Vec<BracketRound>, tournament_id: i64) -> impl IntoView {
             });
         }
         grid.push(cells);
-        render.push((round.title, sres));
+        render.push((round.section, round.title, sres));
     }
 
     // Effective stages for the whole bracket, recomputed when the shared reveal
@@ -824,7 +826,7 @@ fn Bracket(rounds: Vec<BracketRound>, tournament_id: i64) -> impl IntoView {
     let cols = render
         .into_iter()
         .enumerate()
-        .map(|(r, (title, sres))| {
+        .map(|(r, (section, title, sres))| {
             let round_on = move || eff.with(|e| e.get(r).is_some_and(|row| row.iter().any(|&s| s >= 1)));
             let ms = sres
                 .into_iter()
@@ -901,7 +903,7 @@ fn Bracket(rounds: Vec<BracketRound>, tournament_id: i64) -> impl IntoView {
                     }
                 })
                 .collect_view();
-            view! {
+            let col = view! {
                 <div class="bk-round">
                     <div class="bk-round-title">
                         <button
@@ -914,9 +916,47 @@ fn Bracket(rounds: Vec<BracketRound>, tournament_id: i64) -> impl IntoView {
                     </div>
                     <div class="bk-matches">{ms}</div>
                 </div>
-            }
+            };
+            (section, col.into_any())
         })
-        .collect_view();
+        .collect::<Vec<(String, AnyView)>>();
+
+    // Group consecutive columns by their section so a double-elimination bracket
+    // renders as a labelled upper bracket, then lower bracket, then grand final —
+    // instead of one linear column run. A single-elim bracket has one "" group.
+    let mut groups: Vec<(String, Vec<AnyView>)> = Vec::new();
+    for (section, col) in cols {
+        match groups.last_mut() {
+            Some((s, items)) if *s == section => items.push(col),
+            _ => groups.push((section, vec![col])),
+        }
+    }
+    let single = groups.len() == 1 && groups[0].0.is_empty();
+    let body = if single {
+        let cols = groups.into_iter().next().map(|g| g.1).unwrap_or_default();
+        view! { <div class="bracket">{cols}</div> }.into_any()
+    } else {
+        let sects = groups
+            .into_iter()
+            .map(|(section, cols)| {
+                let label = match section.as_str() {
+                    "upper" => "Upper Bracket",
+                    "lower" => "Lower Bracket",
+                    "final" => "Grand Final",
+                    _ => "",
+                };
+                view! {
+                    <div class="bk-bracket-group">
+                        {(!label.is_empty())
+                            .then(|| view! { <div class="bk-group-label">{label}</div> })}
+                        <div class="bracket">{cols}</div>
+                    </div>
+                }
+            })
+            .collect_view();
+        view! { <div class="bracket-de">{sects}</div> }.into_any()
+    };
+
     // The "Bracket" title cascades the whole bracket: each click advances the
     // earliest revealable round (names → scores), unlocking the next round's
     // lineup as it goes; once everything is shown, the next click hides all.
@@ -932,7 +972,7 @@ fn Bracket(rounds: Vec<BracketRound>, tournament_id: i64) -> impl IntoView {
                     "Bracket"
                 </button>
             </div>
-            <div class="bracket">{cols}</div>
+            {body}
         </section>
     }
     .into_any()
