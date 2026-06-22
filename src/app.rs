@@ -60,6 +60,10 @@ struct ShowScores(RwSignal<bool>);
 #[derive(Clone, Copy)]
 struct RevealedEvents(RwSignal<HashSet<String>>);
 
+/// Set of "kind|value" scopes the user is subscribed to (game/event reminders).
+#[derive(Clone, Copy)]
+struct Subscribed(RwSignal<HashSet<String>>);
+
 #[component]
 #[must_use]
 pub fn App() -> impl IntoView {
@@ -76,12 +80,14 @@ pub fn App() -> impl IntoView {
     // Spoiler control: a global reveal + a per-event reveal set.
     let show_scores = RwSignal::new(false);
     let revealed = RwSignal::new(HashSet::<String>::new());
+    let subscribed = RwSignal::new(HashSet::<String>::new());
     provide_context(hour24);
     provide_context(tz);
     provide_context(starred);
     provide_context(vapid);
     provide_context(ShowScores(show_scores));
     provide_context(RevealedEvents(revealed));
+    provide_context(Subscribed(subscribed));
 
     // After hydration, pick up the browser's timezone + saved preferences and
     // the push key. (Client-side only; the initial render uses the defaults
@@ -97,6 +103,7 @@ pub fn App() -> impl IntoView {
             }
             show_scores.set(load_scores_pref());
             starred.set(load_starred());
+            subscribed.set(load_subs());
             leptos::task::spawn_local(async move {
                 if let Ok(k) = crate::server::get_vapid_key().await {
                     vapid.set(k);
@@ -282,6 +289,51 @@ fn EventScoreToggle(league: String) -> impl IntoView {
     }
 }
 
+/// Bell toggle to subscribe to a whole game (`kind="game"`, value "cs2"/"lol")
+/// or event (`kind="league"`, value = league name). Hidden unless push is on.
+#[component]
+fn SubscribeButton(kind: &'static str, value: String) -> impl IntoView {
+    let subscribed = use_context::<Subscribed>().expect("subscribed context").0;
+    let vapid = use_context::<RwSignal<Option<String>>>().expect("vapid context");
+    let key = format!("{kind}|{value}");
+    let key_active = key.clone();
+    let is_on = Memo::new(move |_| subscribed.with(|s| s.contains(&key_active)));
+    let hidden = move || vapid.with(|v| v.is_none());
+
+    let on_click = move |_| {
+        let now_on = subscribed.with_untracked(|s| s.contains(&key));
+        subscribed.update(|s| {
+            if now_on {
+                s.remove(&key);
+            } else {
+                s.insert(key.clone());
+            }
+        });
+        #[cfg(feature = "hydrate")]
+        {
+            let keys: Vec<String> = subscribed.with_untracked(|s| s.iter().cloned().collect());
+            subscribe_scope(kind.to_string(), value.clone(), !now_on, keys, vapid.get_untracked());
+        }
+        #[cfg(not(feature = "hydrate"))]
+        {
+            let _ = (now_on, &value, vapid);
+        }
+    };
+
+    view! {
+        <button
+            class="bell"
+            class:on=move || is_on.get()
+            class:event-hidden=hidden
+            on:click=on_click
+            title="Notify me about this"
+            aria-label="Subscribe to notifications"
+        >
+            {move || if is_on.get() { "notifying" } else { "notify" }}
+        </button>
+    }
+}
+
 #[cfg(feature = "hydrate")]
 fn detect_tz() -> Option<String> {
     use wasm_bindgen::JsValue;
@@ -324,6 +376,64 @@ fn save_scores_pref(show: bool) {
             let _ = storage.set_item("scores", if show { "1" } else { "0" });
         }
     }
+}
+
+#[cfg(feature = "hydrate")]
+fn save_subs(keys: &[String]) {
+    if let Some(win) = web_sys::window() {
+        if let Ok(Some(storage)) = win.local_storage() {
+            let _ = storage.set_item("subs", &keys.join("\n"));
+        }
+    }
+}
+
+#[cfg(feature = "hydrate")]
+fn load_subs() -> HashSet<String> {
+    let mut out = HashSet::new();
+    if let Some(win) = web_sys::window() {
+        if let Ok(Some(storage)) = win.local_storage() {
+            if let Ok(Some(v)) = storage.get_item("subs") {
+                for part in v.split('\n').filter(|p| !p.is_empty()) {
+                    out.insert(part.to_string());
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Persist the subscribed set and (un)register the game/event subscription.
+#[cfg(feature = "hydrate")]
+fn subscribe_scope(kind: String, value: String, subscribing: bool, keys: Vec<String>, vapid: Option<String>) {
+    save_subs(&keys);
+    let Some(vapid) = vapid else { return };
+    leptos::task::spawn_local(async move {
+        let sub = match pte_subscribe(&vapid).await {
+            Ok(s) => s,
+            Err(_) => return,
+        };
+        let (Some(endpoint), Some(p256dh), Some(auth)) = (
+            reflect_str(&sub, "endpoint"),
+            reflect_str(&sub, "p256dh"),
+            reflect_str(&sub, "auth"),
+        ) else {
+            return;
+        };
+        if subscribing {
+            let _ = crate::server::add_subscription(crate::types::SubscribeReq {
+                sub: crate::types::PushSub {
+                    endpoint,
+                    p256dh,
+                    auth,
+                },
+                kind,
+                value,
+            })
+            .await;
+        } else {
+            let _ = crate::server::remove_subscription(endpoint, kind, value).await;
+        }
+    });
 }
 
 /// Refetch the schedule periodically so a left-open tab stays current.
@@ -407,7 +517,9 @@ fn GameTabs(
         <div class="tabs">
             {mk("All", "all")}
             {mk("CS2", "cs2")}
+            <SubscribeButton kind="game" value="cs2".to_string() />
             {mk("LoL", "lol")}
+            <SubscribeButton kind="game" value="lol".to_string() />
         </div>
     }
 }
@@ -585,6 +697,7 @@ fn render_schedule(s: ScheduleView, show_nav: bool, push: bool) -> impl IntoView
                         .iter()
                         .any(|m| m.team_a.score.is_some() && m.team_b.score.is_some());
                     let league_name = lg.league.clone();
+                    let sub_value = lg.league.clone();
                     let rows = lg
                         .matches
                         .into_iter()
@@ -598,7 +711,10 @@ fn render_schedule(s: ScheduleView, show_nav: bool, push: bool) -> impl IntoView
                                 <h3 class="league-title">
                                     <a href=event_url target="_blank" rel="noreferrer">{header}</a>
                                 </h3>
-                                {score_toggle}
+                                <span class="event-controls">
+                                    <SubscribeButton kind="league" value=sub_value />
+                                    {score_toggle}
+                                </span>
                             </div>
                             <div class="rows">{rows}</div>
                         </div>
@@ -643,6 +759,7 @@ const REMIND_LEAD_MS: i64 = 10 * 60 * 1000;
 struct ReminderInfo {
     id: i64,
     game: Game,
+    league: String,
     notify_at_ms: i64,
     title: String,
     body: String,
@@ -674,6 +791,7 @@ fn MatchRow(m: MatchView, show_bo: bool, push: bool) -> impl IntoView {
     let info = ReminderInfo {
         id: m.id,
         game: m.game,
+        league: m.league.clone(),
         notify_at_ms: m.begin_at_ms - REMIND_LEAD_MS,
         title: format!("{} vs {}", m.team_a.label, m.team_b.label),
         body: format!("{} · {}", m.league, m.clock_label),
@@ -851,6 +969,7 @@ fn persist_and_sync(info: ReminderInfo, starring: bool, ids: Vec<i64>, vapid: Op
                 },
                 match_id: info.id,
                 game: info.game,
+                league: info.league,
                 notify_at_ms: info.notify_at_ms,
                 title: info.title,
                 body: info.body,

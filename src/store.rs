@@ -61,12 +61,25 @@ pub fn open(path: &str) -> rusqlite::Result<Connection> {
             title        TEXT    NOT NULL,
             body         TEXT    NOT NULL,
             url          TEXT    NOT NULL,
+            game         TEXT    NOT NULL DEFAULT '',
+            league       TEXT    NOT NULL DEFAULT '',
             sent         INTEGER NOT NULL DEFAULT 0,
             PRIMARY KEY (endpoint, match_id)
+        );
+        CREATE TABLE IF NOT EXISTS subscriptions (
+            endpoint    TEXT    NOT NULL,
+            p256dh      TEXT    NOT NULL,
+            auth        TEXT    NOT NULL,
+            scope_kind  TEXT    NOT NULL,
+            scope_value TEXT    NOT NULL,
+            lead_ms     INTEGER NOT NULL,
+            PRIMARY KEY (endpoint, scope_kind, scope_value)
         );",
     )?;
-    // Migrate DBs created before the league_url column existed (ignored if present).
+    // Migrate older DBs (ignored if the column already exists).
     let _ = conn.execute("ALTER TABLE matches ADD COLUMN league_url TEXT", []);
+    let _ = conn.execute("ALTER TABLE reminders ADD COLUMN game TEXT NOT NULL DEFAULT ''", []);
+    let _ = conn.execute("ALTER TABLE reminders ADD COLUMN league TEXT NOT NULL DEFAULT ''", []);
     Ok(conn)
 }
 
@@ -201,28 +214,56 @@ pub struct Reminder {
     pub title: String,
     pub body: String,
     pub url: String,
+    /// Game/league the match belongs to (for scope-based cleanup).
+    pub game: String,
+    pub league: String,
 }
 
-/// Add or update a reminder (re-arms `sent`).
+const REMINDER_COLS: &str =
+    "endpoint, p256dh, auth, match_id, notify_at_ms, title, body, url, game, league";
+
+fn reminder_params(r: &Reminder) -> [&dyn rusqlite::ToSql; 10] {
+    [
+        &r.endpoint,
+        &r.p256dh,
+        &r.auth,
+        &r.match_id,
+        &r.notify_at_ms,
+        &r.title,
+        &r.body,
+        &r.url,
+        &r.game,
+        &r.league,
+    ]
+}
+
+/// Add or update a reminder (re-arms `sent`). Used for an explicit star.
 pub fn add_reminder(conn: &Connection, r: &Reminder) -> rusqlite::Result<()> {
     conn.execute(
-        "INSERT INTO reminders
-            (endpoint, p256dh, auth, match_id, notify_at_ms, title, body, url, sent)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 0)
-         ON CONFLICT(endpoint, match_id) DO UPDATE SET
-            p256dh=excluded.p256dh, auth=excluded.auth,
-            notify_at_ms=excluded.notify_at_ms, title=excluded.title,
-            body=excluded.body, url=excluded.url, sent=0",
-        params![
-            r.endpoint,
-            r.p256dh,
-            r.auth,
-            r.match_id,
-            r.notify_at_ms,
-            r.title,
-            r.body,
-            r.url
-        ],
+        &format!(
+            "INSERT INTO reminders ({REMINDER_COLS}, sent)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 0)
+             ON CONFLICT(endpoint, match_id) DO UPDATE SET
+                p256dh=excluded.p256dh, auth=excluded.auth,
+                notify_at_ms=excluded.notify_at_ms, title=excluded.title,
+                body=excluded.body, url=excluded.url, game=excluded.game,
+                league=excluded.league, sent=0"
+        ),
+        &reminder_params(r)[..],
+    )?;
+    Ok(())
+}
+
+/// Insert a reminder only if one doesn't exist (so re-expanding a game/event
+/// subscription never re-arms an already-sent reminder).
+pub fn add_reminder_if_absent(conn: &Connection, r: &Reminder) -> rusqlite::Result<()> {
+    conn.execute(
+        &format!(
+            "INSERT INTO reminders ({REMINDER_COLS}, sent)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 0)
+             ON CONFLICT(endpoint, match_id) DO NOTHING"
+        ),
+        &reminder_params(r)[..],
     )?;
     Ok(())
 }
@@ -251,6 +292,9 @@ pub fn due_reminders(conn: &Connection, now_ms: i64) -> rusqlite::Result<Vec<Rem
             title: r.get(5)?,
             body: r.get(6)?,
             url: r.get(7)?,
+            // Not needed for sending.
+            game: String::new(),
+            league: String::new(),
         })
     })?;
     rows.collect()
@@ -264,12 +308,10 @@ pub fn mark_reminder_sent(conn: &Connection, endpoint: &str, match_id: i64) -> r
     Ok(())
 }
 
-/// Remove every reminder for a subscription (e.g. after a 404/410 from push).
-pub fn delete_subscription(conn: &Connection, endpoint: &str) -> rusqlite::Result<()> {
-    conn.execute(
-        "DELETE FROM reminders WHERE endpoint = ?1",
-        params![endpoint],
-    )?;
+/// Remove all reminders and subscriptions for a dead endpoint (404/410 push).
+pub fn delete_endpoint(conn: &Connection, endpoint: &str) -> rusqlite::Result<()> {
+    conn.execute("DELETE FROM reminders WHERE endpoint = ?1", params![endpoint])?;
+    conn.execute("DELETE FROM subscriptions WHERE endpoint = ?1", params![endpoint])?;
     Ok(())
 }
 
@@ -278,6 +320,77 @@ pub fn prune_reminders(conn: &Connection, cutoff_ms: i64) -> rusqlite::Result<()
     conn.execute(
         "DELETE FROM reminders WHERE notify_at_ms < ?1",
         params![cutoff_ms],
+    )?;
+    Ok(())
+}
+
+// ----- Game/event subscriptions --------------------------------------------
+
+/// A subscription to a whole game or event (expanded into reminders).
+#[derive(Debug, Clone)]
+pub struct Subscription {
+    pub endpoint: String,
+    pub p256dh: String,
+    pub auth: String,
+    /// "game" or "league".
+    pub scope_kind: String,
+    /// "cs2"/"lol" for a game, else the league name.
+    pub scope_value: String,
+    pub lead_ms: i64,
+}
+
+pub fn add_subscription(conn: &Connection, s: &Subscription) -> rusqlite::Result<()> {
+    conn.execute(
+        "INSERT INTO subscriptions (endpoint, p256dh, auth, scope_kind, scope_value, lead_ms)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+         ON CONFLICT(endpoint, scope_kind, scope_value) DO UPDATE SET
+            p256dh=excluded.p256dh, auth=excluded.auth, lead_ms=excluded.lead_ms",
+        params![s.endpoint, s.p256dh, s.auth, s.scope_kind, s.scope_value, s.lead_ms],
+    )?;
+    Ok(())
+}
+
+pub fn remove_subscription(
+    conn: &Connection,
+    endpoint: &str,
+    kind: &str,
+    value: &str,
+) -> rusqlite::Result<()> {
+    conn.execute(
+        "DELETE FROM subscriptions WHERE endpoint=?1 AND scope_kind=?2 AND scope_value=?3",
+        params![endpoint, kind, value],
+    )?;
+    Ok(())
+}
+
+pub fn list_subscriptions(conn: &Connection) -> rusqlite::Result<Vec<Subscription>> {
+    let mut stmt = conn.prepare(
+        "SELECT endpoint, p256dh, auth, scope_kind, scope_value, lead_ms FROM subscriptions",
+    )?;
+    let rows = stmt.query_map([], |r| {
+        Ok(Subscription {
+            endpoint: r.get(0)?,
+            p256dh: r.get(1)?,
+            auth: r.get(2)?,
+            scope_kind: r.get(3)?,
+            scope_value: r.get(4)?,
+            lead_ms: r.get(5)?,
+        })
+    })?;
+    rows.collect()
+}
+
+/// On unsubscribe, drop unsent reminders this endpoint got from that scope.
+pub fn delete_unsent_reminders_by_scope(
+    conn: &Connection,
+    endpoint: &str,
+    kind: &str,
+    value: &str,
+) -> rusqlite::Result<()> {
+    let col = if kind == "game" { "game" } else { "league" };
+    conn.execute(
+        &format!("DELETE FROM reminders WHERE endpoint=?1 AND sent=0 AND {col}=?2"),
+        params![endpoint, value],
     )?;
     Ok(())
 }

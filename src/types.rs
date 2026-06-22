@@ -150,11 +150,22 @@ pub struct ReminderReq {
     pub sub: PushSub,
     pub match_id: i64,
     pub game: Game,
+    pub league: String,
     /// When to notify (unix ms) — typically match start minus the lead time.
     pub notify_at_ms: i64,
     pub title: String,
     pub body: String,
     pub url: String,
+}
+
+/// Subscribe/unsubscribe to a whole game or event.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SubscribeReq {
+    pub sub: PushSub,
+    /// "game" or "league".
+    pub kind: String,
+    /// "cs2"/"lol" for a game, else the league name.
+    pub value: String,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
