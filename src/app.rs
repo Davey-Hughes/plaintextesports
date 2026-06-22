@@ -1144,13 +1144,16 @@ fn Bracket(rounds: Vec<BracketRound>, tournament_id: i64, bracket_only: bool) ->
                     // the box still reveals on click (the link stops that
                     // propagation). The detail page gates its own score, so this
                     // never spoils. TBD/demo matches (no id) stay plain text.
+                    // Both names share one title and highlight together (via
+                    // `:has` in CSS) so they read as a single link to the match.
+                    let link_title = format!("Open the {ta} vs {tb} match page");
                     let team_cell = move |name: String| {
                         if mid > 0 {
                             view! {
                                 <a
                                     class="bk-team bk-team-link"
                                     href=format!("/match/{mid}")
-                                    title="Open match page"
+                                    title=link_title.clone()
                                     on:click=move |e: leptos::ev::MouseEvent| e.stop_propagation()
                                 >
                                     {name}
