@@ -30,8 +30,10 @@ with an allowlist/denylist) are shown.
   is the fallback used for the first server render / non-JS clients.
 - Time format is toggleable **24h / 12h** (default 24h), remembered in
   `localStorage`. Each league/event gets a stable color, and can be filtered.
-- Each event header links to its official site when PandaScore provides one,
-  otherwise a game-specific Liquipedia search; match rows link to the official
+- Each event header links to the **exact Liquipedia event page** when it can be
+  resolved (looked up once per event via Liquipedia's search API and cached in
+  SQLite, with validation + fallback so it never regresses to a worse link),
+  else the official site or a Liquipedia search. Match rows link to the official
   stream.
 - With no API token configured, the app serves built-in demo data so the UI is
   fully usable for development.
@@ -72,6 +74,7 @@ cargo test --features ssr # tiering + deserialization tests
 | `POLL_ACTIVE_SECS` | `60` | Poll interval while live/imminent, seconds (min 30) |
 | `UPCOMING_DAYS` | `30` | Days ahead on the homepage (1–60) |
 | `DB_PATH` | `data/cache.db` | SQLite cache path; empty = memory-only |
+| `ENABLE_LIQUIPEDIA` | `true` | Resolve exact event pages via Liquipedia |
 
 ## Deploy (Docker)
 

@@ -12,6 +12,7 @@ use crate::types::{DayGroup, Game, LeagueGroup, MatchStatus, MatchView, Schedule
 use chrono::{DateTime, Datelike, Duration, NaiveDate, TimeZone, Timelike, Utc};
 use chrono_tz::Tz;
 use once_cell::sync::Lazy;
+use std::collections::HashMap;
 use std::sync::RwLock;
 
 struct Snapshot {
@@ -29,6 +30,29 @@ static SNAPSHOT: Lazy<RwLock<Snapshot>> = Lazy::new(|| {
         using_fixture: false,
     })
 });
+
+/// A resolved (or attempted) Liquipedia event link. `url: None` means we looked
+/// and found no confident match (cached so we don't keep re-querying).
+#[derive(Clone)]
+struct EventLink {
+    url: Option<String>,
+    checked_at: DateTime<Utc>,
+}
+
+/// Cache of event-page links keyed by `event_key` (game|league|year). Read on
+/// every render (to_view), written by the poll-time resolver.
+static EVENT_LINKS: Lazy<RwLock<HashMap<String, EventLink>>> =
+    Lazy::new(|| RwLock::new(HashMap::new()));
+
+/// Re-query a "not found" event link only after this many days (catches pages
+/// created after an event starts, without hammering Liquipedia).
+const NEG_TTL_DAYS: i64 = 3;
+/// Cap Liquipedia lookups per poll cycle (the rest resolve next cycle).
+const MAX_RESOLVE_PER_CYCLE: usize = 10;
+
+fn event_key(game: Game, league: &str, year: i32) -> String {
+    format!("{}|{}|{}", game.slug(), league, year)
+}
 
 /// Keep matches whose start is within this many days of "now" in the DB; older
 /// ones are pruned after each poll.
@@ -67,6 +91,15 @@ pub fn spawn_poller() {
                 snap.stale = true; // refreshed by the first live poll
                 snap.using_fixture = false;
                 leptos::logging::log!("loaded {n} matches from cache db");
+            }
+        }
+        // Load cached event-page links.
+        if let Ok(rows) = crate::store::load_event_links(conn) {
+            let mut map = EVENT_LINKS.write().unwrap();
+            for (key, url, checked_at_ms) in rows {
+                let checked_at =
+                    DateTime::from_timestamp_millis(checked_at_ms).unwrap_or_else(Utc::now);
+                map.insert(key, EventLink { url, checked_at });
             }
         }
     }
@@ -120,6 +153,31 @@ pub fn spawn_poller() {
                 fetch_game(&client, &token, Game::Lol, window_end, deep),
             );
             apply_poll(cs_res, lol_res, store.as_mut());
+
+            // Resolve exact Liquipedia links for any new events. The async
+            // lookups hold no DB connection; persistence happens synchronously
+            // after, so the future stays Send.
+            if cfg.resolve_links {
+                let candidates = collect_resolution_candidates();
+                if !candidates.is_empty() {
+                    let mut results: Vec<(String, Option<String>)> = Vec::new();
+                    for c in candidates.into_iter().take(MAX_RESOLVE_PER_CYCLE) {
+                        match crate::liquipedia::resolve_event(&client, c.game, &c.league, c.year)
+                            .await
+                        {
+                            Ok(url) => results.push((c.key, url)),
+                            Err(e) => leptos::logging::log!(
+                                "liquipedia resolve failed ({} {}): {e}",
+                                c.league,
+                                c.year
+                            ),
+                        }
+                        // Respect Liquipedia's API rate limit (~1 req / 2s).
+                        tokio::time::sleep(std::time::Duration::from_millis(2100)).await;
+                    }
+                    apply_resolutions(&results, store.as_mut(), Utc::now());
+                }
+            }
 
             let delay = if active { cfg.active_poll } else { cfg.idle_poll };
             leptos::logging::log!("next poll in {}s (active={active}, deep={deep})", delay.as_secs());
@@ -235,6 +293,77 @@ fn merge_in_memory(
     }
 }
 
+struct Candidate {
+    key: String,
+    game: Game,
+    league: String,
+    year: i32,
+}
+
+/// Distinct events in the snapshot that still need a Liquipedia lookup (unseen,
+/// or a stale "not found"). Pure read of SNAPSHOT + EVENT_LINKS.
+fn collect_resolution_candidates() -> Vec<Candidate> {
+    let now = Utc::now();
+    let snap = SNAPSHOT.read().unwrap();
+    let links = EVENT_LINKS.read().unwrap();
+    let mut seen = std::collections::HashSet::new();
+    let mut out = Vec::new();
+    for m in &snap.matches {
+        let year = m.begin_at.year();
+        let key = event_key(m.game, &m.league, year);
+        if !seen.insert(key.clone()) {
+            continue;
+        }
+        let needs = match links.get(&key) {
+            None => true,
+            Some(e) => e.url.is_none() && (now - e.checked_at) > Duration::days(NEG_TTL_DAYS),
+        };
+        if needs {
+            out.push(Candidate {
+                key,
+                game: m.game,
+                league: m.league.clone(),
+                year,
+            });
+        }
+    }
+    out
+}
+
+/// Persist resolved links to the in-memory cache and (if present) SQLite.
+fn apply_resolutions(
+    results: &[(String, Option<String>)],
+    store: Option<&mut rusqlite::Connection>,
+    now: DateTime<Utc>,
+) {
+    if results.is_empty() {
+        return;
+    }
+    {
+        let mut links = EVENT_LINKS.write().unwrap();
+        for (key, url) in results {
+            links.insert(
+                key.clone(),
+                EventLink {
+                    url: url.clone(),
+                    checked_at: now,
+                },
+            );
+        }
+    }
+    if let Some(conn) = store {
+        for (key, url) in results {
+            if let Err(e) =
+                crate::store::set_event_link(conn, key, url.as_deref(), now.timestamp_millis())
+            {
+                leptos::logging::log!("event_link persist failed: {e}");
+            }
+        }
+    }
+    let found = results.iter().filter(|(_, u)| u.is_some()).count();
+    leptos::logging::log!("resolved {found}/{} event link(s)", results.len());
+}
+
 // ----- View building -------------------------------------------------------
 
 fn local_day_start(tz: &Tz, date: NaiveDate) -> DateTime<Utc> {
@@ -309,12 +438,27 @@ fn to_view(m: &NormalizedMatch, tz: &Tz, now: DateTime<Utc>, hour24: bool) -> Ma
         team_a,
         team_b,
         stream_url: m.stream_url.clone(),
-        event_url: event_link(m.game, &m.league, m.league_url.as_deref()),
+        event_url: resolved_event_url(m.game, &m.league, m.begin_at, m.league_url.as_deref()),
         begin_at_ms: m.begin_at.timestamp_millis(),
     }
 }
 
-/// Link to an event page: the official site when the API provides one, else a
+/// The event link shown in the UI: a resolved exact Liquipedia page when one is
+/// cached, else the generic fallback (official site or Liquipedia search).
+fn resolved_event_url(
+    game: Game,
+    league: &str,
+    begin_at: DateTime<Utc>,
+    official: Option<&str>,
+) -> String {
+    let key = event_key(game, league, begin_at.year());
+    if let Some(EventLink { url: Some(u), .. }) = EVENT_LINKS.read().unwrap().get(&key) {
+        return u.clone();
+    }
+    event_link(game, league, official)
+}
+
+/// Generic fallback link: the official site when the API provides one, else a
 /// game-specific Liquipedia search built from the event name.
 fn event_link(game: Game, league: &str, official: Option<&str>) -> String {
     if let Some(url) = official.filter(|u| !u.trim().is_empty()) {

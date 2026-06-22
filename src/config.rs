@@ -19,6 +19,8 @@ pub struct Config {
     pub upcoming_days: i64,
     /// Path to the SQLite cache file. Empty string disables persistence.
     pub db_path: String,
+    /// Resolve exact event pages via Liquipedia (default on).
+    pub resolve_links: bool,
 }
 
 impl Config {
@@ -57,6 +59,10 @@ impl Config {
 
         let db_path = get("DB_PATH").unwrap_or_else(|| "data/cache.db".to_string());
 
+        let resolve_links = get("ENABLE_LIQUIPEDIA")
+            .map(|v| !matches!(v.trim().to_ascii_lowercase().as_str(), "0" | "false" | "no"))
+            .unwrap_or(true);
+
         Self {
             token,
             tz,
@@ -64,6 +70,7 @@ impl Config {
             active_poll,
             upcoming_days,
             db_path,
+            resolve_links,
         }
     }
 }
@@ -88,6 +95,14 @@ mod tests {
         assert_eq!(c.active_poll.as_secs(), 60);
         assert_eq!(c.upcoming_days, 30);
         assert_eq!(c.db_path, "data/cache.db");
+        assert!(c.resolve_links);
+    }
+
+    #[test]
+    fn liquipedia_can_be_disabled() {
+        assert!(!cfg(&[("ENABLE_LIQUIPEDIA", "false")]).resolve_links);
+        assert!(!cfg(&[("ENABLE_LIQUIPEDIA", "0")]).resolve_links);
+        assert!(cfg(&[("ENABLE_LIQUIPEDIA", "true")]).resolve_links);
     }
 
     #[test]

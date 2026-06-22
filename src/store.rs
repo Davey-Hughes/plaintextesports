@@ -44,6 +44,11 @@ pub fn open(path: &str) -> rusqlite::Result<Connection> {
         CREATE TABLE IF NOT EXISTS meta (
             key   TEXT PRIMARY KEY,
             value TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS event_links (
+            key           TEXT PRIMARY KEY,
+            url           TEXT,
+            checked_at_ms INTEGER NOT NULL
         );",
     )?;
     // Migrate DBs created before the league_url column existed (ignored if present).
@@ -148,6 +153,29 @@ pub fn upsert_and_prune(
     tx.commit()
 }
 
+/// Load all cached event-link resolutions: `(key, url, checked_at_ms)` where a
+/// `None` url means "resolved, no confident match".
+pub fn load_event_links(conn: &Connection) -> rusqlite::Result<Vec<(String, Option<String>, i64)>> {
+    let mut stmt = conn.prepare("SELECT key, url, checked_at_ms FROM event_links")?;
+    let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?;
+    rows.collect()
+}
+
+/// Upsert one event-link resolution.
+pub fn set_event_link(
+    conn: &Connection,
+    key: &str,
+    url: Option<&str>,
+    checked_at_ms: i64,
+) -> rusqlite::Result<()> {
+    conn.execute(
+        "INSERT INTO event_links (key, url, checked_at_ms) VALUES (?1, ?2, ?3)
+         ON CONFLICT(key) DO UPDATE SET url=excluded.url, checked_at_ms=excluded.checked_at_ms",
+        params![key, url, checked_at_ms],
+    )?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -201,5 +229,27 @@ mod tests {
         assert_eq!(all.len(), 1);
         assert_eq!(all[0].status, MatchStatus::Finished);
         assert_eq!(all[0].team_a.score, Some(2));
+    }
+
+    #[test]
+    fn event_links_roundtrip_and_upsert() {
+        let conn = open(":memory:").unwrap();
+        set_event_link(&conn, "lol|MSI|2026", Some("https://liquipedia.net/x"), 100).unwrap();
+        set_event_link(&conn, "cs2|XSE|2026", None, 200).unwrap();
+        let mut rows = load_event_links(&conn).unwrap();
+        rows.sort_by(|a, b| a.0.cmp(&b.0));
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0], ("cs2|XSE|2026".to_string(), None, 200));
+        assert_eq!(
+            rows[1],
+            (
+                "lol|MSI|2026".to_string(),
+                Some("https://liquipedia.net/x".to_string()),
+                100
+            )
+        );
+        // Upsert updates in place (no duplicate).
+        set_event_link(&conn, "cs2|XSE|2026", Some("https://liquipedia.net/y"), 300).unwrap();
+        assert_eq!(load_event_links(&conn).unwrap().len(), 2);
     }
 }
