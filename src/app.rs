@@ -160,8 +160,8 @@ fn SiteHeader() -> impl IntoView {
                 <A href="/">"plaintextesports"</A>
             </div>
             <div class="toggles">
-                <ScoresToggle />
                 <CalendarPicker />
+                <ScoresToggle />
                 <HourToggle />
                 <ThemeToggle />
             </div>
@@ -843,7 +843,6 @@ fn HomePage() -> impl IntoView {
 
     view! {
         <GameTabs game set_game set_league />
-        <EarlierControl />
         <ScheduleSection resource=schedule league set_league show_nav=false />
     }
 }
@@ -906,6 +905,9 @@ fn EarlierControl() -> impl IntoView {
 }
 
 // ----- Calendar date-range picker ------------------------------------------
+
+/// Outline calendar glyph (Feather-style); `currentColor` follows the button.
+const CALENDAR_ICON: &str = r#"<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="5" width="18" height="16" rx="2"></rect><line x1="3" y1="9" x2="21" y2="9"></line><line x1="8" y1="3" x2="8" y2="6"></line><line x1="16" y1="3" x2="16" y2="6"></line></svg>"#;
 
 fn is_leap(y: i32) -> bool {
     (y % 4 == 0 && y % 100 != 0) || y % 400 == 0
@@ -1067,9 +1069,13 @@ fn CalendarPicker() -> impl IntoView {
 
     view! {
         <span class="cal-wrap">
-            <button class="toggle" on:click=move |_| open.update(|o| *o = !*o) title="Date range">
-                "📅"
-            </button>
+            <button
+                class="toggle cal-toggle"
+                on:click=move |_| open.update(|o| *o = !*o)
+                title="Date range"
+                aria-label="Date range"
+                inner_html=CALENDAR_ICON
+            ></button>
             {move || {
                 open.get()
                     .then(|| {
@@ -1428,6 +1434,9 @@ fn render_schedule(s: ScheduleView, show_nav: bool, push: bool) -> impl IntoView
     view! {
         {nav}
         <div class="status-line">{fixture_note}{stale_note} "loaded " {fetched_label}</div>
+        // The "‹ show earlier days" control sits just above the first day (homepage
+        // only; the single-day view has its own prev/next nav instead).
+        {(!show_nav).then(|| view! { <EarlierControl /> })}
         {day_sections}
         {empty.then(|| view! { <p class="empty">"No tier-1 matches in this window."</p> })}
     }
