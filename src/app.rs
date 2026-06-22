@@ -513,7 +513,7 @@ fn EventSection(league: ReadSignal<String>) -> impl IntoView {
 
 #[component]
 fn ThemeToggle() -> impl IntoView {
-    // Cycle dark → light → oled (pure black). Default to dark; sync to the saved
+    // Cycle dark → oled (pure black) → light. Default to dark; sync to the saved
     // value after mount (client only) — matches the pre-paint shell script.
     let theme = RwSignal::new("dark".to_string());
 
@@ -528,8 +528,8 @@ fn ThemeToggle() -> impl IntoView {
 
     let cycle = move |_| {
         let next = match theme.get_untracked().as_str() {
-            "dark" => "light",
-            "light" => "oled",
+            "dark" => "oled",
+            "oled" => "light",
             _ => "dark",
         };
         theme.set(next.to_string());
