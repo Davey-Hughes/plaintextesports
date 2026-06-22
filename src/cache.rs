@@ -444,26 +444,27 @@ fn apply_past(matches: Vec<NormalizedMatch>, store: Option<&mut rusqlite::Connec
     if matches.is_empty() {
         return;
     }
-    let now = Utc::now();
+    // Persist (best effort), then merge the small batch into the in-memory
+    // snapshot in place — no full table reload (the snapshot is already in sync
+    // from the main poll's load_all this same cycle).
     if let Some(conn) = store {
+        let now = Utc::now();
         if let Err(e) =
             crate::store::upsert_and_prune(conn, &matches, now.timestamp_millis(), cutoff_ms)
         {
             leptos::logging::log!("past write failed: {e}");
             return;
         }
-        match crate::store::load_all(conn) {
-            Ok(mut all) => {
-                all.sort_by_key(|m| m.begin_at);
-                SNAPSHOT.write().unwrap_or_else(PoisonError::into_inner).matches = all;
-            }
-            Err(e) => leptos::logging::log!("past reload failed: {e}"),
-        }
-    } else {
-        let mut snap = SNAPSHOT.write().unwrap_or_else(PoisonError::into_inner);
-        let merged = merge_matches(&snap.matches, matches, &[], cutoff_ms);
-        snap.matches = merged;
     }
+    let replaced: std::collections::HashSet<(i64, Game)> =
+        matches.iter().map(|m| (m.id, m.game)).collect();
+    let mut snap = SNAPSHOT.write().unwrap_or_else(PoisonError::into_inner);
+    snap.matches.retain(|m| {
+        !replaced.contains(&(m.id, m.game)) && m.begin_at.timestamp_millis() >= cutoff_ms
+    });
+    snap.matches
+        .extend(matches.into_iter().filter(|m| m.begin_at.timestamp_millis() >= cutoff_ms));
+    snap.matches.sort_by_key(|m| m.begin_at);
 }
 
 /// How often to re-fetch a past day's scores, by age in whole days vs today
@@ -1099,13 +1100,15 @@ fn demo_event_info(league: &str) -> EventInfo {
         BracketRound {
             title: "Semifinals".to_string(),
             matches: vec![
+                // One played, one decided-but-not-yet-played (names only).
                 bm(t[0], t[2], Some(1), Some(2), "b"),
-                bm(t[5], t[6], Some(2), Some(1), "a"),
+                bm(t[5], t[6], None, None, ""),
             ],
         },
         BracketRound {
+            // Participants not decided yet → stays locked/hidden.
             title: "Final".to_string(),
-            matches: vec![bm(t[2], t[5], None, None, "")],
+            matches: vec![bm("TBD", "TBD", None, None, "")],
         },
     ];
     let row = |rank, team: &str, w, l, gw, gl| StandingRow {
