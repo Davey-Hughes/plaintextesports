@@ -123,6 +123,7 @@ pub fn App() -> impl IntoView {
                     <Routes fallback=|| view! { <p class="empty">"Page not found."</p> }>
                         <Route path=StaticSegment("") view=HomePage />
                         <Route path=(StaticSegment("day"), ParamSegment("date")) view=DayPage />
+                        <Route path=StaticSegment("about") view=AboutPage />
                     </Routes>
                 </main>
                 <SiteFooter />
@@ -152,6 +153,8 @@ fn SiteFooter() -> impl IntoView {
     let site = Resource::new(|| (), |()| async { get_site().await });
     view! {
         <footer class="footer">
+            <A href="/about">"about"</A>
+            <span class="sep">" · "</span>
             <span>"tier-1 cs2 + lol schedules"</span>
             <span class="sep">" · "</span>
             <span>"data via PandaScore"</span>
@@ -180,6 +183,78 @@ fn SiteFooter() -> impl IntoView {
                 }}
             </Suspense>
         </footer>
+    }
+}
+
+#[component]
+fn AboutPage() -> impl IntoView {
+    view! {
+        <article class="about">
+            <h1>"about"</h1>
+            <p>
+                "plaintextesports is a fast, no-frills schedule for "
+                <strong>"tier-1 Counter-Strike 2 and League of Legends"</strong>
+                " — only the top events, no lower-tier noise. Match times are shown in your "
+                "own timezone, and your light/dark and 12h/24h choices are remembered."
+            </p>
+
+            <h2>"seeing scores"</h2>
+            <p>
+                "Scores are hidden by default so you can browse finished matches without "
+                "spoilers. There are two ways to reveal them:"
+            </p>
+            <ul>
+                <li>
+                    "Click a match's " <span class="kbd">"Final"</span>
+                    " label to reveal just that match's score (click again to hide it)."
+                </li>
+                <li>
+                    "Use the " <span class="kbd">"show scores"</span>
+                    " toggle at the top to reveal every score at once."
+                </li>
+            </ul>
+
+            <h2>"getting notifications"</h2>
+            <p>
+                "You can get a browser notification shortly before a match starts. Tap a "
+                "star to follow something; the first time, your browser will ask permission "
+                "to show notifications."
+            </p>
+            <ul>
+                <li>
+                    <span class="kbd">"☆"</span>
+                    " on a match — remind me about just this match."
+                </li>
+                <li>
+                    <span class="kbd">"☆"</span>
+                    " next to a game tab (CS2 / LoL) — notify me about every match in that game."
+                </li>
+                <li>
+                    <span class="kbd">"☆"</span>
+                    " in an event's header — notify me about every match in that event."
+                </li>
+            </ul>
+            <p>
+                "A filled " <span class="kbd">"★"</span>
+                " means you're following it. Game and event subscriptions automatically "
+                "include matches added to that game or event later — you don't need to "
+                "re-subscribe. (If you don't see any stars, notifications aren't enabled "
+                "on this instance.)"
+            </p>
+
+            <h2>"about the data"</h2>
+            <p>
+                "Schedules come from PandaScore and refresh in the background. "
+                "A " <span class="kbd">"LIVE"</span>
+                " badge is inferred (a match has started but isn't finished); exact live "
+                "scores aren't available on the free data tier, so they fill in shortly "
+                "after a match ends."
+            </p>
+
+            <p class="about-back">
+                <A href="/">"← back to the schedule"</A>
+            </p>
+        </article>
     }
 }
 
