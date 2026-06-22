@@ -19,6 +19,8 @@ pub struct Config {
     pub upcoming_days: i64,
     /// Path to the SQLite cache file. Empty string disables persistence.
     pub db_path: String,
+    /// Force demo/fixture data, ignoring the token and any cached DB data.
+    pub demo: bool,
     /// Resolve exact event pages via Liquipedia (default on).
     pub resolve_links: bool,
     /// VAPID keys for Web Push (base64url public/private + a contact subject).
@@ -74,6 +76,9 @@ impl Config {
 
         let db_path = get("DB_PATH").unwrap_or_else(|| "data/cache.db".to_string());
 
+        let demo = get("DEMO")
+            .is_some_and(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"));
+
         let resolve_links = get("ENABLE_LIQUIPEDIA")
             .map(|v| !matches!(v.trim().to_ascii_lowercase().as_str(), "0" | "false" | "no"))
             .unwrap_or(true);
@@ -90,6 +95,7 @@ impl Config {
             active_poll,
             upcoming_days,
             db_path,
+            demo,
             resolve_links,
             vapid_public,
             vapid_private,
@@ -119,6 +125,15 @@ mod tests {
         assert_eq!(c.upcoming_days, 30);
         assert_eq!(c.db_path, "data/cache.db");
         assert!(c.resolve_links);
+        assert!(!c.demo);
+    }
+
+    #[test]
+    fn demo_flag() {
+        assert!(cfg(&[("DEMO", "1")]).demo);
+        assert!(cfg(&[("DEMO", "true")]).demo);
+        assert!(!cfg(&[("DEMO", "0")]).demo);
+        assert!(!cfg(&[]).demo);
     }
 
     #[test]
