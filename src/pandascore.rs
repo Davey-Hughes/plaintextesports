@@ -254,25 +254,102 @@ async fn get_segment(
     Ok(parse_and_filter(game, &body)?)
 }
 
-/// Fetch tier-1 matches for one game: upcoming (required) plus best-effort
-/// running and recent finished. Errors on the optional segments are logged and
-/// swallowed so a free-tier 403 on `/running` or `/past` doesn't sink the poll.
-pub async fn fetch_game(client: &reqwest::Client, token: &str, game: Game) -> FetchResult {
+/// Matches per page (PandaScore's maximum).
+const PER_PAGE: usize = 100;
+/// Safety cap on pages fetched in a single deep scan.
+const DEEP_MAX_PAGES: u32 = 30;
+
+/// Fetch one page of the upcoming feed as raw (pre-filter) matches, so the
+/// caller can see the page's latest `begin_at` even when every match on it is
+/// filtered out as low-tier.
+async fn get_upcoming_page(
+    client: &reqwest::Client,
+    token: &str,
+    game: Game,
+    page: u32,
+) -> Result<Vec<RawMatch>, DynError> {
+    let url = format!("{BASE_URL}/{}/matches/upcoming", game_path(game));
+    let page = page.to_string();
+    let body = client
+        .get(&url)
+        .bearer_auth(token)
+        .query(&[
+            ("per_page", "100"),
+            ("sort", "begin_at"),
+            ("page", page.as_str()),
+        ])
+        .send()
+        .await?
+        .error_for_status()?
+        .text()
+        .await?;
+    Ok(serde_json::from_str(&body)?)
+}
+
+/// Fetch tier-1 matches for one game.
+///
+/// The `upcoming` feed is paginated by start time. When `deep`, it pages until
+/// it passes `window_end` (or a page cap) so a tier-1 event is found even behind
+/// hundreds of low-tier matches; when shallow it fetches only the first page,
+/// keeping frequent "active" polls cheap. A failure on a later page returns the
+/// partial result (the SQLite cache fills the rest in on subsequent polls);
+/// only a first-page failure fails the whole fetch. Running + recent past are
+/// best-effort (often unavailable on the free tier).
+pub async fn fetch_game(
+    client: &reqwest::Client,
+    token: &str,
+    game: Game,
+    window_end: DateTime<Utc>,
+    deep: bool,
+) -> FetchResult {
     use std::collections::HashMap;
 
     let mut by_id: HashMap<i64, NormalizedMatch> = HashMap::new();
 
-    // Upcoming is the core feed; a failure here fails the whole game fetch.
-    for m in get_segment(
-        client,
-        token,
-        game,
-        "upcoming",
-        &[("per_page", "100"), ("sort", "begin_at")],
-    )
-    .await?
-    {
-        by_id.insert(m.id, m);
+    let max_pages = if deep { DEEP_MAX_PAGES } else { 1 };
+    let mut page = 1u32;
+    loop {
+        let raw = match get_upcoming_page(client, token, game, page).await {
+            Ok(r) => r,
+            Err(e) => {
+                if page == 1 {
+                    return Err(e); // core feed failed → whole game fetch fails
+                }
+                leptos::logging::log!(
+                    "pandascore {}/upcoming page {page} failed ({e}); using partial result",
+                    game.slug()
+                );
+                break;
+            }
+        };
+        if raw.is_empty() {
+            break;
+        }
+        let latest = raw.iter().filter_map(parse_time).max();
+        for m in raw
+            .iter()
+            .filter(|m| is_tier_one(game, &tier_input(m)))
+            .filter_map(|m| normalize(game, m))
+        {
+            by_id.insert(m.id, m);
+        }
+        // Stop at a short page (the end), once we've passed the display window,
+        // or at the page cap.
+        let full_page = raw.len() >= PER_PAGE;
+        let past_window = latest.is_some_and(|b| b > window_end);
+        if !full_page || past_window {
+            break;
+        }
+        if page >= max_pages {
+            if deep {
+                leptos::logging::log!(
+                    "pandascore {}/upcoming hit {max_pages}-page cap; window may be truncated",
+                    game.slug()
+                );
+            }
+            break;
+        }
+        page += 1;
     }
 
     // Running + recent past are best-effort (often unavailable on free tier).

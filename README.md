@@ -14,8 +14,13 @@ with an allowlist/denylist) are shown.
   memory. Page requests read the cache — they never block on the API.
 - Polling is **adaptive**: schedules change slowly (and the free tier has no
   live feed), so it idles at ~20 min and bursts to ~1 min only while a match is
-  live or starts within ~15 min, to catch final scores/status. This stays far
-  under the free tier's 1,000 req/hr limit.
+  live or starts within ~15 min, to catch final scores/status.
+- Fetching is **depth-aware**: the idle cadence does a *deep scan*, paginating
+  the upcoming feed across the whole `UPCOMING_DAYS` window so a tier-1 event is
+  found even behind hundreds of low-tier matches; frequent active polls fetch
+  only the first page. A rate-limited or failed later page returns a partial
+  result and the SQLite cache fills the rest in on the next poll. All of this
+  stays far under the free tier's 1,000 req/hr limit.
 - Matches are also persisted to a small **SQLite** database (`DB_PATH`), keyed by
   `(id, game)` and upserted each poll with a 2-day retention window. On restart
   the app serves the last-known data instantly (no re-fetch burst), and a match
@@ -59,7 +64,7 @@ cargo test --features ssr # tiering + deserialization tests
 | `DISPLAY_TZ` | `America/Los_Angeles` | IANA tz for times + day grouping |
 | `POLL_INTERVAL_SECS` | `1200` | Idle poll interval, seconds (min 60) |
 | `POLL_ACTIVE_SECS` | `60` | Poll interval while live/imminent, seconds (min 30) |
-| `UPCOMING_DAYS` | `7` | Days ahead on the homepage |
+| `UPCOMING_DAYS` | `30` | Days ahead on the homepage (1–60) |
 | `DB_PATH` | `data/cache.db` | SQLite cache path; empty = memory-only |
 
 ## Deploy (Docker)
