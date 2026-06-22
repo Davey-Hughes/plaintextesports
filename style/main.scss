@@ -225,17 +225,22 @@ a {
   margin: 0.2rem 0 1rem;
 }
 
-// "Show earlier days" / active-range bar above the schedule.
+// "Show earlier days" / active-range bar — sits just above the first day.
 .history-bar {
   display: flex;
   align-items: baseline;
   gap: 0.8rem;
-  margin: 0.2rem 0 0.4rem;
+  margin: 1.5rem 0 0.2rem;
   font-size: 12px;
 
   .history-label {
     color: var(--muted);
   }
+}
+
+// Pull the first day up close to the history bar above it.
+.history-bar + .day {
+  margin-top: 0.3rem;
 }
 
 // A link-styled inline button (no border/background).
@@ -750,9 +755,23 @@ a {
 }
 
 .detail-meta {
+  display: flex;
+  align-items: center;
+  gap: 0.8rem;
   color: var(--muted);
   font-size: 12px;
   margin-bottom: 1.2rem;
+}
+
+.detail-hidden {
+  color: var(--muted);
+  font-size: 13px;
+  margin: 1.4rem 0;
+
+  em {
+    color: var(--fg);
+    font-style: normal;
+  }
 }
 
 .detail-section {
@@ -764,14 +783,29 @@ a {
   margin-top: 2rem;
 }
 
+.section-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.8rem;
+  margin: 0 0 0.5rem;
+  padding-bottom: 0.2rem;
+  border-bottom: 1px solid var(--border);
+}
+
 .section-title {
   font-size: 13px;
   text-transform: uppercase;
   letter-spacing: 0.04em;
   color: var(--fg);
-  margin: 0 0 0.5rem;
-  padding-bottom: 0.2rem;
-  border-bottom: 1px solid var(--border);
+  margin: 0;
+}
+
+// Placeholder shown when a section's results are hidden.
+.section-hidden {
+  color: var(--muted);
+  font-size: 12px;
+  margin: 0.3rem 0;
 }
 
 .streams {
@@ -849,7 +883,10 @@ a {
 }
 
 .bk-round-title {
-  text-align: center;
+  display: flex;
+  align-items: baseline;
+  justify-content: center;
+  gap: 0.5rem;
   color: var(--muted);
   font-size: 11px;
   text-transform: uppercase;
@@ -904,6 +941,11 @@ a {
   &.win .bk-team {
     color: var(--win);
     font-weight: 700;
+  }
+
+  // A round whose results are still hidden.
+  &.bk-hidden .bk-team {
+    color: var(--muted);
   }
 }
 

@@ -66,6 +66,12 @@ struct ShowScores(RwSignal<bool>);
 #[derive(Clone, Copy)]
 struct RevealedMatches(RwSignal<HashSet<i64>>);
 
+/// Revealed standings/bracket-round sections, keyed by `"st:<tid>"` /
+/// `"bk:<tid>:<round>"` so reveal state is per-round and shared by every page
+/// that shows the same tournament's bracket.
+#[derive(Clone, Copy)]
+struct RevealedSections(RwSignal<HashSet<String>>);
+
 /// Set of "kind|value" scopes the user is subscribed to (game/event reminders).
 #[derive(Clone, Copy)]
 struct Subscribed(RwSignal<HashSet<String>>);
@@ -94,6 +100,7 @@ pub fn App() -> impl IntoView {
     // Spoiler control: a global reveal + a per-match reveal set.
     let show_scores = RwSignal::new(false);
     let revealed = RwSignal::new(HashSet::<i64>::new());
+    let sections = RwSignal::new(HashSet::<String>::new());
     let subscribed = RwSignal::new(HashSet::<String>::new());
     // History views: a calendar-selected range, and the "earlier days" expansion.
     let range = RwSignal::new(None::<(String, String)>);
@@ -104,6 +111,7 @@ pub fn App() -> impl IntoView {
     provide_context(vapid);
     provide_context(ShowScores(show_scores));
     provide_context(RevealedMatches(revealed));
+    provide_context(RevealedSections(sections));
     provide_context(Subscribed(subscribed));
     provide_context(DateRange(range));
     provide_context(EarlierDays(earlier));
@@ -123,6 +131,8 @@ pub fn App() -> impl IntoView {
             show_scores.set(load_scores_pref());
             starred.set(load_starred());
             subscribed.set(load_subs());
+            revealed.set(load_revealed());
+            sections.set(load_sections());
             range.set(load_range());
             leptos::task::spawn_local(async move {
                 if let Ok(k) = crate::server::get_vapid_key().await {
@@ -323,10 +333,6 @@ fn detail_view(d: MatchDetail) -> impl IntoView {
         ..
     } = d;
     let m = match_view.expect("found implies match_view");
-    let score = match (m.team_a.score, m.team_b.score) {
-        (Some(a), Some(b)) => format!("{a} – {b}"),
-        _ => "vs".to_string(),
-    };
     let status_label = match m.status {
         MatchStatus::Live => "LIVE",
         MatchStatus::Finished => "Final",
@@ -343,20 +349,76 @@ fn detail_view(d: MatchDetail) -> impl IntoView {
     .filter(|s| !s.is_empty())
     .collect::<Vec<_>>()
     .join(" · ");
-    let win_a = m.team_a.winner;
-    let win_b = m.team_b.winner;
+
+    let mid = m.id;
+    let (sa, sb) = (m.team_a.score, m.team_b.score);
+    let has_score = sa.is_some() && sb.is_some();
+    let (win_a, win_b) = (m.team_a.winner, m.team_b.winner);
+    let (team_a, team_b) = (m.team_a.label, m.team_b.label);
+    let tid = event.tournament_id;
+    let standings = event.standings;
+    let rounds = event.rounds;
+
+    // Scores/standings/bracket are spoilers: reveal when the global toggle is on
+    // or this match was individually revealed (persisted, shared with the list).
+    let global = use_context::<ShowScores>().map(|s| s.0);
+    let revealed = use_context::<RevealedMatches>().map(|r| r.0);
+    let reveal = Memo::new(move |_| {
+        global.is_some_and(|g| g.get())
+            || revealed.is_some_and(|r| r.with(|set| set.contains(&mid)))
+    });
+    // Per-match reveal button (hidden when the global toggle already shows all).
+    let toggle = move |_| {
+        if let Some(r) = revealed {
+            r.update(|s| {
+                if !s.insert(mid) {
+                    s.remove(&mid);
+                }
+            });
+            #[cfg(feature = "hydrate")]
+            save_revealed(&r.get_untracked());
+        }
+    };
+    let toggle_hidden = move || global.is_some_and(|g| g.get());
+
     view! {
         <article class="detail">
             <A href="/">"← schedule"</A>
             <h1 class="detail-title">
-                <span class="detail-team" class:winner=win_a>{m.team_a.label}</span>
-                <span class="detail-score">{score}</span>
-                <span class="detail-team" class:winner=win_b>{m.team_b.label}</span>
+                <span class="detail-team" class:winner=move || reveal.get() && win_a>
+                    {team_a}
+                </span>
+                <span class="detail-score">
+                    {move || {
+                        if reveal.get() && has_score {
+                            format!("{} – {}", sa.unwrap_or(0), sb.unwrap_or(0))
+                        } else {
+                            "vs".to_string()
+                        }
+                    }}
+                </span>
+                <span class="detail-team" class:winner=move || reveal.get() && win_b>
+                    {team_b}
+                </span>
             </h1>
-            <div class="detail-meta">{meta}</div>
+            <div class="detail-meta">
+                <span>{meta}</span>
+                {move || {
+                    (!toggle_hidden())
+                        .then(|| {
+                            view! {
+                                <button class="toggle" on:click=toggle>
+                                    {move || if reveal.get() { "hide scores" } else { "show scores" }}
+                                </button>
+                            }
+                        })
+                }}
+            </div>
             <StreamsList streams=streams />
-            <StandingsTable rows=event.standings />
-            <Bracket rounds=event.rounds />
+            // Standings + bracket self-gate per section (shared, persisted), so
+            // they're always rendered with their own reveal controls.
+            <StandingsTable rows=standings tournament_id=tid />
+            <Bracket rounds=rounds tournament_id=tid />
         </article>
     }
 }
@@ -412,76 +474,168 @@ fn StreamsList(streams: Vec<StreamView>) -> impl IntoView {
     .into_any()
 }
 
+/// Reveal state for a persisted section key (standings / one bracket round),
+/// OR'd with the global "show scores". Returns `(revealed, toggle, toggle-hidden)`
+/// where the toggle is shared across every page showing this same section.
+fn section_reveal(key: String) -> (Memo<bool>, impl Fn(leptos::ev::MouseEvent) + Copy, Memo<bool>) {
+    let global = use_context::<ShowScores>().map(|s| s.0);
+    let sections = use_context::<RevealedSections>().map(|s| s.0);
+    let key = StoredValue::new(key);
+    let revealed = Memo::new(move |_| {
+        global.is_some_and(|g| g.get())
+            || sections.is_some_and(|s| s.with(|set| set.contains(&key.get_value())))
+    });
+    let toggle = move |_: leptos::ev::MouseEvent| {
+        if let Some(s) = sections {
+            let k = key.get_value();
+            s.update(|set| {
+                if !set.remove(&k) {
+                    set.insert(k);
+                }
+            });
+            #[cfg(feature = "hydrate")]
+            save_sections(&s.get_untracked());
+        }
+    };
+    // Hide the per-section toggle when the global toggle already reveals all.
+    let hidden = Memo::new(move |_| global.is_some_and(|g| g.get()));
+    (revealed, toggle, hidden)
+}
+
+/// A small "show"/"hide" button for a section (hidden when the global toggle is on).
 #[component]
-fn StandingsTable(rows: Vec<StandingRow>) -> impl IntoView {
+fn SectionToggle(
+    revealed: Memo<bool>,
+    #[prop(into)] on_toggle: Callback<leptos::ev::MouseEvent>,
+    hidden: Memo<bool>,
+) -> impl IntoView {
+    view! {
+        {move || {
+            (!hidden.get())
+                .then(|| {
+                    view! {
+                        <button class="linkish" on:click=move |e| on_toggle.run(e)>
+                            {move || if revealed.get() { "hide" } else { "show" }}
+                        </button>
+                    }
+                })
+        }}
+    }
+}
+
+#[component]
+fn StandingsTable(rows: Vec<StandingRow>, tournament_id: i64) -> impl IntoView {
     if rows.is_empty() {
         return ().into_any();
     }
-    let body = rows
-        .into_iter()
-        .map(|r| {
-            view! {
-                <tr>
-                    <td class="st-rank">{r.rank}</td>
-                    <td class="st-team">{r.team}</td>
-                    <td class="st-wl">{format!("{}-{}", r.wins, r.losses)}</td>
-                    <td class="st-diff">{format!("{}-{}", r.game_wins, r.game_losses)}</td>
-                </tr>
-            }
-        })
-        .collect_view();
+    let (revealed, toggle, hidden) = section_reveal(format!("st:{tournament_id}"));
     view! {
         <section class="detail-section">
-            <h2 class="section-title">"Standings"</h2>
-            <table class="standings">
-                <thead>
-                    <tr>
-                        <th></th>
-                        <th class="st-team">"Team"</th>
-                        <th>"W-L"</th>
-                        <th>"Maps"</th>
-                    </tr>
-                </thead>
-                <tbody>{body}</tbody>
-            </table>
+            <div class="section-head">
+                <h2 class="section-title">"Standings"</h2>
+                <SectionToggle revealed on_toggle=toggle hidden />
+            </div>
+            {move || {
+                if revealed.get() {
+                    let body = rows
+                        .clone()
+                        .into_iter()
+                        .map(|r| {
+                            view! {
+                                <tr>
+                                    <td class="st-rank">{r.rank}</td>
+                                    <td class="st-team">{r.team}</td>
+                                    <td class="st-wl">{format!("{}-{}", r.wins, r.losses)}</td>
+                                    <td class="st-diff">
+                                        {format!("{}-{}", r.game_wins, r.game_losses)}
+                                    </td>
+                                </tr>
+                            }
+                        })
+                        .collect_view();
+                    view! {
+                        <table class="standings">
+                            <thead>
+                                <tr>
+                                    <th></th>
+                                    <th class="st-team">"Team"</th>
+                                    <th>"W-L"</th>
+                                    <th>"Maps"</th>
+                                </tr>
+                            </thead>
+                            <tbody>{body}</tbody>
+                        </table>
+                    }
+                        .into_any()
+                } else {
+                    view! { <p class="section-hidden">"hidden"</p> }.into_any()
+                }
+            }}
         </section>
     }
     .into_any()
 }
 
 #[component]
-fn Bracket(rounds: Vec<BracketRound>) -> impl IntoView {
+fn Bracket(rounds: Vec<BracketRound>, tournament_id: i64) -> impl IntoView {
     if rounds.is_empty() {
         return ().into_any();
     }
     let cols = rounds
         .into_iter()
-        .map(|r| {
+        .enumerate()
+        .map(|(i, r)| {
+            let (revealed, toggle, hidden) = section_reveal(format!("bk:{tournament_id}:{i}"));
             let ms = r
                 .matches
                 .into_iter()
                 .map(|m| {
-                    let cls_a = if m.winner == "a" { "bk-row win" } else { "bk-row" };
-                    let cls_b = if m.winner == "b" { "bk-row win" } else { "bk-row" };
-                    let sa = m.score_a.map(|s| s.to_string()).unwrap_or_default();
-                    let sb = m.score_b.map(|s| s.to_string()).unwrap_or_default();
+                    let (ta, tb) = (m.team_a, m.team_b);
+                    let (sa, sb) = (m.score_a, m.score_b);
+                    let winner = m.winner;
                     view! {
                         <div class="bk-match">
-                            <div class=cls_a>
-                                <span class="bk-team">{m.team_a}</span>
-                                <span class="bk-score">{sa}</span>
-                            </div>
-                            <div class=cls_b>
-                                <span class="bk-team">{m.team_b}</span>
-                                <span class="bk-score">{sb}</span>
-                            </div>
+                            {move || {
+                                if revealed.get() {
+                                    let cls_a = if winner == "a" { "bk-row win" } else { "bk-row" };
+                                    let cls_b = if winner == "b" { "bk-row win" } else { "bk-row" };
+                                    view! {
+                                        <div class=cls_a>
+                                            <span class="bk-team">{ta.clone()}</span>
+                                            <span class="bk-score">
+                                                {sa.map(|s| s.to_string()).unwrap_or_default()}
+                                            </span>
+                                        </div>
+                                        <div class=cls_b>
+                                            <span class="bk-team">{tb.clone()}</span>
+                                            <span class="bk-score">
+                                                {sb.map(|s| s.to_string()).unwrap_or_default()}
+                                            </span>
+                                        </div>
+                                    }
+                                        .into_any()
+                                } else {
+                                    view! {
+                                        <div class="bk-row bk-hidden">
+                                            <span class="bk-team">"—"</span>
+                                        </div>
+                                        <div class="bk-row bk-hidden">
+                                            <span class="bk-team">"—"</span>
+                                        </div>
+                                    }
+                                        .into_any()
+                                }
+                            }}
                         </div>
                     }
                 })
                 .collect_view();
             view! {
                 <div class="bk-round">
-                    <div class="bk-round-title">{r.title}</div>
+                    <div class="bk-round-title">
+                        <span>{r.title}</span>
+                        <SectionToggle revealed on_toggle=toggle hidden />
+                    </div>
                     <div class="bk-matches">{ms}</div>
                 </div>
             }
@@ -489,7 +643,9 @@ fn Bracket(rounds: Vec<BracketRound>) -> impl IntoView {
         .collect_view();
     view! {
         <section class="detail-section">
-            <h2 class="section-title">"Bracket"</h2>
+            <div class="section-head">
+                <h2 class="section-title">"Bracket"</h2>
+            </div>
             <div class="bracket">{cols}</div>
         </section>
     }
@@ -516,10 +672,11 @@ fn EventSection(league: ReadSignal<String>) -> impl IntoView {
                     .and_then(Result::ok)
                     .filter(|e| !e.is_empty())
                     .map(|e| {
+                        let EventInfo { tournament_id, standings, rounds, .. } = e;
                         view! {
                             <div class="event-extra">
-                                <StandingsTable rows=e.standings />
-                                <Bracket rounds=e.rounds />
+                                <StandingsTable rows=standings tournament_id />
+                                <Bracket rounds=rounds tournament_id />
                             </div>
                         }
                     })
@@ -1487,6 +1644,8 @@ fn MatchRow(m: MatchView, show_bo: bool, push: bool) -> impl IntoView {
                     s.remove(&mid);
                 }
             });
+            #[cfg(feature = "hydrate")]
+            save_revealed(&r.get_untracked());
         }
     };
     let score_noun = if matches!(m.status, MatchStatus::Live) {
@@ -1653,10 +1812,59 @@ fn save_starred(ids: &[i64]) {
 
 #[cfg(feature = "hydrate")]
 fn load_starred() -> HashSet<i64> {
+    load_id_set("starred")
+}
+
+/// Persist the set of individually-revealed match ids, so a match the user has
+/// already peeked at stays revealed across reloads.
+#[cfg(feature = "hydrate")]
+fn save_revealed(ids: &HashSet<i64>) {
+    if let Some(win) = web_sys::window() {
+        if let Ok(Some(storage)) = win.local_storage() {
+            let csv = ids.iter().map(i64::to_string).collect::<Vec<_>>().join(",");
+            let _ = storage.set_item("revealed", &csv);
+        }
+    }
+}
+
+#[cfg(feature = "hydrate")]
+fn load_revealed() -> HashSet<i64> {
+    load_id_set("revealed")
+}
+
+/// Persist revealed standings/bracket sections (newline-separated string keys).
+#[cfg(feature = "hydrate")]
+fn save_sections(keys: &HashSet<String>) {
+    if let Some(win) = web_sys::window() {
+        if let Ok(Some(storage)) = win.local_storage() {
+            let joined = keys.iter().cloned().collect::<Vec<_>>().join("\n");
+            let _ = storage.set_item("sections", &joined);
+        }
+    }
+}
+
+#[cfg(feature = "hydrate")]
+fn load_sections() -> HashSet<String> {
     let mut out = HashSet::new();
     if let Some(win) = web_sys::window() {
         if let Ok(Some(storage)) = win.local_storage() {
-            if let Ok(Some(csv)) = storage.get_item("starred") {
+            if let Ok(Some(v)) = storage.get_item("sections") {
+                for part in v.split('\n').filter(|p| !p.is_empty()) {
+                    out.insert(part.to_string());
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Load a comma-separated set of match ids from local storage.
+#[cfg(feature = "hydrate")]
+fn load_id_set(key: &str) -> HashSet<i64> {
+    let mut out = HashSet::new();
+    if let Some(win) = web_sys::window() {
+        if let Ok(Some(storage)) = win.local_storage() {
+            if let Ok(Some(csv)) = storage.get_item(key) {
                 for part in csv.split(',') {
                     if let Ok(id) = part.trim().parse::<i64>() {
                         out.insert(id);
