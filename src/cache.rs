@@ -540,6 +540,13 @@ fn group_days(views: Vec<MatchView>, tz: &Tz) -> Vec<DayGroup> {
                 .map(|m| m.event_url.clone())
                 .unwrap_or_default();
         }
+        // Keep each game's events together within the day (CS2, then LoL).
+        // Stable sort preserves the time order within a game.
+        day.leagues.sort_by_key(|lg| match lg.matches.first().map(|m| m.game) {
+            Some(Game::Cs2) => 0u8,
+            Some(Game::Lol) => 1,
+            None => 2,
+        });
     }
     days
 }
@@ -853,6 +860,49 @@ mod tests {
         assert_eq!(days[0].leagues[1].league, "LEC");
         assert_eq!(days[0].leagues[1].bo, Some("Bo3".to_string()));
         assert_eq!(days[1].leagues[0].bo, Some("Bo3".to_string()));
+    }
+
+    #[test]
+    fn group_days_keeps_each_game_together() {
+        let ms = |h| {
+            Tz::UTC
+                .with_ymd_and_hms(2026, 6, 21, h, 0, 0)
+                .unwrap()
+                .timestamp_millis()
+        };
+        let mk = |at_ms: i64, game: Game, league: &str| MatchView {
+            id: at_ms,
+            game,
+            league: league.into(),
+            tier: "S".into(),
+            status: MatchStatus::Upcoming,
+            clock_label: String::new(),
+            best_of: "Bo3".into(),
+            team_a: TeamView {
+                label: "A".into(),
+                score: None,
+                winner: false,
+            },
+            team_b: TeamView {
+                label: "B".into(),
+                score: None,
+                winner: false,
+            },
+            stream_url: None,
+            event_url: String::new(),
+            begin_at_ms: at_ms,
+        };
+        // Interleaved by time: LoL, CS2, LoL, CS2.
+        let views = vec![
+            mk(ms(1), Game::Lol, "LCK"),
+            mk(ms(2), Game::Cs2, "IEM"),
+            mk(ms(3), Game::Lol, "LEC"),
+            mk(ms(4), Game::Cs2, "BLAST"),
+        ];
+        let days = group_days(views, &Tz::UTC);
+        let order: Vec<&str> = days[0].leagues.iter().map(|l| l.league.as_str()).collect();
+        // CS2 events first (time order), then LoL events.
+        assert_eq!(order, vec!["IEM", "BLAST", "LCK", "LEC"]);
     }
 
     #[test]
