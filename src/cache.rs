@@ -96,26 +96,42 @@ pub fn spawn_poller() {
             }
         };
 
+        let mut last_deep: Option<DateTime<Utc>> = None;
         loop {
+            let now = Utc::now();
+            let active = {
+                let snap = SNAPSHOT.read().unwrap();
+                is_active_window(&snap.matches, now, Duration::hours(5), Duration::minutes(15))
+            };
+            // Always deep-scan when idle; while active, deep-scan only every
+            // `idle_poll` so a long live event still discovers far-out matches
+            // without paginating the whole window every minute.
+            let deep_interval = Duration::seconds(cfg.idle_poll.as_secs() as i64);
+            let deep = !active || last_deep.is_none_or(|t| now - t >= deep_interval);
+            if deep {
+                last_deep = Some(now);
+            }
+            let window_end = now + Duration::days(cfg.upcoming_days);
+
             // Fetch (network) first, then apply synchronously so we never hold
             // the (non-Sync) DB connection across an await point.
             let (cs_res, lol_res) = tokio::join!(
-                fetch_game(&client, &token, Game::Cs2),
-                fetch_game(&client, &token, Game::Lol),
+                fetch_game(&client, &token, Game::Cs2, window_end, deep),
+                fetch_game(&client, &token, Game::Lol, window_end, deep),
             );
             apply_poll(cs_res, lol_res, store.as_mut());
-            tokio::time::sleep(next_poll_delay(&cfg)).await;
+
+            let delay = if active { cfg.active_poll } else { cfg.idle_poll };
+            leptos::logging::log!("next poll in {}s (active={active}, deep={deep})", delay.as_secs());
+            tokio::time::sleep(delay).await;
         }
     });
 }
 
-/// Choose the next poll delay: the short `active_poll` when any match is live
-/// (started within the last few hours and not finished) or about to start,
-/// otherwise the generous `idle_poll`. This keeps us light during downtime and
-/// responsive around live events without ever approaching the rate limit.
 /// True when any match is live (started within `grace` and not finished) or
-/// starts within `lead`. `grace` bounds how long a match the free tier never
-/// marks "finished" keeps us in the fast cadence.
+/// starts within `lead`. Drives both the fast/slow cadence and shallow/deep
+/// fetch depth. `grace` bounds how long a match the free tier never marks
+/// "finished" keeps us in the fast path.
 fn is_active_window(
     matches: &[NormalizedMatch],
     now: DateTime<Utc>,
@@ -129,17 +145,6 @@ fn is_active_window(
         let imminent = m.begin_at > now && m.begin_at <= now + lead;
         live || imminent
     })
-}
-
-fn next_poll_delay(cfg: &Config) -> std::time::Duration {
-    let now = Utc::now();
-    let active = {
-        let snap = SNAPSHOT.read().unwrap();
-        is_active_window(&snap.matches, now, Duration::hours(5), Duration::minutes(15))
-    };
-    let delay = if active { cfg.active_poll } else { cfg.idle_poll };
-    leptos::logging::log!("next poll in {}s (active={active})", delay.as_secs());
-    delay
 }
 
 /// Persist freshly polled matches (if a store is present) and refresh the

@@ -43,8 +43,8 @@ impl Config {
         let upcoming_days = std::env::var("UPCOMING_DAYS")
             .ok()
             .and_then(|s| s.parse().ok())
-            .filter(|&n| n >= 1 && n <= 31)
-            .unwrap_or(7);
+            .filter(|&n| (1..=60).contains(&n))
+            .unwrap_or(30);
 
         let db_path = std::env::var("DB_PATH").unwrap_or_else(|_| "data/cache.db".to_string());
 
