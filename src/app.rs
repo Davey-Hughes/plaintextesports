@@ -161,6 +161,7 @@ fn SiteHeader() -> impl IntoView {
             </div>
             <div class="toggles">
                 <ScoresToggle />
+                <CalendarPicker />
                 <HourToggle />
                 <ThemeToggle />
             </div>
@@ -904,6 +905,216 @@ fn EarlierControl() -> impl IntoView {
     }
 }
 
+// ----- Calendar date-range picker ------------------------------------------
+
+fn is_leap(y: i32) -> bool {
+    (y % 4 == 0 && y % 100 != 0) || y % 400 == 0
+}
+
+/// Days in month `m` (1-12) of year `y`.
+fn days_in_month(y: i32, m: u32) -> u32 {
+    match m {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        2 => {
+            if is_leap(y) {
+                29
+            } else {
+                28
+            }
+        }
+        _ => 30,
+    }
+}
+
+/// Day of week for a date (0 = Sunday), via Sakamoto's algorithm.
+fn weekday(y: i32, m: u32, d: u32) -> u32 {
+    let t = [0, 3, 2, 5, 0, 3, 5, 1, 4, 6, 2, 4];
+    let yy = if m < 3 { y - 1 } else { y };
+    let w = yy + yy / 4 - yy / 100 + yy / 400 + t[(m - 1) as usize] + d as i32;
+    (w.rem_euclid(7)) as u32
+}
+
+fn month_name(m: u32) -> &'static str {
+    [
+        "January", "February", "March", "April", "May", "June", "July", "August", "September",
+        "October", "November", "December",
+    ]
+    .get(m.saturating_sub(1) as usize)
+    .copied()
+    .unwrap_or("")
+}
+
+/// Today as (year, month, day) in the browser's local date.
+#[cfg(feature = "hydrate")]
+fn today_ymd() -> (i32, u32, u32) {
+    let d = js_sys::Date::new_0();
+    (
+        d.get_full_year() as i32,
+        d.get_month() as u32 + 1,
+        d.get_date() as u32,
+    )
+}
+
+/// A 📅 button that opens a monospace month-grid range picker. Click a start day
+/// then an end day, Apply to filter the schedule to that range.
+#[component]
+fn CalendarPicker() -> impl IntoView {
+    let range = use_context::<DateRange>().expect("range context").0;
+    let earlier = use_context::<EarlierDays>().expect("earlier context").0;
+    let open = RwSignal::new(false);
+    let ym = RwSignal::new((2026i32, 6u32)); // (year, month 1-12); set to today on mount
+    let sel_start = RwSignal::new(None::<String>);
+    let sel_end = RwSignal::new(None::<String>);
+
+    Effect::new(move |_| {
+        #[cfg(feature = "hydrate")]
+        {
+            let (y, m, _) = today_ymd();
+            ym.set((y, m));
+            if let Some((s, e)) = range.get_untracked() {
+                sel_start.set(Some(s));
+                sel_end.set(Some(e));
+            }
+        }
+    });
+
+    let prev_month = move |_| {
+        ym.update(|(y, m)| {
+            if *m == 1 {
+                *m = 12;
+                *y -= 1;
+            } else {
+                *m -= 1;
+            }
+        });
+    };
+    let next_month = move |_| {
+        ym.update(|(y, m)| {
+            if *m == 12 {
+                *m = 1;
+                *y += 1;
+            } else {
+                *m += 1;
+            }
+        });
+    };
+    // First click sets the start; second sets the end (ordered); a third restarts.
+    let pick = move |iso: String| match (sel_start.get_untracked(), sel_end.get_untracked()) {
+        (Some(start), None) => {
+            if iso < start {
+                sel_start.set(Some(iso));
+                sel_end.set(Some(start));
+            } else {
+                sel_end.set(Some(iso));
+            }
+        }
+        _ => {
+            sel_start.set(Some(iso));
+            sel_end.set(None);
+        }
+    };
+    let apply = move |_| {
+        if let (Some(s), Some(e)) = (sel_start.get_untracked(), sel_end.get_untracked()) {
+            earlier.set(0);
+            range.set(Some((s.clone(), e.clone())));
+            #[cfg(feature = "hydrate")]
+            save_range(Some((s, e)));
+            open.set(false);
+        }
+    };
+    let clear = move |_| {
+        sel_start.set(None);
+        sel_end.set(None);
+        earlier.set(0);
+        range.set(None);
+        #[cfg(feature = "hydrate")]
+        save_range(None);
+        open.set(false);
+    };
+
+    let grid = move || {
+        let (y, m) = ym.get();
+        let start = sel_start.get();
+        let end = sel_end.get();
+        let lead = weekday(y, m, 1);
+        let mut cells: Vec<_> = (0..lead)
+            .map(|_| view! { <span class="cal-cell cal-blank"></span> }.into_any())
+            .collect();
+        for day in 1..=days_in_month(y, m) {
+            let iso = format!("{y:04}-{m:02}-{day:02}");
+            let in_range = match (&start, &end) {
+                (Some(s), Some(e)) => iso.as_str() >= s.as_str() && iso.as_str() <= e.as_str(),
+                (Some(s), None) => iso.as_str() == s.as_str(),
+                _ => false,
+            };
+            let mut cls = String::from("cal-cell");
+            if in_range {
+                cls.push_str(" in-range");
+            }
+            let on_pick = move |_| pick(iso.clone());
+            cells.push(
+                view! {
+                    <button class=cls on:click=on_pick>
+                        {day.to_string()}
+                    </button>
+                }
+                .into_any(),
+            );
+        }
+        cells
+    };
+
+    view! {
+        <span class="cal-wrap">
+            <button class="toggle" on:click=move |_| open.update(|o| *o = !*o) title="Date range">
+                "📅"
+            </button>
+            {move || {
+                open.get()
+                    .then(|| {
+                        view! {
+                            <div class="calendar">
+                                <div class="cal-head">
+                                    <button class="cal-nav" on:click=prev_month>
+                                        "‹"
+                                    </button>
+                                    <span class="cal-title">
+                                        {move || {
+                                            let (y, m) = ym.get();
+                                            format!("{} {y}", month_name(m))
+                                        }}
+                                    </span>
+                                    <button class="cal-nav" on:click=next_month>
+                                        "›"
+                                    </button>
+                                </div>
+                                <div class="cal-grid">
+                                    <span class="cal-dow">"Su"</span>
+                                    <span class="cal-dow">"Mo"</span>
+                                    <span class="cal-dow">"Tu"</span>
+                                    <span class="cal-dow">"We"</span>
+                                    <span class="cal-dow">"Th"</span>
+                                    <span class="cal-dow">"Fr"</span>
+                                    <span class="cal-dow">"Sa"</span>
+                                    {grid}
+                                </div>
+                                <div class="cal-actions">
+                                    <button class="linkish" on:click=apply>
+                                        "apply"
+                                    </button>
+                                    <button class="linkish" on:click=clear>
+                                        "clear"
+                                    </button>
+                                </div>
+                            </div>
+                        }
+                    })
+            }}
+        </span>
+    }
+}
+
 #[derive(Params, PartialEq, Clone)]
 struct DayParams {
     date: String,
@@ -1542,6 +1753,17 @@ mod tests {
         assert_eq!(a, league_color_class("Mid-Season Invitational"));
         let n: u32 = a.strip_prefix("lc-").unwrap().parse().unwrap();
         assert!(n < LEAGUE_COLORS);
+    }
+
+    #[test]
+    fn calendar_date_math() {
+        // 2026-06-21 is a Sunday (0); 2026-06-01 is a Monday (1).
+        assert_eq!(weekday(2026, 6, 21), 0);
+        assert_eq!(weekday(2026, 6, 1), 1);
+        assert_eq!(days_in_month(2026, 6), 30);
+        assert_eq!(days_in_month(2026, 2), 28);
+        assert_eq!(days_in_month(2024, 2), 29);
+        assert_eq!(month_name(6), "June");
     }
 
     #[test]

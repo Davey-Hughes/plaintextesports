@@ -254,6 +254,94 @@ a {
   }
 }
 
+// Calendar date-range picker (popover under the 📅 toggle).
+.cal-wrap {
+  position: relative;
+  display: inline-flex;
+}
+
+.calendar {
+  position: absolute;
+  top: 100%;
+  right: 0;
+  z-index: 20;
+  margin-top: 0.3rem;
+  padding: 0.6rem;
+  background: var(--card-bg);
+  border: 1px solid var(--border);
+  font-size: 12px;
+  width: max-content;
+}
+
+.cal-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 0.4rem;
+
+  .cal-title {
+    color: var(--fg);
+    font-weight: 600;
+  }
+}
+
+.cal-nav {
+  background: none;
+  border: 1px solid var(--border);
+  color: var(--muted);
+  font: inherit;
+  cursor: pointer;
+  padding: 0 0.4rem;
+  line-height: 1.4;
+
+  &:hover {
+    color: var(--fg);
+    border-color: var(--fg);
+  }
+}
+
+.cal-grid {
+  display: grid;
+  grid-template-columns: repeat(7, 2em);
+  gap: 1px;
+  text-align: center;
+}
+
+.cal-dow {
+  color: var(--muted);
+  font-size: 11px;
+  padding: 0.2rem 0;
+}
+
+.cal-cell {
+  background: none;
+  border: none;
+  color: var(--fg);
+  font: inherit;
+  padding: 0.25rem 0;
+  cursor: pointer;
+
+  &:hover {
+    background: var(--border);
+  }
+
+  &.in-range {
+    background: var(--accent);
+    color: var(--bg);
+  }
+}
+
+.cal-blank {
+  visibility: hidden;
+}
+
+.cal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.8rem;
+  margin-top: 0.5rem;
+}
+
 .day-nav {
   display: flex;
   align-items: center;
