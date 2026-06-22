@@ -23,6 +23,27 @@ pub async fn get_schedule(
     }
 }
 
+/// Schedule for an inclusive date range ("YYYY-MM-DD" .. "YYYY-MM-DD"). Backs the
+/// "show earlier days" view and the calendar range picker.
+#[server(GetRange, "/api")]
+pub async fn get_range(
+    start: String,
+    end: String,
+    game: String,
+    tz: String,
+    hour24: bool,
+) -> Result<ScheduleView, ServerFnError> {
+    #[cfg(feature = "ssr")]
+    {
+        Ok(crate::cache::range_view(&start, &end, &game, &tz, hour24))
+    }
+    #[cfg(not(feature = "ssr"))]
+    {
+        let _ = (start, end, game, tz, hour24);
+        Ok(ScheduleView::default())
+    }
+}
+
 /// Single-day schedule for `date` ("YYYY-MM-DD").
 #[server(GetDay, "/api")]
 pub async fn get_day(
