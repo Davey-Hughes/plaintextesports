@@ -143,7 +143,15 @@ pub fn spawn_sender() {
             expand_subscriptions(&conn);
 
             let now = Utc::now().timestamp_millis();
-            let due = store::due_reminders(&conn, now).unwrap_or_default();
+            let due = match store::due_reminders(&conn, now) {
+                Ok(d) => d,
+                Err(e) => {
+                    // Don't silently treat a read error as "nothing due" — that
+                    // would drop every reminder with no trace. Log and retry next tick.
+                    leptos::logging::log!("push sender: due_reminders failed: {e}");
+                    Vec::new()
+                }
+            };
 
             // Send (async) without holding a DB borrow across awaits.
             let mut outcomes = Vec::with_capacity(due.len());
@@ -152,11 +160,14 @@ pub fn spawn_sender() {
                 outcomes.push((r.endpoint.clone(), r.match_id, outcome));
             }
 
-            // Apply results (sync).
+            // Apply results (sync). Only mark a reminder sent on success; a
+            // transient Failed is left untouched so the next tick retries it
+            // (still bounded by notify_at_ms and the 24h prune).
             for (endpoint, match_id, outcome) in &outcomes {
                 let res = match outcome {
+                    Outcome::Sent => store::mark_reminder_sent(&conn, endpoint, *match_id),
                     Outcome::Gone => store::delete_endpoint(&conn, endpoint),
-                    _ => store::mark_reminder_sent(&conn, endpoint, *match_id),
+                    Outcome::Failed => continue,
                 };
                 if let Err(e) = res {
                     leptos::logging::log!("push sender: db update failed: {e}");
@@ -197,7 +208,9 @@ fn expand_subscriptions(conn: &rusqlite::Connection) {
                 game: seed.game,
                 league: seed.league,
             };
-            let _ = store::add_reminder_if_absent(conn, &r);
+            if let Err(e) = store::add_reminder_if_absent(conn, &r) {
+                leptos::logging::log!("expand_subscriptions: add_reminder_if_absent failed: {e}");
+            }
         }
     }
 }
