@@ -47,6 +47,15 @@
   --c9: #2f7d6b;
 }
 
+// OLED: pure-black background (for OLED displays). Otherwise the dark palette —
+// only the surface colors are overridden; everything else falls through to the
+// `:root` (dark) defaults above.
+:root[data-theme="oled"] {
+  --bg: #000000;
+  --card-bg: #0a0a0a;
+  --border: #262626;
+}
+
 * {
   box-sizing: border-box;
 }
