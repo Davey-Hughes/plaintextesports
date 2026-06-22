@@ -1268,6 +1268,9 @@ fn demo_matches(now: DateTime<Utc>) -> Vec<NormalizedMatch> {
             now - d(day) - h(2), Finished, 3, demo_team(a, Some(2)), demo_team(b, Some(0))));
         id += 1;
     }
+    // Match the live poll path (which loads DB-sorted), so day grouping — which
+    // relies on time order — produces one group per day.
+    out.sort_by_key(|m| m.begin_at);
     out
 }
 
