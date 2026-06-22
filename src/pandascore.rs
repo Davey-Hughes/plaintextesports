@@ -751,6 +751,50 @@ fn build_rounds(raw: &[RawBracketMatch]) -> Vec<BracketRound> {
         }
     }
 
+    // Order matches within each column so the vertical layout lines up with the
+    // connector lines: a later-round match sits centred between the two feeders
+    // it joins, so position `i` in a column must be fed by positions `2i`/`2i+1`
+    // of the previous one. PandaScore returns each round in an arbitrary order,
+    // so within each section walk from the deepest column back, laying out every
+    // column in the order its successor consumes its feeders.
+    let section_cols: Vec<Vec<usize>> = sections
+        .iter()
+        .map(|&sec| {
+            columns
+                .iter()
+                .enumerate()
+                .filter(|(_, (s, _))| *s == sec)
+                .map(|(i, _)| i)
+                .collect()
+        })
+        .collect();
+    for idxs in &section_cols {
+        for w in (0..idxs.len().saturating_sub(1)).rev() {
+            let (cur, next) = (idxs[w], idxs[w + 1]);
+            let cur_ms: Vec<&RawBracketMatch> = columns[cur].1.clone();
+            let next_ms: Vec<&RawBracketMatch> = columns[next].1.clone();
+            let mut ordered: Vec<&RawBracketMatch> = Vec::with_capacity(cur_ms.len());
+            let mut seen: std::collections::HashSet<i64> = std::collections::HashSet::new();
+            for parent in &next_ms {
+                for pid in parent.previous_matches.iter().filter_map(|p| p.match_id) {
+                    if !seen.contains(&pid) {
+                        if let Some(m) = cur_ms.iter().find(|m| m.id == pid) {
+                            seen.insert(pid);
+                            ordered.push(*m);
+                        }
+                    }
+                }
+            }
+            // Any match no successor reached keeps its place, appended in order.
+            for m in &cur_ms {
+                if seen.insert(m.id) {
+                    ordered.push(*m);
+                }
+            }
+            columns[cur].1 = ordered;
+        }
+    }
+
     // Map each match id to its (column_index, position) so feeder edges can be
     // expressed as grid coordinates the UI can resolve without the raw ids. The
     // section ordering keeps every feeder in an earlier column.
@@ -909,5 +953,36 @@ mod tests {
         assert_eq!(ms.len(), 1);
         assert_eq!(ms[0].id, 1);
         assert_eq!(ms[0].begin_at.to_rfc3339(), "2026-07-01T10:00:00+00:00");
+    }
+
+    #[test]
+    fn build_rounds_orders_columns_to_match_feeder_layout() {
+        // Rounds arrive scrambled (final first, semis before quarters, both out
+        // of tree order). The layout must still place each match's feeders at
+        // positions 2i / 2i+1 of the previous column so the connectors line up.
+        let json = r#"[
+          {"id":20,"opponents":[],"previous_matches":[{"match_id":10},{"match_id":11}]},
+          {"id":11,"opponents":[{"opponent":{"acronym":"A1"}},{"opponent":{"acronym":"B1"}}],
+           "previous_matches":[{"match_id":1},{"match_id":2}]},
+          {"id":10,"opponents":[{"opponent":{"acronym":"C1"}},{"opponent":{"acronym":"D1"}}],
+           "previous_matches":[{"match_id":3},{"match_id":4}]},
+          {"id":2,"opponents":[{"opponent":{"acronym":"B1"}},{"opponent":{"acronym":"B2"}}],"previous_matches":[]},
+          {"id":1,"opponents":[{"opponent":{"acronym":"A1"}},{"opponent":{"acronym":"A2"}}],"previous_matches":[]},
+          {"id":4,"opponents":[{"opponent":{"acronym":"D1"}},{"opponent":{"acronym":"D2"}}],"previous_matches":[]},
+          {"id":3,"opponents":[{"opponent":{"acronym":"C1"}},{"opponent":{"acronym":"C2"}}],"previous_matches":[]}
+        ]"#;
+        let raw: Vec<RawBracketMatch> = serde_json::from_str(json).expect("valid json");
+        let rounds = build_rounds(&raw);
+        assert_eq!(rounds.len(), 3, "quarters / semis / final");
+        // The final's feeders are the two semifinals in column order.
+        assert_eq!(rounds[2].matches[0].feeders, vec![(1, 0), (1, 1)]);
+        // Each semifinal's feeders sit at 2i / 2i+1 of the quarterfinal column.
+        for (i, sf) in rounds[1].matches.iter().enumerate() {
+            assert_eq!(sf.feeders, vec![(0, 2 * i), (0, 2 * i + 1)], "semifinal {i}");
+        }
+        // Final.prev = [10, 11] orders the semis [C/D, A/B]; that propagates to
+        // the quarterfinal column so each semifinal sits between its feeders.
+        let qf_a: Vec<&str> = rounds[0].matches.iter().map(|m| m.team_a.as_str()).collect();
+        assert_eq!(qf_a, vec!["C1", "D1", "A1", "B1"]);
     }
 }
