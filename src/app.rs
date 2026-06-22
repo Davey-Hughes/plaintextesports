@@ -1088,51 +1088,53 @@ fn Bracket(rounds: Vec<BracketRound>, tournament_id: i64) -> impl IntoView {
                             class:bk-locked=max == 0
                             on:click=move |_| do_op(BkOp::Series(r, i))
                         >
-                            {move || match stage() {
-                                0 => {
-                                    view! {
-                                        <div class="bk-row bk-hidden">
-                                            <span class="bk-team">"—"</span>
-                                        </div>
-                                        <div class="bk-row bk-hidden">
-                                            <span class="bk-team">"—"</span>
-                                        </div>
+                            <div class="bk-box">
+                                {move || match stage() {
+                                    0 => {
+                                        view! {
+                                            <div class="bk-row bk-hidden">
+                                                <span class="bk-team">"—"</span>
+                                            </div>
+                                            <div class="bk-row bk-hidden">
+                                                <span class="bk-team">"—"</span>
+                                            </div>
+                                        }
+                                            .into_any()
                                     }
-                                        .into_any()
-                                }
-                                1 => {
-                                    view! {
-                                        <div class="bk-row">
-                                            <span class="bk-team">{ta.clone()}</span>
-                                            <span class="bk-score">{dash}</span>
-                                        </div>
-                                        <div class="bk-row">
-                                            <span class="bk-team">{tb.clone()}</span>
-                                            <span class="bk-score">{dash}</span>
-                                        </div>
+                                    1 => {
+                                        view! {
+                                            <div class="bk-row">
+                                                <span class="bk-team">{ta.clone()}</span>
+                                                <span class="bk-score">{dash}</span>
+                                            </div>
+                                            <div class="bk-row">
+                                                <span class="bk-team">{tb.clone()}</span>
+                                                <span class="bk-score">{dash}</span>
+                                            </div>
+                                        }
+                                            .into_any()
                                     }
-                                        .into_any()
-                                }
-                                _ => {
-                                    let cls_a = if winner == "a" { "bk-row win" } else { "bk-row" };
-                                    let cls_b = if winner == "b" { "bk-row win" } else { "bk-row" };
-                                    view! {
-                                        <div class=cls_a>
-                                            <span class="bk-team">{ta.clone()}</span>
-                                            <span class="bk-score">
-                                                {sa.map(|s| s.to_string()).unwrap_or_default()}
-                                            </span>
-                                        </div>
-                                        <div class=cls_b>
-                                            <span class="bk-team">{tb.clone()}</span>
-                                            <span class="bk-score">
-                                                {sb.map(|s| s.to_string()).unwrap_or_default()}
-                                            </span>
-                                        </div>
+                                    _ => {
+                                        let cls_a = if winner == "a" { "bk-row win" } else { "bk-row" };
+                                        let cls_b = if winner == "b" { "bk-row win" } else { "bk-row" };
+                                        view! {
+                                            <div class=cls_a>
+                                                <span class="bk-team">{ta.clone()}</span>
+                                                <span class="bk-score">
+                                                    {sa.map(|s| s.to_string()).unwrap_or_default()}
+                                                </span>
+                                            </div>
+                                            <div class=cls_b>
+                                                <span class="bk-team">{tb.clone()}</span>
+                                                <span class="bk-score">
+                                                    {sb.map(|s| s.to_string()).unwrap_or_default()}
+                                                </span>
+                                            </div>
+                                        }
+                                            .into_any()
                                     }
-                                        .into_any()
-                                }
-                            }}
+                                }}
+                            </div>
                         </div>
                     }
                 })

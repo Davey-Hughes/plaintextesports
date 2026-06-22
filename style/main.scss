@@ -966,7 +966,7 @@ a {
   letter-spacing: 0.03em;
   border-bottom: 1px solid var(--border);
   padding-bottom: 0.15rem;
-  margin-bottom: 0.2rem;
+  margin-bottom: 0.55rem;
 }
 
 .bk-round {
@@ -1009,44 +1009,67 @@ a {
 .bk-matches {
   display: flex;
   flex-direction: column;
-  justify-content: space-around;
   flex: 1;
 }
 
 .bk-match {
   position: relative;
+  // Each match fills an equal vertical slice of the column (content centred), so
+  // the connector lines below line up across rounds by percentage.
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
   margin: 0.35rem 0.8rem;
-  border: 1px solid var(--border);
-  background: var(--card-bg);
   cursor: pointer;
-
-  &:hover {
-    border-color: var(--muted);
-  }
 
   // A TBD match (teams undecided) can't be revealed.
   &.bk-locked {
     cursor: default;
-
-    &:hover {
-      border-color: var(--border);
-    }
-  }
-
-  // Horizontal connector stubs toward the neighbouring rounds.
-  .bk-round:not(:last-child) & {
-    &::after {
-      content: "";
-      position: absolute;
-      right: -0.8rem;
-      top: 50%;
-      width: 0.8rem;
-      border-top: 1px solid var(--border);
-    }
   }
 }
 
-.bk-round:not(:first-child) .bk-match::before {
+// The visible match box; the slice around it carries the connector lines.
+.bk-box {
+  border: 1px solid var(--border);
+  background: var(--card-bg);
+}
+
+.bk-match:not(.bk-locked):hover .bk-box {
+  border-color: var(--muted);
+}
+
+// Bracket connectors. A feeding match sends a line out to the gutter; the two
+// feeders of a pair also drop/raise a vertical line so they join before the next
+// round, where the fed match receives a flat line. A lone feeder (no pair) just
+// sends a flat line straight across.
+.bracket .bk-round:not(:last-child) .bk-match::after {
+  content: "";
+  position: absolute;
+  right: -0.8rem;
+  width: 0.8rem;
+}
+
+.bracket .bk-round:not(:last-child) .bk-match:nth-child(odd):not(:last-child)::after {
+  top: 50%;
+  height: 50%;
+  border-top: 1px solid var(--border);
+  border-right: 1px solid var(--border);
+}
+
+.bracket .bk-round:not(:last-child) .bk-match:nth-child(even)::after {
+  top: 0;
+  height: 50%;
+  border-bottom: 1px solid var(--border);
+  border-right: 1px solid var(--border);
+}
+
+.bracket .bk-round:not(:last-child) .bk-match:nth-child(odd):last-child::after {
+  top: 50%;
+  border-top: 1px solid var(--border);
+}
+
+.bracket .bk-round:not(:first-child) .bk-match::before {
   content: "";
   position: absolute;
   left: -0.8rem;
