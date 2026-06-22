@@ -413,6 +413,24 @@ a {
   align-items: baseline;
   white-space: nowrap;
   min-width: 3.2em;
+
+  // The whole "Final · Bo3" (or "LIVE") cluster reveals this match's score when
+  // clicked. The dotted underline hints it's interactive; the title gives the
+  // full behavior; a solid underline marks it revealed. Status colors are kept
+  // (so LIVE stays green) by underlining rather than recoloring.
+  &.reveal-meta {
+    cursor: pointer;
+    text-decoration: underline dotted;
+    text-underline-offset: 2px;
+
+    &:hover {
+      text-decoration-color: var(--fg);
+    }
+
+    &.on {
+      text-decoration-style: solid;
+    }
+  }
 }
 
 .row-badge {
@@ -426,24 +444,6 @@ a {
   &.final,
   &.canceled {
     color: var(--muted);
-  }
-
-  // A clickable badge ("Final"/"LIVE") that reveals this match's score. The
-  // dotted underline hints it's interactive; the title gives the full behavior.
-  // A solid underline marks it revealed (status color is kept, so LIVE stays
-  // green).
-  &.reveal-badge {
-    cursor: pointer;
-    text-decoration: underline dotted;
-    text-underline-offset: 2px;
-
-    &:hover {
-      text-decoration-color: var(--fg);
-    }
-
-    &.on {
-      text-decoration-style: solid;
-    }
   }
 }
 

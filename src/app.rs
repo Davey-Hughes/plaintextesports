@@ -863,9 +863,9 @@ fn MatchRow(m: MatchView, show_bo: bool, push: bool) -> impl IntoView {
             || revealed.is_some_and(|r| r.with(|set| set.contains(&mid)))
     });
 
-    // A match's score lives behind its badge: click "Final"/"LIVE" to toggle
-    // just this row's score. (Plain badge for score-less rows, e.g. upcoming or
-    // a live match still at the 0-0 placeholder.)
+    // A match's score lives behind its status meta: click the whole "Final · Bo3"
+    // (or "LIVE") cluster to toggle just this row's score. (Plain meta for
+    // score-less rows, e.g. upcoming or a live match still at the 0-0 placeholder.)
     let toggle_reveal = move |ev: leptos::ev::MouseEvent| {
         // Don't let the click fall through to the row's stream link.
         ev.prevent_default();
@@ -885,20 +885,28 @@ fn MatchRow(m: MatchView, show_bo: bool, push: bool) -> impl IntoView {
     };
     let show_title = format!("Show the {score_noun}");
     let hide_title = format!("Hide the {score_noun}");
-    let badge_view = if has {
+    let badge_cls = format!("row-badge {status_class}");
+    let meta_view = if has {
         view! {
             <span
-                class=format!("row-badge {status_class} reveal-badge")
+                class="row-meta reveal-meta"
                 class:on=move || reveal.get()
                 title=move || if reveal.get() { hide_title.clone() } else { show_title.clone() }
                 on:click=toggle_reveal
             >
-                {badge}
+                <span class=badge_cls>{badge}</span>
+                <span class="row-bo">{bo}</span>
             </span>
         }
         .into_any()
     } else {
-        view! { <span class=format!("row-badge {status_class}")>{badge}</span> }.into_any()
+        view! {
+            <span class="row-meta">
+                <span class=badge_cls>{badge}</span>
+                <span class="row-bo">{bo}</span>
+            </span>
+        }
+        .into_any()
     };
 
     let inner = view! {
@@ -918,10 +926,7 @@ fn MatchRow(m: MatchView, show_bo: bool, push: bool) -> impl IntoView {
         <span class="row-team row-b" class:winner=move || reveal.get() && win_b>
             {m.team_b.label}
         </span>
-        <span class="row-meta">
-            {badge_view}
-            <span class="row-bo">{bo}</span>
-        </span>
+        {meta_view}
     };
 
     // The body is the (optional) stream link; `display: contents` lets its
