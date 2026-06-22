@@ -1444,7 +1444,8 @@ fn GameTabs(
     set_game: WriteSignal<String>,
     set_league: WriteSignal<String>,
 ) -> impl IntoView {
-    // Select a game, or toggle back to "all" if it's already the active filter.
+    // "all" is implicit: no active tab means all games. Click a game to filter;
+    // click the active one again to clear back to all.
     let pick = move |value: &'static str| {
         let next = if game.get_untracked() == value {
             "all"
@@ -1454,19 +1455,6 @@ fn GameTabs(
         set_game.set(next.to_string());
         // Reset the event filter: leagues differ per game.
         set_league.set(String::new());
-    };
-    // The "All" tab (no game to subscribe to). `.tab-all` lines its trailing
-    // items up with the chips row below.
-    let plain = move |label: &'static str, value: &'static str| {
-        view! {
-            <button
-                class="tab tab-all"
-                class:active=move || game.get() == value
-                on:click=move |_| pick(value)
-            >
-                {label}
-            </button>
-        }
     };
     // A game filter tab with an embedded ★ that subscribes to the whole game.
     // The label clicks to filter; the ★ clicks to (un)subscribe.
@@ -1483,7 +1471,6 @@ fn GameTabs(
 
     view! {
         <div class="tabs">
-            {plain("All", "all")}
             {with_star("CS2", "cs2")}
             {with_star("LoL", "lol")}
         </div>
@@ -1496,7 +1483,8 @@ fn LeagueChips(
     selected: ReadSignal<String>,
     set_league: WriteSignal<String>,
 ) -> impl IntoView {
-    let all_active = move || selected.get().is_empty();
+    // No active chip means all events (implicit). Click an event to filter; click
+    // the active one again to clear back to all.
     let chips = leagues
         .into_iter()
         .map(|name| {
@@ -1509,7 +1497,6 @@ fn LeagueChips(
                     class=format!("chip {lc}")
                     class:active=is_active
                     on:click=move |_| {
-                        // Click the active event again to clear back to all events.
                         if selected.get_untracked() == click_name {
                             set_league.set(String::new());
                         } else {
@@ -1523,18 +1510,7 @@ fn LeagueChips(
         })
         .collect_view();
 
-    view! {
-        <div class="chips">
-            <button
-                class="chip chip-all"
-                class:active=all_active
-                on:click=move |_| set_league.set(String::new())
-            >
-                "All events"
-            </button>
-            {chips}
-        </div>
-    }
+    view! { <div class="chips">{chips}</div> }
 }
 
 #[component]

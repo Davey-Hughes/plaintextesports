@@ -152,17 +152,6 @@ a {
   }
 }
 
-// "All" / "All events" lead each filter row. They keep their natural width; the
-// trailing margin is empty space sized so the first real filter (CS2 / IEM)
-// lines up across both rows. ("All events" is the wider label, so the narrower
-// "All" gets the larger margin. The labels are fixed, so these are stable.)
-.chip-all {
-  margin-right: 0.4rem;
-}
-
-.tab-all {
-  margin-right: 3.025rem;
-}
 
 // A game filter tab that embeds a subscribe ★. The label and the ★ split the
 // box so each part of it is clickable (filter vs. subscribe).
