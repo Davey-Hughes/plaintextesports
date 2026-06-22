@@ -1,3 +1,7 @@
+// The view tree's deeply-nested types overflow the default trait-solver depth
+// under the release LTO build, so bump it (mirrors the bin's main.rs).
+#![recursion_limit = "512"]
+
 pub mod app;
 pub mod server;
 pub mod types;
