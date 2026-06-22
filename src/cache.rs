@@ -1110,6 +1110,12 @@ fn seed_demo_events(matches: &[NormalizedMatch], now: DateTime<Utc>) {
 
 /// A demo standings table + single-elimination bracket for one event.
 fn demo_event_info(league: &str) -> EventInfo {
+    // Two extra demo events exercising bigger brackets.
+    match league {
+        "ESL One" => return demo_event_large_de(),
+        "PGL Major" => return demo_event_large_se(),
+        _ => {}
+    }
     let lol = matches!(
         league,
         "LCK" | "LEC" | "LPL" | "MSI" | "Worlds" | "LTA" | "First Stand"
@@ -1204,6 +1210,148 @@ fn demo_event_info(league: &str) -> EventInfo {
     }
 }
 
+// Shared builders for the larger demo brackets.
+fn dbm(a: &str, b: &str, sa: Option<i32>, sb: Option<i32>, w: &str, feeders: &[(usize, usize)]) -> BracketMatch {
+    BracketMatch {
+        team_a: a.to_string(),
+        team_b: b.to_string(),
+        score_a: sa,
+        score_b: sb,
+        winner: w.to_string(),
+        feeders: feeders.to_vec(),
+    }
+}
+fn dbr(title: &str, section: &str, matches: Vec<BracketMatch>) -> BracketRound {
+    BracketRound {
+        title: title.to_string(),
+        matches,
+        section: section.to_string(),
+    }
+}
+fn drow(rank: i32, team: &str, w: i32, l: i32, gw: i32, gl: i32) -> StandingRow {
+    StandingRow {
+        rank,
+        team: team.to_string(),
+        wins: w,
+        losses: l,
+        ties: 0,
+        game_wins: gw,
+        game_losses: gl,
+    }
+}
+
+/// A larger CS2 double-elimination demo: 8-team winner's bracket (QF→SF→Final),
+/// a loser's bracket (Round 1→Final) of different width, and the grand final.
+fn demo_event_large_de() -> EventInfo {
+    let rounds = vec![
+        // Winner's bracket.
+        dbr(
+            "Quarterfinals",
+            "upper",
+            vec![
+                dbm("NAVI", "VIT", Some(2), Some(0), "a", &[]),
+                dbm("FaZe", "MOUZ", Some(2), Some(1), "a", &[]),
+                dbm("G2", "SPIRIT", Some(1), Some(2), "b", &[]),
+                dbm("BIG", "NIP", Some(2), Some(0), "a", &[]),
+            ],
+        ),
+        dbr(
+            "Semifinals",
+            "upper",
+            vec![
+                dbm("NAVI", "FaZe", Some(1), Some(2), "b", &[(0, 0), (0, 1)]),
+                dbm("SPIRIT", "BIG", Some(2), Some(0), "a", &[(0, 2), (0, 3)]),
+            ],
+        ),
+        dbr("Final", "upper", vec![dbm("FaZe", "SPIRIT", Some(2), Some(1), "a", &[(1, 0), (1, 1)])]),
+        // Loser's bracket (the quarterfinal losers drop in).
+        dbr(
+            "Round 1",
+            "lower",
+            vec![
+                dbm("VIT", "MOUZ", Some(2), Some(0), "a", &[(0, 0), (0, 1)]),
+                dbm("G2", "NIP", Some(2), Some(1), "a", &[(0, 2), (0, 3)]),
+            ],
+        ),
+        dbr("Final", "lower", vec![dbm("VIT", "G2", Some(2), Some(1), "a", &[(3, 0), (3, 1)])]),
+        // Grand final.
+        dbr("Final", "final", vec![dbm("FaZe", "VIT", Some(3), Some(1), "a", &[(2, 0), (4, 0)])]),
+    ];
+    let standings = vec![
+        drow(1, "FaZe", 3, 0, 8, 2),
+        drow(2, "VIT", 2, 2, 7, 6),
+        drow(3, "SPIRIT", 2, 1, 6, 4),
+        drow(4, "NAVI", 1, 2, 4, 5),
+        drow(5, "G2", 1, 2, 5, 6),
+        drow(6, "BIG", 1, 2, 4, 5),
+        drow(7, "MOUZ", 0, 2, 1, 4),
+        drow(8, "NIP", 0, 2, 2, 4),
+    ];
+    EventInfo {
+        event: "ESL One".to_string(),
+        tournament_id: 0,
+        game: Game::Cs2,
+        standings,
+        rounds,
+    }
+}
+
+/// A larger CS2 single-elimination demo: 16 teams (Round of 16 → QF → SF → Final).
+fn demo_event_large_se() -> EventInfo {
+    let rounds = vec![
+        dbr(
+            "Round of 16",
+            "",
+            vec![
+                dbm("NAVI", "ENCE", Some(2), Some(0), "a", &[]),
+                dbm("VIT", "COL", Some(2), Some(1), "a", &[]),
+                dbm("FaZe", "FUR", Some(2), Some(0), "a", &[]),
+                dbm("MOUZ", "HER", Some(1), Some(2), "b", &[]),
+                dbm("G2", "C9", Some(2), Some(0), "a", &[]),
+                dbm("SPIRIT", "AST", Some(2), Some(1), "a", &[]),
+                dbm("BIG", "TL", Some(0), Some(2), "b", &[]),
+                dbm("NIP", "VP", Some(2), Some(1), "a", &[]),
+            ],
+        ),
+        dbr(
+            "Quarterfinals",
+            "",
+            vec![
+                dbm("NAVI", "VIT", Some(2), Some(1), "a", &[(0, 0), (0, 1)]),
+                dbm("FaZe", "HER", Some(2), Some(0), "a", &[(0, 2), (0, 3)]),
+                dbm("G2", "SPIRIT", Some(1), Some(2), "b", &[(0, 4), (0, 5)]),
+                dbm("TL", "NIP", Some(2), Some(1), "a", &[(0, 6), (0, 7)]),
+            ],
+        ),
+        dbr(
+            "Semifinals",
+            "",
+            vec![
+                dbm("NAVI", "FaZe", Some(1), Some(2), "b", &[(1, 0), (1, 1)]),
+                dbm("SPIRIT", "TL", Some(2), Some(0), "a", &[(1, 2), (1, 3)]),
+            ],
+        ),
+        dbr("Final", "", vec![dbm("FaZe", "SPIRIT", None, None, "", &[(2, 0), (2, 1)])]),
+    ];
+    let standings = vec![
+        drow(1, "FaZe", 3, 1, 8, 4),
+        drow(2, "SPIRIT", 3, 1, 7, 4),
+        drow(3, "NAVI", 2, 1, 5, 3),
+        drow(4, "TL", 2, 1, 4, 3),
+        drow(5, "VIT", 1, 1, 3, 3),
+        drow(6, "G2", 1, 1, 3, 3),
+        drow(7, "HER", 1, 1, 2, 3),
+        drow(8, "NIP", 1, 1, 3, 3),
+    ];
+    EventInfo {
+        event: "PGL Major".to_string(),
+        tournament_id: 0,
+        game: Game::Cs2,
+        standings,
+        rounds,
+    }
+}
+
 // ----- Demo fixture (no token) ---------------------------------------------
 
 fn demo_team(label: &str, score: Option<i64>) -> NormTeam {
@@ -1292,6 +1440,16 @@ fn demo_matches(now: DateTime<Utc>) -> Vec<NormalizedMatch> {
         // CS2 — ESL Pro League: upcoming only.
         demo_match(6, Game::Cs2, "ESL Pro League", "A", now + h(5), Upcoming, 3,
             demo_team("NIP", None), demo_team("BIG", None)),
+        // CS2 — ESL One: a larger double-elimination event.
+        demo_match(30, Game::Cs2, "ESL One", "S", now - m(80), Finished, 3,
+            demo_team("FaZe", Some(2)), demo_team("SPIRIT", Some(1))),
+        demo_match(31, Game::Cs2, "ESL One", "S", now + h(3), Upcoming, 5,
+            demo_team("FaZe", None), demo_team("VIT", None)),
+        // CS2 — PGL Major: a larger single-elimination event (Round of 16+).
+        demo_match(32, Game::Cs2, "PGL Major", "S", now - m(95), Finished, 3,
+            demo_team("NAVI", Some(2)), demo_team("FaZe", Some(1))),
+        demo_match(33, Game::Cs2, "PGL Major", "S", now + h(6), Upcoming, 3,
+            demo_team("SPIRIT", None), demo_team("TL", None)),
         // LoL — LCK: a result + upcoming.
         demo_match(7, Game::Lol, "LCK", "A", now - m(35), Finished, 3,
             demo_team("T1", Some(2)), demo_team("GEN", Some(1))),
