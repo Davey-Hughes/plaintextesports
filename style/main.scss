@@ -300,10 +300,12 @@ a {
 }
 
 // The event-level ★ (in a league header) is larger/bolder than the per-match ★
-// so "follow this whole event" reads as a bigger scope than a single match.
+// so "follow this whole event" reads as a bigger scope than a single match. The
+// left shift keeps it lined up with the (also shifted) per-row ★/bars below.
 .league-head .sub-star {
   font-size: 17px;
   font-weight: 700;
+  transform: translateX(-4px);
 }
 
 // Map each hashed league class to its palette color.
@@ -375,7 +377,7 @@ a {
   width: 2px;
   margin-block: -0.22rem;
   // Match the ☆'s shift so both line up with the event-header ★.
-  transform: translateX(-3.5px);
+  transform: translateX(-7.5px);
 
   &.live {
     background: var(--accent);
@@ -399,7 +401,7 @@ a {
   // small left shift lines the column up with the larger event-header ★ above.
   justify-self: center;
   text-align: center;
-  transform: translateX(-3.5px);
+  transform: translateX(-7.5px);
   background: none;
   border: none;
   padding: 0;
