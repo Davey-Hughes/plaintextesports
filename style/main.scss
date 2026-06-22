@@ -302,6 +302,16 @@ a {
     border-left-color: var(--accent);
   }
 
+  // Finished matches get a muted side bar (distinct from the green live bar),
+  // and their time/teams dim slightly since the match is over.
+  &.final {
+    border-left-color: var(--muted);
+
+    .row-time {
+      opacity: 0.75;
+    }
+  }
+
   // With a ★ button, prepend a fixed column for it (same width whether it's a
   // button or the empty placeholder, so rows stay aligned).
   &.has-star {
