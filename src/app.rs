@@ -771,14 +771,23 @@ fn apply_stage(set: &mut HashSet<String>, bn: &str, bs: &str, stage: u8) {
     }
 }
 
+/// Whether a bracket match has actually been played: it has both scores and
+/// either a decided winner or a non-zero score. A 0–0 with no winner is an
+/// unplayed/upcoming match, not a real result, so it never gets a score stage.
+fn bm_played(m: &BracketMatch) -> bool {
+    m.score_a.is_some()
+        && m.score_b.is_some()
+        && (!m.winner.is_empty() || m.score_a != Some(0) || m.score_b != Some(0))
+}
+
 /// The furthest a series can be revealed: 0 if its teams are undecided (TBD —
-/// stays hidden so we don't expose an unannounced match), 2 if it has a score,
-/// else 1 (decided teams, not yet played → names only).
+/// stays hidden so we don't expose an unannounced match), 2 if it's been played
+/// (has a score to show), else 1 (decided teams, not yet played → names only).
 fn bm_max_stage(m: &BracketMatch) -> u8 {
     let tbd = |t: &str| t.is_empty() || t == "TBD";
     if tbd(&m.team_a) || tbd(&m.team_b) {
         0
-    } else if m.score_a.is_some() && m.score_b.is_some() {
+    } else if bm_played(m) {
         2
     } else {
         1
@@ -1093,7 +1102,9 @@ fn Bracket(rounds: Vec<BracketRound>, tournament_id: i64) -> impl IntoView {
                     let (ta, tb) = (s.ta, s.tb);
                     let (sa, sb) = (s.sa, s.sb);
                     let winner = s.winner;
-                    let dash = if max == 2 { "-" } else { "" };
+                    // At the names stage show "-" for the score (a played match's
+                    // hidden score, or an unplayed match that has none).
+                    let dash = "-";
                     let match_title = if max == 0 { "Not decided yet" } else { "Reveal this match" };
                     let stage = move || eff.with(|e| e.get(r).and_then(|row| row.get(i)).copied().unwrap_or(0));
                     view! {
@@ -2653,6 +2664,8 @@ mod tests {
         };
         assert_eq!(bm_max_stage(&mk("NAVI", "FaZe", Some(2), Some(1))), 2); // played
         assert_eq!(bm_max_stage(&mk("NAVI", "FaZe", None, None)), 1); // decided, unplayed
+        assert_eq!(bm_max_stage(&mk("NAVI", "FaZe", Some(0), Some(0))), 1); // 0–0, not played
+        assert_eq!(bm_max_stage(&mk("NAVI", "FaZe", Some(2), Some(0))), 2); // a real 2–0
         assert_eq!(bm_max_stage(&mk("TBD", "FaZe", None, None)), 0); // undecided → locked
     }
 
