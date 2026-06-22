@@ -23,6 +23,8 @@ pub fn open(path: &str) -> rusqlite::Result<Connection> {
     }
     let conn = Connection::open(path)?;
     conn.pragma_update(None, "journal_mode", "WAL")?;
+    // The poller and per-request reminder writes use separate connections.
+    conn.pragma_update(None, "busy_timeout", 5000)?;
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS matches (
             id           INTEGER NOT NULL,
@@ -49,6 +51,18 @@ pub fn open(path: &str) -> rusqlite::Result<Connection> {
             key           TEXT PRIMARY KEY,
             url           TEXT,
             checked_at_ms INTEGER NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS reminders (
+            endpoint     TEXT    NOT NULL,
+            p256dh       TEXT    NOT NULL,
+            auth         TEXT    NOT NULL,
+            match_id     INTEGER NOT NULL,
+            notify_at_ms INTEGER NOT NULL,
+            title        TEXT    NOT NULL,
+            body         TEXT    NOT NULL,
+            url          TEXT    NOT NULL,
+            sent         INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY (endpoint, match_id)
         );",
     )?;
     // Migrate DBs created before the league_url column existed (ignored if present).
@@ -172,6 +186,98 @@ pub fn set_event_link(
         "INSERT INTO event_links (key, url, checked_at_ms) VALUES (?1, ?2, ?3)
          ON CONFLICT(key) DO UPDATE SET url=excluded.url, checked_at_ms=excluded.checked_at_ms",
         params![key, url, checked_at_ms],
+    )?;
+    Ok(())
+}
+
+/// A stored Web Push reminder.
+#[derive(Debug, Clone)]
+pub struct Reminder {
+    pub endpoint: String,
+    pub p256dh: String,
+    pub auth: String,
+    pub match_id: i64,
+    pub notify_at_ms: i64,
+    pub title: String,
+    pub body: String,
+    pub url: String,
+}
+
+/// Add or update a reminder (re-arms `sent`).
+pub fn add_reminder(conn: &Connection, r: &Reminder) -> rusqlite::Result<()> {
+    conn.execute(
+        "INSERT INTO reminders
+            (endpoint, p256dh, auth, match_id, notify_at_ms, title, body, url, sent)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 0)
+         ON CONFLICT(endpoint, match_id) DO UPDATE SET
+            p256dh=excluded.p256dh, auth=excluded.auth,
+            notify_at_ms=excluded.notify_at_ms, title=excluded.title,
+            body=excluded.body, url=excluded.url, sent=0",
+        params![
+            r.endpoint,
+            r.p256dh,
+            r.auth,
+            r.match_id,
+            r.notify_at_ms,
+            r.title,
+            r.body,
+            r.url
+        ],
+    )?;
+    Ok(())
+}
+
+pub fn remove_reminder(conn: &Connection, endpoint: &str, match_id: i64) -> rusqlite::Result<()> {
+    conn.execute(
+        "DELETE FROM reminders WHERE endpoint = ?1 AND match_id = ?2",
+        params![endpoint, match_id],
+    )?;
+    Ok(())
+}
+
+/// Unsent reminders whose notify time has arrived.
+pub fn due_reminders(conn: &Connection, now_ms: i64) -> rusqlite::Result<Vec<Reminder>> {
+    let mut stmt = conn.prepare(
+        "SELECT endpoint, p256dh, auth, match_id, notify_at_ms, title, body, url
+         FROM reminders WHERE sent = 0 AND notify_at_ms <= ?1 ORDER BY notify_at_ms",
+    )?;
+    let rows = stmt.query_map([now_ms], |r| {
+        Ok(Reminder {
+            endpoint: r.get(0)?,
+            p256dh: r.get(1)?,
+            auth: r.get(2)?,
+            match_id: r.get(3)?,
+            notify_at_ms: r.get(4)?,
+            title: r.get(5)?,
+            body: r.get(6)?,
+            url: r.get(7)?,
+        })
+    })?;
+    rows.collect()
+}
+
+pub fn mark_reminder_sent(conn: &Connection, endpoint: &str, match_id: i64) -> rusqlite::Result<()> {
+    conn.execute(
+        "UPDATE reminders SET sent = 1 WHERE endpoint = ?1 AND match_id = ?2",
+        params![endpoint, match_id],
+    )?;
+    Ok(())
+}
+
+/// Remove every reminder for a subscription (e.g. after a 404/410 from push).
+pub fn delete_subscription(conn: &Connection, endpoint: &str) -> rusqlite::Result<()> {
+    conn.execute(
+        "DELETE FROM reminders WHERE endpoint = ?1",
+        params![endpoint],
+    )?;
+    Ok(())
+}
+
+/// Drop reminders whose notify time is well in the past.
+pub fn prune_reminders(conn: &Connection, cutoff_ms: i64) -> rusqlite::Result<()> {
+    conn.execute(
+        "DELETE FROM reminders WHERE notify_at_ms < ?1",
+        params![cutoff_ms],
     )?;
     Ok(())
 }

@@ -21,6 +21,21 @@ pub struct Config {
     pub db_path: String,
     /// Resolve exact event pages via Liquipedia (default on).
     pub resolve_links: bool,
+    /// VAPID keys for Web Push (base64url public/private + a contact subject).
+    /// Push is enabled only when all three are set.
+    pub vapid_public: String,
+    pub vapid_private: String,
+    pub vapid_subject: String,
+}
+
+impl Config {
+    /// True when Web Push is fully configured.
+    #[must_use]
+    pub fn push_enabled(&self) -> bool {
+        !self.vapid_public.is_empty()
+            && !self.vapid_private.is_empty()
+            && !self.vapid_subject.is_empty()
+    }
 }
 
 impl Config {
@@ -63,6 +78,11 @@ impl Config {
             .map(|v| !matches!(v.trim().to_ascii_lowercase().as_str(), "0" | "false" | "no"))
             .unwrap_or(true);
 
+        let trimmed = |k: &str| get(k).map(|s| s.trim().to_string()).unwrap_or_default();
+        let vapid_public = trimmed("VAPID_PUBLIC_KEY");
+        let vapid_private = trimmed("VAPID_PRIVATE_KEY");
+        let vapid_subject = trimmed("VAPID_SUBJECT");
+
         Self {
             token,
             tz,
@@ -71,6 +91,9 @@ impl Config {
             upcoming_days,
             db_path,
             resolve_links,
+            vapid_public,
+            vapid_private,
+            vapid_subject,
         }
     }
 }

@@ -21,6 +21,7 @@ tower-http = { version = "0.6", features = [
   "compression-gzip",
 ], optional = true }
 wasm-bindgen = { version = "0.2", optional = true }
+wasm-bindgen-futures = { version = "0.4", optional = true }
 js-sys = { version = "0.3", optional = true }
 web-sys = { version = "0.3", features = [
   "Window",
@@ -43,12 +44,16 @@ chrono-tz = { version = "0.10", optional = true }
 once_cell = { version = "1.21", optional = true }
 dotenvy = { version = "0.15", optional = true }
 rusqlite = { version = "0.40.1", features = ["bundled"], optional = true }
+web-push-native = { version = "0.4.0", features = ["vapid"], optional = true }
+base64ct = { version = "1", features = ["alloc"], optional = true }
+http = { version = "1", optional = true }
 
 [features]
 hydrate = [
   "leptos/hydrate",
   "dep:console_error_panic_hook",
   "dep:wasm-bindgen",
+  "dep:wasm-bindgen-futures",
   "dep:js-sys",
   "dep:web-sys",
 ]
@@ -65,6 +70,9 @@ ssr = [
   "dep:chrono",
   "dep:chrono-tz",
   "dep:rusqlite",
+  "dep:web-push-native",
+  "dep:base64ct",
+  "dep:http",
   "leptos/ssr",
   "leptos_meta/ssr",
   "leptos_router/ssr",

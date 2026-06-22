@@ -75,6 +75,29 @@ cargo test --features ssr # tiering + deserialization tests
 | `UPCOMING_DAYS` | `30` | Days ahead on the homepage (1–60) |
 | `DB_PATH` | `data/cache.db` | SQLite cache path; empty = memory-only |
 | `ENABLE_LIQUIPEDIA` | `true` | Resolve exact event pages via Liquipedia |
+| `VAPID_PUBLIC_KEY` / `VAPID_PRIVATE_KEY` / `VAPID_SUBJECT` | _(none)_ | Web Push reminder keys; all three enable reminders |
+
+## Reminders (Web Push)
+
+Star (★) any upcoming match to get a browser notification ~10 minutes before it
+starts — delivered even if the site is closed, via a service worker + Web Push.
+
+Enable it by generating a VAPID keypair once and setting the env vars:
+
+```sh
+npx web-push generate-vapid-keys
+# put the values in .env: VAPID_PUBLIC_KEY / VAPID_PRIVATE_KEY / VAPID_SUBJECT
+```
+
+How it works: the browser subscribes via `pushManager`; the subscription +
+chosen matches are stored in SQLite (`DB_PATH` required); a background sender
+delivers each reminder at its time (encrypted with `web-push-native`, pure Rust,
+no OpenSSL) and prunes dead subscriptions. The ★ buttons only appear when push
+is configured.
+
+Requirements: **HTTPS in production** (Web Push needs a secure context), a
+writable `DB_PATH`, and on **iOS** the site must be installed to the home screen
+as a PWA before notifications work.
 
 ## Deploy (Docker)
 
