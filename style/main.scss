@@ -143,13 +143,16 @@ a {
   }
 }
 
-// "All" / "All events" lead each filter row. Give them a shared width + a wider
-// trailing gap so the first real filter (CS2 / IEM) lines up across both rows.
-.tab-all,
+// "All" / "All events" lead each filter row. They keep their natural width; the
+// trailing margin is empty space sized so the first real filter (CS2 / IEM)
+// lines up across both rows. ("All events" is the wider label, so the narrower
+// "All" gets the larger margin. The labels are fixed, so these are stable.)
 .chip-all {
-  min-width: 5.75rem;
-  margin-right: 0.35rem;
-  text-align: left;
+  margin-right: 0.4rem;
+}
+
+.tab-all {
+  margin-right: 3.025rem;
 }
 
 // A game filter tab that embeds a subscribe ★. The label and the ★ split the
@@ -371,6 +374,8 @@ a {
   justify-self: center;
   width: 2px;
   margin-block: -0.22rem;
+  // Match the ☆'s shift so both line up with the event-header ★.
+  transform: translateX(-3.5px);
 
   &.live {
     background: var(--accent);
@@ -390,9 +395,11 @@ a {
 
 .star {
   // Centered in the leading column so the ☆ on upcoming rows lines up with the
-  // (also centered) live/final side bar — bar sits under the star's center.
+  // (also centered) live/final side bar — bar sits under the star's center. The
+  // small left shift lines the column up with the larger event-header ★ above.
   justify-self: center;
   text-align: center;
+  transform: translateX(-3.5px);
   background: none;
   border: none;
   padding: 0;
