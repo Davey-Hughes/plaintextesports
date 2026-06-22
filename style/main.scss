@@ -884,11 +884,16 @@ a {
 .section-head {
   display: flex;
   align-items: baseline;
-  justify-content: space-between;
-  gap: 0.8rem;
+  gap: 0.5rem;
   margin: 0 0 0.5rem;
   padding-bottom: 0.2rem;
   border-bottom: 1px solid var(--border);
+}
+
+// A faded "hidden" note beside a section title while its contents are concealed.
+.section-hint {
+  color: var(--muted);
+  font-size: 11px;
 }
 
 .section-title {
