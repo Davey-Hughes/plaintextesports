@@ -1,7 +1,7 @@
 //! Leptos server functions. The bodies read the in-memory cache on the server;
 //! on the client the `#[server]` macro replaces them with a network call.
 
-use crate::types::{ReminderReq, ScheduleView};
+use crate::types::{ReminderReq, ScheduleView, SiteInfo};
 use leptos::prelude::*;
 
 /// Homepage schedule. `game` is "all"/"cs2"/"lol"; `tz` is an IANA name (empty
@@ -39,6 +39,23 @@ pub async fn get_day(
     {
         let _ = (date, game, tz, hour24);
         Ok(ScheduleView::default())
+    }
+}
+
+/// Footer copyright + links from config.
+#[server(GetSite, "/api")]
+pub async fn get_site() -> Result<SiteInfo, ServerFnError> {
+    #[cfg(feature = "ssr")]
+    {
+        let cfg = crate::config::Config::from_env();
+        Ok(SiteInfo {
+            copyright: cfg.copyright,
+            links: cfg.links,
+        })
+    }
+    #[cfg(not(feature = "ssr"))]
+    {
+        Ok(SiteInfo::default())
     }
 }
 

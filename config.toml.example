@@ -32,3 +32,11 @@ resolve_links = true
 public = ""
 private = ""
 subject = "mailto:you@example.com"
+
+# Footer copyright + links (all optional).
+[site]
+copyright = "© 2026 Your Name"
+links = [
+  { label = "GitHub", url = "https://github.com/you/plaintextesports" },
+  # { label = "Twitter", url = "https://twitter.com/you" },
+]

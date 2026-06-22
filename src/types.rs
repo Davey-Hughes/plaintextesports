@@ -122,6 +122,20 @@ pub struct DayGroup {
     pub leagues: Vec<LeagueGroup>,
 }
 
+/// A footer link (e.g. GitHub, social media).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SiteLink {
+    pub label: String,
+    pub url: String,
+}
+
+/// Footer/site info pulled from config.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SiteInfo {
+    pub copyright: Option<String>,
+    pub links: Vec<SiteLink>,
+}
+
 /// A browser Web Push subscription (from `PushSubscription.toJSON()`).
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PushSub {

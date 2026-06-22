@@ -1,4 +1,4 @@
-use crate::server::{get_day, get_schedule};
+use crate::server::{get_day, get_schedule, get_site};
 use crate::types::{Game, MatchStatus, MatchView, ScheduleView};
 use leptos::prelude::*;
 use std::collections::HashSet;
@@ -141,11 +141,36 @@ fn SiteHeader() -> impl IntoView {
 
 #[component]
 fn SiteFooter() -> impl IntoView {
+    let site = Resource::new(|| (), |()| async { get_site().await });
     view! {
         <footer class="footer">
             <span>"tier-1 cs2 + lol schedules"</span>
             <span class="sep">" · "</span>
             <span>"data via PandaScore"</span>
+            <Suspense>
+                {move || {
+                    site.get()
+                        .and_then(Result::ok)
+                        .map(|s| {
+                            let copyright = s
+                                .copyright
+                                .map(|c| view! { <span class="sep">" · "</span><span>{c}</span> });
+                            let links = s
+                                .links
+                                .into_iter()
+                                .map(|l| {
+                                    view! {
+                                        <span class="sep">" · "</span>
+                                        <a href=l.url target="_blank" rel="noreferrer">
+                                            {l.label}
+                                        </a>
+                                    }
+                                })
+                                .collect_view();
+                            view! { {copyright}{links} }
+                        })
+                }}
+            </Suspense>
         </footer>
     }
 }
