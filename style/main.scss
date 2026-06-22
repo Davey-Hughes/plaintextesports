@@ -819,6 +819,10 @@ a {
 
 .detail-score {
   color: var(--muted);
+  // Reserve a fixed, centred slot so revealing the score ("2 – 1") doesn't widen
+  // the title and shift the second team relative to the hidden "vs".
+  min-width: 3.5em;
+  text-align: center;
 }
 
 .event-link {
