@@ -2086,6 +2086,10 @@ fn render_schedule(s: ScheduleView, show_nav: bool, push: bool, event_mode: bool
     } = s;
 
     let empty = days.iter().all(|d| d.leagues.is_empty());
+    // The "‹ show earlier days" control rides the first day's title line (homepage
+    // only; the single-day view has prev/next nav, the event page its own list).
+    let show_earlier = !show_nav && !event_mode;
+    let has_days = !days.is_empty();
 
     let nav = show_nav.then(|| {
         let prev = prev_date.unwrap_or_default();
@@ -2102,7 +2106,8 @@ fn render_schedule(s: ScheduleView, show_nav: bool, push: bool, event_mode: bool
 
     let day_sections = days
         .into_iter()
-        .map(|d| {
+        .enumerate()
+        .map(|(idx, d)| {
             let leagues = d
                 .leagues
                 .into_iter()
@@ -2162,9 +2167,21 @@ fn render_schedule(s: ScheduleView, show_nav: bool, push: bool, event_mode: bool
                     }
                 })
                 .collect_view();
+            // The first day carries the "show earlier days" control beside its date.
+            let head = if idx == 0 && show_earlier {
+                view! {
+                    <div class="day-head">
+                        <h2 class="day-title">{d.day_label}</h2>
+                        <EarlierControl />
+                    </div>
+                }
+                    .into_any()
+            } else {
+                view! { <h2 class="day-title">{d.day_label}</h2> }.into_any()
+            };
             view! {
                 <section class="day">
-                    <h2 class="day-title">{d.day_label}</h2>
+                    {head}
                     {leagues}
                 </section>
             }
@@ -2187,9 +2204,8 @@ fn render_schedule(s: ScheduleView, show_nav: bool, push: bool, event_mode: bool
     view! {
         {nav}
         <div class="status-line">{fixture_note}{stale_note} "loaded " {fetched_label}</div>
-        // The "‹ show earlier days" control sits just above the first day (homepage
-        // only; the single-day view has prev/next nav, the event page its own list).
-        {(!show_nav && !event_mode).then(|| view! { <EarlierControl /> })}
+        // With no days to host it inline, the control stands alone above the notice.
+        {(show_earlier && !has_days).then(|| view! { <EarlierControl /> })}
         {day_sections}
         {empty.then(|| view! { <p class="empty">"No tier-1 matches in this window."</p> })}
     }
