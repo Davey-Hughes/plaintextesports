@@ -420,6 +420,28 @@ a {
   border-bottom: 1px solid var(--border);
 }
 
+// The first day shares its title line with the "show earlier days" control; the
+// date underline then spans the whole row beneath both.
+.day-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-bottom: 0.6rem;
+  padding-bottom: 0.2rem;
+  border-bottom: 1px solid var(--border);
+
+  .day-title {
+    margin: 0;
+    padding: 0;
+    border-bottom: none;
+  }
+
+  .history-bar {
+    margin: 0;
+  }
+}
+
 .league {
   margin: 0.7rem 0 1rem;
   border-left: 3px solid var(--lc, var(--border));
