@@ -25,8 +25,11 @@ with an allowlist/denylist) are shown.
   `(id, game)` and upserted each poll with a 2-day retention window. On restart
   the app serves the last-known data instantly (no re-fetch burst), and a match
   that finishes and drops out of the API window is retained until it ages out.
-- Times are formatted and matches are grouped by day in a configurable timezone
-  (default `America/Los_Angeles`).
+- Times are shown in the **viewer's own timezone** (auto-detected in the browser
+  and sent to the server, which formats + groups by day accordingly). `DISPLAY_TZ`
+  is the fallback used for the first server render / non-JS clients.
+- Time format is toggleable **24h / 12h** (default 24h), remembered in
+  `localStorage`. Each league/event gets a stable color for quick scanning.
 - With no API token configured, the app serves built-in demo data so the UI is
   fully usable for development.
 
@@ -61,7 +64,7 @@ cargo test --features ssr # tiering + deserialization tests
 | Var | Default | Purpose |
 |---|---|---|
 | `PANDASCORE_TOKEN` | _(none)_ | API token; unset = demo data |
-| `DISPLAY_TZ` | `America/Los_Angeles` | IANA tz for times + day grouping |
+| `DISPLAY_TZ` | `America/Los_Angeles` | Fallback tz (viewers' own tz is auto-detected) |
 | `POLL_INTERVAL_SECS` | `1200` | Idle poll interval, seconds (min 60) |
 | `POLL_ACTIVE_SECS` | `60` | Poll interval while live/imminent, seconds (min 30) |
 | `UPCOMING_DAYS` | `30` | Days ahead on the homepage (1–60) |

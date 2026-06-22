@@ -10,6 +10,18 @@
   --link: #7aa2f7;
   --card-bg: #131313;
   --win: #e8e8e8;
+
+  // League/event palette (tuned for the dark background).
+  --c0: #e06c75;
+  --c1: #e09f5b;
+  --c2: #d4b95e;
+  --c3: #8ec07c;
+  --c4: #56b6c2;
+  --c5: #61afef;
+  --c6: #7aa2f7;
+  --c7: #b48ead;
+  --c8: #d987b9;
+  --c9: #8fbcbb;
 }
 
 :root[data-theme="light"] {
@@ -21,6 +33,18 @@
   --link: #2a4fb0;
   --card-bg: #ffffff;
   --win: #000000;
+
+  // League/event palette (darker, for the light background).
+  --c0: #c0392b;
+  --c1: #b06a16;
+  --c2: #8a7410;
+  --c3: #4f8a3d;
+  --c4: #1f8a8a;
+  --c5: #2a6fd6;
+  --c6: #3b4fc4;
+  --c7: #8244a8;
+  --c8: #b03083;
+  --c9: #2f7d6b;
 }
 
 * {
@@ -72,7 +96,12 @@ a {
   }
 }
 
-.theme-toggle {
+.toggles {
+  display: flex;
+  gap: 0.4rem;
+}
+
+.toggle {
   background: none;
   border: 1px solid var(--border);
   color: var(--muted);
@@ -149,14 +178,28 @@ a {
 
 .league {
   margin: 0.7rem 0 1rem;
+  border-left: 3px solid var(--lc, var(--border));
+  padding-left: 0.6rem;
 }
 
 .league-title {
   font-size: 12px;
-  font-weight: 400;
-  color: var(--muted);
+  font-weight: 600;
+  color: var(--lc, var(--muted));
   margin: 0 0 0.2rem;
 }
+
+// Map each hashed league class to its palette color.
+.lc-0 { --lc: var(--c0); }
+.lc-1 { --lc: var(--c1); }
+.lc-2 { --lc: var(--c2); }
+.lc-3 { --lc: var(--c3); }
+.lc-4 { --lc: var(--c4); }
+.lc-5 { --lc: var(--c5); }
+.lc-6 { --lc: var(--c6); }
+.lc-7 { --lc: var(--c7); }
+.lc-8 { --lc: var(--c8); }
+.lc-9 { --lc: var(--c9); }
 
 .rows {
   display: flex;

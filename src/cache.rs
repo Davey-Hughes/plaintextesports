@@ -233,7 +233,10 @@ fn local_day_start(tz: &Tz, date: NaiveDate) -> DateTime<Utc> {
         .map_or_else(|| Utc.from_utc_datetime(&naive), |dt| dt.with_timezone(&Utc))
 }
 
-fn time_label(local: DateTime<Tz>) -> String {
+fn time_label(local: DateTime<Tz>, hour24: bool) -> String {
+    if hour24 {
+        return format!("{:02}:{:02}", local.hour(), local.minute());
+    }
     let h24 = local.hour();
     let (h12, ampm) = match h24 {
         0 => (12, "AM"),
@@ -262,7 +265,7 @@ fn effective_status(m: &NormalizedMatch, now: DateTime<Utc>) -> MatchStatus {
     }
 }
 
-fn to_view(m: &NormalizedMatch, tz: &Tz, now: DateTime<Utc>) -> MatchView {
+fn to_view(m: &NormalizedMatch, tz: &Tz, now: DateTime<Utc>, hour24: bool) -> MatchView {
     let local = m.begin_at.with_timezone(tz);
     let status = effective_status(m, now);
 
@@ -290,7 +293,7 @@ fn to_view(m: &NormalizedMatch, tz: &Tz, now: DateTime<Utc>) -> MatchView {
         league: m.league.clone(),
         tier: m.tier.clone(),
         status,
-        clock_label: time_label(local),
+        clock_label: time_label(local, hour24),
         best_of: m.best_of.map(|n| format!("Bo{n}")).unwrap_or_default(),
         team_a,
         team_b,
@@ -337,6 +340,7 @@ fn group_days(views: Vec<MatchView>, tz: &Tz) -> Vec<DayGroup> {
     days
 }
 
+#[allow(clippy::too_many_arguments)]
 fn matches_in_window(
     snap: &Snapshot,
     game: Option<Game>,
@@ -344,32 +348,39 @@ fn matches_in_window(
     end: DateTime<Utc>,
     tz: &Tz,
     now: DateTime<Utc>,
+    hour24: bool,
 ) -> Vec<MatchView> {
     snap.matches
         .iter()
         .filter(|m| m.status != MatchStatus::Canceled)
         .filter(|m| game.is_none_or(|g| m.game == g))
         .filter(|m| m.begin_at >= start && m.begin_at < end)
-        .map(|m| to_view(m, tz, now))
+        .map(|m| to_view(m, tz, now, hour24))
         .collect()
+}
+
+/// Parse an IANA tz name, falling back to the configured default.
+fn resolve_tz(name: &str, default: Tz) -> Tz {
+    name.parse::<Tz>().unwrap_or(default)
 }
 
 /// Homepage: live matches pinned, then the next `upcoming_days` grouped by day.
 #[must_use]
-pub fn homepage_view(game_filter: &str) -> ScheduleView {
+pub fn homepage_view(game_filter: &str, tz_name: &str, hour24: bool) -> ScheduleView {
     let cfg = Config::from_env();
+    let tz = resolve_tz(tz_name, cfg.tz);
     let game = Game::from_filter(game_filter);
     let now = Utc::now();
-    let start = local_day_start(&cfg.tz, now.with_timezone(&cfg.tz).date_naive());
+    let start = local_day_start(&tz, now.with_timezone(&tz).date_naive());
     let end = now + Duration::days(cfg.upcoming_days);
 
     let snap = SNAPSHOT.read().unwrap();
-    let all = matches_in_window(&snap, game, start, end, &cfg.tz, now);
+    let all = matches_in_window(&snap, game, start, end, &tz, now, hour24);
 
     ScheduleView {
-        days: group_days(all, &cfg.tz),
+        days: group_days(all, &tz),
         fetched_at_ms: snap.fetched_at.timestamp_millis(),
-        fetched_label: time_label(snap.fetched_at.with_timezone(&cfg.tz)),
+        fetched_label: time_label(snap.fetched_at.with_timezone(&tz), hour24),
         stale: snap.stale,
         using_fixture: snap.using_fixture,
         date_label: None,
@@ -380,29 +391,29 @@ pub fn homepage_view(game_filter: &str) -> ScheduleView {
 
 /// Single-day view with prev/next navigation.
 #[must_use]
-pub fn day_view(date: &str, game_filter: &str) -> ScheduleView {
+pub fn day_view(date: &str, game_filter: &str, tz_name: &str, hour24: bool) -> ScheduleView {
     let cfg = Config::from_env();
+    let tz = resolve_tz(tz_name, cfg.tz);
     let game = Game::from_filter(game_filter);
     let now = Utc::now();
 
     let day = NaiveDate::parse_from_str(date, "%Y-%m-%d")
-        .unwrap_or_else(|_| now.with_timezone(&cfg.tz).date_naive());
-    let start = local_day_start(&cfg.tz, day);
-    let end = local_day_start(&cfg.tz, day + Duration::days(1));
+        .unwrap_or_else(|_| now.with_timezone(&tz).date_naive());
+    let start = local_day_start(&tz, day);
+    let end = local_day_start(&tz, day + Duration::days(1));
 
     let snap = SNAPSHOT.read().unwrap();
-    let all = matches_in_window(&snap, game, start, end, &cfg.tz, now);
+    let all = matches_in_window(&snap, game, start, end, &tz, now, hour24);
 
-    let local_noon = cfg
-        .tz
+    let local_noon = tz
         .from_local_datetime(&day.and_hms_opt(12, 0, 0).unwrap())
         .earliest()
-        .unwrap_or_else(|| cfg.tz.from_utc_datetime(&day.and_hms_opt(12, 0, 0).unwrap()));
+        .unwrap_or_else(|| tz.from_utc_datetime(&day.and_hms_opt(12, 0, 0).unwrap()));
 
     ScheduleView {
-        days: group_days(all, &cfg.tz),
+        days: group_days(all, &tz),
         fetched_at_ms: snap.fetched_at.timestamp_millis(),
-        fetched_label: time_label(snap.fetched_at.with_timezone(&cfg.tz)),
+        fetched_label: time_label(snap.fetched_at.with_timezone(&tz), hour24),
         stale: snap.stale,
         using_fixture: snap.using_fixture,
         date_label: Some(day_label(local_noon)),

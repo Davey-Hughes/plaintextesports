@@ -39,6 +39,28 @@ pub fn shell(options: LeptosOptions) -> impl IntoView {
 pub fn App() -> impl IntoView {
     provide_meta_context();
 
+    // Shared user preferences: 24h time (default on) and the detected IANA
+    // timezone ("" => server default until the browser reports one).
+    let hour24 = RwSignal::new(true);
+    let tz = RwSignal::new(String::new());
+    provide_context(hour24);
+    provide_context(tz);
+
+    // After hydration, pick up the browser's timezone + saved hour preference.
+    // (Runs client-side only; the initial SSR/hydrate render uses the defaults
+    // above, so there's no hydration mismatch.)
+    Effect::new(move |_| {
+        #[cfg(feature = "hydrate")]
+        {
+            if let Some(z) = detect_tz() {
+                tz.set(z);
+            }
+            if let Some(h) = load_hour24_pref() {
+                hour24.set(h);
+            }
+        }
+    });
+
     view! {
         <Stylesheet id="leptos" href="/pkg/plaintextesports.css" />
         <Title text="plaintextesports" />
@@ -64,7 +86,10 @@ fn SiteHeader() -> impl IntoView {
             <div class="brand">
                 <A href="/">"plaintextesports"</A>
             </div>
-            <ThemeToggle />
+            <div class="toggles">
+                <HourToggle />
+                <ThemeToggle />
+            </div>
         </header>
     }
 }
@@ -118,9 +143,52 @@ fn ThemeToggle() -> impl IntoView {
     };
 
     view! {
-        <button class="theme-toggle" on:click=toggle>
+        <button class="toggle" on:click=toggle>
             {move || if dark.get() { "light mode" } else { "dark mode" }}
         </button>
+    }
+}
+
+#[component]
+fn HourToggle() -> impl IntoView {
+    let hour24 = use_context::<RwSignal<bool>>().expect("hour24 context");
+    let toggle = move |_| {
+        let next = !hour24.get_untracked();
+        hour24.set(next);
+        #[cfg(feature = "hydrate")]
+        save_hour24_pref(next);
+    };
+    view! {
+        <button class="toggle" on:click=toggle>
+            {move || if hour24.get() { "24h" } else { "12h" }}
+        </button>
+    }
+}
+
+#[cfg(feature = "hydrate")]
+fn detect_tz() -> Option<String> {
+    use wasm_bindgen::JsValue;
+    let fmt = js_sys::Intl::DateTimeFormat::new(&js_sys::Array::new(), &js_sys::Object::new());
+    let opts = fmt.resolved_options();
+    js_sys::Reflect::get(&opts, &JsValue::from_str("timeZone"))
+        .ok()
+        .and_then(|v| v.as_string())
+        .filter(|s| !s.is_empty())
+}
+
+#[cfg(feature = "hydrate")]
+fn load_hour24_pref() -> Option<bool> {
+    let storage = web_sys::window()?.local_storage().ok().flatten()?;
+    let v = storage.get_item("hour24").ok().flatten()?;
+    Some(v != "0")
+}
+
+#[cfg(feature = "hydrate")]
+fn save_hour24_pref(hour24: bool) {
+    if let Some(win) = web_sys::window() {
+        if let Ok(Some(storage)) = win.local_storage() {
+            let _ = storage.set_item("hour24", if hour24 { "1" } else { "0" });
+        }
     }
 }
 
@@ -139,9 +207,11 @@ fn setup_autorefresh(resource: Resource<Result<ScheduleView, ServerFnError>>) {
 #[component]
 fn HomePage() -> impl IntoView {
     let (game, set_game) = signal(String::from("all"));
+    let hour24 = use_context::<RwSignal<bool>>().expect("hour24 context");
+    let tz = use_context::<RwSignal<String>>().expect("tz context");
     let schedule = Resource::new(
-        move || game.get(),
-        |g| async move { get_schedule(g).await },
+        move || (game.get(), tz.get(), hour24.get()),
+        |(g, z, h)| async move { get_schedule(g, z, h).await },
     );
     setup_autorefresh(schedule);
 
@@ -161,9 +231,11 @@ fn DayPage() -> impl IntoView {
     let params = use_params::<DayParams>();
     let date = move || params.get().ok().map(|p| p.date).unwrap_or_default();
     let (game, set_game) = signal(String::from("all"));
+    let hour24 = use_context::<RwSignal<bool>>().expect("hour24 context");
+    let tz = use_context::<RwSignal<String>>().expect("tz context");
     let schedule = Resource::new(
-        move || (date(), game.get()),
-        |(d, g)| async move { get_day(d, g).await },
+        move || (date(), game.get(), tz.get(), hour24.get()),
+        |(d, g, z, h)| async move { get_day(d, g, z, h).await },
     );
     setup_autorefresh(schedule);
 
@@ -217,6 +289,21 @@ fn ScheduleSection(
     }
 }
 
+/// Number of palette colors leagues are hashed into (see `.lc-*` in the SCSS).
+const LEAGUE_COLORS: u32 = 10;
+
+/// Stable color class for a league name. Uses FNV-1a so the server and client
+/// (WASM) compute the identical class — no hydration mismatch — and each event
+/// keeps the same color across days.
+fn league_color_class(name: &str) -> String {
+    let mut h: u32 = 2_166_136_261;
+    for b in name.bytes() {
+        h ^= u32::from(b);
+        h = h.wrapping_mul(16_777_619);
+    }
+    format!("lc-{}", h % LEAGUE_COLORS)
+}
+
 fn render_schedule(s: ScheduleView, show_nav: bool) -> impl IntoView {
     let ScheduleView {
         days,
@@ -251,6 +338,7 @@ fn render_schedule(s: ScheduleView, show_nav: bool) -> impl IntoView {
                 .leagues
                 .into_iter()
                 .map(|lg| {
+                    let lc = league_color_class(&lg.league);
                     let show_bo = lg.bo.is_none();
                     let header = match &lg.bo {
                         Some(bo) => format!("{} · {}", lg.league, bo),
@@ -262,7 +350,7 @@ fn render_schedule(s: ScheduleView, show_nav: bool) -> impl IntoView {
                         .map(|m| view! { <MatchRow m=m show_bo=show_bo /> })
                         .collect_view();
                     view! {
-                        <div class="league">
+                        <div class=format!("league {lc}")>
                             <h3 class="league-title">{header}</h3>
                             <div class="rows">{rows}</div>
                         </div>
