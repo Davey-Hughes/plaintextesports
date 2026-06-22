@@ -84,7 +84,6 @@ pub fn spawn_poller() {
         return;
     };
 
-    let interval = cfg.poll_interval;
     tokio::spawn(async move {
         let client = match reqwest::Client::builder()
             .user_agent("plaintextesports/0.1 (+https://github.com/ralphpotato/plaintextesports)")
@@ -105,9 +104,42 @@ pub fn spawn_poller() {
                 fetch_game(&client, &token, Game::Lol),
             );
             apply_poll(cs_res, lol_res, store.as_mut());
-            tokio::time::sleep(interval).await;
+            tokio::time::sleep(next_poll_delay(&cfg)).await;
         }
     });
+}
+
+/// Choose the next poll delay: the short `active_poll` when any match is live
+/// (started within the last few hours and not finished) or about to start,
+/// otherwise the generous `idle_poll`. This keeps us light during downtime and
+/// responsive around live events without ever approaching the rate limit.
+/// True when any match is live (started within `grace` and not finished) or
+/// starts within `lead`. `grace` bounds how long a match the free tier never
+/// marks "finished" keeps us in the fast cadence.
+fn is_active_window(
+    matches: &[NormalizedMatch],
+    now: DateTime<Utc>,
+    grace: Duration,
+    lead: Duration,
+) -> bool {
+    matches.iter().any(|m| {
+        let live = m.begin_at <= now
+            && now < m.begin_at + grace
+            && !matches!(m.status, MatchStatus::Finished | MatchStatus::Canceled);
+        let imminent = m.begin_at > now && m.begin_at <= now + lead;
+        live || imminent
+    })
+}
+
+fn next_poll_delay(cfg: &Config) -> std::time::Duration {
+    let now = Utc::now();
+    let active = {
+        let snap = SNAPSHOT.read().unwrap();
+        is_active_window(&snap.matches, now, Duration::hours(5), Duration::minutes(15))
+    };
+    let delay = if active { cfg.active_poll } else { cfg.idle_poll };
+    leptos::logging::log!("next poll in {}s (active={active})", delay.as_secs());
+    delay
 }
 
 /// Persist freshly polled matches (if a store is present) and refresh the
@@ -488,4 +520,60 @@ fn demo_matches(now: DateTime<Utc>) -> Vec<NormalizedMatch> {
             demo_team("BLG", None),
         ),
     ]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn at(begin: DateTime<Utc>, status: MatchStatus) -> NormalizedMatch {
+        NormalizedMatch {
+            id: 1,
+            game: Game::Cs2,
+            league: "X".into(),
+            tier: "S".into(),
+            begin_at: begin,
+            status,
+            best_of: Some(3),
+            team_a: NormTeam {
+                label: "A".into(),
+                score: None,
+            },
+            team_b: NormTeam {
+                label: "B".into(),
+                score: None,
+            },
+            stream_url: None,
+        }
+    }
+
+    #[test]
+    fn active_window_detection() {
+        let now = Utc::now();
+        let grace = Duration::hours(5);
+        let lead = Duration::minutes(15);
+        let active = |m: NormalizedMatch| is_active_window(&[m], now, grace, lead);
+
+        assert!(!is_active_window(&[], now, grace, lead), "nothing scheduled");
+        assert!(
+            active(at(now - Duration::hours(1), MatchStatus::Upcoming)),
+            "started 1h ago, not finished => live"
+        );
+        assert!(
+            !active(at(now - Duration::hours(1), MatchStatus::Finished)),
+            "finished match is not active"
+        );
+        assert!(
+            !active(at(now - Duration::hours(6), MatchStatus::Upcoming)),
+            "started 6h ago => past grace, assume over"
+        );
+        assert!(
+            active(at(now + Duration::minutes(10), MatchStatus::Upcoming)),
+            "starts in 10 min => imminent"
+        );
+        assert!(
+            !active(at(now + Duration::hours(2), MatchStatus::Upcoming)),
+            "starts in 2h => not yet active"
+        );
+    }
 }
