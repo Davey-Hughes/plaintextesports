@@ -138,13 +138,29 @@ pub fn load_all(conn: &Connection) -> rusqlite::Result<Vec<NormalizedMatch>> {
 
 /// Read the stored "last fetched" timestamp (unix ms), if any.
 pub fn load_fetched_at(conn: &Connection) -> Option<i64> {
+    get_meta(conn, FETCHED_AT_KEY).and_then(|s| s.parse().ok())
+}
+
+/// Read an arbitrary `meta` value by key. Used for the backfill cursor and the
+/// per-day past-refresh timestamps.
+#[must_use]
+pub fn get_meta(conn: &Connection, key: &str) -> Option<String> {
     conn.query_row(
         "SELECT value FROM meta WHERE key = ?1",
-        params![FETCHED_AT_KEY],
+        params![key],
         |r| r.get::<_, String>(0),
     )
     .ok()
-    .and_then(|s| s.parse().ok())
+}
+
+/// Upsert an arbitrary `meta` key/value.
+pub fn set_meta(conn: &Connection, key: &str, value: &str) -> rusqlite::Result<()> {
+    conn.execute(
+        "INSERT INTO meta (key, value) VALUES (?1, ?2)
+         ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+        params![key, value],
+    )?;
+    Ok(())
 }
 
 /// Upsert freshly polled matches, prune anything older than `cutoff_ms`, and
@@ -473,6 +489,23 @@ mod tests {
         assert_eq!(all.len(), 1);
         assert_eq!(all[0].status, MatchStatus::Finished);
         assert_eq!(all[0].team_a.score, Some(2));
+    }
+
+    #[test]
+    fn meta_get_set_roundtrip() {
+        let conn = open(":memory:").unwrap();
+        assert_eq!(get_meta(&conn, "backfill_cursor_ms"), None);
+        set_meta(&conn, "backfill_cursor_ms", "1700000000000").unwrap();
+        assert_eq!(
+            get_meta(&conn, "backfill_cursor_ms").as_deref(),
+            Some("1700000000000")
+        );
+        // Upsert overwrites in place.
+        set_meta(&conn, "backfill_cursor_ms", "1690000000000").unwrap();
+        assert_eq!(
+            get_meta(&conn, "backfill_cursor_ms").as_deref(),
+            Some("1690000000000")
+        );
     }
 
     #[test]
