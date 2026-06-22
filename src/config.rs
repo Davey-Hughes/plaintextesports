@@ -35,10 +35,10 @@ impl Config {
             .unwrap_or(chrono_tz::America::Los_Angeles);
 
         // Idle base: schedules barely change, and the free tier has no live
-        // feed, so polling fast around the clock buys nothing. Default 15 min.
-        let idle_poll = Duration::from_secs(secs_env("POLL_INTERVAL_SECS", 900, 60));
-        // Active burst when a match is live/imminent. Default 3 min.
-        let active_poll = Duration::from_secs(secs_env("POLL_ACTIVE_SECS", 180, 30));
+        // feed, so polling fast around the clock buys nothing. Default 20 min.
+        let idle_poll = Duration::from_secs(secs_env("POLL_INTERVAL_SECS", 1200, 60));
+        // Active burst when a match is live/imminent. Default 1 min.
+        let active_poll = Duration::from_secs(secs_env("POLL_ACTIVE_SECS", 60, 30));
 
         let upcoming_days = std::env::var("UPCOMING_DAYS")
             .ok()
