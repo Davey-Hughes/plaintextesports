@@ -24,29 +24,38 @@ pub struct Config {
 impl Config {
     #[must_use]
     pub fn from_env() -> Self {
-        let token = std::env::var("PANDASCORE_TOKEN")
-            .ok()
+        Self::from_vars(|k| std::env::var(k).ok())
+    }
+
+    /// Build from an arbitrary key→value lookup. Keeps the parsing/clamping
+    /// logic pure and testable, separate from process env access.
+    fn from_vars(get: impl Fn(&str) -> Option<String>) -> Self {
+        // Seconds value, clamped to at least `min`, else `default`.
+        let secs = |key: &str, default: u64, min: u64| -> u64 {
+            get(key)
+                .and_then(|s| s.parse().ok())
+                .filter(|&n| n >= min)
+                .unwrap_or(default)
+        };
+
+        let token = get("PANDASCORE_TOKEN")
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty());
 
-        let tz = std::env::var("DISPLAY_TZ")
-            .ok()
+        let tz = get("DISPLAY_TZ")
             .and_then(|s| s.parse::<Tz>().ok())
             .unwrap_or(chrono_tz::America::Los_Angeles);
 
-        // Idle base: schedules barely change, and the free tier has no live
-        // feed, so polling fast around the clock buys nothing. Default 20 min.
-        let idle_poll = Duration::from_secs(secs_env("POLL_INTERVAL_SECS", 1200, 60));
-        // Active burst when a match is live/imminent. Default 1 min.
-        let active_poll = Duration::from_secs(secs_env("POLL_ACTIVE_SECS", 60, 30));
+        // Idle base (default 20 min); active burst when live/imminent (1 min).
+        let idle_poll = Duration::from_secs(secs("POLL_INTERVAL_SECS", 1200, 60));
+        let active_poll = Duration::from_secs(secs("POLL_ACTIVE_SECS", 60, 30));
 
-        let upcoming_days = std::env::var("UPCOMING_DAYS")
-            .ok()
+        let upcoming_days = get("UPCOMING_DAYS")
             .and_then(|s| s.parse().ok())
             .filter(|&n| (1..=60).contains(&n))
             .unwrap_or(30);
 
-        let db_path = std::env::var("DB_PATH").unwrap_or_else(|_| "data/cache.db".to_string());
+        let db_path = get("DB_PATH").unwrap_or_else(|| "data/cache.db".to_string());
 
         Self {
             token,
@@ -59,12 +68,58 @@ impl Config {
     }
 }
 
-/// Read a positive seconds env var, clamping to at least `min` and falling back
-/// to `default` when unset/unparseable/too small.
-fn secs_env(key: &str, default: u64, min: u64) -> u64 {
-    std::env::var(key)
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .filter(|&n| n >= min)
-        .unwrap_or(default)
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashMap;
+
+    fn cfg(pairs: &[(&str, &str)]) -> Config {
+        let map: HashMap<String, String> =
+            pairs.iter().map(|(k, v)| ((*k).into(), (*v).into())).collect();
+        Config::from_vars(move |k| map.get(k).cloned())
+    }
+
+    #[test]
+    fn defaults_when_unset() {
+        let c = cfg(&[]);
+        assert!(c.token.is_none());
+        assert_eq!(c.tz, chrono_tz::America::Los_Angeles);
+        assert_eq!(c.idle_poll.as_secs(), 1200);
+        assert_eq!(c.active_poll.as_secs(), 60);
+        assert_eq!(c.upcoming_days, 30);
+        assert_eq!(c.db_path, "data/cache.db");
+    }
+
+    #[test]
+    fn parses_values_and_trims_token() {
+        let c = cfg(&[
+            ("PANDASCORE_TOKEN", "  abc  "),
+            ("DISPLAY_TZ", "Europe/London"),
+            ("POLL_ACTIVE_SECS", "120"),
+            ("DB_PATH", "/tmp/x.db"),
+        ]);
+        assert_eq!(c.token.as_deref(), Some("abc"));
+        assert_eq!(c.tz, chrono_tz::Europe::London);
+        assert_eq!(c.active_poll.as_secs(), 120);
+        assert_eq!(c.db_path, "/tmp/x.db");
+    }
+
+    #[test]
+    fn clamps_and_falls_back_on_bad_values() {
+        let c = cfg(&[
+            ("POLL_INTERVAL_SECS", "10"), // below min 60 -> default 1200
+            ("UPCOMING_DAYS", "999"),     // above max 60 -> default 30
+            ("DISPLAY_TZ", "Nope/Nope"),  // invalid -> default
+            ("POLL_ACTIVE_SECS", "abc"),  // unparseable -> default 60
+        ]);
+        assert_eq!(c.idle_poll.as_secs(), 1200);
+        assert_eq!(c.upcoming_days, 30);
+        assert_eq!(c.tz, chrono_tz::America::Los_Angeles);
+        assert_eq!(c.active_poll.as_secs(), 60);
+    }
+
+    #[test]
+    fn blank_token_is_none() {
+        assert!(cfg(&[("PANDASCORE_TOKEN", "   ")]).token.is_none());
+    }
 }

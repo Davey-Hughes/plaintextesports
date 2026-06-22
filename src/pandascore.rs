@@ -465,4 +465,25 @@ mod tests {
         assert_eq!(score_for(&results, Some(99)), None);
         assert_eq!(score_for(&results, None), None);
     }
+
+    #[test]
+    fn normalize_uses_scheduled_fallback_and_drops_incomplete() {
+        let json = r#"[
+          {"id":1,"status":"not_started","scheduled_at":"2026-07-01T10:00:00Z",
+           "number_of_games":3,
+           "league":{"name":"LCK","slug":"league-of-legends-lck"},
+           "tournament":{"slug":"lck-playoffs","tier":"a"},
+           "opponents":[],"results":[],"streams_list":[]},
+          {"id":2,"status":"not_started",
+           "league":{"name":"LCK","slug":"league-of-legends-lck"},
+           "tournament":{"slug":"lck","tier":"a"}},
+          {"id":3,"status":"not_started","begin_at":"2026-07-01T10:00:00Z",
+           "tournament":{"slug":"x","tier":"a"}}
+        ]"#;
+        let ms = parse_and_filter(Game::Lol, json).expect("valid json");
+        // id1 kept via scheduled_at fallback; id2 dropped (no time); id3 dropped (no league).
+        assert_eq!(ms.len(), 1);
+        assert_eq!(ms[0].id, 1);
+        assert_eq!(ms[0].begin_at.to_rfc3339(), "2026-07-01T10:00:00+00:00");
+    }
 }

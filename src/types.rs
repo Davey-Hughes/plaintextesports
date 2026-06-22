@@ -138,3 +138,37 @@ pub struct ScheduleView {
     pub prev_date: Option<String>,
     pub next_date: Option<String>,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn game_from_filter_maps_known_and_rejects_other() {
+        assert_eq!(Game::from_filter("cs2"), Some(Game::Cs2));
+        assert_eq!(Game::from_filter("lol"), Some(Game::Lol));
+        assert_eq!(Game::from_filter("all"), None);
+        assert_eq!(Game::from_filter(""), None);
+    }
+
+    #[test]
+    fn game_slug_and_label() {
+        assert_eq!(Game::Cs2.slug(), "cs2");
+        assert_eq!(Game::Lol.slug(), "lol");
+        assert_eq!(Game::Cs2.label(), "CS2");
+        assert_eq!(Game::Lol.label(), "LoL");
+    }
+
+    #[test]
+    fn match_status_str_roundtrips() {
+        for s in [
+            MatchStatus::Upcoming,
+            MatchStatus::Live,
+            MatchStatus::Finished,
+            MatchStatus::Canceled,
+        ] {
+            assert_eq!(MatchStatus::from_str(s.as_str()), s);
+        }
+        assert_eq!(MatchStatus::from_str("nonsense"), MatchStatus::Upcoming);
+    }
+}
