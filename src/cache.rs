@@ -635,6 +635,49 @@ pub fn day_view(date: &str, game_filter: &str, tz_name: &str, hour24: bool) -> S
     }
 }
 
+// ----- Game/event subscription expansion -----------------------------------
+
+/// A reminder to create for one upcoming match (from a game/event subscription).
+pub struct ReminderSeed {
+    pub match_id: i64,
+    pub game: String,
+    pub league: String,
+    pub notify_at_ms: i64,
+    pub title: String,
+    pub body: String,
+    pub url: String,
+}
+
+/// Upcoming matches matching a subscription scope, as reminder seeds. `kind` is
+/// "game" (value = "cs2"/"lol") or "league" (value = league name).
+#[must_use]
+pub fn scope_reminder_seeds(kind: &str, value: &str, lead_ms: i64) -> Vec<ReminderSeed> {
+    let cfg = Config::from_env();
+    let now = Utc::now();
+    let snap = SNAPSHOT.read().unwrap();
+    snap.matches
+        .iter()
+        .filter(|m| m.status != MatchStatus::Canceled && m.begin_at > now)
+        .filter(|m| match kind {
+            "game" => m.game.slug() == value,
+            "league" => m.league == value,
+            _ => false,
+        })
+        .map(|m| {
+            let local = m.begin_at.with_timezone(&cfg.tz);
+            ReminderSeed {
+                match_id: m.id,
+                game: m.game.slug().to_string(),
+                league: m.league.clone(),
+                notify_at_ms: m.begin_at.timestamp_millis() - lead_ms,
+                title: format!("{} vs {}", m.team_a.label, m.team_b.label),
+                body: format!("{} · {}", m.league, time_label(local, false)),
+                url: resolved_event_url(m.game, &m.league, m.begin_at, m.league_url.as_deref()),
+            }
+        })
+        .collect()
+}
+
 // ----- Demo fixture (no token) ---------------------------------------------
 
 fn demo_team(label: &str, score: Option<i64>) -> NormTeam {

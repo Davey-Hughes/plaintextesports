@@ -139,6 +139,9 @@ pub fn spawn_sender() {
         leptos::logging::log!("Web Push sender started");
 
         loop {
+            // Expand game/event subscriptions into per-match reminders first.
+            expand_subscriptions(&conn);
+
             let now = Utc::now().timestamp_millis();
             let due = store::due_reminders(&conn, now).unwrap_or_default();
 
@@ -152,7 +155,7 @@ pub fn spawn_sender() {
             // Apply results (sync).
             for (endpoint, match_id, outcome) in &outcomes {
                 let res = match outcome {
-                    Outcome::Gone => store::delete_subscription(&conn, endpoint),
+                    Outcome::Gone => store::delete_endpoint(&conn, endpoint),
                     _ => store::mark_reminder_sent(&conn, endpoint, *match_id),
                 };
                 if let Err(e) = res {
@@ -168,6 +171,35 @@ pub fn spawn_sender() {
             tokio::time::sleep(TICK).await;
         }
     });
+}
+
+/// Turn each game/event subscription into per-match reminders (insert-if-absent
+/// so already-sent reminders aren't re-armed).
+fn expand_subscriptions(conn: &rusqlite::Connection) {
+    let subs = match store::list_subscriptions(conn) {
+        Ok(s) => s,
+        Err(e) => {
+            leptos::logging::log!("subscriptions read failed: {e}");
+            return;
+        }
+    };
+    for s in subs {
+        for seed in crate::cache::scope_reminder_seeds(&s.scope_kind, &s.scope_value, s.lead_ms) {
+            let r = store::Reminder {
+                endpoint: s.endpoint.clone(),
+                p256dh: s.p256dh.clone(),
+                auth: s.auth.clone(),
+                match_id: seed.match_id,
+                notify_at_ms: seed.notify_at_ms,
+                title: seed.title,
+                body: seed.body,
+                url: seed.url,
+                game: seed.game,
+                league: seed.league,
+            };
+            let _ = store::add_reminder_if_absent(conn, &r);
+        }
+    }
 }
 
 #[cfg(test)]
@@ -211,6 +243,8 @@ mod tests {
             title: "T1 vs GEN".into(),
             body: "LCK · starts soon".into(),
             url: "https://example.com/".into(),
+            game: "lol".into(),
+            league: "LCK".into(),
         };
 
         let req = build_push_request(&key, "mailto:dev@example.com", &r).expect("build");

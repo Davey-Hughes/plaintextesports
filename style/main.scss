@@ -236,8 +236,16 @@ a {
   }
 }
 
-.event-score {
+// Right-aligned event header controls (subscribe + reveal-score).
+.event-controls {
   margin-left: auto;
+  display: flex;
+  gap: 0.4rem;
+  align-items: baseline;
+}
+
+.event-score,
+.bell {
   background: none;
   border: 1px solid var(--border);
   color: var(--muted);
@@ -253,16 +261,23 @@ a {
     border-color: var(--fg);
   }
 
-  // Active state uses the event's palette color.
-  &.on {
-    color: var(--bg);
-    background: var(--lc, var(--fg));
-    border-color: var(--lc, var(--fg));
-  }
-
   &.event-hidden {
     display: none;
   }
+}
+
+// Reveal-score active uses the event's palette color.
+.event-score.on {
+  color: var(--bg);
+  background: var(--lc, var(--fg));
+  border-color: var(--lc, var(--fg));
+}
+
+// Subscribed bell uses the live/accent color.
+.bell.on {
+  color: var(--bg);
+  background: var(--accent);
+  border-color: var(--accent);
 }
 
 // Map each hashed league class to its palette color.
