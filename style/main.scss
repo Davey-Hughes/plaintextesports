@@ -132,11 +132,11 @@ a {
   }
 }
 
-.group {
-  margin: 1.4rem 0;
+.day {
+  margin: 1.6rem 0;
 }
 
-.group-title {
+.day-title {
   font-size: 13px;
   font-weight: 700;
   text-transform: uppercase;
@@ -145,88 +145,104 @@ a {
   margin: 0 0 0.6rem;
   padding-bottom: 0.2rem;
   border-bottom: 1px solid var(--border);
-
-  &.live-title {
-    color: var(--accent);
-    border-color: var(--accent);
-  }
 }
 
-.cards {
+.league {
+  margin: 0.7rem 0 1rem;
+}
+
+.league-title {
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--muted);
+  margin: 0 0 0.2rem;
+}
+
+.rows {
+  display: flex;
+  flex-direction: column;
+}
+
+.row {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
-  gap: 0.6rem;
-}
-
-.card {
-  display: block;
-  border: 1px solid var(--border);
-  background: var(--card-bg);
-  padding: 0.5rem 0.6rem;
+  grid-template-columns: 5.2em minmax(0, 1fr) auto minmax(0, 1fr) auto;
+  align-items: baseline;
+  gap: 0.5rem;
+  padding: 0.22rem 0.3rem;
   color: var(--fg);
+  border-left: 2px solid transparent;
 
   &:hover {
-    border-color: var(--fg);
+    background: var(--card-bg);
     text-decoration: none;
   }
 
   &.live {
-    border-color: var(--accent);
+    border-left-color: var(--accent);
   }
 }
 
-.card-top {
-  display: flex;
-  justify-content: space-between;
-  align-items: baseline;
-  gap: 0.5rem;
-  margin-bottom: 0.35rem;
-  font-size: 12px;
+.row-time {
+  color: var(--muted);
+  font-size: 13px;
+  white-space: nowrap;
 }
 
-.card-league {
-  color: var(--muted);
-  white-space: nowrap;
+.row-team {
   overflow: hidden;
   text-overflow: ellipsis;
+  white-space: nowrap;
+
+  &.row-a {
+    text-align: right;
+  }
+
+  &.row-b {
+    text-align: left;
+  }
+
+  &.winner {
+    color: var(--win);
+    font-weight: 700;
+  }
 }
 
-.card-status {
-  white-space: nowrap;
+.row-mid {
   color: var(--muted);
+  text-align: center;
+  white-space: nowrap;
+
+  &.scored {
+    color: var(--fg);
+  }
+}
+
+.row-meta {
+  display: flex;
+  gap: 0.45rem;
+  justify-content: flex-end;
+  align-items: baseline;
+  white-space: nowrap;
+  min-width: 3.2em;
+}
+
+.row-badge {
+  font-size: 11px;
 
   &.live {
     color: var(--accent);
     font-weight: 700;
   }
 
-  &.final {
-    color: var(--fg);
+  &.final,
+  &.canceled {
+    color: var(--muted);
   }
 }
 
-.team {
-  display: flex;
-  justify-content: space-between;
-  gap: 0.5rem;
-
-  .team-name {
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .team-score {
-    color: var(--muted);
-  }
-
-  &.winner {
-    .team-name,
-    .team-score {
-      color: var(--win);
-      font-weight: 700;
-    }
-  }
+.row-bo {
+  color: var(--muted);
+  font-size: 11px;
 }
 
 .empty,

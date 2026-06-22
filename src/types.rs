@@ -88,8 +88,9 @@ pub struct MatchView {
     pub league: String,
     pub tier: String,
     pub status: MatchStatus,
-    /// Ready-to-display time/status, e.g. "6:00 PM", "LIVE", or "Final".
-    pub time_label: String,
+    /// Start time in the display tz, e.g. "6:00 PM" (always the clock time; the
+    /// live/final state is conveyed separately by `status`).
+    pub clock_label: String,
     /// e.g. "Bo3"; empty when unknown.
     pub best_of: String,
     pub team_a: TeamView,
@@ -98,19 +99,27 @@ pub struct MatchView {
     pub begin_at_ms: i64,
 }
 
+/// Matches for one league/event within a day.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LeagueGroup {
+    pub league: String,
+    /// Best-of label shown in the header when uniform across the group (e.g.
+    /// "Bo3"); `None` when matches mix formats (then shown per-row).
+    pub bo: Option<String>,
+    pub matches: Vec<MatchView>,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DayGroup {
     /// ISO date in the display timezone, e.g. "2026-06-21".
     pub day_key: String,
     /// Human label, e.g. "Sunday, June 21".
     pub day_label: String,
-    pub matches: Vec<MatchView>,
+    pub leagues: Vec<LeagueGroup>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ScheduleView {
-    /// Matches currently live, pinned above the day groups.
-    pub live: Vec<MatchView>,
     pub days: Vec<DayGroup>,
     /// When the data was last fetched (unix ms).
     pub fetched_at_ms: i64,

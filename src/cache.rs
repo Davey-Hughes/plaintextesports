@@ -8,7 +8,7 @@
 
 use crate::config::Config;
 use crate::pandascore::{fetch_game, FetchResult, NormTeam, NormalizedMatch};
-use crate::types::{DayGroup, Game, MatchStatus, MatchView, ScheduleView, TeamView};
+use crate::types::{DayGroup, Game, LeagueGroup, MatchStatus, MatchView, ScheduleView, TeamView};
 use chrono::{DateTime, Datelike, Duration, NaiveDate, TimeZone, Timelike, Utc};
 use chrono_tz::Tz;
 use once_cell::sync::Lazy;
@@ -262,34 +262,26 @@ fn effective_status(m: &NormalizedMatch, now: DateTime<Utc>) -> MatchStatus {
     }
 }
 
-fn status_label(status: MatchStatus, local: DateTime<Tz>) -> String {
-    match status {
-        MatchStatus::Live => "LIVE".to_string(),
-        MatchStatus::Finished => "Final".to_string(),
-        MatchStatus::Canceled => "Canceled".to_string(),
-        MatchStatus::Upcoming => time_label(local),
-    }
-}
-
 fn to_view(m: &NormalizedMatch, tz: &Tz, now: DateTime<Utc>) -> MatchView {
     let local = m.begin_at.with_timezone(tz);
     let status = effective_status(m, now);
 
+    // PandaScore returns placeholder 0-0 results on unplayed matches, so only
+    // trust scores once a match is finished.
+    let show_scores = status == MatchStatus::Finished;
     let mut team_a = TeamView {
         label: m.team_a.label.clone(),
-        score: m.team_a.score,
+        score: show_scores.then_some(m.team_a.score).flatten(),
         winner: false,
     };
     let mut team_b = TeamView {
         label: m.team_b.label.clone(),
-        score: m.team_b.score,
+        score: show_scores.then_some(m.team_b.score).flatten(),
         winner: false,
     };
-    if status == MatchStatus::Finished {
-        if let (Some(a), Some(b)) = (team_a.score, team_b.score) {
-            team_a.winner = a > b;
-            team_b.winner = b > a;
-        }
+    if let (Some(a), Some(b)) = (team_a.score, team_b.score) {
+        team_a.winner = a > b;
+        team_b.winner = b > a;
     }
 
     MatchView {
@@ -298,7 +290,7 @@ fn to_view(m: &NormalizedMatch, tz: &Tz, now: DateTime<Utc>) -> MatchView {
         league: m.league.clone(),
         tier: m.tier.clone(),
         status,
-        time_label: status_label(status, local),
+        clock_label: time_label(local),
         best_of: m.best_of.map(|n| format!("Bo{n}")).unwrap_or_default(),
         team_a,
         team_b,
@@ -307,8 +299,10 @@ fn to_view(m: &NormalizedMatch, tz: &Tz, now: DateTime<Utc>) -> MatchView {
     }
 }
 
-/// Group already-sorted views into per-day buckets keyed by the local date.
-fn group_by_day(views: Vec<MatchView>, tz: &Tz) -> Vec<DayGroup> {
+/// Group already-time-sorted views into per-day buckets, and within each day
+/// into per-league groups (leagues ordered by their earliest match). A league
+/// group's `bo` is set only when every match in it shares the same best-of.
+fn group_days(views: Vec<MatchView>, tz: &Tz) -> Vec<DayGroup> {
     let mut days: Vec<DayGroup> = Vec::new();
     for v in views {
         let local = DateTime::from_timestamp_millis(v.begin_at_ms)
@@ -319,10 +313,26 @@ fn group_by_day(views: Vec<MatchView>, tz: &Tz) -> Vec<DayGroup> {
             days.push(DayGroup {
                 day_key: key,
                 day_label: day_label(local),
-                matches: Vec::new(),
+                leagues: Vec::new(),
             });
         }
-        days.last_mut().unwrap().matches.push(v);
+        let day = days.last_mut().unwrap();
+        if let Some(lg) = day.leagues.iter_mut().find(|l| l.league == v.league) {
+            lg.matches.push(v);
+        } else {
+            day.leagues.push(LeagueGroup {
+                league: v.league.clone(),
+                bo: None,
+                matches: vec![v],
+            });
+        }
+    }
+    for day in &mut days {
+        for lg in &mut day.leagues {
+            let first = lg.matches.first().map(|m| m.best_of.clone()).unwrap_or_default();
+            let uniform = !first.is_empty() && lg.matches.iter().all(|m| m.best_of == first);
+            lg.bo = uniform.then_some(first);
+        }
     }
     days
 }
@@ -337,6 +347,7 @@ fn matches_in_window(
 ) -> Vec<MatchView> {
     snap.matches
         .iter()
+        .filter(|m| m.status != MatchStatus::Canceled)
         .filter(|m| game.is_none_or(|g| m.game == g))
         .filter(|m| m.begin_at >= start && m.begin_at < end)
         .map(|m| to_view(m, tz, now))
@@ -355,12 +366,8 @@ pub fn homepage_view(game_filter: &str) -> ScheduleView {
     let snap = SNAPSHOT.read().unwrap();
     let all = matches_in_window(&snap, game, start, end, &cfg.tz, now);
 
-    let (live, upcoming): (Vec<_>, Vec<_>) =
-        all.into_iter().partition(|m| m.status == MatchStatus::Live);
-
     ScheduleView {
-        live,
-        days: group_by_day(upcoming, &cfg.tz),
+        days: group_days(all, &cfg.tz),
         fetched_at_ms: snap.fetched_at.timestamp_millis(),
         fetched_label: time_label(snap.fetched_at.with_timezone(&cfg.tz)),
         stale: snap.stale,
@@ -385,8 +392,6 @@ pub fn day_view(date: &str, game_filter: &str) -> ScheduleView {
 
     let snap = SNAPSHOT.read().unwrap();
     let all = matches_in_window(&snap, game, start, end, &cfg.tz, now);
-    let (live, rest): (Vec<_>, Vec<_>) =
-        all.into_iter().partition(|m| m.status == MatchStatus::Live);
 
     let local_noon = cfg
         .tz
@@ -395,8 +400,7 @@ pub fn day_view(date: &str, game_filter: &str) -> ScheduleView {
         .unwrap_or_else(|| cfg.tz.from_utc_datetime(&day.and_hms_opt(12, 0, 0).unwrap()));
 
     ScheduleView {
-        live,
-        days: group_by_day(rest, &cfg.tz),
+        days: group_days(all, &cfg.tz),
         fetched_at_ms: snap.fetched_at.timestamp_millis(),
         fetched_label: time_label(snap.fetched_at.with_timezone(&cfg.tz)),
         stale: snap.stale,
