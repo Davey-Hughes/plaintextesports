@@ -64,6 +64,7 @@ Edit the allowlist/denylist in [`src/tiering.rs`](src/tiering.rs):
 
 ```sh
 cargo leptos watch        # http://127.0.0.1:4000
+DEMO=1 cargo leptos watch # force fixture data (ignores token + cache db)
 cargo test --features ssr # tiering + deserialization tests
 ```
 
@@ -72,6 +73,7 @@ cargo test --features ssr # tiering + deserialization tests
 | Var | Default | Purpose |
 |---|---|---|
 | `PANDASCORE_TOKEN` | _(none)_ | API token; unset = demo data |
+| `DEMO` | _(off)_ | `1`/`true` forces fixture data even with a token/DB |
 | `DISPLAY_TZ` | `America/Los_Angeles` | Fallback tz (viewers' own tz is auto-detected) |
 | `POLL_INTERVAL_SECS` | `1200` | Idle poll interval, seconds (min 60) |
 | `POLL_ACTIVE_SECS` | `60` | Poll interval while live/imminent, seconds (min 30) |

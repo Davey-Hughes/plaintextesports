@@ -64,6 +64,18 @@ const RETENTION_DAYS: i64 = 2;
 pub fn spawn_poller() {
     let cfg = Config::from_env();
 
+    // DEMO mode: serve fixture data regardless of token/DB (and don't poll).
+    if cfg.demo {
+        leptos::logging::log!("DEMO mode — serving fixture data (ignoring token + cache db)");
+        let now = Utc::now();
+        let mut snap = SNAPSHOT.write().unwrap();
+        snap.matches = demo_matches(now);
+        snap.fetched_at = now;
+        snap.stale = false;
+        snap.using_fixture = true;
+        return;
+    }
+
     // Open the persistent cache (best-effort; degrade to memory-only on error).
     let mut store = if cfg.db_path.is_empty() {
         None
