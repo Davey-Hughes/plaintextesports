@@ -764,12 +764,10 @@ fn render_schedule(s: ScheduleView, show_nav: bool, push: bool) -> impl IntoView
                     view! {
                         <div class=format!("league {lc}")>
                             <div class="league-head">
+                                <SubscribeStar kind="league" value=sub_value />
                                 <h3 class="league-title">
                                     <a href=event_url target="_blank" rel="noreferrer">{header}</a>
                                 </h3>
-                                <span class="event-controls">
-                                    <SubscribeStar kind="league" value=sub_value />
-                                </span>
                             </div>
                             <div class="rows">{rows}</div>
                         </div>
