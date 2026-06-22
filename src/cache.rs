@@ -1092,58 +1092,51 @@ fn demo_event_info(league: &str) -> EventInfo {
     // decided-but-unplayed and TBD-locked states); CS2 events demo a
     // double-elimination playoff (upper/lower bracket + grand final). Feeders are
     // `(round, index)` of the matches whose scores decide each later lineup.
+    let br = |title: &str, section: &str, matches: Vec<BracketMatch>| BracketRound {
+        title: title.to_string(),
+        matches,
+        section: section.to_string(),
+    };
     let rounds = if lol {
         vec![
-            BracketRound {
-                title: "Quarterfinals".to_string(),
-                matches: vec![
+            br(
+                "Quarterfinals",
+                "",
+                vec![
                     bm(t[0], t[1], Some(2), Some(0), "a", vec![]),
                     bm(t[2], t[3], Some(2), Some(1), "a", vec![]),
                     bm(t[4], t[5], Some(1), Some(2), "b", vec![]),
                     bm(t[6], t[7], Some(2), Some(0), "a", vec![]),
                 ],
-            },
-            BracketRound {
-                title: "Semifinals".to_string(),
-                matches: vec![
+            ),
+            br(
+                "Semifinals",
+                "",
+                vec![
                     // One played, one decided-but-not-yet-played (names only).
                     bm(t[0], t[2], Some(1), Some(2), "b", vec![(0, 0), (0, 1)]),
                     bm(t[5], t[6], None, None, "", vec![(0, 2), (0, 3)]),
                 ],
-            },
-            BracketRound {
-                // Participants not decided yet → stays locked/hidden.
-                title: "Final".to_string(),
-                matches: vec![bm("TBD", "TBD", None, None, "", vec![(1, 0), (1, 1)])],
-            },
+            ),
+            // Participants not decided yet → stays locked/hidden.
+            br("Final", "", vec![bm("TBD", "TBD", None, None, "", vec![(1, 0), (1, 1)])]),
         ]
     } else {
         vec![
-            BracketRound {
-                title: "Upper Semis".to_string(),
-                matches: vec![
+            br(
+                "Semifinals",
+                "upper",
+                vec![
                     bm(t[0], t[1], Some(2), Some(1), "a", vec![]),
                     bm(t[2], t[3], Some(2), Some(0), "a", vec![]),
                 ],
-            },
-            BracketRound {
-                title: "Upper Final".to_string(),
-                matches: vec![bm(t[0], t[2], Some(1), Some(2), "b", vec![(0, 0), (0, 1)])],
-            },
-            BracketRound {
-                // Losers of the upper semis drop here.
-                title: "Lower Round".to_string(),
-                matches: vec![bm(t[1], t[3], Some(2), Some(0), "a", vec![(0, 0), (0, 1)])],
-            },
-            BracketRound {
-                // Lower-round winner vs the upper-final loser.
-                title: "Lower Final".to_string(),
-                matches: vec![bm(t[1], t[0], Some(1), Some(2), "b", vec![(2, 0), (1, 0)])],
-            },
-            BracketRound {
-                title: "Grand Final".to_string(),
-                matches: vec![bm(t[2], t[0], Some(3), Some(1), "a", vec![(1, 0), (3, 0)])],
-            },
+            ),
+            br("Final", "upper", vec![bm(t[0], t[2], Some(1), Some(2), "b", vec![(0, 0), (0, 1)])]),
+            // Losers of the upper semis drop here.
+            br("Round 1", "lower", vec![bm(t[1], t[3], Some(2), Some(0), "a", vec![(0, 0), (0, 1)])]),
+            // Lower-round winner vs the upper-final loser.
+            br("Final", "lower", vec![bm(t[1], t[0], Some(1), Some(2), "b", vec![(2, 0), (1, 0)])]),
+            br("Final", "final", vec![bm(t[2], t[0], Some(3), Some(1), "a", vec![(1, 0), (3, 0)])]),
         ]
     };
     let row = |rank, team: &str, w, l, gw, gl| StandingRow {

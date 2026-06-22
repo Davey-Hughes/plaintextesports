@@ -212,6 +212,11 @@ pub struct BracketMatch {
 pub struct BracketRound {
     pub title: String,
     pub matches: Vec<BracketMatch>,
+    /// Which half of a double-elimination bracket this column belongs to:
+    /// "upper", "lower", "final" (grand final), or "" for a single-elimination
+    /// bracket. Drives the upper/lower visual grouping.
+    #[serde(default)]
+    pub section: String,
 }
 
 /// Standings + bracket for one event/tournament.

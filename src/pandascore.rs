@@ -544,6 +544,10 @@ pub async fn fetch_standings(
 #[derive(Debug, Deserialize)]
 struct RawBracketMatch {
     id: i64,
+    /// Match name, e.g. "Lower Bracket Final" — used to split a double-elim
+    /// bracket into upper/lower/grand-final sections.
+    #[serde(default)]
+    name: Option<String>,
     #[serde(default)]
     opponents: Vec<RawOpponent>,
     #[serde(default)]
@@ -619,6 +623,18 @@ fn round_title(n_matches: usize) -> String {
     }
 }
 
+/// Which half of a double-elimination bracket a match belongs to, from its name.
+fn bracket_section(m: &RawBracketMatch) -> &'static str {
+    let n = m.name.as_deref().unwrap_or("").to_lowercase();
+    if n.contains("grand") {
+        "final"
+    } else if n.contains("lower") || n.contains("loser") {
+        "lower"
+    } else {
+        "upper"
+    }
+}
+
 fn build_rounds(raw: &[RawBracketMatch]) -> Vec<BracketRound> {
     if raw.is_empty() {
         return Vec::new();
@@ -627,35 +643,56 @@ fn build_rounds(raw: &[RawBracketMatch]) -> Vec<BracketRound> {
     let mut cache = HashMap::new();
     let mut visiting = std::collections::HashSet::new();
 
-    // Group matches by depth (column), preserving input order within a column.
-    let mut by_depth: HashMap<i32, Vec<&RawBracketMatch>> = HashMap::new();
-    let mut max_depth = 0;
-    for m in raw {
-        let d = bracket_depth(m.id, &by_id, &mut cache, &mut visiting);
-        max_depth = max_depth.max(d);
-        by_depth.entry(d).or_default().push(m);
-    }
+    // A bracket is double-elimination only if it has a lower bracket. When it
+    // does, columns are grouped upper → lower → grand-final (each by depth);
+    // otherwise it's one section ("") grouped purely by depth.
+    let double_elim = raw.iter().any(|m| bracket_section(m) == "lower");
 
-    let ordered: Vec<(i32, Vec<&RawBracketMatch>)> = (0..=max_depth)
-        .filter_map(|d| by_depth.remove(&d).map(|ms| (d, ms)))
+    let mut max_depth = 0;
+    let tagged: Vec<(&RawBracketMatch, i32, &str)> = raw
+        .iter()
+        .map(|m| {
+            let d = bracket_depth(m.id, &by_id, &mut cache, &mut visiting);
+            max_depth = max_depth.max(d);
+            let sec = if double_elim { bracket_section(m) } else { "" };
+            (m, d, sec)
+        })
         .collect();
 
-    // Map each match id to its (round_index, position) so feeder edges can be
-    // expressed as grid coordinates the UI can resolve without the raw ids.
+    // Order columns by section, then depth (preserving input order within one).
+    let sections: &[&str] = if double_elim { &["upper", "lower", "final"] } else { &[""] };
+    let mut columns: Vec<(&str, Vec<&RawBracketMatch>)> = Vec::new();
+    for &sec in sections {
+        for d in 0..=max_depth {
+            let ms: Vec<&RawBracketMatch> = tagged
+                .iter()
+                .filter(|(_, md, msec)| *md == d && *msec == sec)
+                .map(|(m, _, _)| *m)
+                .collect();
+            if !ms.is_empty() {
+                columns.push((sec, ms));
+            }
+        }
+    }
+
+    // Map each match id to its (column_index, position) so feeder edges can be
+    // expressed as grid coordinates the UI can resolve without the raw ids. The
+    // section ordering keeps every feeder in an earlier column.
     let mut pos: HashMap<i64, (usize, usize)> = HashMap::new();
-    for (r, (_, ms)) in ordered.iter().enumerate() {
+    for (r, (_, ms)) in columns.iter().enumerate() {
         for (i, m) in ms.iter().enumerate() {
             pos.insert(m.id, (r, i));
         }
     }
 
-    ordered
-        .iter()
-        .map(|(_, ms)| {
+    columns
+        .into_iter()
+        .map(|(sec, ms)| {
             let matches = ms.iter().map(|m| to_bracket_match(m, &pos)).collect::<Vec<_>>();
             BracketRound {
                 title: round_title(matches.len()),
                 matches,
+                section: sec.to_string(),
             }
         })
         .collect()
