@@ -231,10 +231,47 @@ fn AboutPage() -> impl IntoView {
                 "own timezone, and your light/dark and 12h/24h choices are remembered."
             </p>
 
+            <h2>"filtering the schedule"</h2>
+            <p>
+                "By default you see every tier-1 match. The filters are additive — pick "
+                "any number of them and the schedule narrows to what you chose:"
+            </p>
+            <ul>
+                <li>
+                    "Click a game tab (" <span class="kbd">"CS2"</span> " / "
+                    <span class="kbd">"LoL"</span> ") to include that game."
+                </li>
+                <li>
+                    "Click an event chip (" <span class="kbd">"IEM"</span> ", "
+                    <span class="kbd">"LCK"</span> ", …) to include that event. The chips "
+                    "shown follow the games you've picked."
+                </li>
+                <li>
+                    "When any filter is active a blue " <span class="kbd">"clear"</span>
+                    " appears on the right — click it to reset everything."
+                </li>
+            </ul>
+
+            <h2>"browsing other days"</h2>
+            <p>
+                "The schedule leads with today and what's upcoming. To look back, use "
+                <span class="kbd">"‹ show earlier days"</span>
+                " above the first day to pull in recent days a few at a time. For an exact "
+                "window, open the calendar button at the top and pick a start and end date."
+            </p>
+
+            <h2>"event pages"</h2>
+            <p>
+                "Click an event's name (e.g. " <span class="kbd">"IEM"</span>
+                ") to open its page: the full run of that event's matches, its group-stage "
+                "standings and playoff bracket, and a link out to its Liquipedia/official "
+                "page."
+            </p>
+
             <h2>"seeing scores"</h2>
             <p>
                 "Scores are hidden by default so you can browse finished matches without "
-                "spoilers. There are two ways to reveal them:"
+                "spoilers. To reveal them:"
             </p>
             <ul>
                 <li>
@@ -244,9 +281,38 @@ fn AboutPage() -> impl IntoView {
                 </li>
                 <li>
                     "Use the " <span class="kbd">"show scores"</span>
-                    " toggle at the top to reveal every score at once."
+                    " toggle at the top to reveal every score, standing, and bracket at once."
                 </li>
             </ul>
+
+            <h2>"standings & brackets"</h2>
+            <p>
+                "On an event page (or a match's detail page) the standings and bracket are "
+                "hidden too, and reveal in stages so you control how much you see:"
+            </p>
+            <ul>
+                <li>
+                    "Click the " <span class="kbd">"Standings"</span>
+                    " heading to show the table. Until then it holds blank rows, so the page "
+                    "doesn't jump when you reveal it."
+                </li>
+                <li>
+                    "Click the " <span class="kbd">"Bracket"</span>
+                    " heading to walk the whole bracket forward one step at a time — team "
+                    "names first, then scores, round by round."
+                </li>
+                <li>
+                    "Or reveal a single round by its title (e.g. "
+                    <span class="kbd">"Quarterfinals"</span>
+                    "), or a single series by clicking it. The first click shows the team "
+                    "names, the next shows the score."
+                </li>
+            </ul>
+            <p>
+                "A later round's teams only appear once the matches feeding it have had "
+                "their scores revealed — so you can't accidentally spoil who advanced. What "
+                "you've revealed is remembered and shared everywhere the same event appears."
+            </p>
 
             <h2>"getting notifications"</h2>
             <p>
