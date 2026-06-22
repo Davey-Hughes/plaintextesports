@@ -1129,16 +1129,17 @@ a {
 }
 
 // A revealed team name links to its match page. It inherits the row's colour
-// (so winner/loser emphasis still reads) and only underlines on hover, so the
-// link is unobtrusive until you reach for it. Clicking elsewhere in the box
-// still toggles the reveal.
+// (so winner/loser emphasis still reads) and is unobtrusive until hovered.
+// Clicking elsewhere in the box still toggles the reveal.
 a.bk-team-link {
   color: inherit;
   text-decoration: none;
+}
 
-  &:hover {
-    text-decoration: underline;
-  }
+// Both team names link to the same match, so hovering either one underlines
+// both — making it clear they're a single link to that match's page.
+.bk-box:has(a.bk-team-link:hover) a.bk-team-link {
+  text-decoration: underline;
 }
 
 // Bracket connectors. A feeding match sends a line out to the gutter; the two
