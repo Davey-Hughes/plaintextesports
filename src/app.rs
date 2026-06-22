@@ -166,18 +166,20 @@ pub fn App() -> impl IntoView {
 
 #[component]
 fn SiteHeader() -> impl IntoView {
+    // The brand scrolls away with the page; the toggle bar is a sibling of the
+    // page so it can stick to the top while scrolling.
     view! {
         <header class="header">
             <div class="brand">
                 <A href="/">"plaintextesports"</A>
             </div>
-            <div class="toggles">
-                <CalendarPicker />
-                <ScoresToggle />
-                <HourToggle />
-                <ThemeToggle />
-            </div>
         </header>
+        <div class="toggles">
+            <CalendarPicker />
+            <ScoresToggle />
+            <HourToggle />
+            <ThemeToggle />
+        </div>
     }
 }
 
