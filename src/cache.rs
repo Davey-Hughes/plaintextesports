@@ -166,6 +166,8 @@ pub fn spawn_poller() {
         };
 
         let mut last_deep: Option<DateTime<Utc>> = None;
+        // Last-seen API budget, used to throttle low-priority past work.
+        let mut rate_remaining: Option<u64> = None;
         loop {
             let now = Utc::now();
             let active = {
@@ -217,6 +219,96 @@ pub fn spawn_poller() {
                         tokio::time::sleep(std::time::Duration::from_millis(2100)).await;
                     }
                     apply_resolutions(&results, store.as_mut(), Utc::now());
+                }
+            }
+
+            // Low-priority past-day work: only when nothing is live/imminent and
+            // the API budget has headroom, so current/future polling comes first.
+            if !active && headroom_ok(rate_remaining, cfg.rate_limit_floor) {
+                let cutoff_ms = cfg.archive_cutoff(now).timestamp_millis();
+
+                // 1. Refresh one overdue recent-past day (≤1 request).
+                if cfg.past_refresh {
+                    let bucket = store.as_ref().and_then(|c| next_due_refresh_bucket(c, now));
+                    if let Some((game, day)) = bucket {
+                        let (from, to) = utc_day_bounds(day);
+                        match crate::pandascore::fetch_past_range(&client, &token, game, from, to, 1, 50)
+                            .await
+                        {
+                            Ok(r) => {
+                                rate_remaining = r.rate_remaining.or(rate_remaining);
+                                apply_past(r.matches, store.as_mut(), cutoff_ms);
+                                if let Some(conn) = store.as_ref() {
+                                    let _ = crate::store::set_meta(
+                                        conn,
+                                        &refresh_key(game, day),
+                                        &now.timestamp_millis().to_string(),
+                                    );
+                                }
+                            }
+                            Err(e) => {
+                                leptos::logging::log!("past-refresh failed ({} {day}): {e}", game.slug());
+                            }
+                        }
+                    }
+                }
+
+                // 2. Backfill one ~7-day chunk backwards (both games), if not done.
+                if cfg.backfill && headroom_ok(rate_remaining, cfg.rate_limit_floor) {
+                    let archive = cfg.archive_cutoff(now);
+                    // Compute the next chunk from the persisted cursor (borrow released
+                    // before the await): None ⇒ already done, Some(from,to,last).
+                    let chunk = store.as_ref().and_then(|conn| {
+                        if crate::store::get_meta(conn, "backfill_done").as_deref() == Some("1") {
+                            return None;
+                        }
+                        let cursor = crate::store::get_meta(conn, "backfill_cursor_ms")
+                            .and_then(|s| s.parse::<i64>().ok())
+                            .and_then(DateTime::from_timestamp_millis)
+                            .unwrap_or(now);
+                        Some(if cursor <= archive {
+                            None // reached horizon → mark done below
+                        } else {
+                            let from = (cursor - Duration::days(7)).max(archive);
+                            Some((from, cursor, from <= archive))
+                        })
+                    });
+                    match chunk {
+                        Some(Some((from, to, last))) => {
+                            let (cs, lol) = tokio::join!(
+                                crate::pandascore::fetch_past_range(&client, &token, Game::Cs2, from, to, 1, 50),
+                                crate::pandascore::fetch_past_range(&client, &token, Game::Lol, from, to, 1, 50),
+                            );
+                            let mut got = Vec::new();
+                            for r in [cs, lol] {
+                                match r {
+                                    Ok(r) => {
+                                        rate_remaining = r.rate_remaining.or(rate_remaining);
+                                        got.extend(r.matches);
+                                    }
+                                    Err(e) => leptos::logging::log!("backfill fetch failed: {e}"),
+                                }
+                            }
+                            apply_past(got, store.as_mut(), cutoff_ms);
+                            if let Some(conn) = store.as_ref() {
+                                let _ = crate::store::set_meta(
+                                    conn,
+                                    "backfill_cursor_ms",
+                                    &from.timestamp_millis().to_string(),
+                                );
+                                if last {
+                                    let _ = crate::store::set_meta(conn, "backfill_done", "1");
+                                }
+                            }
+                            leptos::logging::log!("backfilled {} … {}", from.date_naive(), to.date_naive());
+                        }
+                        Some(None) => {
+                            if let Some(conn) = store.as_ref() {
+                                let _ = crate::store::set_meta(conn, "backfill_done", "1");
+                            }
+                        }
+                        None => {}
+                    }
                 }
             }
 
@@ -341,6 +433,100 @@ fn merge_in_memory(
     if any_ok {
         snap.fetched_at = now;
     }
+}
+
+// ----- Past-day refresh + backfill -----------------------------------------
+
+/// Upsert a batch of past matches, prune by cutoff, and reload the snapshot —
+/// the success tail of `apply_poll` for the single-purpose past fetches. Does
+/// not touch `fetched_at`/`stale` (those track the live current/future poll).
+fn apply_past(matches: Vec<NormalizedMatch>, store: Option<&mut rusqlite::Connection>, cutoff_ms: i64) {
+    if matches.is_empty() {
+        return;
+    }
+    let now = Utc::now();
+    if let Some(conn) = store {
+        if let Err(e) =
+            crate::store::upsert_and_prune(conn, &matches, now.timestamp_millis(), cutoff_ms)
+        {
+            leptos::logging::log!("past write failed: {e}");
+            return;
+        }
+        match crate::store::load_all(conn) {
+            Ok(mut all) => {
+                all.sort_by_key(|m| m.begin_at);
+                SNAPSHOT.write().unwrap_or_else(PoisonError::into_inner).matches = all;
+            }
+            Err(e) => leptos::logging::log!("past reload failed: {e}"),
+        }
+    } else {
+        let mut snap = SNAPSHOT.write().unwrap_or_else(PoisonError::into_inner);
+        let merged = merge_matches(&snap.matches, matches, &[], cutoff_ms);
+        snap.matches = merged;
+    }
+}
+
+/// How often to re-fetch a past day's scores, by age in whole days vs today
+/// (UTC). `None` = never: age 0 (today) is the main poll's job, and matches over
+/// a week old are locked (scores no longer change, frees budget for backfill).
+fn refresh_interval(age_days: i64) -> Option<Duration> {
+    match age_days {
+        1 => Some(Duration::hours(6)),
+        2 => Some(Duration::hours(12)),
+        3 => Some(Duration::hours(24)),
+        4..=7 => Some(Duration::hours(48)),
+        _ => None,
+    }
+}
+
+/// Enough API budget left for low-priority past work? Unknown (`None`) ⇒ yes
+/// (the main poll just succeeded, so headroom exists).
+fn headroom_ok(remaining: Option<u64>, floor: u64) -> bool {
+    remaining.is_none_or(|r| r >= floor)
+}
+
+/// UTC calendar-day bounds: `[00:00, next 00:00)`.
+fn utc_day_bounds(day: NaiveDate) -> (DateTime<Utc>, DateTime<Utc>) {
+    let start = day.and_hms_opt(0, 0, 0).unwrap().and_utc();
+    (start, start + Duration::days(1))
+}
+
+fn refresh_key(game: Game, day: NaiveDate) -> String {
+    format!("past_refresh:{}:{}", game.slug(), day.format("%Y-%m-%d"))
+}
+
+/// The single most-overdue past `(game, day)` bucket due for a score refresh,
+/// or `None`. Only buckets that actually have matches in the snapshot and fall
+/// in the 1–7-day refresh window are considered.
+fn next_due_refresh_bucket(conn: &rusqlite::Connection, now: DateTime<Utc>) -> Option<(Game, NaiveDate)> {
+    let today = now.date_naive();
+    let buckets: Vec<(Game, NaiveDate)> = {
+        let snap = SNAPSHOT.read().unwrap_or_else(PoisonError::into_inner);
+        let mut set = std::collections::HashSet::new();
+        for m in &snap.matches {
+            let day = m.begin_at.date_naive();
+            if (1..=7).contains(&(today - day).num_days()) {
+                set.insert((m.game, day));
+            }
+        }
+        set.into_iter().collect()
+    };
+    let mut best: Option<(Game, NaiveDate, i64)> = None;
+    for (game, day) in buckets {
+        let Some(interval) = refresh_interval((today - day).num_days()) else {
+            continue;
+        };
+        let overdue = match crate::store::get_meta(conn, &refresh_key(game, day))
+            .and_then(|s| s.parse::<i64>().ok())
+        {
+            None => i64::MAX, // never refreshed → top priority
+            Some(t) => (now.timestamp_millis() - t) - interval.num_milliseconds(),
+        };
+        if overdue >= 0 && best.as_ref().is_none_or(|b| overdue > b.2) {
+            best = Some((game, day, overdue));
+        }
+    }
+    best.map(|(g, d, _)| (g, d))
 }
 
 struct Candidate {
@@ -1335,6 +1521,33 @@ mod tests {
         // Old cs2 (id 1) replaced by fresh (id 3); lol (id 2) retained; sorted.
         assert_eq!(merged.iter().map(|m| m.id).collect::<Vec<_>>(), vec![2, 3]);
         assert!(!merged.iter().any(|m| m.id == 1));
+    }
+
+    #[test]
+    fn refresh_interval_curve() {
+        assert_eq!(refresh_interval(1), Some(Duration::hours(6)));
+        assert_eq!(refresh_interval(2), Some(Duration::hours(12)));
+        assert_eq!(refresh_interval(3), Some(Duration::hours(24)));
+        assert_eq!(refresh_interval(7), Some(Duration::hours(48)));
+        // Today (0) is the main poll's job; > 1 week is locked.
+        assert_eq!(refresh_interval(0), None);
+        assert_eq!(refresh_interval(8), None);
+    }
+
+    #[test]
+    fn headroom_respects_floor() {
+        assert!(headroom_ok(None, 200)); // unknown → assume OK
+        assert!(headroom_ok(Some(200), 200));
+        assert!(headroom_ok(Some(500), 200));
+        assert!(!headroom_ok(Some(199), 200));
+    }
+
+    #[test]
+    fn utc_day_bounds_are_half_open() {
+        let day = NaiveDate::from_ymd_opt(2026, 5, 1).unwrap();
+        let (start, end) = utc_day_bounds(day);
+        assert_eq!(start.to_rfc3339(), "2026-05-01T00:00:00+00:00");
+        assert_eq!(end.to_rfc3339(), "2026-05-02T00:00:00+00:00");
     }
 
     #[test]
