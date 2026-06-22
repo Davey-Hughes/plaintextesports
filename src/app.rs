@@ -85,6 +85,13 @@ struct DateRange(RwSignal<Option<(String, String)>>);
 #[derive(Clone, Copy)]
 struct EarlierDays(RwSignal<i64>);
 
+/// Selected game filters (slugs) and event filters (league names) — shared and
+/// persisted so they survive navigating to a match and back.
+#[derive(Clone, Copy)]
+struct Games(RwSignal<HashSet<String>>);
+#[derive(Clone, Copy)]
+struct Leagues(RwSignal<HashSet<String>>);
+
 #[component]
 #[must_use]
 pub fn App() -> impl IntoView {
@@ -106,6 +113,9 @@ pub fn App() -> impl IntoView {
     // History views: a calendar-selected range, and the "earlier days" expansion.
     let range = RwSignal::new(None::<(String, String)>);
     let earlier = RwSignal::new(0i64);
+    // Schedule filters (shared + persisted across navigation).
+    let games = RwSignal::new(HashSet::<String>::new());
+    let leagues = RwSignal::new(HashSet::<String>::new());
     provide_context(hour24);
     provide_context(tz);
     provide_context(starred);
@@ -116,6 +126,8 @@ pub fn App() -> impl IntoView {
     provide_context(Subscribed(subscribed));
     provide_context(DateRange(range));
     provide_context(EarlierDays(earlier));
+    provide_context(Games(games));
+    provide_context(Leagues(leagues));
 
     // After hydration, pick up the browser's timezone + saved preferences and
     // the push key. (Client-side only; the initial render uses the defaults
@@ -135,6 +147,8 @@ pub fn App() -> impl IntoView {
             revealed.set(load_revealed());
             sections.set(load_sections());
             range.set(load_range());
+            games.set(load_str_set("games"));
+            leagues.set(load_str_set("leagues"));
             leptos::task::spawn_local(async move {
                 if let Ok(k) = crate::server::get_vapid_key().await {
                     vapid.set(k);
@@ -1018,6 +1032,7 @@ fn StandingsTable(rows: Vec<StandingRow>, tournament_id: i64, game: Game) -> imp
                 >
                     "Standings"
                 </button>
+                {move || (!revealed.get()).then(|| view! { <span class="section-hint">"hidden"</span> })}
             </div>
             <table class="standings" class:placeholder=move || !revealed.get()>
                 <thead>
@@ -1275,6 +1290,7 @@ fn Bracket(rounds: Vec<BracketRound>, tournament_id: i64, bracket_only: bool) ->
                 >
                     "Bracket"
                 </button>
+                {move || (!bracket_on()).then(|| view! { <span class="section-hint">"hidden"</span> })}
             </div>
             {body}
         </section>
@@ -1622,9 +1638,10 @@ fn setup_autorefresh(resource: Resource<Result<ScheduleView, ServerFnError>>) {
 #[component]
 fn HomePage() -> impl IntoView {
     // Game/event filters are multi-select and applied client-side (the server
-    // always returns all games), so the data is fetched once regardless.
-    let games = RwSignal::new(HashSet::<String>::new());
-    let leagues = RwSignal::new(HashSet::<String>::new());
+    // always returns all games), so the data is fetched once regardless. Shared
+    // via context + persisted so they survive navigating away and back.
+    let games = use_context::<Games>().expect("games context").0;
+    let leagues = use_context::<Leagues>().expect("leagues context").0;
     let hour24 = use_context::<RwSignal<bool>>().expect("hour24 context");
     let tz = use_context::<RwSignal<String>>().expect("tz context");
     let range = use_context::<DateRange>().expect("range context").0;
@@ -1931,8 +1948,8 @@ struct DayParams {
 fn DayPage() -> impl IntoView {
     let params = use_params::<DayParams>();
     let date = move || params.get().ok().map(|p| p.date).unwrap_or_default();
-    let games = RwSignal::new(HashSet::<String>::new());
-    let leagues = RwSignal::new(HashSet::<String>::new());
+    let games = use_context::<Games>().expect("games context").0;
+    let leagues = use_context::<Leagues>().expect("leagues context").0;
     let hour24 = use_context::<RwSignal<bool>>().expect("hour24 context");
     let tz = use_context::<RwSignal<String>>().expect("tz context");
     let schedule = Resource::new(
@@ -1960,6 +1977,8 @@ fn GameTabs(
                 g.insert(value.to_string());
             }
         });
+        #[cfg(feature = "hydrate")]
+        save_str_set("games", &games.get_untracked());
     };
     // A game filter tab with an embedded ★ that subscribes to the whole game.
     // The label clicks to filter; the ★ clicks to (un)subscribe.
@@ -1979,6 +1998,11 @@ fn GameTabs(
     let clear = move |_| {
         games.update(HashSet::clear);
         leagues.update(HashSet::clear);
+        #[cfg(feature = "hydrate")]
+        {
+            save_str_set("games", &games.get_untracked());
+            save_str_set("leagues", &leagues.get_untracked());
+        }
     };
     view! {
         <div class="tabs">
@@ -2016,6 +2040,8 @@ fn LeagueChips(leagues: Vec<String>, selected: RwSignal<HashSet<String>>) -> imp
                                     s.insert(click_name.clone());
                                 }
                             });
+                        #[cfg(feature = "hydrate")]
+                        save_str_set("leagues", &selected.get_untracked());
                     }
                 >
                     {name}
@@ -2502,6 +2528,32 @@ fn save_revealed(ids: &HashSet<i64>) {
 #[cfg(feature = "hydrate")]
 fn load_revealed() -> HashSet<i64> {
     load_id_set("revealed")
+}
+
+/// Persist a set of strings under `key` (newline-separated).
+#[cfg(feature = "hydrate")]
+fn save_str_set(key: &str, set: &HashSet<String>) {
+    if let Some(win) = web_sys::window() {
+        if let Ok(Some(storage)) = win.local_storage() {
+            let joined = set.iter().cloned().collect::<Vec<_>>().join("\n");
+            let _ = storage.set_item(key, &joined);
+        }
+    }
+}
+
+#[cfg(feature = "hydrate")]
+fn load_str_set(key: &str) -> HashSet<String> {
+    let mut out = HashSet::new();
+    if let Some(win) = web_sys::window() {
+        if let Ok(Some(storage)) = win.local_storage() {
+            if let Ok(Some(v)) = storage.get_item(key) {
+                for part in v.split('\n').filter(|p| !p.is_empty()) {
+                    out.insert(part.to_string());
+                }
+            }
+        }
+    }
+    out
 }
 
 /// Persist revealed standings/bracket sections (newline-separated string keys).
