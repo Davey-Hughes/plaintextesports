@@ -982,7 +982,12 @@ fn StandingsTable(rows: Vec<StandingRow>, tournament_id: i64, game: Game) -> imp
     view! {
         <section class="detail-section">
             <div class="section-head">
-                <button class="section-title section-toggle" class:on=move || revealed.get() on:click=toggle>
+                <button
+                    class="section-title section-toggle"
+                    class:on=move || revealed.get()
+                    title=move || if revealed.get() { "Hide the standings" } else { "Show the standings" }
+                    on:click=toggle
+                >
                     "Standings"
                 </button>
             </div>
@@ -1081,6 +1086,7 @@ fn Bracket(rounds: Vec<BracketRound>, tournament_id: i64) -> impl IntoView {
                     let (sa, sb) = (s.sa, s.sb);
                     let winner = s.winner;
                     let dash = if max == 2 { "-" } else { "" };
+                    let match_title = if max == 0 { "Not decided yet" } else { "Reveal this match" };
                     let stage = move || eff.with(|e| e.get(r).and_then(|row| row.get(i)).copied().unwrap_or(0));
                     view! {
                         <div
@@ -1088,6 +1094,7 @@ fn Bracket(rounds: Vec<BracketRound>, tournament_id: i64) -> impl IntoView {
                             // clicking a fed series reveals its contributing matches.
                             class="bk-match"
                             class:bk-locked=max == 0
+                            title=match_title
                             on:click=move |_| do_op(BkOp::Series(r, i))
                         >
                             <div class="bk-box">
@@ -1147,6 +1154,7 @@ fn Bracket(rounds: Vec<BracketRound>, tournament_id: i64) -> impl IntoView {
                         <button
                             class="bk-round-toggle"
                             class:on=round_on
+                            title="Reveal this round"
                             on:click=move |_| do_op(BkOp::Round(r))
                         >
                             {title}
@@ -1220,6 +1228,7 @@ fn Bracket(rounds: Vec<BracketRound>, tournament_id: i64) -> impl IntoView {
                 <button
                     class="section-title section-toggle"
                     class:on=bracket_on
+                    title="Reveal the bracket, round by round"
                     on:click=move |_| do_op(BkOp::Cascade)
                 >
                     "Bracket"
