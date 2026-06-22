@@ -78,6 +78,14 @@ ssr = [
   "leptos_router/ssr",
 ]
 
+[dev-dependencies]
+getrandom = "0.2"
+
+# VAPID key generator (cargo run --example gen_vapid --features ssr).
+[[example]]
+name = "gen_vapid"
+required-features = ["ssr"]
+
 [profile.wasm-release]
 inherits = "release"
 opt-level = 'z'
