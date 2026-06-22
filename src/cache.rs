@@ -1039,6 +1039,7 @@ pub async fn event_info(tournament_id: i64) -> EventInfo {
         });
     let info = EventInfo {
         event: String::new(),
+        tournament_id,
         standings,
         rounds,
     };
@@ -1059,13 +1060,9 @@ fn seed_demo_events(matches: &[NormalizedMatch], now: DateTime<Utc>) {
     for m in matches {
         if let Some(tid) = m.tournament_id {
             if seen.insert(tid) {
-                ev.insert(
-                    tid,
-                    CachedEvent {
-                        info: demo_event_info(&m.league),
-                        fetched_at: now,
-                    },
-                );
+                let mut info = demo_event_info(&m.league);
+                info.tournament_id = tid;
+                ev.insert(tid, CachedEvent { info, fetched_at: now });
             }
         }
     }
@@ -1130,6 +1127,7 @@ fn demo_event_info(league: &str) -> EventInfo {
     ];
     EventInfo {
         event: league.to_string(),
+        tournament_id: 0, // set by the caller (seed_demo_events)
         standings,
         rounds,
     }

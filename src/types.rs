@@ -212,6 +212,9 @@ pub struct BracketRound {
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EventInfo {
     pub event: String,
+    /// PandaScore tournament id — the stable key for sharing per-round reveal
+    /// state across the pages that show this same bracket.
+    pub tournament_id: i64,
     pub standings: Vec<StandingRow>,
     pub rounds: Vec<BracketRound>,
 }
