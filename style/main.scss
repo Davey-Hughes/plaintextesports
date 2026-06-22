@@ -254,10 +254,21 @@ a {
   }
 }
 
-// Calendar date-range picker (popover under the 📅 toggle).
+// Calendar date-range picker (popover under the calendar toggle).
 .cal-wrap {
   position: relative;
   display: inline-flex;
+}
+
+// Icon toggle: center the outline SVG and keep it square-ish.
+.cal-toggle {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.2rem 0.4rem;
+
+  svg {
+    display: block;
+  }
 }
 
 .calendar {
