@@ -110,7 +110,7 @@ fn row_to_match(row: &rusqlite::Row) -> rusqlite::Result<NormalizedMatch> {
         league_url: row.get("league_url")?,
         tier: row.get("tier")?,
         begin_at: DateTime::from_timestamp_millis(begin_ms).unwrap_or_else(Utc::now),
-        status: MatchStatus::from_str(&status),
+        status: MatchStatus::from_db(&status),
         best_of: row.get("best_of")?,
         team_a: NormTeam {
             label: row.get("team_a_label")?,

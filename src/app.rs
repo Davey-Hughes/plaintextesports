@@ -790,9 +790,11 @@ fn render_schedule(s: ScheduleView, show_nav: bool, push: bool) -> impl IntoView
     } else {
         String::new()
     };
-    let stale_note = stale
-        .then(|| "data may be stale · ".to_string())
-        .unwrap_or_default();
+    let stale_note = if stale {
+        "data may be stale · ".to_string()
+    } else {
+        String::new()
+    };
 
     view! {
         {nav}
