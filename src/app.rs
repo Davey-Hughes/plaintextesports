@@ -2,8 +2,8 @@ use crate::server::{
     get_day, get_event_info, get_match_detail, get_range, get_schedule, get_site,
 };
 use crate::types::{
-    BracketRound, EventInfo, Game, MatchDetail, MatchStatus, MatchView, ScheduleView, StandingRow,
-    StreamView,
+    BracketMatch, BracketRound, EventInfo, Game, MatchDetail, MatchStatus, MatchView, ScheduleView,
+    StandingRow, StreamView,
 };
 use leptos::prelude::*;
 use std::collections::HashSet;
@@ -423,13 +423,35 @@ fn detail_view(d: MatchDetail) -> impl IntoView {
     }
 }
 
-/// Build a readable label for a broadcast (host + language/role tags).
-fn stream_label(s: &StreamView) -> String {
-    let host = s
-        .url
+/// Split a stream URL into a friendly (site, channel), e.g.
+/// "https://www.twitch.tv/esl_csgo" → ("Twitch", "esl_csgo").
+fn stream_parts(url: &str) -> (String, String) {
+    let after = url
         .split_once("//")
-        .map_or(s.url.as_str(), |(_, rest)| rest)
+        .map_or(url, |(_, rest)| rest)
         .trim_end_matches('/');
+    let (domain, path) = after.split_once('/').unwrap_or((after, ""));
+    let domain = domain.trim_start_matches("www.");
+    let site = if domain.contains("twitch") {
+        "Twitch"
+    } else if domain.contains("youtube") || domain.contains("youtu.be") {
+        "YouTube"
+    } else if domain.contains("kick") {
+        "Kick"
+    } else if domain.contains("afreeca") || domain.contains("sooplive") || domain.contains("soop") {
+        "SOOP"
+    } else if domain.contains("bilibili") {
+        "Bilibili"
+    } else {
+        domain
+    };
+    // The channel/handle is the path (drop any query string).
+    let channel = path.split('?').next().unwrap_or("").trim_matches('/');
+    (site.to_string(), channel.to_string())
+}
+
+/// Language + main/official tags for a stream, e.g. "EN · main".
+fn stream_tags(s: &StreamView) -> String {
     let mut tags = Vec::new();
     if !s.language.is_empty() {
         tags.push(s.language.to_uppercase());
@@ -439,11 +461,7 @@ fn stream_label(s: &StreamView) -> String {
     } else if s.official {
         tags.push("official".to_string());
     }
-    if tags.is_empty() {
-        host.to_string()
-    } else {
-        format!("{host} · {}", tags.join(", "))
-    }
+    tags.join(" · ")
 }
 
 #[component]
@@ -454,13 +472,17 @@ fn StreamsList(streams: Vec<StreamView>) -> impl IntoView {
     let items = streams
         .into_iter()
         .map(|s| {
-            let label = stream_label(&s);
+            let (site, channel) = stream_parts(&s.url);
+            let tags = stream_tags(&s);
             let cls = if s.official { "stream official" } else { "stream" };
             view! {
                 <li class=cls>
                     <a href=s.url target="_blank" rel="noreferrer">
-                        {label}
+                        <span class="stream-site">{site}</span>
+                        {(!channel.is_empty())
+                            .then(|| view! { <span class="stream-chan">{format!("/{channel}")}</span> })}
                     </a>
+                    {(!tags.is_empty()).then(|| view! { <span class="stream-tags">{tags}</span> })}
                 </li>
             }
         })
@@ -477,7 +499,7 @@ fn StreamsList(streams: Vec<StreamView>) -> impl IntoView {
 /// Reveal state for a persisted section key (standings / one bracket round),
 /// OR'd with the global "show scores". Returns `(revealed, toggle, toggle-hidden)`
 /// where the toggle is shared across every page showing this same section.
-fn section_reveal(key: String) -> (Memo<bool>, impl Fn(leptos::ev::MouseEvent) + Copy, Memo<bool>) {
+fn section_reveal(key: String) -> (Memo<bool>, impl Fn(leptos::ev::MouseEvent) + Copy) {
     let global = use_context::<ShowScores>().map(|s| s.0);
     let sections = use_context::<RevealedSections>().map(|s| s.0);
     let key = StoredValue::new(key);
@@ -497,17 +519,15 @@ fn section_reveal(key: String) -> (Memo<bool>, impl Fn(leptos::ev::MouseEvent) +
             save_sections(&s.get_untracked());
         }
     };
-    // Hide the per-section toggle when the global toggle already reveals all.
-    let hidden = Memo::new(move |_| global.is_some_and(|g| g.get()));
-    (revealed, toggle, hidden)
+    (revealed, toggle)
 }
 
-/// Reveal stage for one bracket series, from its position key `<tid>:<r>:<i>`:
-/// 0 hidden, 1 team names, 2 scores. `bs:` implies scores; `bn:`, names.
-fn series_stage(set: &HashSet<String>, base: &str) -> u8 {
-    if set.contains(&format!("bs:{base}")) {
+/// Reveal stage of a bracket series from its precomputed name/score keys:
+/// 0 hidden, 1 team names, 2 scores. (`bs` set ⇒ scores; `bn` ⇒ names.)
+fn stage_of(set: &HashSet<String>, bn: &str, bs: &str) -> u8 {
+    if set.contains(bs) {
         2
-    } else if set.contains(&format!("bn:{base}")) {
+    } else if set.contains(bn) {
         1
     } else {
         0
@@ -515,21 +535,34 @@ fn series_stage(set: &HashSet<String>, base: &str) -> u8 {
 }
 
 /// Move one series to a reveal stage (0 hidden / 1 names / 2 scores).
-fn set_series_stage(set: &mut HashSet<String>, base: &str, stage: u8) {
-    let (bn, bs) = (format!("bn:{base}"), format!("bs:{base}"));
+fn apply_stage(set: &mut HashSet<String>, bn: &str, bs: &str, stage: u8) {
     match stage {
         0 => {
-            set.remove(&bn);
-            set.remove(&bs);
+            set.remove(bn);
+            set.remove(bs);
         }
         1 => {
-            set.insert(bn);
-            set.remove(&bs);
+            set.insert(bn.to_string());
+            set.remove(bs);
         }
         _ => {
-            set.insert(bn);
-            set.insert(bs);
+            set.insert(bn.to_string());
+            set.insert(bs.to_string());
         }
+    }
+}
+
+/// The furthest a series can be revealed: 0 if its teams are undecided (TBD —
+/// stays hidden so we don't expose an unannounced match), 2 if it has a score,
+/// else 1 (decided teams, not yet played → names only).
+fn bm_max_stage(m: &BracketMatch) -> u8 {
+    let tbd = |t: &str| t.is_empty() || t == "TBD";
+    if tbd(&m.team_a) || tbd(&m.team_b) {
+        0
+    } else if m.score_a.is_some() && m.score_b.is_some() {
+        2
+    } else {
+        1
     }
 }
 
@@ -539,7 +572,7 @@ fn StandingsTable(rows: Vec<StandingRow>, tournament_id: i64) -> impl IntoView {
         return ().into_any();
     }
     // Click the "Standings" title to reveal/hide the table.
-    let (revealed, toggle, _hidden) = section_reveal(format!("st:{tournament_id}"));
+    let (revealed, toggle) = section_reveal(format!("st:{tournament_id}"));
     view! {
         <section class="detail-section">
             <div class="section-head">
@@ -601,63 +634,81 @@ fn Bracket(rounds: Vec<BracketRound>, tournament_id: i64) -> impl IntoView {
         .enumerate()
         .map(|(r, round)| {
             let title = round.title;
-            let n = round.matches.len();
-            // Click the round title to cycle the whole round through the next
-            // reveal stage (hidden → names → scores → hidden), based on its least
-            // revealed series.
+            // Precompute each series' name/score keys + max stage once, so the
+            // reactive Memos below don't re-`format!` on every reveal click.
+            let series: Vec<(BracketMatch, String, String, u8)> = round
+                .matches
+                .into_iter()
+                .enumerate()
+                .map(|(i, m)| {
+                    let max = bm_max_stage(&m);
+                    (m, format!("bn:{tid}:{r}:{i}"), format!("bs:{tid}:{r}:{i}"), max)
+                })
+                .collect();
+            // Click the round title to advance every series one stage (capped at
+            // its own max); once all are fully revealed, the next click hides all.
+            let round_keys: Vec<(String, String, u8)> =
+                series.iter().map(|(_, bn, bs, mx)| (bn.clone(), bs.clone(), *mx)).collect();
             let round_toggle = move |_| {
                 if let Some(sec) = sections {
                     sec.update(|set| {
-                        let min = (0..n)
-                            .map(|i| series_stage(set, &format!("{tid}:{r}:{i}")))
-                            .min()
-                            .unwrap_or(0);
-                        let target = if min >= 2 { 0 } else { min + 1 };
-                        for i in 0..n {
-                            set_series_stage(set, &format!("{tid}:{r}:{i}"), target);
+                        let all_maxed = round_keys
+                            .iter()
+                            .all(|(bn, bs, mx)| stage_of(set, bn, bs) >= *mx);
+                        for (bn, bs, mx) in &round_keys {
+                            let target = if all_maxed {
+                                0
+                            } else {
+                                (stage_of(set, bn, bs) + 1).min(*mx)
+                            };
+                            apply_stage(set, bn, bs, target);
                         }
                     });
                     #[cfg(feature = "hydrate")]
                     save_sections(&sec.get_untracked());
                 }
             };
+            let round_bns: Vec<String> = series.iter().map(|(_, bn, _, _)| bn.clone()).collect();
             let round_on = Memo::new(move |_| {
                 global.is_some_and(|g| g.get())
-                    || sections.is_some_and(|s| {
-                        s.with(|set| (0..n).any(|i| set.contains(&format!("bn:{tid}:{r}:{i}"))))
-                    })
+                    || sections.is_some_and(|s| s.with(|set| round_bns.iter().any(|bn| set.contains(bn))))
             });
-            let ms = round
-                .matches
+            let ms = series
                 .into_iter()
-                .enumerate()
-                .map(|(i, m)| {
+                .map(|(m, bn, bs, max)| {
                     let (ta, tb) = (m.team_a, m.team_b);
                     let (sa, sb) = (m.score_a, m.score_b);
                     let winner = m.winner;
-                    let base = format!("{tid}:{r}:{i}");
-                    let base_stage = base.clone();
-                    // 0 hidden, 1 names, 2 scores.
+                    let (bn_s, bs_s) = (bn.clone(), bs.clone());
+                    // Displayed stage, clamped to this series' max (so the global
+                    // toggle / a round cycle never over-reveals a TBD/unplayed match).
                     let stage = Memo::new(move |_| {
-                        if global.is_some_and(|g| g.get()) {
-                            return 2u8;
-                        }
-                        sections.map_or(0, |s| s.with(|set| series_stage(set, &base_stage)))
+                        let s = if global.is_some_and(|g| g.get()) {
+                            2
+                        } else {
+                            sections.map_or(0, |sec| sec.with(|set| stage_of(set, &bn_s, &bs_s)))
+                        };
+                        s.min(max)
                     });
-                    // Click a series to advance just it to the next stage.
+                    // Click a series to advance just it (no-op for a locked TBD match).
                     let series_toggle = move |_| {
+                        if max == 0 {
+                            return;
+                        }
                         if let Some(sec) = sections {
                             sec.update(|set| {
-                                let cur = series_stage(set, &base);
-                                let target = if cur >= 2 { 0 } else { cur + 1 };
-                                set_series_stage(set, &base, target);
+                                let cur = stage_of(set, &bn, &bs);
+                                let target = if cur >= max { 0 } else { cur + 1 };
+                                apply_stage(set, &bn, &bs, target);
                             });
                             #[cfg(feature = "hydrate")]
                             save_sections(&sec.get_untracked());
                         }
                     };
+                    // A "-" placeholder at the names stage signals a score exists.
+                    let dash = if max == 2 { "-" } else { "" };
                     view! {
-                        <div class="bk-match" on:click=series_toggle>
+                        <div class="bk-match" class:bk-locked=move || max == 0 on:click=series_toggle>
                             {move || match stage.get() {
                                 0 => {
                                     view! {
@@ -674,9 +725,11 @@ fn Bracket(rounds: Vec<BracketRound>, tournament_id: i64) -> impl IntoView {
                                     view! {
                                         <div class="bk-row">
                                             <span class="bk-team">{ta.clone()}</span>
+                                            <span class="bk-score">{dash}</span>
                                         </div>
                                         <div class="bk-row">
                                             <span class="bk-team">{tb.clone()}</span>
+                                            <span class="bk-score">{dash}</span>
                                         </div>
                                     }
                                         .into_any()
@@ -978,8 +1031,8 @@ fn iso_from_today(offset_days: i64) -> String {
     format!(
         "{:04}-{:02}-{:02}",
         d.get_full_year() as i32,
-        d.get_month() as u32 + 1,
-        d.get_date() as u32
+        d.get_month() + 1,
+        d.get_date()
     )
 }
 
@@ -1047,7 +1100,13 @@ fn setup_autorefresh(resource: Resource<Result<ScheduleView, ServerFnError>>) {
         #[cfg(feature = "hydrate")]
         {
             use std::time::Duration;
-            set_interval(move || resource.refetch(), Duration::from_secs(60));
+            // Keep the handle so client-side route changes clear the timer instead
+            // of leaking a new 60s refetch loop on every page mount.
+            if let Ok(handle) =
+                set_interval_with_handle(move || resource.refetch(), Duration::from_secs(60))
+            {
+                on_cleanup(move || handle.clear());
+            }
         }
         let _ = resource;
     });
@@ -1188,11 +1247,7 @@ fn month_name(m: u32) -> &'static str {
 #[cfg(feature = "hydrate")]
 fn today_ymd() -> (i32, u32, u32) {
     let d = js_sys::Date::new_0();
-    (
-        d.get_full_year() as i32,
-        d.get_month() as u32 + 1,
-        d.get_date() as u32,
-    )
+    (d.get_full_year() as i32, d.get_month() + 1, d.get_date())
 }
 
 /// A 📅 button that opens a monospace month-grid range picker. Click a start day
@@ -2066,16 +2121,29 @@ mod tests {
     #[test]
     fn bracket_series_stage_transitions() {
         let mut set = HashSet::new();
-        let base = "9:0:0";
-        assert_eq!(series_stage(&set, base), 0);
-        set_series_stage(&mut set, base, 1); // names
-        assert_eq!(series_stage(&set, base), 1);
-        assert!(set.contains("bn:9:0:0") && !set.contains("bs:9:0:0"));
-        set_series_stage(&mut set, base, 2); // scores
-        assert_eq!(series_stage(&set, base), 2);
-        set_series_stage(&mut set, base, 0); // hidden
-        assert_eq!(series_stage(&set, base), 0);
+        let (bn, bs) = ("bn:9:0:0", "bs:9:0:0");
+        assert_eq!(stage_of(&set, bn, bs), 0);
+        apply_stage(&mut set, bn, bs, 1); // names
+        assert_eq!(stage_of(&set, bn, bs), 1);
+        assert!(set.contains(bn) && !set.contains(bs));
+        apply_stage(&mut set, bn, bs, 2); // scores
+        assert_eq!(stage_of(&set, bn, bs), 2);
+        apply_stage(&mut set, bn, bs, 0); // hidden
         assert!(set.is_empty());
+    }
+
+    #[test]
+    fn bracket_max_stage_caps_reveal() {
+        let mk = |a: &str, b: &str, sa, sb| BracketMatch {
+            team_a: a.into(),
+            team_b: b.into(),
+            score_a: sa,
+            score_b: sb,
+            winner: String::new(),
+        };
+        assert_eq!(bm_max_stage(&mk("NAVI", "FaZe", Some(2), Some(1))), 2); // played
+        assert_eq!(bm_max_stage(&mk("NAVI", "FaZe", None, None)), 1); // decided, unplayed
+        assert_eq!(bm_max_stage(&mk("TBD", "FaZe", None, None)), 0); // undecided → locked
     }
 
     #[test]

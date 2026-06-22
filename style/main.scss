@@ -830,16 +830,28 @@ a {
 }
 
 .stream {
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
   padding: 0.15rem 0;
 
   a {
     color: var(--link);
   }
 
-  // Official broadcasts read as the primary option.
-  &.official a {
+  .stream-chan {
+    color: var(--muted);
+  }
+
+  // The official/main broadcast reads as the primary option (site name in fg).
+  &.official a .stream-site {
     color: var(--fg);
     font-weight: 600;
+  }
+
+  .stream-tags {
+    color: var(--muted);
+    font-size: 11px;
   }
 }
 
@@ -943,6 +955,15 @@ a {
 
   &:hover {
     border-color: var(--muted);
+  }
+
+  // A TBD match (teams undecided) can't be revealed.
+  &.bk-locked {
+    cursor: default;
+
+    &:hover {
+      border-color: var(--border);
+    }
   }
 
   // Horizontal connector stubs toward the neighbouring rounds.
