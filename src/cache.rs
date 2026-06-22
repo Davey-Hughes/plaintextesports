@@ -232,12 +232,12 @@ pub fn spawn_poller() {
                     let bucket = store.as_ref().and_then(|c| next_due_refresh_bucket(c, now));
                     if let Some((game, day)) = bucket {
                         let (from, to) = utc_day_bounds(day);
-                        match crate::pandascore::fetch_past_range(&client, &token, game, from, to, 1, 50)
+                        match crate::pandascore::fetch_past_range_all(&client, &token, game, from, to)
                             .await
                         {
-                            Ok(r) => {
-                                rate_remaining = r.rate_remaining.or(rate_remaining);
-                                apply_past(r.matches, store.as_mut(), cutoff_ms);
+                            Ok((matches, rate)) => {
+                                rate_remaining = rate.or(rate_remaining);
+                                apply_past(matches, store.as_mut(), cutoff_ms);
                                 if let Some(conn) = store.as_ref() {
                                     let _ = crate::store::set_meta(
                                         conn,
@@ -276,15 +276,15 @@ pub fn spawn_poller() {
                     match chunk {
                         Some(Some((from, to, last))) => {
                             let (cs, lol) = tokio::join!(
-                                crate::pandascore::fetch_past_range(&client, &token, Game::Cs2, from, to, 1, 50),
-                                crate::pandascore::fetch_past_range(&client, &token, Game::Lol, from, to, 1, 50),
+                                crate::pandascore::fetch_past_range_all(&client, &token, Game::Cs2, from, to),
+                                crate::pandascore::fetch_past_range_all(&client, &token, Game::Lol, from, to),
                             );
                             let mut got = Vec::new();
                             for r in [cs, lol] {
                                 match r {
-                                    Ok(r) => {
-                                        rate_remaining = r.rate_remaining.or(rate_remaining);
-                                        got.extend(r.matches);
+                                    Ok((matches, rate)) => {
+                                        rate_remaining = rate.or(rate_remaining);
+                                        got.extend(matches);
                                     }
                                     Err(e) => leptos::logging::log!("backfill fetch failed: {e}"),
                                 }
@@ -1034,6 +1034,29 @@ pub fn league_tournament(league: &str) -> Option<i64> {
         .and_then(|m| m.tournament_id)
 }
 
+/// The tournament (stage) ids of a league's cached matches, ordered by when each
+/// stage started — so a multi-stage event (e.g. Swiss stages → playoffs) renders
+/// its stages in order.
+#[must_use]
+pub fn event_stages(league: &str) -> Vec<i64> {
+    let snap = SNAPSHOT.read().unwrap_or_else(PoisonError::into_inner);
+    let mut earliest: std::collections::HashMap<i64, i64> = std::collections::HashMap::new();
+    for m in &snap.matches {
+        if m.league == league {
+            if let Some(tid) = m.tournament_id {
+                let ms = m.begin_at.timestamp_millis();
+                earliest
+                    .entry(tid)
+                    .and_modify(|e| *e = (*e).min(ms))
+                    .or_insert(ms);
+            }
+        }
+    }
+    let mut stages: Vec<(i64, i64)> = earliest.into_iter().collect();
+    stages.sort_by_key(|&(_, ms)| ms);
+    stages.into_iter().map(|(tid, _)| tid).collect()
+}
+
 /// Standings + bracket for a tournament, cached with a TTL. Fetches live when a
 /// token is configured; in demo mode returns the pre-seeded fixture.
 pub async fn event_info(tournament_id: i64) -> EventInfo {
@@ -1063,6 +1086,15 @@ pub async fn event_info(tournament_id: i64) -> EventInfo {
             .map(|c| c.info.clone())
             .unwrap_or_default();
     };
+    // Stage name + whether it's an elimination bracket (vs a Swiss/group stage).
+    let (stage, has_bracket) =
+        match crate::pandascore::fetch_tournament_meta(&HTTP, &token, tournament_id).await {
+            Ok((name, hb)) => (name, Some(hb)),
+            Err(e) => {
+                leptos::logging::log!("tournament meta failed (tournament {tournament_id}): {e}");
+                (String::new(), None)
+            }
+        };
     // Fetch live (best-effort; an endpoint failure just yields an empty section).
     let standings = crate::pandascore::fetch_standings(&HTTP, &token, tournament_id)
         .await
@@ -1070,15 +1102,22 @@ pub async fn event_info(tournament_id: i64) -> EventInfo {
             leptos::logging::log!("standings fetch failed (tournament {tournament_id}): {e}");
             Vec::new()
         });
-    let rounds = crate::pandascore::fetch_bracket(&HTTP, &token, tournament_id)
-        .await
-        .unwrap_or_else(|e| {
-            leptos::logging::log!("bracket fetch failed (tournament {tournament_id}): {e}");
-            Vec::new()
-        });
+    // Skip the bracket fetch for known non-bracket stages; otherwise fetch (the
+    // builder still drops a Swiss stage that slips through).
+    let rounds = if has_bracket == Some(false) {
+        Vec::new()
+    } else {
+        crate::pandascore::fetch_bracket(&HTTP, &token, tournament_id)
+            .await
+            .unwrap_or_else(|e| {
+                leptos::logging::log!("bracket fetch failed (tournament {tournament_id}): {e}");
+                Vec::new()
+            })
+    };
     let info = EventInfo {
         event: String::new(),
         tournament_id,
+        stage,
         game,
         standings,
         rounds,
@@ -1204,6 +1243,7 @@ fn demo_event_info(league: &str) -> EventInfo {
     EventInfo {
         event: league.to_string(),
         tournament_id: 0, // set by the caller (seed_demo_events)
+        stage: String::new(),
         game: if lol { Game::Lol } else { Game::Cs2 },
         standings,
         rounds,
@@ -1290,6 +1330,7 @@ fn demo_event_large_de() -> EventInfo {
     EventInfo {
         event: "ESL One".to_string(),
         tournament_id: 0,
+        stage: String::new(),
         game: Game::Cs2,
         standings,
         rounds,
@@ -1346,6 +1387,7 @@ fn demo_event_large_se() -> EventInfo {
     EventInfo {
         event: "PGL Major".to_string(),
         tournament_id: 0,
+        stage: String::new(),
         game: Game::Cs2,
         standings,
         rounds,

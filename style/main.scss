@@ -870,6 +870,17 @@ a {
   margin-top: 2rem;
 }
 
+// A stage heading on a multi-stage event page (e.g. "Stage 1", "Playoffs").
+.stage-head {
+  font-size: 14px;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  color: var(--fg);
+  margin: 0 0 0.4rem;
+  padding-bottom: 0.2rem;
+  border-bottom: 1px dashed var(--border);
+}
+
 .section-head {
   display: flex;
   align-items: baseline;

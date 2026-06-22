@@ -114,6 +114,30 @@ pub async fn get_event_schedule(
     }
 }
 
+/// Standings/bracket for every stage of an event (by league name), in order —
+/// e.g. Swiss Stage 1/2/3 then the Playoffs bracket. Empty stages are dropped.
+#[server(GetEventStages, "/api")]
+pub async fn get_event_stages(league: String) -> Result<Vec<EventInfo>, ServerFnError> {
+    #[cfg(feature = "ssr")]
+    {
+        let mut out = Vec::new();
+        for tid in crate::cache::event_stages(&league) {
+            let mut info = crate::cache::event_info(tid).await;
+            if info.is_empty() {
+                continue;
+            }
+            info.event = league.clone();
+            out.push(info);
+        }
+        Ok(out)
+    }
+    #[cfg(not(feature = "ssr"))]
+    {
+        let _ = league;
+        Ok(Vec::new())
+    }
+}
+
 /// Standings + bracket for an event (by league name), for the event-filter view.
 #[server(GetEventInfo, "/api")]
 pub async fn get_event_info(league: String) -> Result<EventInfo, ServerFnError> {
