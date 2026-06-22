@@ -56,9 +56,10 @@ pub fn shell(options: LeptosOptions) -> impl IntoView {
 #[derive(Clone, Copy)]
 struct ShowScores(RwSignal<bool>);
 
-/// Set of event/league names whose scores are individually revealed.
+/// Set of match ids whose scores are individually revealed (by clicking the
+/// match's "Final" badge).
 #[derive(Clone, Copy)]
-struct RevealedEvents(RwSignal<HashSet<String>>);
+struct RevealedMatches(RwSignal<HashSet<i64>>);
 
 /// Set of "kind|value" scopes the user is subscribed to (game/event reminders).
 #[derive(Clone, Copy)]
@@ -77,16 +78,16 @@ pub fn App() -> impl IntoView {
     // fetched / if Web Push isn't configured).
     let starred = RwSignal::new(HashSet::<i64>::new());
     let vapid = RwSignal::new(None::<String>);
-    // Spoiler control: a global reveal + a per-event reveal set.
+    // Spoiler control: a global reveal + a per-match reveal set.
     let show_scores = RwSignal::new(false);
-    let revealed = RwSignal::new(HashSet::<String>::new());
+    let revealed = RwSignal::new(HashSet::<i64>::new());
     let subscribed = RwSignal::new(HashSet::<String>::new());
     provide_context(hour24);
     provide_context(tz);
     provide_context(starred);
     provide_context(vapid);
     provide_context(ShowScores(show_scores));
-    provide_context(RevealedEvents(revealed));
+    provide_context(RevealedMatches(revealed));
     provide_context(Subscribed(subscribed));
 
     // After hydration, pick up the browser's timezone + saved preferences and
@@ -254,37 +255,6 @@ fn ScoresToggle() -> impl IntoView {
     view! {
         <button class="toggle" on:click=toggle>
             {move || if show.get() { "hide scores" } else { "show scores" }}
-        </button>
-    }
-}
-
-/// Per-event score reveal button (shown on a league header that has results).
-#[component]
-fn EventScoreToggle(league: String) -> impl IntoView {
-    let global = use_context::<ShowScores>().map(|s| s.0);
-    let revealed = use_context::<RevealedEvents>().expect("revealed context").0;
-    let l_active = league.clone();
-    let is_on = Memo::new(move |_| revealed.with(|s| s.contains(&l_active)));
-    let l_click = league;
-    let on_click = move |_| {
-        revealed.update(|s| {
-            if s.contains(&l_click) {
-                s.remove(&l_click);
-            } else {
-                s.insert(l_click.clone());
-            }
-        });
-    };
-    // When the global reveal is on, everything is shown — hide the per-event button.
-    let hidden = move || global.is_some_and(|g| g.get());
-    view! {
-        <button
-            class="event-score"
-            class:on=move || is_on.get()
-            class:event-hidden=hidden
-            on:click=on_click
-        >
-            {move || if is_on.get() { "hide score" } else { "show score" }}
         </button>
     }
 }
@@ -709,20 +679,12 @@ fn render_schedule(s: ScheduleView, show_nav: bool, push: bool) -> impl IntoView
                         None => lg.league.clone(),
                     };
                     let event_url = lg.event_url;
-                    // Only events with results need a per-event reveal button.
-                    let has_scores = lg
-                        .matches
-                        .iter()
-                        .any(|m| m.team_a.score.is_some() && m.team_b.score.is_some());
-                    let league_name = lg.league.clone();
                     let sub_value = lg.league.clone();
                     let rows = lg
                         .matches
                         .into_iter()
                         .map(|m| view! { <MatchRow m=m show_bo=show_bo push=push /> })
                         .collect_view();
-                    let score_toggle =
-                        has_scores.then(|| view! { <EventScoreToggle league=league_name /> });
                     view! {
                         <div class=format!("league {lc}")>
                             <div class="league-head">
@@ -731,7 +693,6 @@ fn render_schedule(s: ScheduleView, show_nav: bool, push: bool) -> impl IntoView
                                 </h3>
                                 <span class="event-controls">
                                     <SubscribeStar kind="league" value=sub_value />
-                                    {score_toggle}
                                 </span>
                             </div>
                             <div class="rows">{rows}</div>
@@ -819,14 +780,46 @@ fn MatchRow(m: MatchView, show_bo: bool, push: bool) -> impl IntoView {
     };
 
     // Scores are spoilers: reveal only when the global toggle is on or this
-    // event is individually revealed.
+    // match was individually revealed (by clicking its "Final" badge).
+    let mid = m.id;
     let global = use_context::<ShowScores>().map(|s| s.0);
-    let revealed = use_context::<RevealedEvents>().map(|r| r.0);
-    let league = m.league.clone();
+    let revealed = use_context::<RevealedMatches>().map(|r| r.0);
     let reveal = Memo::new(move |_| {
         global.is_some_and(|g| g.get())
-            || revealed.is_some_and(|r| r.with(|set| set.contains(&league)))
+            || revealed.is_some_and(|r| r.with(|set| set.contains(&mid)))
     });
+
+    // A finished match's score lives behind its badge: click "Final" to toggle
+    // just this row's score. (Plain badge for live/upcoming/score-less rows.)
+    let toggle_reveal = move |ev: leptos::ev::MouseEvent| {
+        // Don't let the click fall through to the row's stream link.
+        ev.prevent_default();
+        ev.stop_propagation();
+        if let Some(r) = revealed {
+            r.update(|s| {
+                if !s.insert(mid) {
+                    s.remove(&mid);
+                }
+            });
+        }
+    };
+    let badge_view = if has {
+        view! {
+            <span
+                class=format!("row-badge {status_class} reveal-badge")
+                class:on=move || reveal.get()
+                title=move || {
+                    if reveal.get() { "Hide the final score" } else { "Show the final score" }
+                }
+                on:click=toggle_reveal
+            >
+                {badge}
+            </span>
+        }
+        .into_any()
+    } else {
+        view! { <span class=format!("row-badge {status_class}")>{badge}</span> }.into_any()
+    };
 
     let inner = view! {
         <span class="row-time">{m.clock_label}</span>
@@ -846,7 +839,7 @@ fn MatchRow(m: MatchView, show_bo: bool, push: bool) -> impl IntoView {
             {m.team_b.label}
         </span>
         <span class="row-meta">
-            <span class=format!("row-badge {status_class}")>{badge}</span>
+            {badge_view}
             <span class="row-bo">{bo}</span>
         </span>
     };

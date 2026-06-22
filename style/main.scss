@@ -270,34 +270,6 @@ a {
   align-items: baseline;
 }
 
-.event-score {
-  background: none;
-  border: 1px solid var(--border);
-  color: var(--muted);
-  font: inherit;
-  font-size: 11px;
-  line-height: 1.4;
-  padding: 0 0.4rem;
-  cursor: pointer;
-  white-space: nowrap;
-
-  &:hover {
-    color: var(--fg);
-    border-color: var(--fg);
-  }
-
-  &.event-hidden {
-    display: none;
-  }
-}
-
-// Reveal-score active uses the event's palette color.
-.event-score.on {
-  color: var(--bg);
-  background: var(--lc, var(--fg));
-  border-color: var(--lc, var(--fg));
-}
-
 // Subscribe ★ — shared by the game filter tabs and the event headers. Matches
 // the per-match ★ (same gold when active) so "follow this" reads consistently.
 .sub-star {
@@ -462,6 +434,23 @@ a {
   &.final,
   &.canceled {
     color: var(--muted);
+  }
+
+  // A clickable badge (e.g. "Final") that reveals this match's score. The
+  // dotted underline hints it's interactive; the title gives the full behavior.
+  &.reveal-badge {
+    cursor: pointer;
+    text-decoration: underline dotted;
+    text-underline-offset: 2px;
+
+    &:hover {
+      color: var(--fg);
+    }
+
+    &.on {
+      color: var(--fg);
+      text-decoration-style: solid;
+    }
   }
 }
 
