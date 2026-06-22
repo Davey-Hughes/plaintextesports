@@ -566,6 +566,137 @@ fn bm_max_stage(m: &BracketMatch) -> u8 {
     }
 }
 
+/// Per-series reveal metadata used to compute effective stages and gate clicks.
+#[derive(Clone)]
+struct BkCell {
+    bn: String,
+    bs: String,
+    /// Furthest this series can be revealed (see [`bm_max_stage`]).
+    max: u8,
+    /// `(round, index)` of the matches whose scores must be shown before this
+    /// series' lineup is known (empty for a first-round match).
+    feeders: Vec<(usize, usize)>,
+}
+
+/// A series' lineup is auto-revealed (stage 1) once all its feeders' scores are
+/// shown — works for single- and double-elimination. First-round matches
+/// (no feeders) never auto-reveal; they're revealed manually.
+fn auto_stage(eff: &[Vec<u8>], feeders: &[(usize, usize)]) -> u8 {
+    if feeders.is_empty() {
+        return 0;
+    }
+    let all_scored = feeders
+        .iter()
+        .all(|&(r, i)| eff.get(r).and_then(|row| row.get(i)).copied().unwrap_or(0) >= 2);
+    u8::from(all_scored)
+}
+
+/// Effective reveal stage per series: the manual reveal (from the shared set)
+/// unioned with the auto-revealed lineup, capped at each series' max. Computed
+/// round by round so feeders (always in earlier rounds) are ready. `global`
+/// reveals everything (still capped, so TBD matches stay hidden).
+fn compute_effective(grid: &[Vec<BkCell>], set: &HashSet<String>, global: bool) -> Vec<Vec<u8>> {
+    let mut eff: Vec<Vec<u8>> = Vec::with_capacity(grid.len());
+    for row in grid {
+        let stages: Vec<u8> = row
+            .iter()
+            .map(|c| {
+                if global {
+                    return c.max;
+                }
+                stage_of(set, &c.bn, &c.bs)
+                    .max(auto_stage(&eff, &c.feeders))
+                    .min(c.max)
+            })
+            .collect();
+        eff.push(stages);
+    }
+    eff
+}
+
+/// Whether a series can still be advanced: decided (max > 0), not already maxed,
+/// and — for later rounds — its feeders' scores revealed (lineup known).
+fn bk_advanceable(grid: &[Vec<BkCell>], eff: &[Vec<u8>], r: usize, i: usize) -> bool {
+    let c = &grid[r][i];
+    c.max > 0
+        && eff[r][i] < c.max
+        && (c.feeders.is_empty() || auto_stage(eff, &c.feeders) == 1)
+}
+
+/// A bracket reveal action, applied against the shared section set.
+#[derive(Clone, Copy)]
+enum BkOp {
+    /// Cycle one series (the granular click).
+    Series(usize, usize),
+    /// Advance a whole round one stage, or reset it once fully revealed.
+    Round(usize),
+    /// Advance the earliest revealable round; reset all once everything is shown.
+    Cascade,
+}
+
+/// Apply a bracket reveal action to the shared set, respecting feeder gating so a
+/// later round's lineup can't be revealed before its feeders' scores are shown.
+fn apply_bracket_op(set: &mut HashSet<String>, grid: &[Vec<BkCell>], op: BkOp) {
+    let eff = compute_effective(grid, set, false);
+    let advance = |set: &mut HashSet<String>, r: usize, i: usize| {
+        let c = &grid[r][i];
+        let auto = auto_stage(&eff, &c.feeders);
+        let next = (eff[r][i] + 1).min(c.max);
+        // Falling back to the auto stage means "let auto provide it" → clear manual.
+        let target = if next <= auto { 0 } else { next };
+        apply_stage(set, &c.bn, &c.bs, target);
+    };
+    match op {
+        BkOp::Series(r, i) => {
+            if !bk_advanceable(grid, &eff, r, i) {
+                // At max already? Cycle back (hide score; auto may keep the names).
+                let c = &grid[r][i];
+                if c.max > 0 && eff[r][i] >= c.max {
+                    let auto = auto_stage(&eff, &c.feeders);
+                    apply_stage(set, &c.bn, &c.bs, auto);
+                }
+                return;
+            }
+            advance(set, r, i);
+        }
+        BkOp::Round(r) => {
+            let n = grid[r].len();
+            if (0..n).any(|i| bk_advanceable(grid, &eff, r, i)) {
+                for i in 0..n {
+                    if bk_advanceable(grid, &eff, r, i) {
+                        advance(set, r, i);
+                    }
+                }
+            } else {
+                // Fully revealed → hide the whole round.
+                for c in &grid[r] {
+                    apply_stage(set, &c.bn, &c.bs, 0);
+                }
+            }
+        }
+        BkOp::Cascade => {
+            let frontier =
+                (0..grid.len()).find(|&r| (0..grid[r].len()).any(|i| bk_advanceable(grid, &eff, r, i)));
+            match frontier {
+                Some(r) => {
+                    for i in 0..grid[r].len() {
+                        if bk_advanceable(grid, &eff, r, i) {
+                            advance(set, r, i);
+                        }
+                    }
+                }
+                None => {
+                    for row in grid {
+                        for c in row {
+                            apply_stage(set, &c.bn, &c.bs, 0);
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 #[component]
 fn StandingsTable(rows: Vec<StandingRow>, tournament_id: i64) -> impl IntoView {
     if rows.is_empty() {
@@ -621,6 +752,18 @@ fn StandingsTable(rows: Vec<StandingRow>, tournament_id: i64) -> impl IntoView {
     .into_any()
 }
 
+/// Render data for one bracket series (parallel to its [`BkCell`] in the grid).
+struct BkRender {
+    i: usize,
+    ta: String,
+    tb: String,
+    sa: Option<i32>,
+    sb: Option<i32>,
+    winner: String,
+    max: u8,
+    feeders: Vec<(usize, usize)>,
+}
+
 #[component]
 fn Bracket(rounds: Vec<BracketRound>, tournament_id: i64) -> impl IntoView {
     if rounds.is_empty() {
@@ -629,87 +772,87 @@ fn Bracket(rounds: Vec<BracketRound>, tournament_id: i64) -> impl IntoView {
     let global = use_context::<ShowScores>().map(|s| s.0);
     let sections = use_context::<RevealedSections>().map(|s| s.0);
     let tid = tournament_id;
-    let cols = rounds
+
+    // Build the reveal grid (keys/max/feeders, for stage computation + clicks)
+    // and the parallel render data, once.
+    let mut grid: Vec<Vec<BkCell>> = Vec::with_capacity(rounds.len());
+    let mut render: Vec<(String, Vec<BkRender>)> = Vec::with_capacity(rounds.len());
+    for (r, round) in rounds.into_iter().enumerate() {
+        let mut cells = Vec::with_capacity(round.matches.len());
+        let mut sres = Vec::with_capacity(round.matches.len());
+        for (i, m) in round.matches.into_iter().enumerate() {
+            let max = bm_max_stage(&m);
+            let feeders = m.feeders;
+            cells.push(BkCell {
+                bn: format!("bn:{tid}:{r}:{i}"),
+                bs: format!("bs:{tid}:{r}:{i}"),
+                max,
+                feeders: feeders.clone(),
+            });
+            sres.push(BkRender {
+                i,
+                ta: m.team_a,
+                tb: m.team_b,
+                sa: m.score_a,
+                sb: m.score_b,
+                winner: m.winner,
+                max,
+                feeders,
+            });
+        }
+        grid.push(cells);
+        render.push((round.title, sres));
+    }
+
+    // Effective stages for the whole bracket, recomputed when the shared reveal
+    // set or the global toggle changes.
+    let grid_sv = StoredValue::new(grid.clone());
+    let eff = Memo::new(move |_| {
+        let g = global.is_some_and(|s| s.get());
+        let set = sections.map(|s| s.get()).unwrap_or_default();
+        compute_effective(&grid, &set, g)
+    });
+    // A single Copy handle for every reveal click (series / round / cascade).
+    let do_op = move |op: BkOp| {
+        if let Some(sec) = sections {
+            sec.update(|set| apply_bracket_op(set, &grid_sv.get_value(), op));
+            #[cfg(feature = "hydrate")]
+            save_sections(&sec.get_untracked());
+        }
+    };
+
+    let cols = render
         .into_iter()
         .enumerate()
-        .map(|(r, round)| {
-            let title = round.title;
-            // Precompute each series' name/score keys + max stage once, so the
-            // reactive Memos below don't re-`format!` on every reveal click.
-            let series: Vec<(BracketMatch, String, String, u8)> = round
-                .matches
+        .map(|(r, (title, sres))| {
+            let round_on = move || eff.with(|e| e.get(r).is_some_and(|row| row.iter().any(|&s| s >= 1)));
+            let ms = sres
                 .into_iter()
-                .enumerate()
-                .map(|(i, m)| {
-                    let max = bm_max_stage(&m);
-                    (m, format!("bn:{tid}:{r}:{i}"), format!("bs:{tid}:{r}:{i}"), max)
-                })
-                .collect();
-            // Click the round title to advance every series one stage (capped at
-            // its own max); once all are fully revealed, the next click hides all.
-            let round_keys: Vec<(String, String, u8)> =
-                series.iter().map(|(_, bn, bs, mx)| (bn.clone(), bs.clone(), *mx)).collect();
-            let round_toggle = move |_| {
-                if let Some(sec) = sections {
-                    sec.update(|set| {
-                        let all_maxed = round_keys
-                            .iter()
-                            .all(|(bn, bs, mx)| stage_of(set, bn, bs) >= *mx);
-                        for (bn, bs, mx) in &round_keys {
-                            let target = if all_maxed {
-                                0
-                            } else {
-                                (stage_of(set, bn, bs) + 1).min(*mx)
-                            };
-                            apply_stage(set, bn, bs, target);
-                        }
-                    });
-                    #[cfg(feature = "hydrate")]
-                    save_sections(&sec.get_untracked());
-                }
-            };
-            let round_bns: Vec<String> = series.iter().map(|(_, bn, _, _)| bn.clone()).collect();
-            let round_on = Memo::new(move |_| {
-                global.is_some_and(|g| g.get())
-                    || sections.is_some_and(|s| s.with(|set| round_bns.iter().any(|bn| set.contains(bn))))
-            });
-            let ms = series
-                .into_iter()
-                .map(|(m, bn, bs, max)| {
-                    let (ta, tb) = (m.team_a, m.team_b);
-                    let (sa, sb) = (m.score_a, m.score_b);
-                    let winner = m.winner;
-                    let (bn_s, bs_s) = (bn.clone(), bs.clone());
-                    // Displayed stage, clamped to this series' max (so the global
-                    // toggle / a round cycle never over-reveals a TBD/unplayed match).
-                    let stage = Memo::new(move |_| {
-                        let s = if global.is_some_and(|g| g.get()) {
-                            2
-                        } else {
-                            sections.map_or(0, |sec| sec.with(|set| stage_of(set, &bn_s, &bs_s)))
-                        };
-                        s.min(max)
-                    });
-                    // Click a series to advance just it (no-op for a locked TBD match).
-                    let series_toggle = move |_| {
-                        if max == 0 {
-                            return;
-                        }
-                        if let Some(sec) = sections {
-                            sec.update(|set| {
-                                let cur = stage_of(set, &bn, &bs);
-                                let target = if cur >= max { 0 } else { cur + 1 };
-                                apply_stage(set, &bn, &bs, target);
-                            });
-                            #[cfg(feature = "hydrate")]
-                            save_sections(&sec.get_untracked());
+                .map(|s| {
+                    let (i, max) = (s.i, s.max);
+                    let (ta, tb) = (s.ta, s.tb);
+                    let (sa, sb) = (s.sa, s.sb);
+                    let winner = s.winner;
+                    let feeders = s.feeders;
+                    let dash = if max == 2 { "-" } else { "" };
+                    // Locked (not clickable) when undecided (TBD) or its feeders'
+                    // scores aren't shown yet, so the lineup is still unknown.
+                    let locked = {
+                        let feeders = feeders.clone();
+                        move || {
+                            max == 0
+                                || (!feeders.is_empty()
+                                    && eff.with(|e| auto_stage(e, &feeders) == 0))
                         }
                     };
-                    // A "-" placeholder at the names stage signals a score exists.
-                    let dash = if max == 2 { "-" } else { "" };
+                    let stage = move || eff.with(|e| e.get(r).and_then(|row| row.get(i)).copied().unwrap_or(0));
                     view! {
-                        <div class="bk-match" class:bk-locked=move || max == 0 on:click=series_toggle>
-                            {move || match stage.get() {
+                        <div
+                            class="bk-match"
+                            class:bk-locked=locked
+                            on:click=move |_| do_op(BkOp::Series(r, i))
+                        >
+                            {move || match stage() {
                                 0 => {
                                     view! {
                                         <div class="bk-row bk-hidden">
@@ -763,8 +906,8 @@ fn Bracket(rounds: Vec<BracketRound>, tournament_id: i64) -> impl IntoView {
                     <div class="bk-round-title">
                         <button
                             class="bk-round-toggle"
-                            class:on=move || round_on.get()
-                            on:click=round_toggle
+                            class:on=round_on
+                            on:click=move |_| do_op(BkOp::Round(r))
                         >
                             {title}
                         </button>
@@ -774,10 +917,20 @@ fn Bracket(rounds: Vec<BracketRound>, tournament_id: i64) -> impl IntoView {
             }
         })
         .collect_view();
+    // The "Bracket" title cascades the whole bracket: each click advances the
+    // earliest revealable round (names → scores), unlocking the next round's
+    // lineup as it goes; once everything is shown, the next click hides all.
+    let bracket_on = move || eff.with(|e| e.iter().flatten().any(|&s| s >= 1));
     view! {
         <section class="detail-section">
             <div class="section-head">
-                <h2 class="section-title">"Bracket"</h2>
+                <button
+                    class="section-title section-toggle"
+                    class:on=bracket_on
+                    on:click=move |_| do_op(BkOp::Cascade)
+                >
+                    "Bracket"
+                </button>
             </div>
             <div class="bracket">{cols}</div>
         </section>
@@ -2115,11 +2268,62 @@ mod tests {
             team_b: b.into(),
             score_a: sa,
             score_b: sb,
-            winner: String::new(),
+            ..Default::default()
         };
         assert_eq!(bm_max_stage(&mk("NAVI", "FaZe", Some(2), Some(1))), 2); // played
         assert_eq!(bm_max_stage(&mk("NAVI", "FaZe", None, None)), 1); // decided, unplayed
         assert_eq!(bm_max_stage(&mk("TBD", "FaZe", None, None)), 0); // undecided → locked
+    }
+
+    /// A 4-team single-elim grid: 2 semis (played) → 1 final (played).
+    fn semis_final_grid() -> Vec<Vec<BkCell>> {
+        let cell = |r, i, max, feeders: &[(usize, usize)]| BkCell {
+            bn: format!("bn:1:{r}:{i}"),
+            bs: format!("bs:1:{r}:{i}"),
+            max,
+            feeders: feeders.to_vec(),
+        };
+        vec![
+            vec![cell(0, 0, 2, &[]), cell(0, 1, 2, &[])],
+            vec![cell(1, 0, 2, &[(0, 0), (0, 1)])],
+        ]
+    }
+
+    #[test]
+    fn bracket_feeder_auto_reveals_next_lineup() {
+        let grid = semis_final_grid();
+        let mut set = HashSet::new();
+        // Nothing revealed → final lineup is hidden (feeders unscored).
+        assert_eq!(compute_effective(&grid, &set, false), vec![vec![0, 0], vec![0]]);
+        // Reveal both semis' scores → the final's lineup (stage 1) auto-appears.
+        apply_stage(&mut set, "bn:1:0:0", "bs:1:0:0", 2);
+        apply_stage(&mut set, "bn:1:0:1", "bs:1:0:1", 2);
+        assert_eq!(compute_effective(&grid, &set, false), vec![vec![2, 2], vec![1]]);
+    }
+
+    #[test]
+    fn bracket_locked_until_feeders_scored() {
+        let grid = semis_final_grid();
+        let mut set = HashSet::new();
+        // Trying to reveal the final before its feeders are scored is a no-op.
+        apply_bracket_op(&mut set, &grid, BkOp::Series(1, 0));
+        assert_eq!(compute_effective(&grid, &set, false), vec![vec![0, 0], vec![0]]);
+    }
+
+    #[test]
+    fn bracket_cascade_advances_round_by_round() {
+        let grid = semis_final_grid();
+        let mut set = HashSet::new();
+        let eff = |set: &HashSet<String>| compute_effective(&grid, set, false);
+        apply_bracket_op(&mut set, &grid, BkOp::Cascade); // semis → names
+        assert_eq!(eff(&set), vec![vec![1, 1], vec![0]]);
+        apply_bracket_op(&mut set, &grid, BkOp::Cascade); // semis → scores (final auto-names)
+        assert_eq!(eff(&set), vec![vec![2, 2], vec![1]]);
+        apply_bracket_op(&mut set, &grid, BkOp::Cascade); // final → scores
+        assert_eq!(eff(&set), vec![vec![2, 2], vec![2]]);
+        apply_bracket_op(&mut set, &grid, BkOp::Cascade); // all shown → reset
+        assert_eq!(eff(&set), vec![vec![0, 0], vec![0]]);
+        assert!(set.is_empty());
     }
 
     #[test]

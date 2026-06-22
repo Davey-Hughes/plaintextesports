@@ -636,10 +636,23 @@ fn build_rounds(raw: &[RawBracketMatch]) -> Vec<BracketRound> {
         by_depth.entry(d).or_default().push(m);
     }
 
-    (0..=max_depth)
+    let ordered: Vec<(i32, Vec<&RawBracketMatch>)> = (0..=max_depth)
         .filter_map(|d| by_depth.remove(&d).map(|ms| (d, ms)))
+        .collect();
+
+    // Map each match id to its (round_index, position) so feeder edges can be
+    // expressed as grid coordinates the UI can resolve without the raw ids.
+    let mut pos: HashMap<i64, (usize, usize)> = HashMap::new();
+    for (r, (_, ms)) in ordered.iter().enumerate() {
+        for (i, m) in ms.iter().enumerate() {
+            pos.insert(m.id, (r, i));
+        }
+    }
+
+    ordered
+        .iter()
         .map(|(_, ms)| {
-            let matches = ms.iter().map(|m| to_bracket_match(m)).collect::<Vec<_>>();
+            let matches = ms.iter().map(|m| to_bracket_match(m, &pos)).collect::<Vec<_>>();
             BracketRound {
                 title: round_title(matches.len()),
                 matches,
@@ -648,7 +661,7 @@ fn build_rounds(raw: &[RawBracketMatch]) -> Vec<BracketRound> {
         .collect()
 }
 
-fn to_bracket_match(m: &RawBracketMatch) -> BracketMatch {
+fn to_bracket_match(m: &RawBracketMatch, pos: &HashMap<i64, (usize, usize)>) -> BracketMatch {
     let (label_a, id_a) = team_label(m.opponents.first().and_then(|o| o.opponent.as_ref()));
     let (label_b, id_b) = team_label(m.opponents.get(1).and_then(|o| o.opponent.as_ref()));
     let winner = match m.winner_id {
@@ -656,12 +669,18 @@ fn to_bracket_match(m: &RawBracketMatch) -> BracketMatch {
         w if w.is_some() && w == id_b => "b",
         _ => "",
     };
+    let feeders = m
+        .previous_matches
+        .iter()
+        .filter_map(|p| p.match_id.and_then(|id| pos.get(&id).copied()))
+        .collect();
     BracketMatch {
         team_a: label_a,
         team_b: label_b,
         score_a: score_for(&m.results, id_a).map(|s| s as i32),
         score_b: score_for(&m.results, id_b).map(|s| s as i32),
         winner: winner.to_string(),
+        feeders,
     }
 }
 
