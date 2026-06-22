@@ -51,6 +51,15 @@ pub fn shell(options: LeptosOptions) -> impl IntoView {
     }
 }
 
+/// Global "reveal scores" preference (newtype so it doesn't collide with the
+/// `RwSignal<bool>` used for the 24h setting in context).
+#[derive(Clone, Copy)]
+struct ShowScores(RwSignal<bool>);
+
+/// Set of event/league names whose scores are individually revealed.
+#[derive(Clone, Copy)]
+struct RevealedEvents(RwSignal<HashSet<String>>);
+
 #[component]
 #[must_use]
 pub fn App() -> impl IntoView {
@@ -64,10 +73,15 @@ pub fn App() -> impl IntoView {
     // fetched / if Web Push isn't configured).
     let starred = RwSignal::new(HashSet::<i64>::new());
     let vapid = RwSignal::new(None::<String>);
+    // Spoiler control: a global reveal + a per-event reveal set.
+    let show_scores = RwSignal::new(false);
+    let revealed = RwSignal::new(HashSet::<String>::new());
     provide_context(hour24);
     provide_context(tz);
     provide_context(starred);
     provide_context(vapid);
+    provide_context(ShowScores(show_scores));
+    provide_context(RevealedEvents(revealed));
 
     // After hydration, pick up the browser's timezone + saved preferences and
     // the push key. (Client-side only; the initial render uses the defaults
@@ -81,6 +95,7 @@ pub fn App() -> impl IntoView {
             if let Some(h) = load_hour24_pref() {
                 hour24.set(h);
             }
+            show_scores.set(load_scores_pref());
             starred.set(load_starred());
             leptos::task::spawn_local(async move {
                 if let Ok(k) = crate::server::get_vapid_key().await {
@@ -116,6 +131,7 @@ fn SiteHeader() -> impl IntoView {
                 <A href="/">"plaintextesports"</A>
             </div>
             <div class="toggles">
+                <ScoresToggle />
                 <HourToggle />
                 <ThemeToggle />
             </div>
@@ -194,6 +210,53 @@ fn HourToggle() -> impl IntoView {
     }
 }
 
+#[component]
+fn ScoresToggle() -> impl IntoView {
+    let show = use_context::<ShowScores>().expect("show_scores context").0;
+    let toggle = move |_| {
+        let next = !show.get_untracked();
+        show.set(next);
+        #[cfg(feature = "hydrate")]
+        save_scores_pref(next);
+    };
+    view! {
+        <button class="toggle" on:click=toggle>
+            {move || if show.get() { "hide scores" } else { "show scores" }}
+        </button>
+    }
+}
+
+/// Per-event score reveal button (shown on a league header that has results).
+#[component]
+fn EventScoreToggle(league: String) -> impl IntoView {
+    let global = use_context::<ShowScores>().map(|s| s.0);
+    let revealed = use_context::<RevealedEvents>().expect("revealed context").0;
+    let l_active = league.clone();
+    let is_on = Memo::new(move |_| revealed.with(|s| s.contains(&l_active)));
+    let l_click = league;
+    let on_click = move |_| {
+        revealed.update(|s| {
+            if s.contains(&l_click) {
+                s.remove(&l_click);
+            } else {
+                s.insert(l_click.clone());
+            }
+        });
+    };
+    // When the global reveal is on, everything is shown — hide the per-event button.
+    let hidden = move || global.is_some_and(|g| g.get());
+    view! {
+        <button
+            class="event-score"
+            class:on=move || is_on.get()
+            class:event-hidden=hidden
+            on:click=on_click
+        >
+            {move || if is_on.get() { "hide score" } else { "show score" }}
+        </button>
+    }
+}
+
 #[cfg(feature = "hydrate")]
 fn detect_tz() -> Option<String> {
     use wasm_bindgen::JsValue;
@@ -217,6 +280,23 @@ fn save_hour24_pref(hour24: bool) {
     if let Some(win) = web_sys::window() {
         if let Ok(Some(storage)) = win.local_storage() {
             let _ = storage.set_item("hour24", if hour24 { "1" } else { "0" });
+        }
+    }
+}
+
+#[cfg(feature = "hydrate")]
+fn load_scores_pref() -> bool {
+    web_sys::window()
+        .and_then(|w| w.local_storage().ok().flatten())
+        .and_then(|s| s.get_item("scores").ok().flatten())
+        .is_some_and(|v| v == "1")
+}
+
+#[cfg(feature = "hydrate")]
+fn save_scores_pref(show: bool) {
+    if let Some(win) = web_sys::window() {
+        if let Ok(Some(storage)) = win.local_storage() {
+            let _ = storage.set_item("scores", if show { "1" } else { "0" });
         }
     }
 }
@@ -473,16 +553,27 @@ fn render_schedule(s: ScheduleView, show_nav: bool, push: bool) -> impl IntoView
                         None => lg.league.clone(),
                     };
                     let event_url = lg.event_url;
+                    // Only events with results need a per-event reveal button.
+                    let has_scores = lg
+                        .matches
+                        .iter()
+                        .any(|m| m.team_a.score.is_some() && m.team_b.score.is_some());
+                    let league_name = lg.league.clone();
                     let rows = lg
                         .matches
                         .into_iter()
                         .map(|m| view! { <MatchRow m=m show_bo=show_bo push=push /> })
                         .collect_view();
+                    let score_toggle =
+                        has_scores.then(|| view! { <EventScoreToggle league=league_name /> });
                     view! {
                         <div class=format!("league {lc}")>
-                            <h3 class="league-title">
-                                <a href=event_url target="_blank" rel="noreferrer">{header}</a>
-                            </h3>
+                            <div class="league-head">
+                                <h3 class="league-title">
+                                    <a href=event_url target="_blank" rel="noreferrer">{header}</a>
+                                </h3>
+                                {score_toggle}
+                            </div>
                             <div class="rows">{rows}</div>
                         </div>
                     }
@@ -543,12 +634,11 @@ fn MatchRow(m: MatchView, show_bo: bool, push: bool) -> impl IntoView {
         MatchStatus::Upcoming => "",
     };
 
-    let scored = matches!((m.team_a.score, m.team_b.score), (Some(_), Some(_)));
-    let mid = match (m.team_a.score, m.team_b.score) {
-        (Some(a), Some(b)) => format!("{a} – {b}"),
-        _ => "vs".to_string(),
-    };
-    let mid_class = if scored { "row-mid scored" } else { "row-mid" };
+    let sa = m.team_a.score;
+    let sb = m.team_b.score;
+    let has = sa.is_some() && sb.is_some();
+    let win_a = m.team_a.winner;
+    let win_b = m.team_b.winner;
     let bo = if show_bo { m.best_of } else { String::new() };
 
     let info = ReminderInfo {
@@ -564,11 +654,33 @@ fn MatchRow(m: MatchView, show_bo: bool, push: bool) -> impl IntoView {
         },
     };
 
+    // Scores are spoilers: reveal only when the global toggle is on or this
+    // event is individually revealed.
+    let global = use_context::<ShowScores>().map(|s| s.0);
+    let revealed = use_context::<RevealedEvents>().map(|r| r.0);
+    let league = m.league.clone();
+    let reveal = Memo::new(move |_| {
+        global.is_some_and(|g| g.get())
+            || revealed.is_some_and(|r| r.with(|set| set.contains(&league)))
+    });
+
     let inner = view! {
         <span class="row-time">{m.clock_label}</span>
-        <span class="row-team row-a" class:winner=m.team_a.winner>{m.team_a.label}</span>
-        <span class=mid_class>{mid}</span>
-        <span class="row-team row-b" class:winner=m.team_b.winner>{m.team_b.label}</span>
+        <span class="row-team row-a" class:winner=move || reveal.get() && win_a>
+            {m.team_a.label}
+        </span>
+        <span class="row-mid" class:scored=move || reveal.get() && has>
+            {move || {
+                if reveal.get() && has {
+                    format!("{} – {}", sa.unwrap_or(0), sb.unwrap_or(0))
+                } else {
+                    "vs".to_string()
+                }
+            }}
+        </span>
+        <span class="row-team row-b" class:winner=move || reveal.get() && win_b>
+            {m.team_b.label}
+        </span>
         <span class="row-meta">
             <span class=format!("row-badge {status_class}")>{badge}</span>
             <span class="row-bo">{bo}</span>

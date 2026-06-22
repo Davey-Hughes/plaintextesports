@@ -30,6 +30,9 @@ with an allowlist/denylist) are shown.
   is the fallback used for the first server render / non-JS clients.
 - Time format is toggleable **24h / 12h** (default 24h), remembered in
   `localStorage`. Each league/event gets a stable color, and can be filtered.
+- **Scores are hidden by default** (spoiler guard). A top-right "show scores"
+  toggle reveals all (persisted), or a per-event "show score" button reveals
+  just one event — so it's not all-or-nothing.
 - Each event header links to the **exact Liquipedia event page** when it can be
   resolved (looked up once per event via Liquipedia's search API and cached in
   SQLite, with validation + fallback so it never regresses to a worse link),
