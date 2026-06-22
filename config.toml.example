@@ -19,6 +19,9 @@ upcoming_days = 30
 idle_poll_secs = 1200
 active_poll_secs = 60
 
+# How long before a match starts to send its reminder, in minutes (0-1440).
+reminder_lead_minutes = 15
+
 # SQLite cache path (persists matches/links/reminders). "" disables persistence.
 db_path = "data/cache.db"
 

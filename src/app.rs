@@ -767,10 +767,8 @@ fn render_schedule(s: ScheduleView, show_nav: bool, push: bool) -> impl IntoView
     }
 }
 
-/// Lead time before a match start to fire its reminder.
-const REMIND_LEAD_MS: i64 = 10 * 60 * 1000;
-
-/// Everything the reminder for a match needs (built from a `MatchView`).
+/// Everything the reminder for a match needs (built from a `MatchView`). The
+/// lead time is applied server-side, so we just pass the match start here.
 /// Fields are consumed only in the `hydrate` build (the ★ click handler).
 #[derive(Clone)]
 #[cfg_attr(not(feature = "hydrate"), allow(dead_code))]
@@ -778,7 +776,7 @@ struct ReminderInfo {
     id: i64,
     game: Game,
     league: String,
-    notify_at_ms: i64,
+    begin_at_ms: i64,
     title: String,
     body: String,
     url: String,
@@ -810,7 +808,7 @@ fn MatchRow(m: MatchView, show_bo: bool, push: bool) -> impl IntoView {
         id: m.id,
         game: m.game,
         league: m.league.clone(),
-        notify_at_ms: m.begin_at_ms - REMIND_LEAD_MS,
+        begin_at_ms: m.begin_at_ms,
         title: format!("{} vs {}", m.team_a.label, m.team_b.label),
         body: format!("{} · {}", m.league, m.clock_label),
         url: if m.event_url.is_empty() {
@@ -1002,7 +1000,7 @@ fn persist_and_sync(info: ReminderInfo, starring: bool, ids: Vec<i64>, vapid: Op
                 match_id: info.id,
                 game: info.game,
                 league: info.league,
-                notify_at_ms: info.notify_at_ms,
+                begin_at_ms: info.begin_at_ms,
                 title: info.title,
                 body: info.body,
                 url: info.url,

@@ -18,6 +18,7 @@ struct FileConfig {
     upcoming_days: Option<i64>,
     idle_poll_secs: Option<u64>,
     active_poll_secs: Option<u64>,
+    reminder_lead_minutes: Option<i64>,
     db_path: Option<String>,
     resolve_links: Option<bool>,
     vapid: Option<VapidFile>,
@@ -54,6 +55,7 @@ impl FileConfig {
         put("UPCOMING_DAYS", self.upcoming_days.map(|n| n.to_string()));
         put("POLL_INTERVAL_SECS", self.idle_poll_secs.map(|n| n.to_string()));
         put("POLL_ACTIVE_SECS", self.active_poll_secs.map(|n| n.to_string()));
+        put("REMINDER_LEAD_MINUTES", self.reminder_lead_minutes.map(|n| n.to_string()));
         put("DB_PATH", self.db_path.clone());
         put("ENABLE_LIQUIPEDIA", self.resolve_links.map(|b| b.to_string()));
         if let Some(v) = &self.vapid {
@@ -79,6 +81,8 @@ pub struct Config {
     pub active_poll: Duration,
     /// Days ahead shown on the homepage "upcoming" view.
     pub upcoming_days: i64,
+    /// How long before a match starts to fire its reminder (milliseconds).
+    pub reminder_lead_ms: i64,
     /// Path to the SQLite cache file. Empty string disables persistence.
     pub db_path: String,
     /// Force demo/fixture data, ignoring the token and any cached DB data.
@@ -172,6 +176,13 @@ impl Config {
             .filter(|&n| (1..=60).contains(&n))
             .unwrap_or(30);
 
+        // Reminder lead time in minutes (default 15), clamped to a sane range.
+        let reminder_lead_ms = get("REMINDER_LEAD_MINUTES")
+            .and_then(|s| s.parse::<i64>().ok())
+            .filter(|&n| (0..=1440).contains(&n))
+            .unwrap_or(15)
+            * 60_000;
+
         let db_path = get("DB_PATH").unwrap_or_else(|| "data/cache.db".to_string());
 
         let demo = get("DEMO")
@@ -192,6 +203,7 @@ impl Config {
             idle_poll,
             active_poll,
             upcoming_days,
+            reminder_lead_ms,
             db_path,
             demo,
             resolve_links,
@@ -223,9 +235,19 @@ mod tests {
         assert_eq!(c.idle_poll.as_secs(), 1200);
         assert_eq!(c.active_poll.as_secs(), 60);
         assert_eq!(c.upcoming_days, 30);
+        assert_eq!(c.reminder_lead_ms, 15 * 60_000);
         assert_eq!(c.db_path, "data/cache.db");
         assert!(c.resolve_links);
         assert!(!c.demo);
+    }
+
+    #[test]
+    fn reminder_lead_parses_and_clamps() {
+        assert_eq!(cfg(&[("REMINDER_LEAD_MINUTES", "30")]).reminder_lead_ms, 30 * 60_000);
+        assert_eq!(cfg(&[("REMINDER_LEAD_MINUTES", "0")]).reminder_lead_ms, 0);
+        // Out of range / unparseable fall back to the 15-minute default.
+        assert_eq!(cfg(&[("REMINDER_LEAD_MINUTES", "9999")]).reminder_lead_ms, 15 * 60_000);
+        assert_eq!(cfg(&[("REMINDER_LEAD_MINUTES", "x")]).reminder_lead_ms, 15 * 60_000);
     }
 
     #[test]

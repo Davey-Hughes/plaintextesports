@@ -151,8 +151,9 @@ pub struct ReminderReq {
     pub match_id: i64,
     pub game: Game,
     pub league: String,
-    /// When to notify (unix ms) — typically match start minus the lead time.
-    pub notify_at_ms: i64,
+    /// Match start (unix ms). The server subtracts the configured lead time to
+    /// decide when to fire, so the lead lives in one place (config.toml).
+    pub begin_at_ms: i64,
     pub title: String,
     pub body: String,
     pub url: String,

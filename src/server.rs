@@ -89,7 +89,7 @@ pub async fn add_reminder(req: ReminderReq) -> Result<(), ServerFnError> {
             p256dh: req.sub.p256dh,
             auth: req.sub.auth,
             match_id: req.match_id,
-            notify_at_ms: req.notify_at_ms,
+            notify_at_ms: req.begin_at_ms - cfg.reminder_lead_ms,
             title: req.title,
             body: req.body,
             url: req.url,
@@ -123,7 +123,7 @@ pub async fn add_subscription(req: SubscribeReq) -> Result<(), ServerFnError> {
             auth: req.sub.auth,
             scope_kind: req.kind,
             scope_value: req.value,
-            lead_ms: 10 * 60 * 1000,
+            lead_ms: cfg.reminder_lead_ms,
         };
         crate::store::add_subscription(&conn, &s)
             .map_err(|e| ServerFnError::new(format!("db: {e}")))?;
