@@ -802,21 +802,6 @@ fn render_schedule(s: ScheduleView, show_nav: bool, push: bool) -> impl IntoView
     }
 }
 
-/// Everything the reminder for a match needs (built from a `MatchView`). The
-/// lead time is applied server-side, so we just pass the match start here.
-/// Fields are consumed only in the `hydrate` build (the ★ click handler).
-#[derive(Clone)]
-#[cfg_attr(not(feature = "hydrate"), allow(dead_code))]
-struct ReminderInfo {
-    id: i64,
-    game: Game,
-    league: String,
-    begin_at_ms: i64,
-    title: String,
-    body: String,
-    url: String,
-}
-
 #[component]
 fn MatchRow(m: MatchView, show_bo: bool, push: bool) -> impl IntoView {
     let status_class = match m.status {
@@ -838,20 +823,6 @@ fn MatchRow(m: MatchView, show_bo: bool, push: bool) -> impl IntoView {
     let win_a = m.team_a.winner;
     let win_b = m.team_b.winner;
     let bo = if show_bo { m.best_of } else { String::new() };
-
-    let info = ReminderInfo {
-        id: m.id,
-        game: m.game,
-        league: m.league.clone(),
-        begin_at_ms: m.begin_at_ms,
-        title: format!("{} vs {}", m.team_a.label, m.team_b.label),
-        body: format!("{} · {}", m.league, m.clock_label),
-        url: if m.event_url.is_empty() {
-            "/".to_string()
-        } else {
-            m.event_url.clone()
-        },
-    };
 
     // Scores are spoilers: reveal only when the global toggle is on or this
     // match was individually revealed (by clicking its "Final" badge).
@@ -945,7 +916,7 @@ fn MatchRow(m: MatchView, show_bo: bool, push: bool) -> impl IntoView {
         // Only upcoming matches are remindable; others get an empty placeholder
         // so the grid columns stay aligned.
         let star = if matches!(m.status, MatchStatus::Upcoming) {
-            view! { <StarButton id=m.id info=info /> }.into_any()
+            view! { <StarButton id=m.id game=m.game league=m.league.clone() /> }.into_any()
         } else {
             view! { <span class="star star-empty"></span> }.into_any()
         };
@@ -962,15 +933,15 @@ fn MatchRow(m: MatchView, show_bo: bool, push: bool) -> impl IntoView {
 }
 
 #[component]
-fn StarButton(id: i64, info: ReminderInfo) -> impl IntoView {
+fn StarButton(id: i64, game: Game, league: String) -> impl IntoView {
     let starred = use_context::<RwSignal<HashSet<i64>>>().expect("starred context");
     let subscribed = use_context::<Subscribed>().expect("subscribed context").0;
     let vapid = use_context::<RwSignal<Option<String>>>().expect("vapid context");
     // The ★ lights up if this match is starred individually *or* a higher-level
     // subscription (the whole game, or this event) already covers it — so the
     // star reflects everything you'll be notified about.
-    let game_key = format!("game|{}", info.game.slug());
-    let league_key = format!("league|{}", info.league);
+    let game_key = format!("game|{}", game.slug());
+    let league_key = format!("league|{league}");
     let is_on = Memo::new(move |_| {
         starred.with(|s| s.contains(&id))
             || subscribed.with(|s| s.contains(&game_key) || s.contains(&league_key))
@@ -988,11 +959,11 @@ fn StarButton(id: i64, info: ReminderInfo) -> impl IntoView {
         #[cfg(feature = "hydrate")]
         {
             let ids: Vec<i64> = starred.get_untracked().iter().copied().collect();
-            persist_and_sync(info.clone(), !now_on, ids, vapid.get_untracked());
+            persist_and_sync(id, !now_on, ids, vapid.get_untracked());
         }
         #[cfg(not(feature = "hydrate"))]
         {
-            let _ = (now_on, &info, vapid);
+            let _ = (now_on, vapid);
         }
     };
 
@@ -1051,9 +1022,10 @@ fn load_starred() -> HashSet<i64> {
     out
 }
 
-/// Persist the starred set and (un)register the reminder on the server.
+/// Persist the starred set and (un)register the reminder on the server. The
+/// server derives the notification details from `match_id`, so we send just that.
 #[cfg(feature = "hydrate")]
-fn persist_and_sync(info: ReminderInfo, starring: bool, ids: Vec<i64>, vapid: Option<String>) {
+fn persist_and_sync(match_id: i64, starring: bool, ids: Vec<i64>, vapid: Option<String>) {
     save_starred(&ids);
     let Some(vapid) = vapid else { return };
     leptos::task::spawn_local(async move {
@@ -1075,17 +1047,11 @@ fn persist_and_sync(info: ReminderInfo, starring: bool, ids: Vec<i64>, vapid: Op
                     p256dh,
                     auth,
                 },
-                match_id: info.id,
-                game: info.game,
-                league: info.league,
-                begin_at_ms: info.begin_at_ms,
-                title: info.title,
-                body: info.body,
-                url: info.url,
+                match_id,
             };
             let _ = crate::server::add_reminder(req).await;
         } else {
-            let _ = crate::server::remove_reminder(endpoint, info.id).await;
+            let _ = crate::server::remove_reminder(endpoint, match_id).await;
         }
     });
 }

@@ -145,18 +145,13 @@ pub struct PushSub {
 }
 
 /// A request to be reminded about a match (sent from the browser when starred).
+/// Only the push subscription + match id are sent; the server derives the
+/// notification's time/title/body/url from its snapshot (it doesn't trust the
+/// client for those).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReminderReq {
     pub sub: PushSub,
     pub match_id: i64,
-    pub game: Game,
-    pub league: String,
-    /// Match start (unix ms). The server subtracts the configured lead time to
-    /// decide when to fire, so the lead lives in one place (config.toml).
-    pub begin_at_ms: i64,
-    pub title: String,
-    pub body: String,
-    pub url: String,
 }
 
 /// Subscribe/unsubscribe to a whole game or event.
