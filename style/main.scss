@@ -965,6 +965,7 @@ a {
 }
 
 .bk-de-left {
+  position: relative;
   display: flex;
   flex-direction: column;
   gap: 1.2rem;
@@ -974,6 +975,13 @@ a {
 .bracket-de .bracket {
   overflow-x: visible;
   padding: 0;
+}
+
+// Right-align the winner's/loser's brackets so each one's final lands at the
+// same edge (next to the grand final), whatever the bracket's width — so the
+// grand-final connector works for any bracket size.
+.bk-de-left .bracket {
+  justify-content: flex-end;
 }
 
 .bk-bracket-group .bracket {
@@ -1097,6 +1105,37 @@ a {
   left: -0.8rem;
   top: 50%;
   width: 0.8rem;
+  border-top: 1px solid var(--border);
+}
+
+// Link the winner's-bracket final and loser's-bracket final to the grand final:
+// a vertical rail in the gap (clear of the section-title lines), with a flat stub
+// from each final and from the grand final joining it. The rail spans the full
+// height so it always reaches both finals, whatever their sizes.
+.bk-de-left::after {
+  content: "";
+  position: absolute;
+  right: -0.75rem;
+  top: 0;
+  bottom: 0;
+  border-left: 1px solid var(--border);
+}
+
+.bk-de-left .bracket .bk-round:last-child .bk-match::after {
+  content: "";
+  position: absolute;
+  right: -1.55rem;
+  top: 50%;
+  width: 1.55rem;
+  border-top: 1px solid var(--border);
+}
+
+.bracket-de > .bk-bracket-group:last-child .bk-match::before {
+  content: "";
+  position: absolute;
+  left: -1.55rem;
+  top: 50%;
+  width: 1.55rem;
   border-top: 1px solid var(--border);
 }
 
