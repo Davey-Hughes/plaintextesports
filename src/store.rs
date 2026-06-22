@@ -9,10 +9,25 @@
 use crate::pandascore::{NormTeam, NormalizedMatch};
 use crate::types::{Game, MatchStatus};
 use chrono::{DateTime, Utc};
+use once_cell::sync::OnceCell;
 use rusqlite::{params, Connection};
 use std::path::Path;
+use std::sync::{Mutex, PoisonError};
 
 const FETCHED_AT_KEY: &str = "fetched_at_ms";
+
+/// Process-wide write connection shared by the request handlers (reminder /
+/// subscription server fns). Opened once on first use so each request doesn't
+/// re-`open()` the DB and re-run the schema/migrations. The poller and push
+/// sender keep their own long-lived connections (WAL allows the extra writer).
+static SHARED: OnceCell<Mutex<Connection>> = OnceCell::new();
+
+/// Borrow the shared request-handler connection, opening (and migrating) it once.
+/// Recovers from a poisoned mutex since the connection itself stays valid.
+pub fn shared(path: &str) -> rusqlite::Result<std::sync::MutexGuard<'static, Connection>> {
+    let m = SHARED.get_or_try_init(|| open(path).map(Mutex::new))?;
+    Ok(m.lock().unwrap_or_else(PoisonError::into_inner))
+}
 
 /// Open (creating if needed) the cache DB and ensure the schema exists.
 pub fn open(path: &str) -> rusqlite::Result<Connection> {
@@ -23,7 +38,8 @@ pub fn open(path: &str) -> rusqlite::Result<Connection> {
     }
     let conn = Connection::open(path)?;
     conn.pragma_update(None, "journal_mode", "WAL")?;
-    // The poller and per-request reminder writes use separate connections.
+    // The poller, push sender, and request handlers (see `shared`) each hold
+    // their own connection; WAL + this busy timeout lets the writers coexist.
     conn.pragma_update(None, "busy_timeout", 5000)?;
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS matches (
