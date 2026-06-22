@@ -358,7 +358,7 @@ a {
 // the full row height, so consecutive live/final rows connect into one line.
 .row-bar {
   align-self: stretch;
-  justify-self: start;
+  justify-self: center;
   width: 2px;
   margin-block: -0.22rem;
 
@@ -379,13 +379,13 @@ a {
 }
 
 .star {
-  // Pin to the column's left edge (like .row-bar) so the ☆ on upcoming rows
-  // lines up vertically with the live/final side bars in the same column.
-  justify-self: start;
-  text-align: left;
+  // Centered in the leading column so the ☆ on upcoming rows lines up with the
+  // (also centered) live/final side bar — bar sits under the star's center.
+  justify-self: center;
+  text-align: center;
   background: none;
   border: none;
-  padding: 0 0.15rem 0 0;
+  padding: 0;
   margin: 0;
   cursor: pointer;
   color: var(--muted);
@@ -559,4 +559,193 @@ a {
   .about-back {
     margin-top: 1.8rem;
   }
+}
+
+// ----- Match detail page + standings / bracket -----------------------------
+
+.detail {
+  margin: 1rem 0;
+}
+
+.detail-title {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 0.4rem 1rem;
+  font-size: 18px;
+  margin: 0.8rem 0 0.2rem;
+}
+
+.detail-team {
+  font-weight: 700;
+
+  &.winner {
+    color: var(--win);
+  }
+}
+
+.detail-score {
+  color: var(--muted);
+}
+
+.detail-meta {
+  color: var(--muted);
+  font-size: 12px;
+  margin-bottom: 1.2rem;
+}
+
+.detail-section {
+  margin: 1.4rem 0;
+}
+
+// Standings/bracket shown beneath the schedule when one event is filtered.
+.event-extra {
+  margin-top: 2rem;
+}
+
+.section-title {
+  font-size: 13px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--fg);
+  margin: 0 0 0.5rem;
+  padding-bottom: 0.2rem;
+  border-bottom: 1px solid var(--border);
+}
+
+.streams {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.stream {
+  padding: 0.15rem 0;
+
+  a {
+    color: var(--link);
+  }
+
+  // Official broadcasts read as the primary option.
+  &.official a {
+    color: var(--fg);
+    font-weight: 600;
+  }
+}
+
+.standings {
+  border-collapse: collapse;
+  font-size: 13px;
+  width: 100%;
+  max-width: 26rem;
+
+  th {
+    text-align: right;
+    color: var(--muted);
+    font-weight: 600;
+    font-size: 11px;
+    text-transform: uppercase;
+    padding: 0.2rem 0.5rem;
+    border-bottom: 1px solid var(--border);
+  }
+
+  td {
+    padding: 0.2rem 0.5rem;
+    text-align: right;
+    white-space: nowrap;
+  }
+
+  .st-rank {
+    color: var(--muted);
+    width: 1.5em;
+  }
+
+  .st-team {
+    text-align: left;
+    width: 100%;
+  }
+
+  tbody tr:hover {
+    background: var(--card-bg);
+  }
+}
+
+// Bracket: rounds as side-by-side columns; matches distributed with space-around
+// so each later round centers between its feeders, with horizontal connector
+// stubs between columns.
+.bracket {
+  display: flex;
+  overflow-x: auto;
+  padding: 0.3rem 0;
+  font-size: 12px;
+}
+
+.bk-round {
+  display: flex;
+  flex-direction: column;
+  flex: 0 0 auto;
+  min-width: 9.5em;
+}
+
+.bk-round-title {
+  text-align: center;
+  color: var(--muted);
+  font-size: 11px;
+  text-transform: uppercase;
+  margin-bottom: 0.3rem;
+}
+
+.bk-matches {
+  display: flex;
+  flex-direction: column;
+  justify-content: space-around;
+  flex: 1;
+}
+
+.bk-match {
+  position: relative;
+  margin: 0.35rem 0.8rem;
+  border: 1px solid var(--border);
+  background: var(--card-bg);
+
+  // Horizontal connector stubs toward the neighbouring rounds.
+  .bk-round:not(:last-child) & {
+    &::after {
+      content: "";
+      position: absolute;
+      right: -0.8rem;
+      top: 50%;
+      width: 0.8rem;
+      border-top: 1px solid var(--border);
+    }
+  }
+}
+
+.bk-round:not(:first-child) .bk-match::before {
+  content: "";
+  position: absolute;
+  left: -0.8rem;
+  top: 50%;
+  width: 0.8rem;
+  border-top: 1px solid var(--border);
+}
+
+.bk-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.6rem;
+  padding: 0.12rem 0.4rem;
+
+  & + & {
+    border-top: 1px solid var(--border);
+  }
+
+  &.win .bk-team {
+    color: var(--win);
+    font-weight: 700;
+  }
+}
+
+.bk-score {
+  color: var(--muted);
 }
