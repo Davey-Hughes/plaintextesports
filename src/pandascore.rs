@@ -23,6 +23,8 @@ pub struct NormalizedMatch {
     pub id: i64,
     pub game: Game,
     pub league: String,
+    /// Official league/event site from the API, if any (often absent).
+    pub league_url: Option<String>,
     pub tier: String,
     pub begin_at: DateTime<Utc>,
     pub status: MatchStatus,
@@ -71,6 +73,8 @@ struct RawLeague {
     name: Option<String>,
     #[serde(default)]
     slug: Option<String>,
+    #[serde(default)]
+    url: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -167,6 +171,11 @@ fn parse_time(raw: &RawMatch) -> Option<DateTime<Utc>> {
 fn normalize(game: Game, raw: &RawMatch) -> Option<NormalizedMatch> {
     let begin_at = parse_time(raw)?;
     let league = raw.league.as_ref().and_then(|l| l.name.clone())?;
+    let league_url = raw
+        .league
+        .as_ref()
+        .and_then(|l| l.url.clone())
+        .filter(|u| !u.trim().is_empty());
 
     let (label_a, id_a) = team_label(raw.opponents.first().and_then(|o| o.opponent.as_ref()));
     let (label_b, id_b) = team_label(raw.opponents.get(1).and_then(|o| o.opponent.as_ref()));
@@ -190,6 +199,7 @@ fn normalize(game: Game, raw: &RawMatch) -> Option<NormalizedMatch> {
         id: raw.id,
         game,
         league,
+        league_url,
         tier,
         begin_at,
         status: map_status(raw.status.as_deref()),

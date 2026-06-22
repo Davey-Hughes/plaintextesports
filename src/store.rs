@@ -28,6 +28,7 @@ pub fn open(path: &str) -> rusqlite::Result<Connection> {
             id           INTEGER NOT NULL,
             game         TEXT    NOT NULL,
             league       TEXT    NOT NULL,
+            league_url   TEXT,
             tier         TEXT    NOT NULL,
             begin_at_ms  INTEGER NOT NULL,
             status       TEXT    NOT NULL,
@@ -45,6 +46,8 @@ pub fn open(path: &str) -> rusqlite::Result<Connection> {
             value TEXT NOT NULL
         );",
     )?;
+    // Migrate DBs created before the league_url column existed (ignored if present).
+    let _ = conn.execute("ALTER TABLE matches ADD COLUMN league_url TEXT", []);
     Ok(conn)
 }
 
@@ -56,6 +59,7 @@ fn row_to_match(row: &rusqlite::Row) -> rusqlite::Result<NormalizedMatch> {
         id: row.get("id")?,
         game: Game::from_filter(&game).unwrap_or(Game::Cs2),
         league: row.get("league")?,
+        league_url: row.get("league_url")?,
         tier: row.get("tier")?,
         begin_at: DateTime::from_timestamp_millis(begin_ms).unwrap_or_else(Utc::now),
         status: MatchStatus::from_str(&status),
@@ -103,15 +107,16 @@ pub fn upsert_and_prune(
         let mut up = tx.prepare(
             "INSERT INTO matches
                 (id, game, league, tier, begin_at_ms, status, best_of,
-                 team_a_label, team_a_score, team_b_label, team_b_score, stream_url)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
+                 team_a_label, team_a_score, team_b_label, team_b_score, stream_url,
+                 league_url)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
              ON CONFLICT(id, game) DO UPDATE SET
                 league=excluded.league, tier=excluded.tier,
                 begin_at_ms=excluded.begin_at_ms, status=excluded.status,
                 best_of=excluded.best_of,
                 team_a_label=excluded.team_a_label, team_a_score=excluded.team_a_score,
                 team_b_label=excluded.team_b_label, team_b_score=excluded.team_b_score,
-                stream_url=excluded.stream_url",
+                stream_url=excluded.stream_url, league_url=excluded.league_url",
         )?;
         for m in matches {
             up.execute(params![
@@ -127,6 +132,7 @@ pub fn upsert_and_prune(
                 m.team_b.label,
                 m.team_b.score,
                 m.stream_url,
+                m.league_url,
             ])?;
         }
         tx.execute(
@@ -151,6 +157,7 @@ mod tests {
             id,
             game: Game::Lol,
             league: "LCK".into(),
+            league_url: None,
             tier: "A".into(),
             begin_at,
             status: MatchStatus::Upcoming,

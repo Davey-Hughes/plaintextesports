@@ -298,8 +298,39 @@ fn to_view(m: &NormalizedMatch, tz: &Tz, now: DateTime<Utc>, hour24: bool) -> Ma
         team_a,
         team_b,
         stream_url: m.stream_url.clone(),
+        event_url: event_link(m.game, &m.league, m.league_url.as_deref()),
         begin_at_ms: m.begin_at.timestamp_millis(),
     }
+}
+
+/// Link to an event page: the official site when the API provides one, else a
+/// game-specific Liquipedia search built from the event name.
+fn event_link(game: Game, league: &str, official: Option<&str>) -> String {
+    if let Some(url) = official.filter(|u| !u.trim().is_empty()) {
+        return url.to_string();
+    }
+    let wiki = match game {
+        Game::Cs2 => "counterstrike",
+        Game::Lol => "leagueoflegends",
+    };
+    format!(
+        "https://liquipedia.net/{wiki}/index.php?search={}",
+        pct_encode(league)
+    )
+}
+
+/// Minimal percent-encoding for a URL query value.
+fn pct_encode(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for b in s.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(b as char);
+            }
+            _ => out.push_str(&format!("%{b:02X}")),
+        }
+    }
+    out
 }
 
 /// Group already-time-sorted views into per-day buckets, and within each day
@@ -325,6 +356,7 @@ fn group_days(views: Vec<MatchView>, tz: &Tz) -> Vec<DayGroup> {
         } else {
             day.leagues.push(LeagueGroup {
                 league: v.league.clone(),
+                event_url: String::new(),
                 bo: None,
                 matches: vec![v],
             });
@@ -335,6 +367,11 @@ fn group_days(views: Vec<MatchView>, tz: &Tz) -> Vec<DayGroup> {
             let first = lg.matches.first().map(|m| m.best_of.clone()).unwrap_or_default();
             let uniform = !first.is_empty() && lg.matches.iter().all(|m| m.best_of == first);
             lg.bo = uniform.then_some(first);
+            lg.event_url = lg
+                .matches
+                .first()
+                .map(|m| m.event_url.clone())
+                .unwrap_or_default();
         }
     }
     days
@@ -447,6 +484,7 @@ fn demo_match(
         id,
         game,
         league: league.to_string(),
+        league_url: None,
         tier: tier.to_string(),
         begin_at,
         status,
@@ -551,6 +589,7 @@ mod tests {
             id: 1,
             game: Game::Cs2,
             league: "X".into(),
+            league_url: None,
             tier: "S".into(),
             begin_at: begin,
             status,
@@ -669,6 +708,7 @@ mod tests {
                 winner: false,
             },
             stream_url: None,
+            event_url: String::new(),
             begin_at_ms: at_ms,
         };
         let views = vec![
@@ -693,5 +733,20 @@ mod tests {
         assert_eq!(resolve_tz("Europe/London", Tz::UTC), chrono_tz::Europe::London);
         assert_eq!(resolve_tz("", Tz::UTC), Tz::UTC);
         assert_eq!(resolve_tz("Not/AZone", Tz::UTC), Tz::UTC);
+    }
+
+    #[test]
+    fn event_link_official_else_liquipedia() {
+        assert_eq!(
+            event_link(Game::Lol, "MSI", Some("https://lolesports.com")),
+            "https://lolesports.com"
+        );
+        let lol = event_link(Game::Lol, "Mid-Season Invitational", None);
+        assert!(lol.starts_with("https://liquipedia.net/leagueoflegends/index.php?search="));
+        assert!(lol.contains("Mid-Season%20Invitational"));
+        // Blank official falls back too, with the CS wiki.
+        let cs = event_link(Game::Cs2, "BLAST Premier", Some("  "));
+        assert!(cs.starts_with("https://liquipedia.net/counterstrike/index.php?search="));
+        assert!(cs.contains("BLAST%20Premier"));
     }
 }
