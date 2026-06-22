@@ -60,8 +60,11 @@ impl MatchStatus {
         }
     }
 
+    /// Parse the string written by [`as_str`](Self::as_str) back (used when
+    /// loading from the cache DB). Unknown values default to `Upcoming`. Named
+    /// `from_db` rather than `from_str` to avoid shadowing the `FromStr` trait.
     #[must_use]
-    pub fn from_str(s: &str) -> Self {
+    pub fn from_db(s: &str) -> Self {
         match s {
             "live" => Self::Live,
             "finished" => Self::Finished,
@@ -211,8 +214,8 @@ mod tests {
             MatchStatus::Finished,
             MatchStatus::Canceled,
         ] {
-            assert_eq!(MatchStatus::from_str(s.as_str()), s);
+            assert_eq!(MatchStatus::from_db(s.as_str()), s);
         }
-        assert_eq!(MatchStatus::from_str("nonsense"), MatchStatus::Upcoming);
+        assert_eq!(MatchStatus::from_db("nonsense"), MatchStatus::Upcoming);
     }
 }
