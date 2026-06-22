@@ -199,6 +199,12 @@ pub struct BracketMatch {
     pub score_b: Option<i32>,
     /// Which side won, if decided: "a", "b", or empty.
     pub winner: String,
+    /// The `(round_index, match_index)` of the matches whose winners/losers feed
+    /// this one (0 entries = a first-round match). Used to auto-reveal a series'
+    /// lineup once its feeders' scores are revealed — works for single- and
+    /// double-elimination alike. Each feeder is in a strictly earlier round.
+    #[serde(default)]
+    pub feeders: Vec<(usize, usize)>,
 }
 
 /// A column of the elimination bracket (e.g. "Quarterfinals").
