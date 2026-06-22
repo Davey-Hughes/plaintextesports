@@ -29,10 +29,11 @@ RUN mkdir -p /app/data
 ENV RUST_LOG="info"
 ENV LEPTOS_SITE_ADDR="0.0.0.0:8080"
 ENV LEPTOS_SITE_ROOT="./site"
-ENV DISPLAY_TZ="America/Los_Angeles"
 ENV DB_PATH="/app/data/cache.db"
-# Provide the API token at run time, e.g.:
-#   docker run -p 8080:8080 -e PANDASCORE_TOKEN=xxxx -v pte-data:/app/data plaintextesports
+# Mount config.toml (token, vapid, etc.) and the data volume, e.g.:
+#   docker run -p 8080:8080 \
+#     -v ./config.toml:/app/config.toml -v pte-data:/app/data plaintextesports
+# Individual settings can also be passed as env (e.g. -e PANDASCORE_TOKEN=xxxx).
 # Without a token the app serves demo fixture data.
 
 # Persist the SQLite cache across container restarts.

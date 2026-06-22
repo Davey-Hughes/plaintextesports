@@ -1,0 +1,34 @@
+# plaintextesports configuration. Copy to config.toml and edit.
+# Any matching env var (e.g. DEMO=1) overrides the value here.
+
+# PandaScore API token (free tier: https://pandascore.co, no card). Omit to
+# serve demo data.
+pandascore_token = ""
+
+# Force demo/fixture data, ignoring the token + cache DB (dev/UI work).
+# demo = true
+
+# Timezone for the first server render / non-JS clients (viewers' own tz is
+# auto-detected in the browser). IANA name.
+display_tz = "America/Los_Angeles"
+
+# Days ahead shown on the homepage (1-60).
+upcoming_days = 30
+
+# Poll cadence in seconds: idle (nothing live) and active (live/imminent).
+idle_poll_secs = 1200
+active_poll_secs = 60
+
+# SQLite cache path (persists matches/links/reminders). "" disables persistence.
+db_path = "data/cache.db"
+
+# Resolve exact event pages via Liquipedia (cached).
+resolve_links = true
+
+# Web Push reminders. Generate keys once with:
+#   cargo run --example gen_vapid --features ssr
+# All three required to enable reminders.
+[vapid]
+public = ""
+private = ""
+subject = "mailto:you@example.com"

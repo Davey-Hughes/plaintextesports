@@ -47,6 +47,10 @@ rusqlite = { version = "0.40.1", features = ["bundled"], optional = true }
 web-push-native = { version = "0.4.0", features = ["vapid"], optional = true }
 base64ct = { version = "1", features = ["alloc"], optional = true }
 http = { version = "1", optional = true }
+toml = { version = "1.1.2", default-features = false, features = [
+  "parse",
+  "serde",
+], optional = true }
 
 [features]
 hydrate = [
@@ -73,6 +77,7 @@ ssr = [
   "dep:web-push-native",
   "dep:base64ct",
   "dep:http",
+  "dep:toml",
   "leptos/ssr",
   "leptos_meta/ssr",
   "leptos_router/ssr",
