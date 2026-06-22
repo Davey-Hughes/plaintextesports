@@ -2,6 +2,7 @@
 //! (server-only).
 
 use crate::types::SiteLink;
+use chrono::{DateTime, Months, Utc};
 use chrono_tz::Tz;
 use once_cell::sync::Lazy;
 use serde::Deserialize;
@@ -19,6 +20,10 @@ struct FileConfig {
     idle_poll_secs: Option<u64>,
     active_poll_secs: Option<u64>,
     reminder_lead_minutes: Option<i64>,
+    archive_months: Option<i64>,
+    past_refresh: Option<bool>,
+    backfill: Option<bool>,
+    rate_limit_floor: Option<u64>,
     db_path: Option<String>,
     resolve_links: Option<bool>,
     vapid: Option<VapidFile>,
@@ -56,6 +61,10 @@ impl FileConfig {
         put("POLL_INTERVAL_SECS", self.idle_poll_secs.map(|n| n.to_string()));
         put("POLL_ACTIVE_SECS", self.active_poll_secs.map(|n| n.to_string()));
         put("REMINDER_LEAD_MINUTES", self.reminder_lead_minutes.map(|n| n.to_string()));
+        put("ARCHIVE_MONTHS", self.archive_months.map(|n| n.to_string()));
+        put("ENABLE_PAST_REFRESH", self.past_refresh.map(|b| b.to_string()));
+        put("ENABLE_BACKFILL", self.backfill.map(|b| b.to_string()));
+        put("RATE_LIMIT_FLOOR", self.rate_limit_floor.map(|n| n.to_string()));
         put("DB_PATH", self.db_path.clone());
         put("ENABLE_LIQUIPEDIA", self.resolve_links.map(|b| b.to_string()));
         if let Some(v) = &self.vapid {
@@ -83,6 +92,16 @@ pub struct Config {
     pub upcoming_days: i64,
     /// How long before a match starts to fire its reminder (milliseconds).
     pub reminder_lead_ms: i64,
+    /// How many months of past matches to keep + backfill (1-3; free-tier
+    /// history is shallow, so this is capped low).
+    pub archive_months: i64,
+    /// Periodically re-fetch recent past days to catch late score corrections.
+    pub past_refresh: bool,
+    /// Slowly backfill older past matches up to `archive_months` on a fresh DB.
+    pub backfill: bool,
+    /// Skip past-refresh/backfill when the API's remaining hourly budget is
+    /// below this, so current/future polling always has headroom.
+    pub rate_limit_floor: u64,
     /// Path to the SQLite cache file. Empty string disables persistence.
     pub db_path: String,
     /// Force demo/fixture data, ignoring the token and any cached DB data.
@@ -107,6 +126,14 @@ impl Config {
         !self.vapid_public.is_empty()
             && !self.vapid_private.is_empty()
             && !self.vapid_subject.is_empty()
+    }
+
+    /// The oldest match start to keep/backfill: `now - archive_months` (calendar
+    /// months, so month-length differences are handled correctly).
+    #[must_use]
+    pub fn archive_cutoff(&self, now: DateTime<Utc>) -> DateTime<Utc> {
+        now.checked_sub_months(Months::new(self.archive_months as u32))
+            .unwrap_or(now)
     }
 }
 
@@ -183,6 +210,23 @@ impl Config {
             .unwrap_or(15)
             * 60_000;
 
+        // Months of history to keep + backfill (default 1, capped at 3 — the
+        // free tier's history window is shallow).
+        let archive_months = get("ARCHIVE_MONTHS")
+            .and_then(|s| s.parse().ok())
+            .filter(|&n| (1..=3).contains(&n))
+            .unwrap_or(1);
+
+        // Both default on; disabled with the usual falsey values.
+        let flag = |key: &str, default: bool| -> bool {
+            get(key)
+                .map(|v| !matches!(v.trim().to_ascii_lowercase().as_str(), "0" | "false" | "no"))
+                .unwrap_or(default)
+        };
+        let past_refresh = flag("ENABLE_PAST_REFRESH", true);
+        let backfill = flag("ENABLE_BACKFILL", true);
+        let rate_limit_floor = secs("RATE_LIMIT_FLOOR", 200, 0);
+
         let db_path = get("DB_PATH").unwrap_or_else(|| "data/cache.db".to_string());
 
         let demo = get("DEMO")
@@ -204,6 +248,10 @@ impl Config {
             active_poll,
             upcoming_days,
             reminder_lead_ms,
+            archive_months,
+            past_refresh,
+            backfill,
+            rate_limit_floor,
             db_path,
             demo,
             resolve_links,
@@ -236,9 +284,34 @@ mod tests {
         assert_eq!(c.active_poll.as_secs(), 60);
         assert_eq!(c.upcoming_days, 30);
         assert_eq!(c.reminder_lead_ms, 15 * 60_000);
+        assert_eq!(c.archive_months, 1);
+        assert!(c.past_refresh);
+        assert!(c.backfill);
+        assert_eq!(c.rate_limit_floor, 200);
         assert_eq!(c.db_path, "data/cache.db");
         assert!(c.resolve_links);
         assert!(!c.demo);
+    }
+
+    #[test]
+    fn archive_and_polling_knobs_parse_and_clamp() {
+        assert_eq!(cfg(&[("ARCHIVE_MONTHS", "3")]).archive_months, 3);
+        // Out of range (free-tier wall) → default 1.
+        assert_eq!(cfg(&[("ARCHIVE_MONTHS", "12")]).archive_months, 1);
+        assert_eq!(cfg(&[("ARCHIVE_MONTHS", "0")]).archive_months, 1);
+        assert!(!cfg(&[("ENABLE_PAST_REFRESH", "false")]).past_refresh);
+        assert!(!cfg(&[("ENABLE_BACKFILL", "0")]).backfill);
+        assert_eq!(cfg(&[("RATE_LIMIT_FLOOR", "500")]).rate_limit_floor, 500);
+    }
+
+    #[test]
+    fn archive_cutoff_subtracts_calendar_months() {
+        let now = chrono::TimeZone::with_ymd_and_hms(&Utc, 2026, 6, 21, 12, 0, 0).unwrap();
+        let c = cfg(&[("ARCHIVE_MONTHS", "1")]);
+        assert_eq!(
+            c.archive_cutoff(now),
+            chrono::TimeZone::with_ymd_and_hms(&Utc, 2026, 5, 21, 12, 0, 0).unwrap()
+        );
     }
 
     #[test]
