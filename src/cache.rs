@@ -1046,6 +1046,14 @@ pub async fn event_info(tournament_id: i64) -> EventInfo {
             }
         }
     }
+    // The game backing this tournament (for game-appropriate standings labels).
+    let game = SNAPSHOT
+        .read()
+        .unwrap_or_else(PoisonError::into_inner)
+        .matches
+        .iter()
+        .find(|m| m.tournament_id == Some(tournament_id))
+        .map_or(Game::Cs2, |m| m.game);
     let Some(token) = Config::from_env().token.clone() else {
         // No token (demo / unconfigured): serve whatever's seeded, else nothing.
         return EVENTS
@@ -1071,6 +1079,7 @@ pub async fn event_info(tournament_id: i64) -> EventInfo {
     let info = EventInfo {
         event: String::new(),
         tournament_id,
+        game,
         standings,
         rounds,
     };
@@ -1189,6 +1198,7 @@ fn demo_event_info(league: &str) -> EventInfo {
     EventInfo {
         event: league.to_string(),
         tournament_id: 0, // set by the caller (seed_demo_events)
+        game: if lol { Game::Lol } else { Game::Cs2 },
         standings,
         rounds,
     }

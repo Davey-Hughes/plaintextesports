@@ -469,10 +469,10 @@ fn EventPage() -> impl IntoView {
                             .and_then(Result::ok)
                             .filter(|e| !e.is_empty())
                             .map(|e| {
-                                let EventInfo { tournament_id, standings, rounds, .. } = e;
+                                let EventInfo { tournament_id, game, standings, rounds, .. } = e;
                                 view! {
                                     <div class="event-extra">
-                                        <StandingsTable rows=standings tournament_id />
+                                        <StandingsTable rows=standings tournament_id game />
                                         <Bracket rounds=rounds tournament_id />
                                     </div>
                                 }
@@ -564,6 +564,7 @@ fn detail_view(d: MatchDetail) -> impl IntoView {
     let (win_a, win_b) = (m.team_a.winner, m.team_b.winner);
     let (team_a, team_b) = (m.team_a.label, m.team_b.label);
     let tid = event.tournament_id;
+    let game = event.game;
     let standings = event.standings;
     let rounds = event.rounds;
 
@@ -625,7 +626,7 @@ fn detail_view(d: MatchDetail) -> impl IntoView {
             <StreamsList streams=streams />
             // Standings + bracket self-gate per section (shared, persisted), so
             // they're always rendered with their own reveal controls.
-            <StandingsTable rows=standings tournament_id=tid />
+            <StandingsTable rows=standings tournament_id=tid game=game />
             <Bracket rounds=rounds tournament_id=tid />
         </article>
     }
@@ -938,10 +939,15 @@ fn apply_bracket_op(set: &mut HashSet<String>, grid: &[Vec<BkCell>], op: BkOp) {
 }
 
 #[component]
-fn StandingsTable(rows: Vec<StandingRow>, tournament_id: i64) -> impl IntoView {
+fn StandingsTable(rows: Vec<StandingRow>, tournament_id: i64, game: Game) -> impl IntoView {
     if rows.is_empty() {
         return ().into_any();
     }
+    // The game/map record column: CS2 plays maps, LoL plays games.
+    let record_label = match game {
+        Game::Lol => "Games",
+        Game::Cs2 => "Maps",
+    };
     // Click the "Standings" title to reveal/hide the table.
     let (revealed, toggle) = section_reveal(format!("st:{tournament_id}"));
     // Always render every row so the table reserves its height — when hidden, the
@@ -984,7 +990,7 @@ fn StandingsTable(rows: Vec<StandingRow>, tournament_id: i64) -> impl IntoView {
                         <th></th>
                         <th class="st-team">"Team"</th>
                         <th>"W-L"</th>
-                        <th>"Maps"</th>
+                        <th>{record_label}</th>
                     </tr>
                 </thead>
                 <tbody>{body}</tbody>
@@ -1250,10 +1256,10 @@ fn EventSection(leagues: RwSignal<HashSet<String>>) -> impl IntoView {
                     .and_then(Result::ok)
                     .filter(|e| !e.is_empty())
                     .map(|e| {
-                        let EventInfo { tournament_id, standings, rounds, .. } = e;
+                        let EventInfo { tournament_id, game, standings, rounds, .. } = e;
                         view! {
                             <div class="event-extra">
-                                <StandingsTable rows=standings tournament_id />
+                                <StandingsTable rows=standings tournament_id game />
                                 <Bracket rounds=rounds tournament_id />
                             </div>
                         }

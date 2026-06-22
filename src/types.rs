@@ -7,8 +7,9 @@
 
 use serde::{Deserialize, Serialize};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Game {
+    #[default]
     Cs2,
     Lol,
 }
@@ -226,6 +227,8 @@ pub struct EventInfo {
     /// PandaScore tournament id — the stable key for sharing per-round reveal
     /// state across the pages that show this same bracket.
     pub tournament_id: i64,
+    /// Which game this event is, so standings can use game-appropriate labels.
+    pub game: Game,
     pub standings: Vec<StandingRow>,
     pub rounds: Vec<BracketRound>,
 }
