@@ -82,11 +82,12 @@ cargo test --features ssr # tiering + deserialization tests
 Star (★) any upcoming match to get a browser notification ~10 minutes before it
 starts — delivered even if the site is closed, via a service worker + Web Push.
 
-Enable it by generating a VAPID keypair once and setting the env vars:
+Enable it by generating a VAPID keypair once and setting the env vars. Use the
+built-in generator (no extra tooling), or `npx` if you prefer:
 
 ```sh
-npx web-push generate-vapid-keys
-# put the values in .env: VAPID_PUBLIC_KEY / VAPID_PRIVATE_KEY / VAPID_SUBJECT
+cargo run --example gen_vapid --features ssr   # prints VAPID_* lines for .env
+# or: npx web-push generate-vapid-keys
 ```
 
 How it works: the browser subscribes via `pushManager`; the subscription +
