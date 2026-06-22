@@ -353,12 +353,14 @@ a {
 }
 
 // Live/final indicator that lives in the leading (★) column of push-enabled
-// rows — same slot as the ☆, which only ever appears on upcoming matches.
+// rows — same slot as the ☆, which only ever appears on upcoming matches. The
+// negative block margin (matching .row's vertical padding) makes the bar span
+// the full row height, so consecutive live/final rows connect into one line.
 .row-bar {
   align-self: stretch;
   justify-self: start;
   width: 2px;
-  border-radius: 1px;
+  margin-block: -0.22rem;
 
   &.live {
     background: var(--accent);
@@ -377,6 +379,10 @@ a {
 }
 
 .star {
+  // Pin to the column's left edge (like .row-bar) so the ☆ on upcoming rows
+  // lines up vertically with the live/final side bars in the same column.
+  justify-self: start;
+  text-align: left;
   background: none;
   border: none;
   padding: 0 0.15rem 0 0;
