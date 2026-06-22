@@ -205,8 +205,9 @@ fn AboutPage() -> impl IntoView {
             </p>
             <ul>
                 <li>
-                    "Click a match's " <span class="kbd">"Final"</span>
-                    " label to reveal just that match's score (click again to hide it)."
+                    "Click a match's " <span class="kbd">"Final"</span> " (or "
+                    <span class="kbd">"LIVE"</span>
+                    ") label to reveal just that match's score (click again to hide it)."
                 </li>
                 <li>
                     "Use the " <span class="kbd">"show scores"</span>
@@ -864,8 +865,9 @@ fn MatchRow(m: MatchView, show_bo: bool, push: bool) -> impl IntoView {
             || revealed.is_some_and(|r| r.with(|set| set.contains(&mid)))
     });
 
-    // A finished match's score lives behind its badge: click "Final" to toggle
-    // just this row's score. (Plain badge for live/upcoming/score-less rows.)
+    // A match's score lives behind its badge: click "Final"/"LIVE" to toggle
+    // just this row's score. (Plain badge for score-less rows, e.g. upcoming or
+    // a live match still at the 0-0 placeholder.)
     let toggle_reveal = move |ev: leptos::ev::MouseEvent| {
         // Don't let the click fall through to the row's stream link.
         ev.prevent_default();
@@ -878,14 +880,19 @@ fn MatchRow(m: MatchView, show_bo: bool, push: bool) -> impl IntoView {
             });
         }
     };
+    let score_noun = if matches!(m.status, MatchStatus::Live) {
+        "live score"
+    } else {
+        "final score"
+    };
+    let show_title = format!("Show the {score_noun}");
+    let hide_title = format!("Hide the {score_noun}");
     let badge_view = if has {
         view! {
             <span
                 class=format!("row-badge {status_class} reveal-badge")
                 class:on=move || reveal.get()
-                title=move || {
-                    if reveal.get() { "Hide the final score" } else { "Show the final score" }
-                }
+                title=move || if reveal.get() { hide_title.clone() } else { show_title.clone() }
                 on:click=toggle_reveal
             >
                 {badge}

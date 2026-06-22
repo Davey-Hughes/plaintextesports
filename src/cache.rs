@@ -422,21 +422,31 @@ fn to_view(m: &NormalizedMatch, tz: &Tz, now: DateTime<Utc>, hour24: bool) -> Ma
     let status = effective_status(m, now);
 
     // PandaScore returns placeholder 0-0 results on unplayed matches, so only
-    // trust scores once a match is finished.
-    let show_scores = status == MatchStatus::Finished;
+    // trust a finished match's score, or a live match's score once it's nonzero
+    // (a real in-progress map count rather than the 0-0 placeholder).
+    let trust_scores = match status {
+        MatchStatus::Finished => true,
+        MatchStatus::Live => {
+            matches!((m.team_a.score, m.team_b.score), (Some(a), Some(b)) if a > 0 || b > 0)
+        }
+        _ => false,
+    };
     let mut team_a = TeamView {
         label: m.team_a.label.clone(),
-        score: show_scores.then_some(m.team_a.score).flatten(),
+        score: trust_scores.then_some(m.team_a.score).flatten(),
         winner: false,
     };
     let mut team_b = TeamView {
         label: m.team_b.label.clone(),
-        score: show_scores.then_some(m.team_b.score).flatten(),
+        score: trust_scores.then_some(m.team_b.score).flatten(),
         winner: false,
     };
-    if let (Some(a), Some(b)) = (team_a.score, team_b.score) {
-        team_a.winner = a > b;
-        team_b.winner = b > a;
+    // Only a finished match has a winner; a leader mid-match isn't one yet.
+    if status == MatchStatus::Finished {
+        if let (Some(a), Some(b)) = (team_a.score, team_b.score) {
+            team_a.winner = a > b;
+            team_b.winner = b > a;
+        }
     }
 
     MatchView {
@@ -731,7 +741,7 @@ fn demo_matches(now: DateTime<Utc>) -> Vec<NormalizedMatch> {
         demo_match(1, Game::Cs2, "IEM", "S", now - m(35), Finished, 3,
             demo_team("NAVI", Some(1)), demo_team("FaZe", Some(2))),
         demo_match(2, Game::Cs2, "IEM", "S", now - m(10), Live, 3,
-            demo_team("G2", None), demo_team("MOUZ", None)),
+            demo_team("G2", Some(1)), demo_team("MOUZ", Some(0))),
         demo_match(3, Game::Cs2, "IEM", "S", now + h(2), Upcoming, 3,
             demo_team("VIT", None), demo_team("SPIRIT", None)),
         // CS2 — BLAST: a result + upcoming.
@@ -858,6 +868,25 @@ mod tests {
         let v = to_view(&up, &Tz::UTC, now, true);
         assert_eq!(v.team_a.score, None);
         assert_eq!(v.team_b.score, None);
+    }
+
+    #[test]
+    fn to_view_shows_live_scores_only_when_nonzero() {
+        let now = Utc::now();
+        // A live match with a real partial score: shown, but no winner yet.
+        let mut live = at(now - Duration::minutes(10), MatchStatus::Live);
+        live.team_a.score = Some(1);
+        live.team_b.score = Some(0);
+        let v = to_view(&live, &Tz::UTC, now, true);
+        assert_eq!(v.team_a.score, Some(1));
+        assert!(!v.team_a.winner && !v.team_b.winner, "no winner mid-match");
+
+        // A live match still at the 0-0 placeholder stays hidden.
+        let mut live0 = at(now - Duration::minutes(10), MatchStatus::Live);
+        live0.team_a.score = Some(0);
+        live0.team_b.score = Some(0);
+        let v = to_view(&live0, &Tz::UTC, now, true);
+        assert_eq!(v.team_a.score, None);
     }
 
     #[test]

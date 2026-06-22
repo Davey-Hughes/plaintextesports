@@ -436,19 +436,20 @@ a {
     color: var(--muted);
   }
 
-  // A clickable badge (e.g. "Final") that reveals this match's score. The
+  // A clickable badge ("Final"/"LIVE") that reveals this match's score. The
   // dotted underline hints it's interactive; the title gives the full behavior.
+  // A solid underline marks it revealed (status color is kept, so LIVE stays
+  // green).
   &.reveal-badge {
     cursor: pointer;
     text-decoration: underline dotted;
     text-underline-offset: 2px;
 
     &:hover {
-      color: var(--fg);
+      text-decoration-color: var(--fg);
     }
 
     &.on {
-      color: var(--fg);
       text-decoration-style: solid;
     }
   }
