@@ -721,9 +721,15 @@ fn demo_matches(now: DateTime<Utc>) -> Vec<NormalizedMatch> {
     let m = Duration::minutes;
     let d = Duration::days;
     vec![
-        // CS2 — IEM: a result, a live game, and an upcoming one.
-        demo_match(1, Game::Cs2, "IEM", "S", now - m(75), Finished, 3,
-            demo_team("NAVI", Some(2)), demo_team("FaZe", Some(1))),
+        // CS2 — IEM: a playoff day — three finished results, a live game, and an
+        // upcoming one (shows an event whose matches are mostly final). The
+        // finals stay within ~2h of now so they fall in the homepage's window.
+        demo_match(14, Game::Cs2, "IEM", "S", now - m(105), Finished, 3,
+            demo_team("NAVI", Some(2)), demo_team("VIT", Some(0))),
+        demo_match(15, Game::Cs2, "IEM", "S", now - m(70), Finished, 3,
+            demo_team("FaZe", Some(2)), demo_team("MOUZ", Some(1))),
+        demo_match(1, Game::Cs2, "IEM", "S", now - m(35), Finished, 3,
+            demo_team("NAVI", Some(1)), demo_team("FaZe", Some(2))),
         demo_match(2, Game::Cs2, "IEM", "S", now - m(10), Live, 3,
             demo_team("G2", None), demo_team("MOUZ", None)),
         demo_match(3, Game::Cs2, "IEM", "S", now + h(2), Upcoming, 3,
