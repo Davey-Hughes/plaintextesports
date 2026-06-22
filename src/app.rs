@@ -518,6 +518,7 @@ fn render_schedule(s: ScheduleView, show_nav: bool, push: bool) -> impl IntoView
         fetched_label,
         stale,
         using_fixture,
+        demo_forced,
         date_label,
         prev_date,
         next_date,
@@ -588,9 +589,13 @@ fn render_schedule(s: ScheduleView, show_nav: bool, push: bool) -> impl IntoView
         })
         .collect_view();
 
-    let fixture_note = using_fixture
-        .then(|| "demo data — set PANDASCORE_TOKEN for live schedules · ".to_string())
-        .unwrap_or_default();
+    let fixture_note = if demo_forced {
+        "demo mode (forced) · ".to_string()
+    } else if using_fixture {
+        "demo data — set PANDASCORE_TOKEN for live schedules · ".to_string()
+    } else {
+        String::new()
+    };
     let stale_note = stale
         .then(|| "data may be stale · ".to_string())
         .unwrap_or_default();

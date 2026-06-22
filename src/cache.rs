@@ -587,6 +587,7 @@ pub fn homepage_view(game_filter: &str, tz_name: &str, hour24: bool) -> Schedule
         fetched_label: time_label(snap.fetched_at.with_timezone(&tz), hour24),
         stale: snap.stale,
         using_fixture: snap.using_fixture,
+        demo_forced: cfg.demo,
         date_label: None,
         prev_date: None,
         next_date: None,
@@ -620,6 +621,7 @@ pub fn day_view(date: &str, game_filter: &str, tz_name: &str, hour24: bool) -> S
         fetched_label: time_label(snap.fetched_at.with_timezone(&tz), hour24),
         stale: snap.stale,
         using_fixture: snap.using_fixture,
+        demo_forced: cfg.demo,
         date_label: Some(day_label(local_noon)),
         prev_date: Some((day - Duration::days(1)).format("%Y-%m-%d").to_string()),
         next_date: Some((day + Duration::days(1)).format("%Y-%m-%d").to_string()),
@@ -664,86 +666,44 @@ fn demo_match(
 
 /// Demo data anchored to `now` so the page is populated without a token.
 fn demo_matches(now: DateTime<Utc>) -> Vec<NormalizedMatch> {
+    use MatchStatus::{Finished, Live, Upcoming};
     let h = Duration::hours;
+    let m = Duration::minutes;
     let d = Duration::days;
     vec![
-        demo_match(
-            1,
-            Game::Cs2,
-            "IEM",
-            "S",
-            now - h(1),
-            MatchStatus::Live,
-            3,
-            demo_team("NAVI", Some(1)),
-            demo_team("FaZe", Some(0)),
-        ),
-        demo_match(
-            2,
-            Game::Lol,
-            "LCK",
-            "A",
-            now - h(2),
-            MatchStatus::Finished,
-            3,
-            demo_team("T1", Some(2)),
-            demo_team("GEN", Some(1)),
-        ),
-        demo_match(
-            3,
-            Game::Lol,
-            "LCK",
-            "A",
-            now + h(3),
-            MatchStatus::Upcoming,
-            3,
-            demo_team("HLE", None),
-            demo_team("DK", None),
-        ),
-        demo_match(
-            4,
-            Game::Cs2,
-            "BLAST",
-            "S",
-            now + h(5),
-            MatchStatus::Upcoming,
-            3,
-            demo_team("VIT", None),
-            demo_team("SPIRIT", None),
-        ),
-        demo_match(
-            5,
-            Game::Lol,
-            "LEC",
-            "A",
-            now + d(1),
-            MatchStatus::Upcoming,
-            3,
-            demo_team("G2", None),
-            demo_team("FNC", None),
-        ),
-        demo_match(
-            6,
-            Game::Cs2,
-            "BLAST",
-            "S",
-            now + d(1) + h(2),
-            MatchStatus::Upcoming,
-            1,
-            demo_team("MOUZ", None),
-            demo_team("G2", None),
-        ),
-        demo_match(
-            7,
-            Game::Lol,
-            "Worlds",
-            "S",
-            now + d(3),
-            MatchStatus::Upcoming,
-            5,
-            demo_team("T1", None),
-            demo_team("BLG", None),
-        ),
+        // CS2 — IEM: a result, a live game, and an upcoming one.
+        demo_match(1, Game::Cs2, "IEM", "S", now - m(75), Finished, 3,
+            demo_team("NAVI", Some(2)), demo_team("FaZe", Some(1))),
+        demo_match(2, Game::Cs2, "IEM", "S", now - m(10), Live, 3,
+            demo_team("G2", None), demo_team("MOUZ", None)),
+        demo_match(3, Game::Cs2, "IEM", "S", now + h(2), Upcoming, 3,
+            demo_team("VIT", None), demo_team("SPIRIT", None)),
+        // CS2 — BLAST: a result + upcoming.
+        demo_match(4, Game::Cs2, "BLAST", "S", now - m(50), Finished, 3,
+            demo_team("SPIRIT", Some(2)), demo_team("G2", Some(0))),
+        demo_match(5, Game::Cs2, "BLAST", "S", now + h(4), Upcoming, 1,
+            demo_team("FaZe", None), demo_team("MOUZ", None)),
+        // CS2 — ESL Pro League: upcoming only.
+        demo_match(6, Game::Cs2, "ESL Pro League", "A", now + h(5), Upcoming, 3,
+            demo_team("NIP", None), demo_team("BIG", None)),
+        // LoL — LCK: a result + upcoming.
+        demo_match(7, Game::Lol, "LCK", "A", now - m(35), Finished, 3,
+            demo_team("T1", Some(2)), demo_team("GEN", Some(1))),
+        demo_match(8, Game::Lol, "LCK", "A", now + h(3), Upcoming, 3,
+            demo_team("HLE", None), demo_team("DK", None)),
+        // LoL — LEC: a result (FNC win) + upcoming next day.
+        demo_match(9, Game::Lol, "LEC", "A", now - m(20), Finished, 3,
+            demo_team("G2", Some(1)), demo_team("FNC", Some(2))),
+        demo_match(10, Game::Lol, "LEC", "A", now + d(1), Upcoming, 3,
+            demo_team("MAD", None), demo_team("VIT", None)),
+        // LoL — LPL: upcoming.
+        demo_match(11, Game::Lol, "LPL", "A", now + h(6), Upcoming, 3,
+            demo_team("BLG", None), demo_team("TES", None)),
+        // LoL — MSI / Worlds: bigger upcoming events, further out.
+        demo_match(12, Game::Lol, "MSI", "S", now + d(1) + h(2), Upcoming, 5,
+            demo_team("T1", None), demo_team("BLG", None)),
+        demo_match(13, Game::Lol, "Worlds", "S", now + d(3), Upcoming, 5,
+            demo_team("GEN", None), demo_team("JDG", None)),
     ]
 }
 
