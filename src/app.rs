@@ -472,10 +472,11 @@ fn EventPage() -> impl IntoView {
                             .filter(|e| !e.is_empty())
                             .map(|e| {
                                 let EventInfo { tournament_id, game, standings, rounds, .. } = e;
+                                let bracket_only = standings.is_empty();
                                 view! {
                                     <div class="event-extra">
                                         <StandingsTable rows=standings tournament_id game />
-                                        <Bracket rounds=rounds tournament_id />
+                                        <Bracket rounds=rounds tournament_id bracket_only />
                                     </div>
                                 }
                             });
@@ -568,6 +569,7 @@ fn detail_view(d: MatchDetail) -> impl IntoView {
     let tid = event.tournament_id;
     let game = event.game;
     let standings = event.standings;
+    let bracket_only = standings.is_empty();
     let rounds = event.rounds;
 
     // Scores/standings/bracket are spoilers: reveal when the global toggle is on
@@ -637,7 +639,7 @@ fn detail_view(d: MatchDetail) -> impl IntoView {
             // Standings + bracket self-gate per section (shared, persisted), so
             // they're always rendered with their own reveal controls.
             <StandingsTable rows=standings tournament_id=tid game=game />
-            <Bracket rounds=rounds tournament_id=tid />
+            <Bracket rounds=rounds tournament_id=tid bracket_only=bracket_only />
         </article>
     }
 }
@@ -801,6 +803,9 @@ struct BkCell {
     bs: String,
     /// Furthest this series can be revealed (see [`bm_max_stage`]).
     max: u8,
+    /// Minimum stage always shown (1 = team names) — used so a bracket-only
+    /// event's first-round matchups stay visible (only scores are a spoiler).
+    floor: u8,
     /// `(round, index)` of the matches whose scores must be shown before this
     /// series' lineup is known (empty for a first-round match).
     feeders: Vec<(usize, usize)>,
@@ -834,6 +839,7 @@ fn compute_effective(grid: &[Vec<BkCell>], set: &HashSet<String>, global: bool) 
                 }
                 stage_of(set, &c.bn, &c.bs)
                     .max(auto_stage(&eff, &c.feeders))
+                    .max(c.floor)
                     .min(c.max)
             })
             .collect();
@@ -1036,7 +1042,7 @@ struct BkRender {
 }
 
 #[component]
-fn Bracket(rounds: Vec<BracketRound>, tournament_id: i64) -> impl IntoView {
+fn Bracket(rounds: Vec<BracketRound>, tournament_id: i64, bracket_only: bool) -> impl IntoView {
     if rounds.is_empty() {
         return ().into_any();
     }
@@ -1053,10 +1059,14 @@ fn Bracket(rounds: Vec<BracketRound>, tournament_id: i64) -> impl IntoView {
         let mut sres = Vec::with_capacity(round.matches.len());
         for (i, m) in round.matches.into_iter().enumerate() {
             let max = bm_max_stage(&m);
+            // For a bracket-only event, keep first-round matchups (no feeders)
+            // visible by default — only their scores are a spoiler.
+            let floor = u8::from(bracket_only && m.feeders.is_empty() && max >= 1);
             cells.push(BkCell {
                 bn: format!("bn:{tid}:{r}:{i}"),
                 bs: format!("bs:{tid}:{r}:{i}"),
                 max,
+                floor,
                 feeders: m.feeders,
             });
             sres.push(BkRender {
@@ -1297,10 +1307,11 @@ fn EventSection(leagues: RwSignal<HashSet<String>>) -> impl IntoView {
                     .filter(|e| !e.is_empty())
                     .map(|e| {
                         let EventInfo { tournament_id, game, standings, rounds, .. } = e;
+                        let bracket_only = standings.is_empty();
                         view! {
                             <div class="event-extra">
                                 <StandingsTable rows=standings tournament_id game />
-                                <Bracket rounds=rounds tournament_id />
+                                <Bracket rounds=rounds tournament_id bracket_only />
                             </div>
                         }
                     })
@@ -2675,6 +2686,7 @@ mod tests {
             bn: format!("bn:1:{r}:{i}"),
             bs: format!("bs:1:{r}:{i}"),
             max,
+            floor: 0,
             feeders: feeders.to_vec(),
         };
         vec![
