@@ -77,9 +77,6 @@ static HTTP: Lazy<reqwest::Client> = Lazy::new(|| {
         .unwrap_or_default()
 });
 
-/// Keep matches whose start is within this many days of "now" in the DB; older
-/// ones are pruned after each poll.
-const RETENTION_DAYS: i64 = 2;
 
 /// Start the background poller. Loads any persisted matches first (so a restart
 /// serves data immediately), then either polls PandaScore or, with no token,
@@ -191,7 +188,12 @@ pub fn spawn_poller() {
                 fetch_game(&client, &token, Game::Cs2, window_end, deep),
                 fetch_game(&client, &token, Game::Lol, window_end, deep),
             );
-            apply_poll(cs_res, lol_res, store.as_mut());
+            apply_poll(
+                cs_res,
+                lol_res,
+                store.as_mut(),
+                cfg.archive_cutoff(now).timestamp_millis(),
+            );
 
             // Resolve exact Liquipedia links for any new events. The async
             // lookups hold no DB connection; persistence happens synchronously
@@ -246,7 +248,12 @@ fn is_active_window(
 
 /// Persist freshly polled matches (if a store is present) and refresh the
 /// in-memory snapshot. Synchronous — no `.await` while touching the DB.
-fn apply_poll(cs_res: FetchResult, lol_res: FetchResult, store: Option<&mut rusqlite::Connection>) {
+fn apply_poll(
+    cs_res: FetchResult,
+    lol_res: FetchResult,
+    store: Option<&mut rusqlite::Connection>,
+    cutoff_ms: i64,
+) {
     let now = Utc::now();
     let mut fresh: Vec<NormalizedMatch> = Vec::new();
     let mut errored: Vec<Game> = Vec::new();
@@ -270,8 +277,8 @@ fn apply_poll(cs_res: FetchResult, lol_res: FetchResult, store: Option<&mut rusq
         // Upsert successes; matches for an errored game stay in the DB (we only
         // prune by age), so the reload below preserves them.
         if any_ok {
-            let cutoff = (now - Duration::days(RETENTION_DAYS)).timestamp_millis();
-            if let Err(e) = crate::store::upsert_and_prune(conn, &fresh, now.timestamp_millis(), cutoff)
+            if let Err(e) =
+                crate::store::upsert_and_prune(conn, &fresh, now.timestamp_millis(), cutoff_ms)
             {
                 leptos::logging::log!("cache db write failed: {e}");
             }
@@ -291,11 +298,11 @@ fn apply_poll(cs_res: FetchResult, lol_res: FetchResult, store: Option<&mut rusq
             }
             Err(e) => {
                 leptos::logging::log!("cache db read failed: {e}");
-                merge_in_memory(fresh, &errored, any_ok, any_err, now);
+                merge_in_memory(fresh, &errored, any_ok, any_err, now, cutoff_ms);
             }
         }
     } else {
-        merge_in_memory(fresh, &errored, any_ok, any_err, now);
+        merge_in_memory(fresh, &errored, any_ok, any_err, now, cutoff_ms);
     }
 }
 
@@ -307,10 +314,13 @@ fn merge_matches(
     prev: &[NormalizedMatch],
     mut fresh: Vec<NormalizedMatch>,
     errored: &[Game],
+    cutoff_ms: i64,
 ) -> Vec<NormalizedMatch> {
     for &game in errored {
         fresh.extend(prev.iter().filter(|m| m.game == game).cloned());
     }
+    // Mirror the DB prune so memory-only mode doesn't accumulate stale matches.
+    fresh.retain(|m| m.begin_at.timestamp_millis() >= cutoff_ms);
     fresh.sort_by_key(|m| m.begin_at);
     fresh
 }
@@ -321,9 +331,10 @@ fn merge_in_memory(
     any_ok: bool,
     any_err: bool,
     now: DateTime<Utc>,
+    cutoff_ms: i64,
 ) {
     let mut snap = SNAPSHOT.write().unwrap_or_else(PoisonError::into_inner);
-    let merged = merge_matches(&snap.matches, matches, errored);
+    let merged = merge_matches(&snap.matches, matches, errored, cutoff_ms);
     snap.matches = merged;
     snap.using_fixture = false;
     snap.stale = any_err;
@@ -672,6 +683,45 @@ pub fn day_view(date: &str, game_filter: &str, tz_name: &str, hour24: bool) -> S
     }
 }
 
+/// Schedule for an inclusive date range `[start_date, end_date]` (ISO dates in
+/// the display tz). Backs the "show earlier days" view and the calendar picker.
+#[must_use]
+pub fn range_view(
+    start_date: &str,
+    end_date: &str,
+    game_filter: &str,
+    tz_name: &str,
+    hour24: bool,
+) -> ScheduleView {
+    let cfg = Config::from_env();
+    let tz = resolve_tz(tz_name, cfg.tz);
+    let game = Game::from_filter(game_filter);
+    let now = Utc::now();
+    let today = now.with_timezone(&tz).date_naive();
+
+    let parse = |s: &str| NaiveDate::parse_from_str(s, "%Y-%m-%d");
+    let start_day = parse(start_date).unwrap_or(today);
+    let end_day = parse(end_date).unwrap_or(today).max(start_day);
+    let start = local_day_start(&tz, start_day);
+    // Inclusive end day → window runs to the start of the following day.
+    let end = local_day_start(&tz, end_day + Duration::days(1));
+
+    let snap = SNAPSHOT.read().unwrap_or_else(PoisonError::into_inner);
+    let all = matches_in_window(&snap, game, start, end, &tz, now, hour24);
+
+    ScheduleView {
+        days: group_days(all, &tz),
+        fetched_at_ms: snap.fetched_at.timestamp_millis(),
+        fetched_label: time_label(snap.fetched_at.with_timezone(&tz), hour24),
+        stale: snap.stale,
+        using_fixture: snap.using_fixture,
+        demo_forced: cfg.demo,
+        date_label: None,
+        prev_date: None,
+        next_date: None,
+    }
+}
+
 // ----- Game/event subscription expansion -----------------------------------
 
 /// A reminder to create for one upcoming match (from a game/event subscription).
@@ -965,7 +1015,7 @@ fn demo_matches(now: DateTime<Utc>) -> Vec<NormalizedMatch> {
     let h = Duration::hours;
     let m = Duration::minutes;
     let d = Duration::days;
-    vec![
+    let mut out = vec![
         // CS2 — IEM: a playoff day — three finished results, a live game, and an
         // upcoming one (shows an event whose matches are mostly final). The
         // finals stay within ~2h of now so they fall in the homepage's window.
@@ -1005,7 +1055,34 @@ fn demo_matches(now: DateTime<Utc>) -> Vec<NormalizedMatch> {
             demo_team("T1", None), demo_team("BLG", None)),
         demo_match(13, Game::Lol, "Worlds", "S", now + d(3), Upcoming, 5,
             demo_team("GEN", None), demo_team("JDG", None)),
-    ]
+    ];
+
+    // Finished results across the prior ~2 weeks so "show earlier days" and the
+    // calendar have history to render in demo mode. Reuse the same leagues so
+    // their seeded standings/brackets apply to the detail pages.
+    let cs_events = ["IEM", "BLAST", "ESL Pro League"];
+    let lol_events = ["LCK", "LEC", "LPL"];
+    let cs_teams = [
+        ("NAVI", "FaZe"), ("VIT", "MOUZ"), ("G2", "SPIRIT"),
+        ("BIG", "NIP"), ("FaZe", "VIT"), ("MOUZ", "NAVI"),
+    ];
+    let lol_teams = [
+        ("T1", "GEN"), ("HLE", "DK"), ("BLG", "TES"),
+        ("G2", "FNC"), ("GEN", "T1"), ("DK", "BLG"),
+    ];
+    let mut id = 100;
+    for day in 1..=12i64 {
+        let i = (day - 1) as usize;
+        let (a, b) = cs_teams[i % cs_teams.len()];
+        out.push(demo_match(id, Game::Cs2, cs_events[i % cs_events.len()], "S",
+            now - d(day) - h(3), Finished, 3, demo_team(a, Some(2)), demo_team(b, Some(1))));
+        id += 1;
+        let (a, b) = lol_teams[i % lol_teams.len()];
+        out.push(demo_match(id, Game::Lol, lol_events[i % lol_events.len()], "A",
+            now - d(day) - h(2), Finished, 3, demo_team(a, Some(2)), demo_team(b, Some(0))));
+        id += 1;
+    }
+    out
 }
 
 #[cfg(test)]
@@ -1253,9 +1330,25 @@ mod tests {
         };
         let prev = vec![mk(1, Game::Cs2, 1), mk(2, Game::Lol, 2)];
         let fresh = vec![mk(3, Game::Cs2, 3)]; // cs2 refetched; lol failed this round
-        let merged = merge_matches(&prev, fresh, &[Game::Lol]);
+        let old_cutoff = (now - Duration::days(365)).timestamp_millis();
+        let merged = merge_matches(&prev, fresh, &[Game::Lol], old_cutoff);
         // Old cs2 (id 1) replaced by fresh (id 3); lol (id 2) retained; sorted.
         assert_eq!(merged.iter().map(|m| m.id).collect::<Vec<_>>(), vec![2, 3]);
         assert!(!merged.iter().any(|m| m.id == 1));
+    }
+
+    #[test]
+    fn merge_matches_drops_matches_older_than_cutoff() {
+        let now = Utc::now();
+        let mk = |id, h| {
+            let mut m = at(now + Duration::hours(h), MatchStatus::Finished);
+            m.id = id;
+            m
+        };
+        let prev = vec![];
+        let fresh = vec![mk(1, -240), mk(2, -2)]; // 10 days ago, 2 hours ago
+        let cutoff = (now - Duration::days(7)).timestamp_millis();
+        let merged = merge_matches(&prev, fresh, &[], cutoff);
+        assert_eq!(merged.iter().map(|m| m.id).collect::<Vec<_>>(), vec![2]);
     }
 }
