@@ -502,24 +502,34 @@ fn section_reveal(key: String) -> (Memo<bool>, impl Fn(leptos::ev::MouseEvent) +
     (revealed, toggle, hidden)
 }
 
-/// A small "show"/"hide" button for a section (hidden when the global toggle is on).
-#[component]
-fn SectionToggle(
-    revealed: Memo<bool>,
-    #[prop(into)] on_toggle: Callback<leptos::ev::MouseEvent>,
-    hidden: Memo<bool>,
-) -> impl IntoView {
-    view! {
-        {move || {
-            (!hidden.get())
-                .then(|| {
-                    view! {
-                        <button class="linkish" on:click=move |e| on_toggle.run(e)>
-                            {move || if revealed.get() { "hide" } else { "show" }}
-                        </button>
-                    }
-                })
-        }}
+/// Reveal stage for one bracket series, from its position key `<tid>:<r>:<i>`:
+/// 0 hidden, 1 team names, 2 scores. `bs:` implies scores; `bn:`, names.
+fn series_stage(set: &HashSet<String>, base: &str) -> u8 {
+    if set.contains(&format!("bs:{base}")) {
+        2
+    } else if set.contains(&format!("bn:{base}")) {
+        1
+    } else {
+        0
+    }
+}
+
+/// Move one series to a reveal stage (0 hidden / 1 names / 2 scores).
+fn set_series_stage(set: &mut HashSet<String>, base: &str, stage: u8) {
+    let (bn, bs) = (format!("bn:{base}"), format!("bs:{base}"));
+    match stage {
+        0 => {
+            set.remove(&bn);
+            set.remove(&bs);
+        }
+        1 => {
+            set.insert(bn);
+            set.remove(&bs);
+        }
+        _ => {
+            set.insert(bn);
+            set.insert(bs);
+        }
     }
 }
 
@@ -528,12 +538,14 @@ fn StandingsTable(rows: Vec<StandingRow>, tournament_id: i64) -> impl IntoView {
     if rows.is_empty() {
         return ().into_any();
     }
-    let (revealed, toggle, hidden) = section_reveal(format!("st:{tournament_id}"));
+    // Click the "Standings" title to reveal/hide the table.
+    let (revealed, toggle, _hidden) = section_reveal(format!("st:{tournament_id}"));
     view! {
         <section class="detail-section">
             <div class="section-head">
-                <h2 class="section-title">"Standings"</h2>
-                <SectionToggle revealed on_toggle=toggle hidden />
+                <button class="section-title section-toggle" class:on=move || revealed.get() on:click=toggle>
+                    "Standings"
+                </button>
             </div>
             {move || {
                 if revealed.get() {
@@ -581,22 +593,95 @@ fn Bracket(rounds: Vec<BracketRound>, tournament_id: i64) -> impl IntoView {
     if rounds.is_empty() {
         return ().into_any();
     }
+    let global = use_context::<ShowScores>().map(|s| s.0);
+    let sections = use_context::<RevealedSections>().map(|s| s.0);
+    let tid = tournament_id;
     let cols = rounds
         .into_iter()
         .enumerate()
-        .map(|(i, r)| {
-            let (revealed, toggle, hidden) = section_reveal(format!("bk:{tournament_id}:{i}"));
-            let ms = r
+        .map(|(r, round)| {
+            let title = round.title;
+            let n = round.matches.len();
+            // Click the round title to cycle the whole round through the next
+            // reveal stage (hidden → names → scores → hidden), based on its least
+            // revealed series.
+            let round_toggle = move |_| {
+                if let Some(sec) = sections {
+                    sec.update(|set| {
+                        let min = (0..n)
+                            .map(|i| series_stage(set, &format!("{tid}:{r}:{i}")))
+                            .min()
+                            .unwrap_or(0);
+                        let target = if min >= 2 { 0 } else { min + 1 };
+                        for i in 0..n {
+                            set_series_stage(set, &format!("{tid}:{r}:{i}"), target);
+                        }
+                    });
+                    #[cfg(feature = "hydrate")]
+                    save_sections(&sec.get_untracked());
+                }
+            };
+            let round_on = Memo::new(move |_| {
+                global.is_some_and(|g| g.get())
+                    || sections.is_some_and(|s| {
+                        s.with(|set| (0..n).any(|i| set.contains(&format!("bn:{tid}:{r}:{i}"))))
+                    })
+            });
+            let ms = round
                 .matches
                 .into_iter()
-                .map(|m| {
+                .enumerate()
+                .map(|(i, m)| {
                     let (ta, tb) = (m.team_a, m.team_b);
                     let (sa, sb) = (m.score_a, m.score_b);
                     let winner = m.winner;
+                    let base = format!("{tid}:{r}:{i}");
+                    let base_stage = base.clone();
+                    // 0 hidden, 1 names, 2 scores.
+                    let stage = Memo::new(move |_| {
+                        if global.is_some_and(|g| g.get()) {
+                            return 2u8;
+                        }
+                        sections.map_or(0, |s| s.with(|set| series_stage(set, &base_stage)))
+                    });
+                    // Click a series to advance just it to the next stage.
+                    let series_toggle = move |_| {
+                        if let Some(sec) = sections {
+                            sec.update(|set| {
+                                let cur = series_stage(set, &base);
+                                let target = if cur >= 2 { 0 } else { cur + 1 };
+                                set_series_stage(set, &base, target);
+                            });
+                            #[cfg(feature = "hydrate")]
+                            save_sections(&sec.get_untracked());
+                        }
+                    };
                     view! {
-                        <div class="bk-match">
-                            {move || {
-                                if revealed.get() {
+                        <div class="bk-match" on:click=series_toggle>
+                            {move || match stage.get() {
+                                0 => {
+                                    view! {
+                                        <div class="bk-row bk-hidden">
+                                            <span class="bk-team">"—"</span>
+                                        </div>
+                                        <div class="bk-row bk-hidden">
+                                            <span class="bk-team">"—"</span>
+                                        </div>
+                                    }
+                                        .into_any()
+                                }
+                                1 => {
+                                    view! {
+                                        <div class="bk-row">
+                                            <span class="bk-team">{ta.clone()}</span>
+                                        </div>
+                                        <div class="bk-row">
+                                            <span class="bk-team">{tb.clone()}</span>
+                                        </div>
+                                    }
+                                        .into_any()
+                                }
+                                _ => {
                                     let cls_a = if winner == "a" { "bk-row win" } else { "bk-row" };
                                     let cls_b = if winner == "b" { "bk-row win" } else { "bk-row" };
                                     view! {
@@ -614,16 +699,6 @@ fn Bracket(rounds: Vec<BracketRound>, tournament_id: i64) -> impl IntoView {
                                         </div>
                                     }
                                         .into_any()
-                                } else {
-                                    view! {
-                                        <div class="bk-row bk-hidden">
-                                            <span class="bk-team">"—"</span>
-                                        </div>
-                                        <div class="bk-row bk-hidden">
-                                            <span class="bk-team">"—"</span>
-                                        </div>
-                                    }
-                                        .into_any()
                                 }
                             }}
                         </div>
@@ -633,8 +708,13 @@ fn Bracket(rounds: Vec<BracketRound>, tournament_id: i64) -> impl IntoView {
             view! {
                 <div class="bk-round">
                     <div class="bk-round-title">
-                        <span>{r.title}</span>
-                        <SectionToggle revealed on_toggle=toggle hidden />
+                        <button
+                            class="bk-round-toggle"
+                            class:on=move || round_on.get()
+                            on:click=round_toggle
+                        >
+                            {title}
+                        </button>
                     </div>
                     <div class="bk-matches">{ms}</div>
                 </div>
@@ -1981,6 +2061,21 @@ mod tests {
         assert_eq!(days_in_month(2026, 2), 28);
         assert_eq!(days_in_month(2024, 2), 29);
         assert_eq!(month_name(6), "June");
+    }
+
+    #[test]
+    fn bracket_series_stage_transitions() {
+        let mut set = HashSet::new();
+        let base = "9:0:0";
+        assert_eq!(series_stage(&set, base), 0);
+        set_series_stage(&mut set, base, 1); // names
+        assert_eq!(series_stage(&set, base), 1);
+        assert!(set.contains("bn:9:0:0") && !set.contains("bs:9:0:0"));
+        set_series_stage(&mut set, base, 2); // scores
+        assert_eq!(series_stage(&set, base), 2);
+        set_series_stage(&mut set, base, 0); // hidden
+        assert_eq!(series_stage(&set, base), 0);
+        assert!(set.is_empty());
     }
 
     #[test]
