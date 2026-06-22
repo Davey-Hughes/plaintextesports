@@ -596,4 +596,102 @@ mod tests {
             "starts in 2h => not yet active"
         );
     }
+
+    #[test]
+    fn time_label_24h_and_12h() {
+        let t = |h, mi| Tz::UTC.with_ymd_and_hms(2026, 6, 21, h, mi, 0).unwrap();
+        assert_eq!(time_label(t(18, 30), true), "18:30");
+        assert_eq!(time_label(t(18, 30), false), "6:30 PM");
+        assert_eq!(time_label(t(0, 5), true), "00:05");
+        assert_eq!(time_label(t(0, 5), false), "12:05 AM");
+        assert_eq!(time_label(t(12, 0), false), "12:00 PM");
+    }
+
+    #[test]
+    fn effective_status_live_heuristic() {
+        let now = Utc::now();
+        let mut m = at(now - Duration::hours(1), MatchStatus::Upcoming);
+        assert_eq!(effective_status(&m, now), MatchStatus::Live);
+        m.begin_at = now + Duration::hours(1);
+        assert_eq!(effective_status(&m, now), MatchStatus::Upcoming);
+        m.status = MatchStatus::Finished;
+        m.begin_at = now - Duration::hours(1);
+        assert_eq!(effective_status(&m, now), MatchStatus::Finished);
+    }
+
+    #[test]
+    fn to_view_only_shows_scores_when_finished() {
+        let now = Utc::now();
+        let mut fin = at(now - Duration::hours(2), MatchStatus::Finished);
+        fin.team_a.score = Some(2);
+        fin.team_b.score = Some(1);
+        let v = to_view(&fin, &Tz::UTC, now, true);
+        assert_eq!(v.team_a.score, Some(2));
+        assert!(v.team_a.winner && !v.team_b.winner);
+
+        // Placeholder 0-0 on an unplayed match must be hidden.
+        let mut up = at(now + Duration::hours(2), MatchStatus::Upcoming);
+        up.team_a.score = Some(0);
+        up.team_b.score = Some(0);
+        let v = to_view(&up, &Tz::UTC, now, true);
+        assert_eq!(v.team_a.score, None);
+        assert_eq!(v.team_b.score, None);
+    }
+
+    #[test]
+    fn group_days_buckets_by_day_then_league() {
+        let ms = |h| {
+            Tz::UTC
+                .with_ymd_and_hms(2026, 6, 21, h, 0, 0)
+                .unwrap()
+                .timestamp_millis()
+        };
+        let day2 = Tz::UTC
+            .with_ymd_and_hms(2026, 6, 22, 1, 0, 0)
+            .unwrap()
+            .timestamp_millis();
+        let mk = |at_ms: i64, league: &str, bo: &str| MatchView {
+            id: at_ms,
+            game: Game::Lol,
+            league: league.into(),
+            tier: "S".into(),
+            status: MatchStatus::Upcoming,
+            clock_label: String::new(),
+            best_of: bo.into(),
+            team_a: TeamView {
+                label: "A".into(),
+                score: None,
+                winner: false,
+            },
+            team_b: TeamView {
+                label: "B".into(),
+                score: None,
+                winner: false,
+            },
+            stream_url: None,
+            begin_at_ms: at_ms,
+        };
+        let views = vec![
+            mk(ms(1), "LCK", "Bo3"),
+            mk(ms(2), "LEC", "Bo3"),
+            mk(ms(3), "LCK", "Bo5"),
+            mk(day2, "LCK", "Bo3"),
+        ];
+        let days = group_days(views, &Tz::UTC);
+        assert_eq!(days.len(), 2);
+        assert_eq!(days[0].leagues.len(), 2);
+        assert_eq!(days[0].leagues[0].league, "LCK");
+        assert_eq!(days[0].leagues[0].matches.len(), 2);
+        assert_eq!(days[0].leagues[0].bo, None, "mixed Bo3/Bo5 => no header bo");
+        assert_eq!(days[0].leagues[1].league, "LEC");
+        assert_eq!(days[0].leagues[1].bo, Some("Bo3".to_string()));
+        assert_eq!(days[1].leagues[0].bo, Some("Bo3".to_string()));
+    }
+
+    #[test]
+    fn resolve_tz_falls_back() {
+        assert_eq!(resolve_tz("Europe/London", Tz::UTC), chrono_tz::Europe::London);
+        assert_eq!(resolve_tz("", Tz::UTC), Tz::UTC);
+        assert_eq!(resolve_tz("Not/AZone", Tz::UTC), Tz::UTC);
+    }
 }

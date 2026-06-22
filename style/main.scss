@@ -141,6 +141,35 @@ a {
   }
 }
 
+.chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  margin: 0.1rem 0 0.6rem;
+}
+
+.chip {
+  background: none;
+  border: 1px solid var(--border);
+  // League chips set --lc (palette color); the "All events" chip has no --lc
+  // and falls back to the neutral muted/fg treatment.
+  color: var(--lc, var(--muted));
+  font: inherit;
+  font-size: 12px;
+  padding: 0.1rem 0.55rem;
+  cursor: pointer;
+
+  &:hover {
+    border-color: var(--lc, var(--fg));
+  }
+
+  &.active {
+    background: var(--lc, var(--fg));
+    border-color: var(--lc, var(--fg));
+    color: var(--bg);
+  }
+}
+
 .status-line {
   color: var(--muted);
   font-size: 12px;

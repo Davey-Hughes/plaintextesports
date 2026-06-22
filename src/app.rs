@@ -207,6 +207,7 @@ fn setup_autorefresh(resource: Resource<Result<ScheduleView, ServerFnError>>) {
 #[component]
 fn HomePage() -> impl IntoView {
     let (game, set_game) = signal(String::from("all"));
+    let (league, set_league) = signal(String::new());
     let hour24 = use_context::<RwSignal<bool>>().expect("hour24 context");
     let tz = use_context::<RwSignal<String>>().expect("tz context");
     let schedule = Resource::new(
@@ -216,8 +217,8 @@ fn HomePage() -> impl IntoView {
     setup_autorefresh(schedule);
 
     view! {
-        <GameTabs game set_game />
-        <ScheduleSection resource=schedule show_nav=false />
+        <GameTabs game set_game set_league />
+        <ScheduleSection resource=schedule league set_league show_nav=false />
     }
 }
 
@@ -231,6 +232,7 @@ fn DayPage() -> impl IntoView {
     let params = use_params::<DayParams>();
     let date = move || params.get().ok().map(|p| p.date).unwrap_or_default();
     let (game, set_game) = signal(String::from("all"));
+    let (league, set_league) = signal(String::new());
     let hour24 = use_context::<RwSignal<bool>>().expect("hour24 context");
     let tz = use_context::<RwSignal<String>>().expect("tz context");
     let schedule = Resource::new(
@@ -240,19 +242,27 @@ fn DayPage() -> impl IntoView {
     setup_autorefresh(schedule);
 
     view! {
-        <GameTabs game set_game />
-        <ScheduleSection resource=schedule show_nav=true />
+        <GameTabs game set_game set_league />
+        <ScheduleSection resource=schedule league set_league show_nav=true />
     }
 }
 
 #[component]
-fn GameTabs(game: ReadSignal<String>, set_game: WriteSignal<String>) -> impl IntoView {
+fn GameTabs(
+    game: ReadSignal<String>,
+    set_game: WriteSignal<String>,
+    set_league: WriteSignal<String>,
+) -> impl IntoView {
     let mk = move |label: &'static str, value: &'static str| {
         view! {
             <button
                 class="tab"
                 class:active=move || game.get() == value
-                on:click=move |_| set_game.set(value.to_string())
+                on:click=move |_| {
+                    set_game.set(value.to_string());
+                    // Reset the event filter: leagues differ per game.
+                    set_league.set(String::new());
+                }
             >
                 {label}
             </button>
@@ -269,8 +279,50 @@ fn GameTabs(game: ReadSignal<String>, set_game: WriteSignal<String>) -> impl Int
 }
 
 #[component]
+fn LeagueChips(
+    leagues: Vec<String>,
+    selected: ReadSignal<String>,
+    set_league: WriteSignal<String>,
+) -> impl IntoView {
+    let all_active = move || selected.get().is_empty();
+    let chips = leagues
+        .into_iter()
+        .map(|name| {
+            let lc = league_color_class(&name);
+            let sel_name = name.clone();
+            let click_name = name.clone();
+            let is_active = move || selected.get() == sel_name;
+            view! {
+                <button
+                    class=format!("chip {lc}")
+                    class:active=is_active
+                    on:click=move |_| set_league.set(click_name.clone())
+                >
+                    {name}
+                </button>
+            }
+        })
+        .collect_view();
+
+    view! {
+        <div class="chips">
+            <button
+                class="chip"
+                class:active=all_active
+                on:click=move |_| set_league.set(String::new())
+            >
+                "All events"
+            </button>
+            {chips}
+        </div>
+    }
+}
+
+#[component]
 fn ScheduleSection(
     resource: Resource<Result<ScheduleView, ServerFnError>>,
+    league: ReadSignal<String>,
+    set_league: WriteSignal<String>,
     show_nav: bool,
 ) -> impl IntoView {
     view! {
@@ -279,7 +331,26 @@ fn ScheduleSection(
                 resource
                     .get()
                     .map(|res| match res {
-                        Ok(s) => render_schedule(s, show_nav).into_any(),
+                        Ok(s) => {
+                            let leagues = distinct_leagues(&s);
+                            let filtered = filter_by_league(s, &league.get());
+                            // Only offer event chips when there's more than one.
+                            let chips = (leagues.len() > 1)
+                                .then(move || {
+                                    view! {
+                                        <LeagueChips
+                                            leagues=leagues
+                                            selected=league
+                                            set_league=set_league
+                                        />
+                                    }
+                                });
+                            view! {
+                                {chips}
+                                {render_schedule(filtered, show_nav)}
+                            }
+                                .into_any()
+                        }
                         Err(_) => {
                             view! { <p class="error">"Failed to load schedule."</p> }.into_any()
                         }
@@ -287,6 +358,31 @@ fn ScheduleSection(
             }}
         </Suspense>
     }
+}
+
+/// Distinct league names across all days, in first-appearance order.
+fn distinct_leagues(s: &ScheduleView) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for day in &s.days {
+        for lg in &day.leagues {
+            if !out.iter().any(|l| l == &lg.league) {
+                out.push(lg.league.clone());
+            }
+        }
+    }
+    out
+}
+
+/// Keep only the named league (empty = keep all); drop days left empty.
+fn filter_by_league(mut s: ScheduleView, league: &str) -> ScheduleView {
+    if league.is_empty() {
+        return s;
+    }
+    for day in &mut s.days {
+        day.leagues.retain(|lg| lg.league == league);
+    }
+    s.days.retain(|d| !d.leagues.is_empty());
+    s
 }
 
 /// Number of palette colors leagues are hashed into (see `.lc-*` in the SCSS).
@@ -423,5 +519,88 @@ fn MatchRow(m: MatchView, show_bo: bool) -> impl IntoView {
         }
         .into_any(),
         None => view! { <div class=format!("row {status_class}")>{inner}</div> }.into_any(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::types::{DayGroup, Game, LeagueGroup, TeamView};
+
+    fn mv(league: &str) -> MatchView {
+        MatchView {
+            id: 1,
+            game: Game::Lol,
+            league: league.into(),
+            tier: "S".into(),
+            status: MatchStatus::Upcoming,
+            clock_label: String::new(),
+            best_of: "Bo3".into(),
+            team_a: TeamView {
+                label: "A".into(),
+                score: None,
+                winner: false,
+            },
+            team_b: TeamView {
+                label: "B".into(),
+                score: None,
+                winner: false,
+            },
+            stream_url: None,
+            begin_at_ms: 0,
+        }
+    }
+
+    fn sched(days: Vec<Vec<&str>>) -> ScheduleView {
+        let days = days
+            .into_iter()
+            .enumerate()
+            .map(|(i, leagues)| DayGroup {
+                day_key: format!("d{i}"),
+                day_label: format!("Day {i}"),
+                leagues: leagues
+                    .into_iter()
+                    .map(|l| LeagueGroup {
+                        league: l.into(),
+                        bo: None,
+                        matches: vec![mv(l)],
+                    })
+                    .collect(),
+            })
+            .collect();
+        ScheduleView {
+            days,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn color_class_is_stable_and_in_range() {
+        let a = league_color_class("Mid-Season Invitational");
+        assert_eq!(a, league_color_class("Mid-Season Invitational"));
+        let n: u32 = a.strip_prefix("lc-").unwrap().parse().unwrap();
+        assert!(n < LEAGUE_COLORS);
+    }
+
+    #[test]
+    fn distinct_leagues_in_first_appearance_order() {
+        let s = sched(vec![vec!["LCK", "LEC"], vec!["LCK", "LPL"]]);
+        assert_eq!(distinct_leagues(&s), vec!["LCK", "LEC", "LPL"]);
+    }
+
+    #[test]
+    fn filter_by_league_keeps_only_match_and_drops_empty_days() {
+        let s = sched(vec![vec!["LCK", "LEC"], vec!["LPL"]]);
+        let f = filter_by_league(s, "LCK");
+        assert_eq!(f.days.len(), 1);
+        assert_eq!(f.days[0].leagues.len(), 1);
+        assert_eq!(f.days[0].leagues[0].league, "LCK");
+    }
+
+    #[test]
+    fn filter_by_league_empty_keeps_everything() {
+        let s = sched(vec![vec!["LCK", "LEC"]]);
+        let f = filter_by_league(s, "");
+        assert_eq!(f.days[0].leagues.len(), 2);
     }
 }
