@@ -294,6 +294,9 @@ a {
   flex-wrap: wrap;
   gap: 0.35rem;
   margin: 0.1rem 0 0.6rem;
+  // Reserve one chip-row of height even when there are no event chips, so the
+  // schedule below doesn't jump as the game filter changes the chip count.
+  min-height: 1.4rem;
 }
 
 .chip {

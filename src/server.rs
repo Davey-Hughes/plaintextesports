@@ -120,16 +120,8 @@ pub async fn get_event_schedule(
 pub async fn get_event_stages(league: String) -> Result<Vec<EventInfo>, ServerFnError> {
     #[cfg(feature = "ssr")]
     {
-        let mut out = Vec::new();
-        for tid in crate::cache::event_stages(&league) {
-            let mut info = crate::cache::event_info(tid).await;
-            if info.is_empty() {
-                continue;
-            }
-            info.event = league.clone();
-            out.push(info);
-        }
-        Ok(out)
+        let tids = crate::cache::event_stages(&league);
+        Ok(crate::cache::stages_info(tids, &league).await)
     }
     #[cfg(not(feature = "ssr"))]
     {
@@ -138,7 +130,24 @@ pub async fn get_event_stages(league: String) -> Result<Vec<EventInfo>, ServerFn
     }
 }
 
-/// Standings + bracket for an event (by league name), for the event-filter view.
+/// Like [`get_event_stages`] but keyed on the (short) league name the front-page
+/// event filter selects, so a single-event filter shows every stage's bracket.
+#[server(GetEventStagesByLeague, "/api")]
+pub async fn get_event_stages_by_league(league: String) -> Result<Vec<EventInfo>, ServerFnError> {
+    #[cfg(feature = "ssr")]
+    {
+        let tids = crate::cache::league_stages(&league);
+        Ok(crate::cache::stages_info(tids, &league).await)
+    }
+    #[cfg(not(feature = "ssr"))]
+    {
+        let _ = league;
+        Ok(Vec::new())
+    }
+}
+
+/// Standings + bracket for one tournament stage (by league name), kept for the
+/// API surface; the single-event filter uses [`get_event_stages_by_league`].
 #[server(GetEventInfo, "/api")]
 pub async fn get_event_info(league: String) -> Result<EventInfo, ServerFnError> {
     #[cfg(feature = "ssr")]
