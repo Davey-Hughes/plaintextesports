@@ -941,6 +941,14 @@ fn sw_played(m: &SwissMatch) -> bool {
             && (m.score_a != Some(0) || m.score_b != Some(0)))
 }
 
+/// A finishing record like "3-0"/"0-3": advanced if it has more wins than
+/// losses, eliminated otherwise.
+fn record_is_pass(rec: &str) -> bool {
+    rec.split_once('-')
+        .and_then(|(w, l)| Some(w.trim().parse::<i32>().ok()? > l.trim().parse::<i32>().ok()?))
+        .unwrap_or(false)
+}
+
 fn sw_max_stage(m: &SwissMatch) -> u8 {
     let tbd = |t: &str| t.is_empty() || t == "TBD";
     if tbd(&m.team_a) || tbd(&m.team_b) {
@@ -1449,7 +1457,17 @@ fn SwissBracket(rounds: Vec<SwissRound>, tournament_id: i64) -> impl IntoView {
                     }
                     .into_any();
                 }
-                let cls = if win {
+                // A team that finished the stage (has a record) colours its name
+                // green if it advanced (more wins) or red if it was knocked out;
+                // the exact record sits above the bucket. Otherwise the usual
+                // bold-winner / muted-loser styling.
+                let cls = if scores && !rec.is_empty() {
+                    if record_is_pass(&rec) {
+                        "sw-row pass"
+                    } else {
+                        "sw-row exit"
+                    }
+                } else if win {
                     "sw-row win"
                 } else if lose {
                     "sw-row lose"
@@ -1468,22 +1486,6 @@ fn SwissBracket(rounds: Vec<SwissRound>, tournament_id: i64) -> impl IntoView {
                         on:mouseenter=move |_| hovered.set(n_enter.clone())
                     >
                         {team_link(name)}
-                        // The record badge sits left of the score (which stays
-                        // pinned to the box edge) so the row reads less cluttered.
-                        {(scores && !rec.is_empty())
-                            .then(move || {
-                                // "W-L": advanced (green) if more wins than losses,
-                                // else eliminated (red).
-                                let pass = rec
-                                    .split_once('-')
-                                    .and_then(|(w, l)| {
-                                        Some(w.trim().parse::<i32>().ok()? > l.trim().parse::<i32>().ok()?)
-                                    })
-                                    .unwrap_or(false);
-                                let cls =
-                                    if pass { "sw-badge sw-pass" } else { "sw-badge sw-exit" };
-                                view! { <span class=cls>{rec}</span> }
-                            })}
                         {score_view(score)}
                     </div>
                 }
@@ -1517,10 +1519,51 @@ fn SwissBracket(rounds: Vec<SwissRound>, tournament_id: i64) -> impl IntoView {
             let buckets = buckets_r
                 .into_iter()
                 .map(move |(record, ms)| {
+                    // The records teams reach from this bucket (3-0 advance, 0-3
+                    // out, …), deduped, each with the match positions that produce
+                    // it — shown above the group, gated on those matches being
+                    // revealed so it isn't a spoiler.
+                    let mut outcomes: Vec<(String, bool, Vec<(usize, usize)>)> = Vec::new();
+                    for m in &ms {
+                        for rec in [&m.a_record, &m.b_record] {
+                            if rec.is_empty() {
+                                continue;
+                            }
+                            match outcomes.iter_mut().find(|(r, _, _)| r == rec) {
+                                Some(e) => e.2.push((m.r, m.i)),
+                                None => {
+                                    outcomes.push((rec.clone(), record_is_pass(rec), vec![(m.r, m.i)]))
+                                }
+                            }
+                        }
+                    }
+                    let outcome_view = (!outcomes.is_empty()).then(move || {
+                        move || {
+                            outcomes
+                                .iter()
+                                .filter(|(_, _, pos)| {
+                                    pos.iter().any(|&(rr, ii)| {
+                                        eff.with(|e| {
+                                            e.get(rr).and_then(|row| row.get(ii)).copied().unwrap_or(0)
+                                                >= 2
+                                        })
+                                    })
+                                })
+                                .map(|(rec, pass, _)| {
+                                    let cls =
+                                        if *pass { "sw-out sw-pass" } else { "sw-out sw-exit" };
+                                    view! { <span class=cls>{rec.clone()}</span> }
+                                })
+                                .collect_view()
+                        }
+                    });
                     let matches = ms.into_iter().map(move |m| mk_match(m)).collect_view();
                     view! {
                         <div class="sw-bucket">
-                            <div class="sw-record">{record}</div>
+                            <div class="sw-record">
+                                <span class="sw-record-in">{record}</span>
+                                {outcome_view}
+                            </div>
                             {matches}
                         </div>
                     }

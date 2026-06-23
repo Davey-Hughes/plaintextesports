@@ -1154,13 +1154,24 @@ a {
 }
 
 // Each record bucket is a clearly-labelled group (that's how Swiss reads —
-// teams paired by their W-L), set off from the next by a generous gap.
+// teams paired by their W-L), set off from the next by a generous gap. The
+// entering record (e.g. 2-0) plus the outcomes teams reach from it once shown.
 .sw-record {
   font-size: 10px;
-  color: var(--muted);
   letter-spacing: 0.03em;
   margin-bottom: 0.25rem;
   padding-left: 0.1rem;
+}
+
+.sw-record-in {
+  color: var(--muted);
+}
+
+// The finishing record(s) reached from this bucket (green advance / red out),
+// shown above the boxes instead of inside them.
+.sw-out {
+  font-weight: 700;
+  margin-left: 0.35rem;
 }
 
 .sw-bucket + .sw-bucket {
@@ -1184,9 +1195,9 @@ a {
   background: var(--card-bg);
   margin-bottom: 0.3rem;
   cursor: pointer;
-  // A fixed width so every box is identical — hidden or revealed, badge or no
-  // badge — and toggling a result never resizes anything.
-  width: 7.5rem;
+  // A fixed width so every box is identical — hidden or revealed — and toggling
+  // never resizes anything. Narrow, since the record now sits above the group.
+  width: 5rem;
 }
 
 // A TBD match (teams undecided) can't be revealed.
@@ -1200,14 +1211,10 @@ a {
 }
 
 // A match is one light box holding its two team rows (no inner divider, so it
-// doesn't read as a box-in-a-box). A fixed three-column grid — name, score,
-// reserved badge cell — keeps every box and column aligned regardless of
-// content.
+// doesn't read as a box-in-a-box): name | right-aligned score.
 .sw-row {
   display: grid;
-  // Name | right-aligned score | optional record badge. With no badge the score
-  // sits at the box edge; a pass/exit badge nudges it left to make room.
-  grid-template-columns: 1fr auto auto;
+  grid-template-columns: 1fr auto;
   align-items: center;
   gap: 0.25rem;
   padding: 0.12rem 0.4rem;
@@ -1222,6 +1229,16 @@ a {
 
   &.lose .sw-team {
     color: var(--muted);
+  }
+
+  // A finisher's name is coloured by outcome instead (green advanced / red out).
+  &.pass .sw-team {
+    color: var(--pass);
+    font-weight: 700;
+  }
+
+  &.exit .sw-team {
+    color: var(--exit);
   }
 
   &.sw-hidden .sw-team {
@@ -1277,15 +1294,7 @@ a.sw-link {
   color: var(--border);
 }
 
-// The final stage record (3-0 … 0-3) for a team that finished — just the figure
-// in green if it advanced (more wins) or red if it was knocked out, no box, so
-// it reads as a quiet outcome tag beside the score.
-.sw-badge {
-  font-size: 10px;
-  font-weight: 700;
-  letter-spacing: 0.02em;
-}
-
+// Outcome colours: green if a team advanced (more wins), red if knocked out.
 .sw-pass {
   color: var(--pass);
 }
