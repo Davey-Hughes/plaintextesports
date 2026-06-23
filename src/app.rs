@@ -483,6 +483,17 @@ fn EventPage() -> impl IntoView {
                                     </p>
                                 }
                             });
+                        // Each event match's (day, time), so the bracket can date its
+                        // rounds and show per-match times from the same data.
+                        let mut times: std::collections::HashMap<i64, (String, String)> =
+                            std::collections::HashMap::new();
+                        for d in &s.days {
+                            for lg in &d.leagues {
+                                for m in &lg.matches {
+                                    times.insert(m.id, (d.day_key.clone(), m.clock_label.clone()));
+                                }
+                            }
+                        }
                         // One section per stage: a Swiss/group stage shows its
                         // standings, the playoffs its bracket — each labelled.
                         let extra = stage_list
@@ -496,7 +507,7 @@ fn EventPage() -> impl IntoView {
                                     <div class="event-extra">
                                         {label}
                                         <StandingsTable rows=standings tournament_id game />
-                                        <Bracket rounds=rounds tournament_id bracket_only />
+                                        <Bracket rounds=rounds tournament_id bracket_only times=times.clone() />
                                     </div>
                                 }
                             })
@@ -1064,11 +1075,55 @@ struct BkRender {
     mid: i64,
 }
 
+/// The day number from a `YYYY-MM-DD` key (leading zero stripped by parsing).
+fn day_num(key: &str) -> u32 {
+    key.rsplit('-').next().and_then(|s| s.parse().ok()).unwrap_or(0)
+}
+
+/// Format a `YYYY-MM-DD` day key as a short date, e.g. "Jun 18".
+fn fmt_day_short(key: &str) -> String {
+    const MONTHS: [&str; 12] = [
+        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+    ];
+    let month: usize = key.split('-').nth(1).and_then(|s| s.parse().ok()).unwrap_or(0);
+    let Some(mon) = MONTHS.get(month.wrapping_sub(1)) else {
+        return String::new();
+    };
+    format!("{mon} {}", day_num(key))
+}
+
+/// Format a round's date span from its sorted-unique day keys: a single day
+/// ("Jun 18"), a same-month range ("Jun 18–19"), or a cross-month range
+/// ("Jun 30 – Jul 1"). Empty when no dates are known.
+fn fmt_date_range(keys: &[String]) -> String {
+    let (Some(first), Some(last)) = (keys.first(), keys.last()) else {
+        return String::new();
+    };
+    if first == last {
+        return fmt_day_short(first);
+    }
+    if first.get(..7).is_some() && first.get(..7) == last.get(..7) {
+        format!("{}–{}", fmt_day_short(first), day_num(last))
+    } else {
+        format!("{} – {}", fmt_day_short(first), fmt_day_short(last))
+    }
+}
+
 #[component]
-fn Bracket(rounds: Vec<BracketRound>, tournament_id: i64, bracket_only: bool) -> impl IntoView {
+fn Bracket(
+    rounds: Vec<BracketRound>,
+    tournament_id: i64,
+    bracket_only: bool,
+    /// `match_id -> (day_key, clock_label)` for the event's matches, so the
+    /// bracket can date each round and show a per-match time on hover. Empty
+    /// where the schedule isn't on the page (then no times are shown).
+    #[prop(optional)]
+    times: std::collections::HashMap<i64, (String, String)>,
+) -> impl IntoView {
     if rounds.is_empty() {
         return ().into_any();
     }
+    let times = StoredValue::new(times);
     let global = use_context::<ShowScores>().map(|s| s.0);
     let sections = use_context::<RevealedSections>().map(|s| s.0);
     let tid = tournament_id;
@@ -1140,6 +1195,16 @@ fn Bracket(rounds: Vec<BracketRound>, tournament_id: i64, bracket_only: bool) ->
         .enumerate()
         .map(|(r, (section, title, sres))| {
             let round_on = move || eff.with(|e| e.get(r).is_some_and(|row| row.iter().any(|&s| s >= 1)));
+            // The round's date span, from its matches' schedule days.
+            let round_date = {
+                let mut keys: Vec<String> = sres
+                    .iter()
+                    .filter_map(|s| times.with_value(|t| t.get(&s.mid).map(|(d, _)| d.clone())))
+                    .collect();
+                keys.sort();
+                keys.dedup();
+                fmt_date_range(&keys)
+            };
             let ms = sres
                 .into_iter()
                 .map(|s| {
@@ -1149,6 +1214,13 @@ fn Bracket(rounds: Vec<BracketRound>, tournament_id: i64, bracket_only: bool) ->
                     let winner = s.winner;
                     let mid = s.mid;
                     let match_title = if max == 0 { "Not decided yet" } else { "Reveal this match" };
+                    // Box tooltip shows the match time when known (the schedule is
+                    // on the page), else the reveal hint.
+                    let box_title = times
+                        .with_value(|t| {
+                            t.get(&mid).map(|(d, c)| format!("{} · {}", fmt_day_short(d), c))
+                        })
+                        .unwrap_or_else(|| match_title.to_string());
                     let stage = move || eff.with(|e| e.get(r).and_then(|row| row.get(i)).copied().unwrap_or(0));
                     // A revealed team name links to its match page; the rest of
                     // the box still reveals on click (the link stops that
@@ -1225,7 +1297,7 @@ fn Bracket(rounds: Vec<BracketRound>, tournament_id: i64, bracket_only: bool) ->
                         <div class="bk-match" class:bk-locked=max == 0>
                             <div
                                 class="bk-box"
-                                title=match_title
+                                title=box_title
                                 on:click=move |_| do_op(BkOp::Series(r, i))
                             >
                                 {move || {
@@ -1345,6 +1417,8 @@ fn Bracket(rounds: Vec<BracketRound>, tournament_id: i64, bracket_only: bool) ->
                         >
                             {title}
                         </button>
+                        {(!round_date.is_empty())
+                            .then(|| view! { <span class="bk-round-date">{round_date}</span> })}
                     </div>
                     <div class="bk-matches">{ms}</div>
                 </div>
