@@ -1672,14 +1672,15 @@ a.bk-team-link {
   border-right: 1px solid var(--border);
 }
 
-// Bridge the (fixed) gap + loser's label + loser's final-round title between the
-// two brackets — a constant distance, so it holds at any bracket size.
+// Bridge the (fixed) gap + loser's label + loser's final-round title (the title
+// stacks the round name over its date, two lines) between the two brackets — a
+// constant distance, so it holds at any bracket size.
 .bk-de-left .bk-bracket-group:last-child::before {
   content: "";
   position: absolute;
   right: -0.75rem;
   top: -1.2rem;
-  height: 4.32rem;
+  height: 5.4rem;
   border-left: 1px solid var(--border);
 }
 
