@@ -1148,7 +1148,15 @@ a {
   display: flex;
   align-items: baseline;
   justify-content: center;
+  gap: 0.4rem;
   margin-bottom: 0.3rem;
+}
+
+// The round's date span, beside the round title — muted and small so it reads
+// as secondary context, not a header.
+.bk-round-date {
+  color: var(--muted);
+  font-size: 10px;
 }
 
 // Clickable round heading (cycles the round's reveal stage).
