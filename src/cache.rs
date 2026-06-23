@@ -9,8 +9,8 @@
 use crate::config::Config;
 use crate::pandascore::{fetch_game, FetchResult, NormTeam, NormalizedMatch};
 use crate::types::{
-    BracketMatch, BracketRound, DayGroup, EventInfo, Game, LeagueGroup, MatchStatus, MatchView,
-    ScheduleView, StandingRow, StreamView, TeamView,
+    full_event_name, BracketMatch, BracketRound, DayGroup, EventInfo, Game, LeagueGroup,
+    MatchStatus, MatchView, ScheduleView, StandingRow, StreamView, TeamView,
 };
 use chrono::{DateTime, Datelike, Duration, NaiveDate, TimeZone, Timelike, Utc};
 use chrono_tz::Tz;
@@ -754,11 +754,18 @@ fn group_days(views: Vec<MatchView>, tz: &Tz) -> Vec<DayGroup> {
             });
         }
         let day = days.last_mut().unwrap();
-        if let Some(lg) = day.leagues.iter_mut().find(|l| l.league == v.league) {
+        // Group by edition (league + serie), so two editions of the same circuit
+        // form distinct groups with their own header and event link.
+        if let Some(lg) = day
+            .leagues
+            .iter_mut()
+            .find(|l| l.league == v.league && l.serie_name == v.serie_name)
+        {
             lg.matches.push(v);
         } else {
             day.leagues.push(LeagueGroup {
                 league: v.league.clone(),
+                serie_name: v.serie_name.clone(),
                 event_url: String::new(),
                 bo: None,
                 matches: vec![v],
@@ -913,17 +920,19 @@ pub fn range_view(
 /// All cached matches for one event/league (past + upcoming), grouped by day.
 /// Backs the internal event page.
 #[must_use]
-pub fn event_view(league: &str, tz_name: &str, hour24: bool) -> ScheduleView {
+pub fn event_view(event: &str, tz_name: &str, hour24: bool) -> ScheduleView {
     let cfg = Config::from_env();
     let tz = resolve_tz(tz_name, cfg.tz);
     let now = Utc::now();
 
+    // `event` is the full edition name (league + serie), so two editions of one
+    // circuit resolve to distinct pages.
     let snap = SNAPSHOT.read().unwrap_or_else(PoisonError::into_inner);
     let all: Vec<MatchView> = snap
         .matches
         .iter()
         .filter(|m| m.status != MatchStatus::Canceled)
-        .filter(|m| m.league == league)
+        .filter(|m| full_event_name(&m.league, &m.serie_name) == event)
         .map(|m| to_view(m, &tz, now, hour24))
         .collect();
 
@@ -1035,15 +1044,15 @@ pub fn league_tournament(league: &str) -> Option<i64> {
         .and_then(|m| m.tournament_id)
 }
 
-/// The tournament (stage) ids of a league's cached matches, ordered by when each
+/// The tournament (stage) ids of an event's cached matches, ordered by when each
 /// stage started — so a multi-stage event (e.g. Swiss stages → playoffs) renders
-/// its stages in order.
+/// its stages in order. `event` is the full edition name (league + serie).
 #[must_use]
-pub fn event_stages(league: &str) -> Vec<i64> {
+pub fn event_stages(event: &str) -> Vec<i64> {
     let snap = SNAPSHOT.read().unwrap_or_else(PoisonError::into_inner);
     let mut earliest: std::collections::HashMap<i64, i64> = std::collections::HashMap::new();
     for m in &snap.matches {
-        if m.league == league {
+        if full_event_name(&m.league, &m.serie_name) == event {
             if let Some(tid) = m.tournament_id {
                 let ms = m.begin_at.timestamp_millis();
                 earliest
@@ -1762,6 +1771,47 @@ mod tests {
         let order: Vec<&str> = days[0].leagues.iter().map(|l| l.league.as_str()).collect();
         // CS2 events first (time order), then LoL events.
         assert_eq!(order, vec!["IEM", "BLAST", "LCK", "LEC"]);
+    }
+
+    #[test]
+    fn group_days_splits_editions_of_one_league() {
+        let ms = |h| {
+            Tz::UTC
+                .with_ymd_and_hms(2026, 6, 21, h, 0, 0)
+                .unwrap()
+                .timestamp_millis()
+        };
+        let mk = |at_ms: i64, serie: &str| MatchView {
+            id: at_ms,
+            game: Game::Cs2,
+            league: "IEM".into(),
+            serie_name: serie.into(),
+            tier: "S".into(),
+            status: MatchStatus::Upcoming,
+            clock_label: String::new(),
+            best_of: "Bo3".into(),
+            team_a: TeamView { label: "A".into(), score: None, winner: false },
+            team_b: TeamView { label: "B".into(), score: None, winner: false },
+            stream_url: None,
+            event_url: String::new(),
+            begin_at_ms: at_ms,
+        };
+        let views = vec![
+            mk(ms(1), "Cologne Major"),
+            mk(ms(2), "Katowice"),
+            mk(ms(3), "Cologne Major"),
+        ];
+        let days = group_days(views, &Tz::UTC);
+        assert_eq!(days.len(), 1);
+        // Same league, two editions => two groups (one per edition).
+        assert_eq!(days[0].leagues.len(), 2);
+        let cologne = days[0]
+            .leagues
+            .iter()
+            .find(|l| l.serie_name == "Cologne Major")
+            .expect("Cologne group");
+        assert_eq!(cologne.matches.len(), 2, "both Cologne matches grouped");
+        assert_eq!(full_event_name(&cologne.league, &cologne.serie_name), "IEM Cologne Major");
     }
 
     #[test]
