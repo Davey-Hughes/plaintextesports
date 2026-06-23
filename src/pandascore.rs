@@ -94,6 +94,10 @@ struct RawSerie {
     /// seasons where the league name already names the event.
     #[serde(default)]
     name: Option<String>,
+    /// The full serie name including the year/split (e.g. "Cologne Major 2026",
+    /// "Spring 2026", or just "2026"); preferred so each season is unique.
+    #[serde(default)]
+    full_name: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -213,12 +217,19 @@ fn normalize(game: Game, raw: &RawMatch) -> Option<NormalizedMatch> {
         .as_ref()
         .and_then(|l| l.url.clone())
         .filter(|u| !u.trim().is_empty());
-    // The edition name (e.g. "Cologne Major"); dropped when empty or identical
-    // to the league, so combining league + serie never doubles up.
+    // The full serie name incl. the year/split (e.g. "Cologne Major 2026",
+    // "Spring 2026", "2026") so each season is uniquely named; falls back to the
+    // bare edition name. Dropped when empty or identical to the league, so
+    // combining league + serie never doubles up.
     let serie_name = raw
         .serie
         .as_ref()
-        .and_then(|s| s.name.as_deref())
+        .and_then(|s| {
+            s.full_name
+                .as_deref()
+                .filter(|v| !v.trim().is_empty())
+                .or(s.name.as_deref())
+        })
         .map(str::trim)
         .filter(|s| !s.is_empty() && !s.eq_ignore_ascii_case(&league))
         .unwrap_or_default()

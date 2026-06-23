@@ -1432,9 +1432,9 @@ fn demo_match(
         game,
         league: league.to_string(),
         league_url: None,
-        // Give the demo IEM an edition so the event/match pages can show the
-        // combined "IEM Katowice" name; league seasons have no extra edition.
-        serie_name: if league == "IEM" { "Katowice".to_string() } else { String::new() },
+        // Give the demo IEM a dated edition so the event/match pages can show
+        // the combined "IEM Katowice 2026" name; league seasons stay bare.
+        serie_name: if league == "IEM" { "Katowice 2026".to_string() } else { String::new() },
         tier: tier.to_string(),
         begin_at,
         status,
