@@ -1201,15 +1201,15 @@ fn Bracket(rounds: Vec<BracketRound>, tournament_id: i64, bracket_only: bool) ->
                         f.is_some_and(|(fr, fi)| eff.with(|e| e[fr][fi] >= 2))
                     };
                     view! {
-                        <div
-                            // Only a TBD match (no participants at all) is locked;
-                            // clicking a fed series reveals its contributing matches.
-                            class="bk-match"
-                            class:bk-locked=max == 0
-                            title=match_title
-                            on:click=move |_| do_op(BkOp::Series(r, i))
-                        >
-                            <div class="bk-box">
+                        // The slice fills the column for connector alignment, but
+                        // only the visible box is the click target (the tall slice
+                        // around it isn't), so the hit area matches what's drawn.
+                        <div class="bk-match" class:bk-locked=max == 0>
+                            <div
+                                class="bk-box"
+                                title=match_title
+                                on:click=move |_| do_op(BkOp::Series(r, i))
+                            >
                                 {move || {
                                     let st = stage();
                                     let scores = st >= 2;

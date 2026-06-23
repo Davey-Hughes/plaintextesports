@@ -1110,21 +1110,23 @@ a {
   flex-direction: column;
   justify-content: center;
   margin: 0.35rem 0.8rem;
-  cursor: pointer;
-
-  // A TBD match (teams undecided) can't be revealed.
-  &.bk-locked {
-    cursor: default;
-  }
 }
 
-// The visible match box; the slice around it carries the connector lines.
+// The visible match box; the slice around it carries the connector lines. The
+// box (not the whole slice) is the click target, so the hit area matches what's
+// drawn.
 .bk-box {
   border: 1px solid var(--border);
   background: var(--card-bg);
+  cursor: pointer;
 }
 
-.bk-match:not(.bk-locked):hover .bk-box {
+// A TBD match (teams undecided) can't be revealed.
+.bk-match.bk-locked .bk-box {
+  cursor: default;
+}
+
+.bk-match:not(.bk-locked) .bk-box:hover {
   border-color: var(--muted);
 }
 
