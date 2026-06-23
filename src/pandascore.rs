@@ -691,6 +691,8 @@ fn build_swiss(raw: &[RawBracketMatch]) -> Vec<SwissRound> {
     // a generous cap and mark outcomes by "no further matches" too.
     let mut records: HashMap<i64, (i32, i32)> = HashMap::new();
     let mut labels: HashMap<i64, String> = HashMap::new();
+    // Each team's previous-round match id, so a match can name its feeders.
+    let mut last_match: HashMap<i64, i64> = HashMap::new();
     let target = win_target(by_round.len());
     let mut out = Vec::with_capacity(by_round.len());
     for (number, matches) in by_round {
@@ -742,6 +744,16 @@ fn build_swiss(raw: &[RawBracketMatch]) -> Vec<SwissRound> {
                 }
                 _ => {}
             }
+            // Each side's feeder is its match in the previous round (None in
+            // round 1, where the matchup is the seeding).
+            let a_feeder = id_a.and_then(|a| last_match.get(&a).copied());
+            let b_feeder = id_b.and_then(|b| last_match.get(&b).copied());
+            if let Some(a) = id_a {
+                last_match.insert(a, m.id);
+            }
+            if let Some(b) = id_b {
+                last_match.insert(b, m.id);
+            }
             buckets.entry((pw, pl)).or_default().push(SwissMatch {
                 team_a: label_a,
                 team_b: label_b,
@@ -751,6 +763,8 @@ fn build_swiss(raw: &[RawBracketMatch]) -> Vec<SwissRound> {
                 match_id: m.id,
                 a_record: a_rec,
                 b_record: b_rec,
+                a_feeder,
+                b_feeder,
             });
         }
         for (id, won) in updates {
@@ -1168,5 +1182,14 @@ mod tests {
         // Round 3 decides the last spots: C advances 2-1, B is eliminated 1-2.
         assert_eq!(swiss[2].buckets[0].matches[0].a_record, "2-1");
         assert_eq!(swiss[2].buckets[0].matches[0].b_record, "1-2");
+        // Feeders: round 1 has none; later rounds point at each side's prior
+        // match. R2 A-vs-C is fed by A's R1 (id 1) and C's R1 (id 2); R3 C-vs-B
+        // by C's R2 (id 3) and B's R2 (id 4).
+        assert_eq!(swiss[0].buckets[0].matches[0].a_feeder, None);
+        assert_eq!(swiss[0].buckets[0].matches[0].b_feeder, None);
+        assert_eq!(swiss[1].buckets[0].matches[0].a_feeder, Some(1));
+        assert_eq!(swiss[1].buckets[0].matches[0].b_feeder, Some(2));
+        assert_eq!(swiss[2].buckets[0].matches[0].a_feeder, Some(3));
+        assert_eq!(swiss[2].buckets[0].matches[0].b_feeder, Some(4));
     }
 }
