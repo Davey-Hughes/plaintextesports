@@ -1212,11 +1212,20 @@ fn Bracket(rounds: Vec<BracketRound>, tournament_id: i64, bracket_only: bool) ->
                             >
                                 {move || {
                                     let st = stage();
-                                    let scores = st >= 2;
-                                    // A slot shows when the match itself is revealed
-                                    // to names, or its feeder's score is revealed.
-                                    let show_a = is_real(&label_a) && (st >= 1 || fed_shown(f0));
-                                    let show_b = is_real(&label_b) && (st >= 1 || fed_shown(f1));
+                                    // A fed slot is known only while its feeder's
+                                    // score is shown (the team comes from that
+                                    // result); a first-round slot is known once the
+                                    // match itself is revealed. So hiding a feeder's
+                                    // score makes the fed team unknown again, and a
+                                    // played match can't show its score until both
+                                    // of its teams are known. This cascades up the
+                                    // bracket: hide a semifinal score and the final's
+                                    // fed side goes blank.
+                                    let known_a = if f0.is_some() { fed_shown(f0) } else { st >= 1 };
+                                    let known_b = if f1.is_some() { fed_shown(f1) } else { st >= 1 };
+                                    let scores = st >= 2 && known_a && known_b;
+                                    let show_a = is_real(&label_a) && known_a;
+                                    let show_b = is_real(&label_b) && known_b;
                                     let cls_a = if scores && winner == "a" {
                                         "bk-row win"
                                     } else if scores && winner == "b" {
