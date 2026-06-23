@@ -148,8 +148,8 @@ pub fn App() -> impl IntoView {
             revealed.set(load_revealed());
             sections.set(load_sections());
             range.set(load_range());
-            games.set(load_str_set("games"));
-            leagues.set(load_str_set("leagues"));
+            // `games`/`leagues` are initialised by `FilterUrlSync` (URL query, else
+            // localStorage) since it needs the router context.
             leptos::task::spawn_local(async move {
                 if let Ok(k) = crate::server::get_vapid_key().await {
                     vapid.set(k);
@@ -162,6 +162,7 @@ pub fn App() -> impl IntoView {
         <Stylesheet id="leptos" href="/pkg/plaintextesports.css" />
         <Title text="plaintextesports" />
         <Router>
+            <FilterUrlSync />
             <div class="page">
                 <SiteHeader />
                 <main class="main">
@@ -176,6 +177,77 @@ pub fn App() -> impl IntoView {
                 <SiteFooter />
             </div>
         </Router>
+    }
+}
+
+/// Keeps the schedule filter (games + events) in sync with the URL query so a
+/// filtered view is shareable — `?g=cs2&e=<event>`; no filter ⇒ a clean URL. On
+/// load it initialises the filter from the query (falling back to the saved
+/// preference). Renders nothing. Must live inside the `Router`.
+#[component]
+fn FilterUrlSync() -> impl IntoView {
+    let games = use_context::<Games>().expect("games context").0;
+    let leagues = use_context::<Leagues>().expect("leagues context").0;
+    let _ = (games, leagues);
+    #[cfg(feature = "hydrate")]
+    {
+        use leptos_router::hooks::{use_location, use_navigate, use_query_map};
+        use leptos_router::NavigateOptions;
+
+        fn parse_set(v: &str) -> HashSet<String> {
+            v.split(',').filter(|p| !p.is_empty()).map(str::to_string).collect()
+        }
+
+        let query = use_query_map();
+        let location = use_location();
+        let navigate = use_navigate();
+
+        // Initialise once: a query param wins (a shared link), else the saved
+        // preference. (`get_untracked` ⇒ this effect runs a single time.)
+        Effect::new(move |_| {
+            let q = query.get_untracked();
+            match q.get("g").filter(|v| !v.is_empty()) {
+                Some(v) => games.set(parse_set(&v)),
+                None => games.set(load_str_set("games")),
+            }
+            match q.get("e").filter(|v| !v.is_empty()) {
+                Some(v) => leagues.set(parse_set(&v)),
+                None => leagues.set(load_str_set("leagues")),
+            }
+        });
+
+        // Mirror the active filter into the query, but only on the schedule pages
+        // (home / day) where the filter applies — never touch other pages' URLs.
+        Effect::new(move |_| {
+            let path = location.pathname.get();
+            let g = games.get();
+            let l = leagues.get();
+            if !(path == "/" || path.is_empty() || path.starts_with("/day")) {
+                return;
+            }
+            let enc = |set: &HashSet<String>| {
+                let mut v: Vec<String> = set.iter().cloned().collect();
+                v.sort();
+                v.iter()
+                    .map(|s| js_sys::encode_uri_component(s).as_string().unwrap_or_default())
+                    .collect::<Vec<_>>()
+                    .join(",")
+            };
+            let mut parts = Vec::new();
+            if !g.is_empty() {
+                parts.push(format!("g={}", enc(&g)));
+            }
+            if !l.is_empty() {
+                parts.push(format!("e={}", enc(&l)));
+            }
+            let want = if parts.is_empty() { String::new() } else { format!("?{}", parts.join("&")) };
+            // Skip a redundant navigation (also breaks any feedback loop).
+            if location.search.get_untracked() == want {
+                return;
+            }
+            let url = format!("{path}{want}");
+            navigate(&url, NavigateOptions { replace: true, scroll: false, ..Default::default() });
+        });
     }
 }
 
