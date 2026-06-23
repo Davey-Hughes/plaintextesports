@@ -55,7 +55,10 @@ subject = "mailto:you@example.com"
 
 # Footer copyright + links (all optional).
 [site]
-copyright = "© 2026 Your Name"
+# Just the holder name — "© <current year>" is prepended automatically.
+copyright = "Your Name"
+# When set, the copyright line becomes a link to this URL.
+# copyright_url = "https://your-site.example"
 links = [
   { label = "GitHub", url = "https://github.com/you/plaintextesports" },
   # { label = "Twitter", url = "https://twitter.com/you" },

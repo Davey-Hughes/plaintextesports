@@ -212,9 +212,21 @@ fn SiteFooter() -> impl IntoView {
                     site.get()
                         .and_then(Result::ok)
                         .map(|s| {
-                            let copyright = s
-                                .copyright
-                                .map(|c| view! { <span class="sep">" · "</span><span>{c}</span> });
+                            // The copyright links out when a URL is configured,
+                            // otherwise it's plain text.
+                            let copyright = s.copyright.map(|c| {
+                                let url = s.copyright_url.filter(|u| !u.trim().is_empty());
+                                let inner = match url {
+                                    Some(u) => {
+                                        view! {
+                                            <a href=u target="_blank" rel="noreferrer">{c}</a>
+                                        }
+                                            .into_any()
+                                    }
+                                    None => view! { <span>{c}</span> }.into_any(),
+                                };
+                                view! { <span class="sep">" · "</span>{inner} }
+                            });
                             let links = s
                                 .links
                                 .into_iter()
@@ -704,6 +716,9 @@ fn detail_view(d: MatchDetail) -> impl IntoView {
     let mid = m.id;
     let (sa, sb) = (m.team_a.score, m.team_b.score);
     let has_score = sa.is_some() && sb.is_some();
+    // "Played" = under way or done (an upcoming match can still carry a 0-0
+    // placeholder score, so a score alone isn't enough).
+    let played = matches!(m.status, MatchStatus::Live | MatchStatus::Finished) && has_score;
     let (win_a, win_b) = (m.team_a.winner, m.team_b.winner);
     let (team_a, team_b) = (m.team_a.label, m.team_b.label);
     let tid = event.tournament_id;
@@ -732,7 +747,9 @@ fn detail_view(d: MatchDetail) -> impl IntoView {
             save_revealed(&r.get_untracked());
         }
     };
-    let toggle_hidden = move || global.is_some_and(|g| g.get());
+    // Hide the reveal toggle when the global toggle already shows all, or when
+    // the match hasn't been played yet (nothing to reveal).
+    let toggle_hidden = move || global.is_some_and(|g| g.get()) || !played;
 
     view! {
         <article class="detail">
@@ -3159,7 +3176,7 @@ fn render_schedule(s: ScheduleView, show_nav: bool, push: bool, event_mode: bool
 
     view! {
         {nav}
-        <div class="status-line">{fixture_note}{stale_note} "loaded " {fetched_label}</div>
+        <div class="status-line">{fixture_note}{stale_note} "schedule last updated " {fetched_label}</div>
         // With no days to host it inline, the control stands alone above the notice.
         {(show_earlier && !has_days).then(|| view! { <EarlierControl /> })}
         {day_sections}

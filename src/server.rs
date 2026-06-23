@@ -151,9 +151,13 @@ pub async fn get_event_stages_by_league(league: String) -> Result<Vec<EventInfo>
 pub async fn get_site() -> Result<SiteInfo, ServerFnError> {
     #[cfg(feature = "ssr")]
     {
+        use chrono::Datelike;
         let cfg = crate::config::Config::from_env();
+        // The config holds just the holder name; prepend "© <current year>".
+        let year = chrono::Utc::now().year();
         Ok(SiteInfo {
-            copyright: cfg.copyright,
+            copyright: cfg.copyright.map(|name| format!("© {year} {name}")),
+            copyright_url: cfg.copyright_url,
             links: cfg.links,
         })
     }
