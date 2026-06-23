@@ -3,6 +3,7 @@
 #![recursion_limit = "512"]
 
 pub mod app;
+pub mod bracket;
 pub mod server;
 pub mod types;
 
