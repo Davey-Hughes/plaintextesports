@@ -2994,33 +2994,25 @@ fn MatchRow(m: MatchView, show_bo: bool, push: bool) -> impl IntoView {
         </a>
     };
 
-    if push {
-        // The leading column holds either the reminder ★ (upcoming) or the
-        // live/final side bar — never both — so they share one slot and live/
-        // final rows don't waste an empty star cell.
-        let lead = match m.status {
-            MatchStatus::Upcoming => {
-                view! { <StarButton id=m.id game=m.game league=m.league.clone() /> }.into_any()
-            }
-            MatchStatus::Live => view! { <span class="row-bar live"></span> }.into_any(),
-            MatchStatus::Finished => view! { <span class="row-bar final"></span> }.into_any(),
-            MatchStatus::Canceled => view! { <span class="star star-empty"></span> }.into_any(),
-        };
-        view! {
-            <div class=format!("row has-star {status_class}") id=format!("m-{}", m.id)>
-                {lead}
-                {body}
-            </div>
+    // The leading column is always reserved, so the layout never shifts when push
+    // support (the ★) resolves after hydration — `push` only controls whether the
+    // reminder ★ is shown, not the grid. The column holds the ★ (upcoming, push
+    // enabled), the live/final side bar, or an empty placeholder.
+    let lead = match m.status {
+        MatchStatus::Live => view! { <span class="row-bar live"></span> }.into_any(),
+        MatchStatus::Finished => view! { <span class="row-bar final"></span> }.into_any(),
+        MatchStatus::Upcoming if push => {
+            view! { <StarButton id=m.id game=m.game league=m.league.clone() /> }.into_any()
         }
-        .into_any()
-    } else {
-        view! {
-            <div class=format!("row {status_class}") id=format!("m-{}", m.id)>
-                {body}
-            </div>
-        }
-        .into_any()
+        _ => view! { <span class="row-lead-empty"></span> }.into_any(),
+    };
+    view! {
+        <div class=format!("row has-star {status_class}") id=format!("m-{}", m.id)>
+            {lead}
+            {body}
+        </div>
     }
+    .into_any()
 }
 
 #[component]
