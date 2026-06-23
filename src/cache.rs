@@ -833,6 +833,7 @@ pub fn homepage_view(game_filter: &str, tz_name: &str, hour24: bool) -> Schedule
 
     ScheduleView {
         days: group_days(all, &tz),
+        today_key: now.with_timezone(&tz).date_naive().format("%Y-%m-%d").to_string(),
         fetched_at_ms: snap.fetched_at.timestamp_millis(),
         fetched_label: time_label(snap.fetched_at.with_timezone(&tz), hour24),
         stale: snap.stale,
@@ -867,6 +868,7 @@ pub fn day_view(date: &str, game_filter: &str, tz_name: &str, hour24: bool) -> S
 
     ScheduleView {
         days: group_days(all, &tz),
+        today_key: now.with_timezone(&tz).date_naive().format("%Y-%m-%d").to_string(),
         fetched_at_ms: snap.fetched_at.timestamp_millis(),
         fetched_label: time_label(snap.fetched_at.with_timezone(&tz), hour24),
         stale: snap.stale,
@@ -906,6 +908,7 @@ pub fn range_view(
 
     ScheduleView {
         days: group_days(all, &tz),
+        today_key: now.with_timezone(&tz).date_naive().format("%Y-%m-%d").to_string(),
         fetched_at_ms: snap.fetched_at.timestamp_millis(),
         fetched_label: time_label(snap.fetched_at.with_timezone(&tz), hour24),
         stale: snap.stale,
@@ -938,6 +941,7 @@ pub fn event_view(event: &str, tz_name: &str, hour24: bool) -> ScheduleView {
 
     ScheduleView {
         days: group_days(all, &tz),
+        today_key: now.with_timezone(&tz).date_naive().format("%Y-%m-%d").to_string(),
         fetched_at_ms: snap.fetched_at.timestamp_millis(),
         fetched_label: time_label(snap.fetched_at.with_timezone(&tz), hour24),
         stale: snap.stale,

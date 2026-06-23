@@ -330,6 +330,11 @@ pub struct MatchDetail {
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ScheduleView {
     pub days: Vec<DayGroup>,
+    /// Today's date key (`%Y-%m-%d`) in the display tz, computed server-side so a
+    /// day heading can be greyed when past or highlighted when it's today (the
+    /// keys sort chronologically as strings). Empty in tests.
+    #[serde(default)]
+    pub today_key: String,
     /// When the data was last fetched (unix ms).
     pub fetched_at_ms: i64,
     /// Server-formatted "last loaded" time in the display tz, e.g. "10:57 AM".

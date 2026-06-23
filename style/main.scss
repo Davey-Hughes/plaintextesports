@@ -484,6 +484,16 @@ a {
   margin: 0 0 0.6rem;
   padding-bottom: 0.2rem;
   border-bottom: 1px solid var(--border);
+
+  // A day that's already passed reads as muted history; today's stands out.
+  &.day-past {
+    color: var(--muted);
+  }
+
+  &.day-today {
+    color: var(--accent);
+    border-bottom-color: var(--accent);
+  }
 }
 
 // The first day shares its title line with the "show earlier days" control; the
@@ -1260,14 +1270,13 @@ a.sw-link {
   color: var(--border);
 }
 
-// The final stage record (3-0 … 0-3) for a team that finished — a small chip,
-// green if it advanced (more wins) and red if it was knocked out, so the
-// outcome reads at a glance.
+// The final stage record (3-0 … 0-3) for a team that finished — just the figure
+// in green if it advanced (more wins) or red if it was knocked out, no box, so
+// it reads as a quiet outcome tag beside the score.
 .sw-badge {
   font-size: 10px;
-  border: 1px solid currentColor;
-  border-radius: 2px;
-  padding: 0 0.2rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
 }
 
 .sw-pass {
