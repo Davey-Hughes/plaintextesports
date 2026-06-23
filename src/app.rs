@@ -615,6 +615,9 @@ fn EventPage() -> impl IntoView {
                                 </nav>
                             }
                         });
+                        // A dotted rule between the schedule and the brackets below.
+                        let sep = (!stage_list.is_empty())
+                            .then(|| view! { <hr class="section-sep" /> });
                         view! {
                             <article class="detail">
                                 <A href="/">"← schedule"</A>
@@ -622,6 +625,7 @@ fn EventPage() -> impl IntoView {
                                 {link}
                                 {nav}
                                 <div id="sched">{render_schedule(s, false, push, true)}</div>
+                                {sep}
                                 <EventStages stages=stage_list times=times />
                             </article>
                         }
@@ -1574,7 +1578,7 @@ fn SwissBracket(rounds: Vec<SwissRound>, tournament_id: i64) -> impl IntoView {
                         <div class="sw-bucket">
                             <div class="sw-record">
                                 <span class="sw-record-in">{record}</span>
-                                {outcome_view}
+                                <span class="sw-outs">{outcome_view}</span>
                             </div>
                             {matches}
                         </div>
