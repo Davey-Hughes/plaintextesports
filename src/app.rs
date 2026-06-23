@@ -434,19 +434,23 @@ fn dec_segment(s: &str) -> String {
 /// (with a bracket/list toggle) and/or a playoff bracket. One toggle drives
 /// every Swiss stage. Shared by the event page and the front-page single-event
 /// filter.
+/// One stage's standings/bracket combo: a Swiss stage shows a buchholz-grid /
+/// ranking-list toggle (sharing `swiss_grid` so sibling stages switch together);
+/// every stage also shows its playoff bracket. Used by the event page (one per
+/// stage) and the match detail page (its single stage).
 #[component]
-fn EventStages(
-    stages: Vec<EventInfo>,
+fn EventStageCombo(
+    event: EventInfo,
+    /// Shared grid/list toggle so multiple stages flip together.
+    swiss_grid: RwSignal<bool>,
     /// `match_id -> (day_key, clock_label)` so brackets can date rounds and show
     /// per-match times; empty where the schedule isn't on the page.
     #[prop(optional)]
     times: std::collections::HashMap<i64, (String, String)>,
 ) -> impl IntoView {
     let times = StoredValue::new(times);
-    // Swiss stages can show as the buchholz grid (default) or the ranking list;
-    // one toggle drives every stage. Switching keeps the clicked tab pinned in
-    // place (the views differ in height), so the page doesn't jump.
-    let swiss_grid = RwSignal::new(true);
+    // Switching keeps the clicked tab pinned in place (the views differ in
+    // height), so the page doesn't jump.
     let set_view = move |e: leptos::ev::MouseEvent, grid: bool| {
         #[cfg(feature = "hydrate")]
         {
@@ -471,62 +475,70 @@ fn EventStages(
             swiss_grid.set(grid);
         }
     };
+    let EventInfo { tournament_id, stage, game, standings, rounds, swiss, .. } = event;
+    let bracket_only = standings.is_empty();
+    let has_swiss = !swiss.is_empty();
+    let label = (!stage.is_empty()).then(|| view! { <h2 class="stage-head">{stage}</h2> });
+    // A Swiss stage gets a grid/list toggle; otherwise just the standings
+    // (+ any playoff bracket).
+    let tabs = has_swiss.then(|| {
+        view! {
+            <div class="swiss-tabs">
+                <button
+                    class="swiss-tab"
+                    class:active=move || swiss_grid.get()
+                    on:click=move |e| set_view(e, true)
+                >
+                    "bracket"
+                </button>
+                <button
+                    class="swiss-tab"
+                    class:active=move || !swiss_grid.get()
+                    on:click=move |e| set_view(e, false)
+                >
+                    "list"
+                </button>
+            </div>
+        }
+    });
+    // Stack the grid and the list in one cell so the taller one fixes the
+    // height — switching tabs never changes the page height. The inactive
+    // view is hidden but still occupies its space.
+    let grid_view = has_swiss.then(|| {
+        view! {
+            <div class="swiss-view" class:swiss-view-off=move || !swiss_grid.get()>
+                <SwissBracket rounds=swiss tournament_id />
+            </div>
+        }
+    });
+    let list_view = view! {
+        <div class="swiss-view" class:swiss-view-off=move || has_swiss && swiss_grid.get()>
+            <StandingsTable rows=standings tournament_id game />
+        </div>
+    };
+    view! {
+        <div class="event-extra" id=format!("stage-{tournament_id}")>
+            <div class="stage-bar">{label} {tabs}</div>
+            <div class="swiss-views">{grid_view} {list_view}</div>
+            <Bracket rounds=rounds tournament_id bracket_only times=times.get_value() />
+        </div>
+    }
+}
+
+#[component]
+fn EventStages(
+    stages: Vec<EventInfo>,
+    /// `match_id -> (day_key, clock_label)` so brackets can date rounds and show
+    /// per-match times; empty where the schedule isn't on the page.
+    #[prop(optional)]
+    times: std::collections::HashMap<i64, (String, String)>,
+) -> impl IntoView {
+    let times = StoredValue::new(times);
+    // One toggle drives every stage.
+    let swiss_grid = RwSignal::new(true);
     stages
         .into_iter()
-        .map(move |e| {
-            let EventInfo { tournament_id, stage, game, standings, rounds, swiss, .. } = e;
-            let bracket_only = standings.is_empty();
-            let has_swiss = !swiss.is_empty();
-            let label =
-                (!stage.is_empty()).then(|| view! { <h2 class="stage-head">{stage}</h2> });
-            // A Swiss stage gets a grid/list toggle; otherwise just the standings
-            // (+ any playoff bracket).
-            let tabs = has_swiss.then(|| {
-                view! {
-                    <div class="swiss-tabs">
-                        <button
-                            class="swiss-tab"
-                            class:active=move || swiss_grid.get()
-                            on:click=move |e| set_view(e, true)
-                        >
-                            "bracket"
-                        </button>
-                        <button
-                            class="swiss-tab"
-                            class:active=move || !swiss_grid.get()
-                            on:click=move |e| set_view(e, false)
-                        >
-                            "list"
-                        </button>
-                    </div>
-                }
-            });
-            // Stack the grid and the list in one cell so the taller one fixes the
-            // height — switching tabs never changes the page height. The inactive
-            // view is hidden but still occupies its space.
-            let grid_view = has_swiss.then(|| {
-                view! {
-                    <div class="swiss-view" class:swiss-view-off=move || !swiss_grid.get()>
-                        <SwissBracket rounds=swiss tournament_id />
-                    </div>
-                }
-            });
-            let list_view = view! {
-                <div
-                    class="swiss-view"
-                    class:swiss-view-off=move || has_swiss && swiss_grid.get()
-                >
-                    <StandingsTable rows=standings tournament_id game />
-                </div>
-            };
-            view! {
-                <div class="event-extra" id=format!("stage-{tournament_id}")>
-                    <div class="stage-bar">{label} {tabs}</div>
-                    <div class="swiss-views">{grid_view} {list_view}</div>
-                    <Bracket rounds=rounds tournament_id bracket_only times=times.get_value() />
-                </div>
-            }
-        })
+        .map(move |e| view! { <EventStageCombo event=e swiss_grid times=times.get_value() /> })
         .collect_view()
 }
 
@@ -722,11 +734,6 @@ fn detail_view(d: MatchDetail) -> impl IntoView {
     let played = matches!(m.status, MatchStatus::Live | MatchStatus::Finished) && has_score;
     let (win_a, win_b) = (m.team_a.winner, m.team_b.winner);
     let (team_a, team_b) = (m.team_a.label, m.team_b.label);
-    let tid = event.tournament_id;
-    let game = event.game;
-    let standings = event.standings;
-    let bracket_only = standings.is_empty();
-    let rounds = event.rounds;
 
     // Scores/standings/bracket are spoilers: reveal when the global toggle is on
     // or this match was individually revealed (persisted, shared with the list).
@@ -794,10 +801,10 @@ fn detail_view(d: MatchDetail) -> impl IntoView {
                 }}
             </div>
             <StreamsList streams=streams />
-            // Standings + bracket self-gate per section (shared, persisted), so
-            // they're always rendered with their own reveal controls.
-            <StandingsTable rows=standings tournament_id=tid game=game />
-            <Bracket rounds=rounds tournament_id=tid bracket_only=bracket_only />
+            // The event's stage combo (Swiss grid/list + playoff bracket), same as
+            // the event page; each section self-gates its own reveal (shared,
+            // persisted). Empty sections render nothing.
+            <EventStageCombo event=event swiss_grid=RwSignal::new(true) />
         </article>
     }
 }
