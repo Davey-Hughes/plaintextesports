@@ -234,6 +234,41 @@ pub struct BracketMatch {
     pub feeders: Vec<(usize, usize)>,
 }
 
+/// One match within a Swiss-stage bracket (a "first to N" group stage rendered
+/// as a buchholz grid rather than a tree).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SwissMatch {
+    pub team_a: String,
+    pub team_b: String,
+    pub score_a: Option<i32>,
+    pub score_b: Option<i32>,
+    /// Which side won, if decided: "a", "b", or empty.
+    pub winner: String,
+    pub match_id: i64,
+    /// Outcome this match triggered for each side: "advanced" (reached the win
+    /// target), "eliminated" (reached the loss limit), or "" (still in).
+    #[serde(default)]
+    pub a_outcome: String,
+    #[serde(default)]
+    pub b_outcome: String,
+}
+
+/// A record bucket within a Swiss round — the teams that entered with the same
+/// W-L (e.g. all the 2-0 teams), playing each other.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SwissBucket {
+    /// The shared entering record, e.g. "2-0".
+    pub record: String,
+    pub matches: Vec<SwissMatch>,
+}
+
+/// One round (column) of a Swiss stage, its buckets ordered most-wins first.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SwissRound {
+    pub number: u32,
+    pub buckets: Vec<SwissBucket>,
+}
+
 /// A column of the elimination bracket (e.g. "Quarterfinals").
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BracketRound {
@@ -261,12 +296,17 @@ pub struct EventInfo {
     pub game: Game,
     pub standings: Vec<StandingRow>,
     pub rounds: Vec<BracketRound>,
+    /// Swiss-stage rounds (buchholz grid), when this stage is a Swiss/group
+    /// stage; empty otherwise. Paired with `standings` (the same stage), so the
+    /// UI can toggle between the grid and the ranking table.
+    #[serde(default)]
+    pub swiss: Vec<SwissRound>,
 }
 
 impl EventInfo {
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.standings.is_empty() && self.rounds.is_empty()
+        self.standings.is_empty() && self.rounds.is_empty() && self.swiss.is_empty()
     }
 }
 

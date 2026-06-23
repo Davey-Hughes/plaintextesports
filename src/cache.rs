@@ -1112,17 +1112,19 @@ pub async fn event_info(tournament_id: i64) -> EventInfo {
             leptos::logging::log!("standings fetch failed (tournament {tournament_id}): {e}");
             Vec::new()
         });
-    // Skip the bracket fetch for known non-bracket stages; otherwise fetch (the
-    // builder still drops a Swiss stage that slips through).
-    let rounds = if has_bracket == Some(false) {
-        Vec::new()
-    } else {
+    // Fetch the brackets endpoint when the stage has a tree bracket *or* a
+    // standings table — a Swiss stage reports `has_bracket=false` but still
+    // exposes its matches there (which `build_swiss` turns into the grid).
+    // Truly-empty stages (no bracket, no standings) skip the call.
+    let (rounds, swiss) = if has_bracket == Some(true) || !standings.is_empty() {
         crate::pandascore::fetch_bracket(&HTTP, &token, tournament_id)
             .await
             .unwrap_or_else(|e| {
                 leptos::logging::log!("bracket fetch failed (tournament {tournament_id}): {e}");
-                Vec::new()
+                (Vec::new(), Vec::new())
             })
+    } else {
+        (Vec::new(), Vec::new())
     };
     let info = EventInfo {
         event: String::new(),
@@ -1131,6 +1133,7 @@ pub async fn event_info(tournament_id: i64) -> EventInfo {
         game,
         standings,
         rounds,
+        swiss,
     };
     EVENTS.write().unwrap_or_else(PoisonError::into_inner).insert(
         tournament_id,
@@ -1258,6 +1261,7 @@ fn demo_event_info(league: &str) -> EventInfo {
         game: if lol { Game::Lol } else { Game::Cs2 },
         standings,
         rounds,
+        swiss: Vec::new(),
     }
 }
 
@@ -1346,6 +1350,7 @@ fn demo_event_large_de() -> EventInfo {
         game: Game::Cs2,
         standings,
         rounds,
+        swiss: Vec::new(),
     }
 }
 
@@ -1403,6 +1408,7 @@ fn demo_event_large_se() -> EventInfo {
         game: Game::Cs2,
         standings,
         rounds,
+        swiss: Vec::new(),
     }
 }
 
