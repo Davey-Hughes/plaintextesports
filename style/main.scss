@@ -1066,18 +1066,30 @@ a {
   background: var(--card-bg);
   margin-bottom: 0.3rem;
   cursor: pointer;
+  // A fixed width so every box is identical — hidden or revealed, badge or no
+  // badge — and toggling a result never resizes anything.
+  width: 7.5rem;
 }
 
-.sw-match:hover {
+// A TBD match (teams undecided) can't be revealed.
+.sw-match.sw-locked {
+  cursor: default;
+  opacity: 0.5;
+}
+
+.sw-match:not(.sw-locked):hover {
   border-color: var(--muted);
 }
 
 // A match is one light box holding its two team rows (no inner divider, so it
-// doesn't read as a box-in-a-box).
+// doesn't read as a box-in-a-box). A fixed three-column grid — name, score,
+// reserved badge cell — keeps every box and column aligned regardless of
+// content.
 .sw-row {
-  display: flex;
-  align-items: baseline;
-  gap: 0.3rem;
+  display: grid;
+  grid-template-columns: 1fr 0.7rem 1.9rem;
+  align-items: center;
+  gap: 0.25rem;
   padding: 0.12rem 0.4rem;
   font-size: 12px;
   white-space: nowrap;
@@ -1112,8 +1124,8 @@ a {
 }
 
 .sw-team {
-  flex: 1;
-  padding-right: 0.4rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 // The name links to its schedule row; it inherits the row colour and only
@@ -1129,6 +1141,26 @@ a.sw-link {
 
 .sw-score {
   color: var(--muted);
+  text-align: right;
+}
+
+// Hidden-score markers (same as the playoff bracket): a played match shows a
+// small filled dot that reads as "revealable"; one not yet played, a faint dash.
+.sw-pending {
+  color: var(--fg);
+  font-size: 9px;
+}
+
+.sw-unplayed {
+  color: var(--border);
+}
+
+// The badge sits in its own reserved cell (kept even when empty, so boxes stay
+// uniform), right-aligned within it.
+.sw-badge-cell {
+  display: flex;
+  justify-content: flex-end;
+  overflow: hidden;
 }
 
 // The final stage record (3-0 … 0-3) for a team that finished — a small,

@@ -896,6 +896,26 @@ fn bm_max_stage(m: &BracketMatch) -> u8 {
     }
 }
 
+/// Swiss-match equivalents of [`bm_played`] / [`bm_max_stage`], so a Swiss stage
+/// reveals through the same staged feeder-gated machinery as the playoff.
+fn sw_played(m: &SwissMatch) -> bool {
+    !m.winner.is_empty()
+        || (m.score_a.is_some()
+            && m.score_b.is_some()
+            && (m.score_a != Some(0) || m.score_b != Some(0)))
+}
+
+fn sw_max_stage(m: &SwissMatch) -> u8 {
+    let tbd = |t: &str| t.is_empty() || t == "TBD";
+    if tbd(&m.team_a) || tbd(&m.team_b) {
+        0
+    } else if sw_played(m) {
+        2
+    } else {
+        1
+    }
+}
+
 /// Per-series reveal metadata used to compute effective stages and gate clicks.
 #[derive(Clone)]
 struct BkCell {
@@ -1177,137 +1197,265 @@ fn fmt_date_range(keys: &[String]) -> String {
     }
 }
 
+/// One Swiss match's render data, paired with its `(round, position)` grid slot
+/// and the resolved grid coordinates of its two feeders (each side's prior
+/// match), so it reveals through the same staged, feeder-gated machinery as the
+/// playoff bracket.
+struct SwRender {
+    r: usize,
+    i: usize,
+    team_a: String,
+    team_b: String,
+    sa: Option<i32>,
+    sb: Option<i32>,
+    winner: String,
+    mid: i64,
+    a_record: String,
+    b_record: String,
+    f0: Option<(usize, usize)>,
+    f1: Option<(usize, usize)>,
+    max: u8,
+}
+
 /// A Swiss / "first to N" stage drawn as a buchholz grid: a column per round,
 /// each round's matches grouped into record buckets (2-0, 1-1, 0-2, …). Styled
-/// like the playoff bracket — winner bold, loser muted, the team that finishes
-/// the stage badged with its final record (3-0 … 0-3). Clicking a box reveals
-/// its scores; clicking a name scrolls to that match's row in the schedule. The
-/// reveal-all toggle shares state with the stage's standings table.
+/// and revealed exactly like the playoff bracket — winner bold, loser muted,
+/// finishers badged with their final record (3-0 … 0-3). Progressive reveal is
+/// feeder-gated: a side's name only shows once its previous-round match's score
+/// is revealed, so you reveal round by round and can't peek ahead. A hidden but
+/// played match shows a dot (there's a result to reveal); an unplayed one a
+/// dash. Clicking a name scrolls to that match's row in the schedule.
 #[component]
 fn SwissBracket(rounds: Vec<SwissRound>, tournament_id: i64) -> impl IntoView {
     if rounds.is_empty() {
         return ().into_any();
     }
+    let global = use_context::<ShowScores>().map(|s| s.0);
     let sections = use_context::<RevealedSections>().map(|s| s.0);
-    let (all_revealed, all_toggle) = section_reveal(format!("st:{tournament_id}"));
+    let tid = tournament_id;
     // The team whose path is being traced (hovered), keyed by name.
     let hovered = RwSignal::new(String::new());
-    let cols = rounds
+
+    // Map every match to its (round, position) slot so feeders resolve to grid
+    // coordinates (position runs across a round's buckets, in display order).
+    let mut pos: std::collections::HashMap<i64, (usize, usize)> = std::collections::HashMap::new();
+    for (r, round) in rounds.iter().enumerate() {
+        let mut i = 0usize;
+        for bucket in &round.buckets {
+            for m in &bucket.matches {
+                if m.match_id > 0 {
+                    pos.insert(m.match_id, (r, i));
+                }
+                i += 1;
+            }
+        }
+    }
+
+    // Build the reveal grid (one row per round, matches in column order) and the
+    // parallel render tree (kept grouped into record buckets for display).
+    let mut grid: Vec<Vec<BkCell>> = Vec::with_capacity(rounds.len());
+    let mut render: Vec<(String, Vec<(String, Vec<SwRender>)>)> = Vec::with_capacity(rounds.len());
+    for (r, round) in rounds.into_iter().enumerate() {
+        let head = format!("Round {}", round.number);
+        let mut cells: Vec<BkCell> = Vec::new();
+        let mut buckets_r: Vec<(String, Vec<SwRender>)> = Vec::new();
+        let mut i = 0usize;
+        for bucket in round.buckets {
+            let mut ms: Vec<SwRender> = Vec::new();
+            for m in bucket.matches {
+                let max = sw_max_stage(&m);
+                let f0 = m.a_feeder.and_then(|f| pos.get(&f).copied());
+                let f1 = m.b_feeder.and_then(|f| pos.get(&f).copied());
+                // Both feeders or neither (round 1) — keep slot order [a, b].
+                let feeders = match (f0, f1) {
+                    (Some(a), Some(b)) => vec![a, b],
+                    _ => Vec::new(),
+                };
+                cells.push(BkCell {
+                    bn: format!("swn:{tid}:{r}:{i}"),
+                    bs: format!("sws:{tid}:{r}:{i}"),
+                    max,
+                    floor: 0,
+                    feeders,
+                });
+                ms.push(SwRender {
+                    r,
+                    i,
+                    team_a: m.team_a,
+                    team_b: m.team_b,
+                    sa: m.score_a,
+                    sb: m.score_b,
+                    winner: m.winner,
+                    mid: m.match_id,
+                    a_record: m.a_record,
+                    b_record: m.b_record,
+                    f0,
+                    f1,
+                    max,
+                });
+                i += 1;
+            }
+            buckets_r.push((bucket.record, ms));
+        }
+        grid.push(cells);
+        render.push((head, buckets_r));
+    }
+
+    // Effective stages for the whole stage, recomputed when the shared reveal set
+    // or the global toggle changes (same machinery as the playoff bracket).
+    let grid_sv = StoredValue::new(grid.clone());
+    let eff = Memo::new(move |_| {
+        let g = global.is_some_and(|s| s.get());
+        let set = sections.map(|s| s.get()).unwrap_or_default();
+        compute_effective(&grid, &set, g)
+    });
+    let do_op = move |op: BkOp| {
+        if let Some(sec) = sections {
+            sec.update(|set| apply_bracket_op(set, &grid_sv.get_value(), op));
+            #[cfg(feature = "hydrate")]
+            save_sections(&sec.get_untracked());
+        }
+    };
+
+    // Render one match box: feeder-gated per-slot reveal, dot/dash for a hidden
+    // result, hover-trace, and a name that scrolls to the schedule row.
+    let mk_match = move |m: SwRender| -> leptos::prelude::AnyView {
+        let SwRender {
+            r, i, team_a, team_b, sa, sb, winner, mid, a_record, b_record, f0, f1, max,
+        } = m;
+        let stage = move || eff.with(|e| e.get(r).and_then(|row| row.get(i)).copied().unwrap_or(0));
+        let fed_shown = move |f: Option<(usize, usize)>| {
+            f.is_some_and(|(fr, fi)| {
+                eff.with(|e| e.get(fr).and_then(|row| row.get(fi)).copied().unwrap_or(0) >= 2)
+            })
+        };
+        let team_link = move |name: String| -> leptos::prelude::AnyView {
+            if mid <= 0 {
+                return view! { <span class="sw-team">{name}</span> }.into_any();
+            }
+            view! {
+                <a
+                    class="sw-team sw-link"
+                    href=format!("/match/{mid}")
+                    title="Find this match in the schedule"
+                    on:click=move |e: leptos::ev::MouseEvent| {
+                        e.stop_propagation();
+                        #[cfg(feature = "hydrate")]
+                        if let Some(row) = web_sys::window()
+                            .and_then(|w| w.document())
+                            .and_then(|d| d.get_element_by_id(&format!("m-{mid}")))
+                        {
+                            e.prevent_default();
+                            row.scroll_into_view();
+                            let cl = row.class_list();
+                            let _ = cl.remove_1("row-flash");
+                            let _ = row.client_width();
+                            let _ = cl.add_1("row-flash");
+                        }
+                    }
+                >
+                    {name}
+                </a>
+            }
+            .into_any()
+        };
+        let body = move || {
+            let st = stage();
+            // A fed slot is known once its feeder's score is shown; a round-1 slot
+            // once this match itself is revealed. Scores need both sides known.
+            let known_a = if f0.is_some() { fed_shown(f0) } else { st >= 1 };
+            let known_b = if f1.is_some() { fed_shown(f1) } else { st >= 1 };
+            let scores = st >= 2 && known_a && known_b;
+            let score_view = move |s: Option<i32>| -> leptos::prelude::AnyView {
+                if scores {
+                    view! {
+                        <span class="sw-score">{s.map(|v| v.to_string()).unwrap_or_default()}</span>
+                    }
+                    .into_any()
+                } else if max >= 2 {
+                    view! {
+                        <span class="sw-score sw-pending" title="Result hidden — click to reveal">
+                            "●"
+                        </span>
+                    }
+                    .into_any()
+                } else {
+                    view! {
+                        <span class="sw-score sw-unplayed" title="Not played yet">"-"</span>
+                    }
+                    .into_any()
+                }
+            };
+            let row = move |known: bool,
+                            win: bool,
+                            lose: bool,
+                            name: String,
+                            score: Option<i32>,
+                            rec: String|
+                  -> leptos::prelude::AnyView {
+                if !known {
+                    return view! {
+                        <div class="sw-row sw-hidden">
+                            <span class="sw-team">"—"</span>
+                        </div>
+                    }
+                    .into_any();
+                }
+                let cls = if win {
+                    "sw-row win"
+                } else if lose {
+                    "sw-row lose"
+                } else {
+                    "sw-row"
+                };
+                // Hovering a team lights its row in every round (and dims the
+                // rest), so you can trace its run. The record badge sits in a
+                // reserved cell so every box is the same width with or without it.
+                let (n_class, n_enter) = (name.clone(), name.clone());
+                view! {
+                    <div
+                        class=cls
+                        class:sw-path=move || hovered.with(|h| !h.is_empty() && *h == n_class)
+                        on:mouseenter=move |_| hovered.set(n_enter.clone())
+                        on:mouseleave=move |_| hovered.set(String::new())
+                    >
+                        {team_link(name)}
+                        {score_view(score)}
+                        <span class="sw-badge-cell">
+                            {(scores && !rec.is_empty())
+                                .then(|| view! { <span class="sw-badge">{rec}</span> })}
+                        </span>
+                    </div>
+                }
+                .into_any()
+            };
+            view! {
+                {row(known_a, scores && winner == "a", scores && winner == "b", team_a.clone(), sa, a_record.clone())}
+                {row(known_b, scores && winner == "b", scores && winner == "a", team_b.clone(), sb, b_record.clone())}
+            }
+            .into_any()
+        };
+        let title = if max == 0 { "Not decided yet" } else { "Click to reveal this match" };
+        view! {
+            <div
+                class="sw-match"
+                class:sw-locked=max == 0
+                title=title
+                on:click=move |_| do_op(BkOp::Series(r, i))
+            >
+                {body}
+            </div>
+        }
+        .into_any()
+    };
+
+    let cols = render
         .into_iter()
-        .map(|round| {
-            let head = format!("Round {}", round.number);
-            let buckets = round
-                .buckets
+        .map(move |(head, buckets_r)| {
+            let buckets = buckets_r
                 .into_iter()
-                .map(|bucket| {
-                    let record = bucket.record;
-                    let matches = bucket
-                        .matches
-                        .into_iter()
-                        .map(|m| {
-                            let SwissMatch {
-                                team_a, team_b, score_a, score_b, winner, match_id, a_record,
-                                b_record,
-                            } = m;
-                            let mid = match_id;
-                            // Per-match reveal: this match, the whole stage, or the
-                            // global toggle. Clicking the box flips just this one.
-                            let key = StoredValue::new(format!("swm:{mid}"));
-                            let revealed = move || {
-                                all_revealed.get()
-                                    || sections.is_some_and(|s| {
-                                        s.with(|set| set.contains(&key.get_value()))
-                                    })
-                            };
-                            let toggle = move |_| {
-                                if let Some(s) = sections {
-                                    s.update(|set| {
-                                        let k = key.get_value();
-                                        if !set.remove(&k) {
-                                            set.insert(k);
-                                        }
-                                    });
-                                    #[cfg(feature = "hydrate")]
-                                    save_sections(&s.get_untracked());
-                                }
-                            };
-                            // The name scrolls to this match's schedule row (the
-                            // box reveal stops there); a TBD/demo match (no id) is
-                            // plain text.
-                            let team_link = move |name: String| {
-                                if mid <= 0 {
-                                    return view! { <span class="sw-team">{name}</span> }.into_any();
-                                }
-                                view! {
-                                    <a
-                                        class="sw-team sw-link"
-                                        href=format!("/match/{mid}")
-                                        title="Find this match in the schedule"
-                                        on:click=move |e: leptos::ev::MouseEvent| {
-                                            e.stop_propagation();
-                                            #[cfg(feature = "hydrate")]
-                                            if let Some(row) = web_sys::window()
-                                                .and_then(|w| w.document())
-                                                .and_then(|d| d.get_element_by_id(&format!("m-{mid}")))
-                                            {
-                                                e.prevent_default();
-                                                row.scroll_into_view();
-                                                let cl = row.class_list();
-                                                let _ = cl.remove_1("row-flash");
-                                                let _ = row.client_width();
-                                                let _ = cl.add_1("row-flash");
-                                            }
-                                        }
-                                    >
-                                        {name}
-                                    </a>
-                                }
-                                .into_any()
-                            };
-                            let body = move || {
-                                if !revealed() {
-                                    return view! {
-                                        <div class="sw-row sw-hidden">
-                                            <span class="sw-team">"—"</span>
-                                        </div>
-                                        <div class="sw-row sw-hidden">
-                                            <span class="sw-team">"—"</span>
-                                        </div>
-                                    }
-                                    .into_any();
-                                }
-                                let row = move |is_win: bool, name: String, score: Option<i32>, rec: String| {
-                                    let base = if is_win { "sw-row win" } else { "sw-row lose" };
-                                    // Hovering a team lights its row in every round
-                                    // (and dims the rest), so you can trace its run.
-                                    let (n_class, n_enter) = (name.clone(), name.clone());
-                                    view! {
-                                        <div
-                                            class=base
-                                            class:sw-path=move || {
-                                                hovered.with(|h| !h.is_empty() && *h == n_class)
-                                            }
-                                            on:mouseenter=move |_| hovered.set(n_enter.clone())
-                                            on:mouseleave=move |_| hovered.set(String::new())
-                                        >
-                                            {team_link(name)}
-                                            <span class="sw-score">
-                                                {score.map(|s| s.to_string()).unwrap_or_default()}
-                                            </span>
-                                            {(!rec.is_empty())
-                                                .then(|| view! { <span class="sw-badge">{rec}</span> })}
-                                        </div>
-                                    }
-                                };
-                                view! {
-                                    {row(winner == "a", team_a.clone(), score_a, a_record.clone())}
-                                    {row(winner == "b", team_b.clone(), score_b, b_record.clone())}
-                                }
-                                .into_any()
-                            };
-                            view! { <div class="sw-match" on:click=toggle>{body}</div> }
-                        })
-                        .collect_view();
+                .map(move |(record, ms)| {
+                    let matches = ms.into_iter().map(move |m| mk_match(m)).collect_view();
                     view! {
                         <div class="sw-bucket">
                             <div class="sw-record">{record}</div>
@@ -1324,20 +1472,22 @@ fn SwissBracket(rounds: Vec<SwissRound>, tournament_id: i64) -> impl IntoView {
             }
         })
         .collect_view();
+
+    // The "Bracket" title cascades the whole stage: each click reveals the
+    // earliest revealable round's scores, unlocking the next round's lineup.
+    let bracket_on = move || eff.with(|e| e.iter().flatten().any(|&s| s >= 1));
     view! {
         <section class="detail-section swiss-section">
             <div class="section-head">
                 <button
                     class="section-title section-toggle"
-                    class:on=move || all_revealed.get()
-                    title=move || {
-                        if all_revealed.get() { "Hide the bracket" } else { "Show the bracket" }
-                    }
-                    on:click=all_toggle
+                    class:on=bracket_on
+                    title="Reveal the bracket, round by round"
+                    on:click=move |_| do_op(BkOp::Cascade)
                 >
                     "Bracket"
                 </button>
-                {move || (!all_revealed.get()).then(|| view! { <span class="section-hint">"hidden"</span> })}
+                {move || (!bracket_on()).then(|| view! { <span class="section-hint">"hidden"</span> })}
             </div>
             <div class="swiss-scroll">
                 <div class="swiss" class:sw-tracing=move || hovered.with(|h| !h.is_empty())>

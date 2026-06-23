@@ -251,6 +251,14 @@ pub struct SwissMatch {
     pub a_record: String,
     #[serde(default)]
     pub b_record: String,
+    /// The `match_id` of each side's previous-round match (the "feeder" that put
+    /// it at this record), or `None` in round 1. Progressive reveal gates a
+    /// side's name on its feeder's score being shown — exactly like the playoff
+    /// bracket — so you can't peek ahead without revealing the earlier rounds.
+    #[serde(default)]
+    pub a_feeder: Option<i64>,
+    #[serde(default)]
+    pub b_feeder: Option<i64>,
 }
 
 /// A record bucket within a Swiss round — the teams that entered with the same
