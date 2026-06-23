@@ -201,7 +201,7 @@ fn SiteHeader() -> impl IntoView {
 fn SiteFooter() -> impl IntoView {
     let site = Resource::new(|| (), |()| async { get_site().await });
     view! {
-        <footer class="footer">
+        <footer class="footer" id="site-footer">
             <A href="/about">"about"</A>
             <span class="sep">" · "</span>
             <span>"tier-1 cs2 + lol schedules"</span>
@@ -2767,7 +2767,10 @@ fn league_color_class(name: &str) -> String {
 #[component]
 fn UpNextBar(day: DayGroup) -> impl IntoView {
     let anchor = format!("day-{}", day.day_key);
-    let hidden = RwSignal::new(false);
+    // The bar hides when its target day scrolls into view (you're already there)
+    // or when the footer does (so it never covers the footer at the page bottom).
+    let day_seen = RwSignal::new(false);
+    let foot_seen = RwSignal::new(false);
     // Flatten the day's matches (time + teams), capped so the bar stays slim.
     const CAP: usize = 4;
     let all: Vec<MatchView> = day.leagues.into_iter().flat_map(|lg| lg.matches).collect();
@@ -2822,30 +2825,37 @@ fn UpNextBar(day: DayGroup) -> impl IntoView {
         use wasm_bindgen::closure::Closure;
         use wasm_bindgen::JsCast;
         Effect::new(move |_| {
-            let Some(el) = web_sys::window()
-                .and_then(|w| w.document())
-                .and_then(|d| d.get_element_by_id(&anchor))
-            else {
+            let Some(doc) = web_sys::window().and_then(|w| w.document()) else {
                 return;
             };
-            let cb = Closure::<dyn FnMut(js_sys::Array)>::new(move |entries: js_sys::Array| {
-                let first = entries.get(0).unchecked_into::<web_sys::IntersectionObserverEntry>();
-                hidden.set(first.is_intersecting());
-            });
-            if let Ok(obs) = web_sys::IntersectionObserver::new(cb.as_ref().unchecked_ref()) {
-                obs.observe(&el);
+            // Observe an element; mirror its visibility into `sig`. The observer
+            // keeps firing as long as its callback is alive; leak it for the
+            // page's lifetime (web-sys handles can't ride on_cleanup, which
+            // requires Send + Sync).
+            let observe = |el: web_sys::Element, sig: RwSignal<bool>| {
+                let cb = Closure::<dyn FnMut(js_sys::Array)>::new(move |entries: js_sys::Array| {
+                    let first =
+                        entries.get(0).unchecked_into::<web_sys::IntersectionObserverEntry>();
+                    sig.set(first.is_intersecting());
+                });
+                if let Ok(obs) = web_sys::IntersectionObserver::new(cb.as_ref().unchecked_ref()) {
+                    obs.observe(&el);
+                }
+                cb.forget();
+            };
+            if let Some(el) = doc.get_element_by_id(&anchor) {
+                observe(el, day_seen);
             }
-            // The observer keeps firing as long as its callback is alive; leak it
-            // for the page's lifetime (web-sys handles can't ride on_cleanup,
-            // which requires Send + Sync).
-            cb.forget();
+            if let Some(el) = doc.get_element_by_id("site-footer") {
+                observe(el, foot_seen);
+            }
         });
     }
 
     view! {
         <div
             class="upnext"
-            class:upnext-hidden=move || hidden.get()
+            class:upnext-hidden=move || day_seen.get() || foot_seen.get()
             on:click=jump
             title="Jump to these matches"
         >
