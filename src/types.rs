@@ -123,6 +123,20 @@ pub fn full_event_name(league: &str, serie: &str) -> String {
     }
 }
 
+/// Whether `full_event_name(league, serie) == target`, without allocating — used
+/// to filter the snapshot by edition on every event request.
+#[must_use]
+pub fn event_name_eq(league: &str, serie: &str, target: &str) -> bool {
+    if serie.is_empty() {
+        target == league
+    } else {
+        target
+            .strip_prefix(league)
+            .and_then(|rest| rest.strip_prefix(' '))
+            .is_some_and(|rest| rest == serie)
+    }
+}
+
 /// Matches for one league/event within a day.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LeagueGroup {
@@ -354,6 +368,18 @@ pub struct ScheduleView {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn event_name_eq_agrees_with_full_event_name() {
+        for (league, serie) in [("IEM", "Cologne Major"), ("LCK", ""), ("A B", "C")] {
+            let full = full_event_name(league, serie);
+            assert!(event_name_eq(league, serie, &full));
+        }
+        assert!(!event_name_eq("IEM", "Cologne Major", "IEM Katowice"));
+        assert!(!event_name_eq("IEM", "Cologne", "IEM Cologne Major")); // serie is a prefix
+        assert!(!event_name_eq("LCK", "", "LCK Spring"));
+        assert!(!event_name_eq("IEM", "Cologne", "IEMCologne")); // missing the space
+    }
 
     #[test]
     fn game_from_filter_maps_known_and_rejects_other() {
