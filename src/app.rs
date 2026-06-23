@@ -2937,6 +2937,7 @@ fn UpNextBar(day: DayGroup) -> impl IntoView {
 fn render_schedule(s: ScheduleView, show_nav: bool, push: bool, event_mode: bool) -> impl IntoView {
     let ScheduleView {
         days,
+        today_key,
         fetched_label,
         stale,
         using_fixture,
@@ -2946,6 +2947,7 @@ fn render_schedule(s: ScheduleView, show_nav: bool, push: bool, event_mode: bool
         next_date,
         ..
     } = s;
+    let today_key = StoredValue::new(today_key);
 
     let empty = days.iter().all(|d| d.leagues.is_empty());
     // The "‹ show earlier days" control rides the first day's title line (homepage
@@ -3034,17 +3036,29 @@ fn render_schedule(s: ScheduleView, show_nav: bool, push: bool, event_mode: bool
                     }
                 })
                 .collect_view();
+            // Grey a past day's heading, highlight today's (keys sort by date).
+            let day_cls = today_key.with_value(|t| {
+                if t.is_empty() {
+                    "day-title"
+                } else if d.day_key.as_str() < t.as_str() {
+                    "day-title day-past"
+                } else if d.day_key == *t {
+                    "day-title day-today"
+                } else {
+                    "day-title"
+                }
+            });
             // The first day carries the "show earlier days" control beside its date.
             let head = if idx == 0 && show_earlier {
                 view! {
                     <div class="day-head">
-                        <h2 class="day-title">{d.day_label}</h2>
+                        <h2 class=day_cls>{d.day_label}</h2>
                         <EarlierControl />
                     </div>
                 }
                     .into_any()
             } else {
-                view! { <h2 class="day-title">{d.day_label}</h2> }.into_any()
+                view! { <h2 class=day_cls>{d.day_label}</h2> }.into_any()
             };
             view! {
                 <section class="day" id=format!("day-{}", d.day_key)>
