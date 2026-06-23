@@ -85,6 +85,68 @@ a {
   }
 }
 
+// Pinned "up next" preview on the event page: aligned with the page column,
+// fixed to the viewport bottom, hidden once the real day section is in view.
+.upnext {
+  position: fixed;
+  left: 50%;
+  bottom: 0;
+  transform: translateX(-50%);
+  width: 100%;
+  max-width: 760px;
+  box-sizing: border-box;
+  padding: 0.45rem 1rem 0.55rem;
+  background: var(--card-bg);
+  border: 1px solid var(--border);
+  border-bottom: none;
+  cursor: pointer;
+  z-index: 20;
+
+  &:hover {
+    border-color: var(--muted);
+  }
+}
+
+.upnext-hidden {
+  display: none;
+}
+
+.upnext-head {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+  margin-bottom: 0.25rem;
+}
+
+.upnext-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+  font-size: 13px;
+}
+
+.upnext-match {
+  display: flex;
+  gap: 0.5rem;
+  color: inherit;
+  text-decoration: none;
+
+  &:hover .upnext-team {
+    text-decoration: underline;
+  }
+}
+
+.upnext-time,
+.upnext-vs {
+  color: var(--muted);
+}
+
+.upnext-more {
+  color: var(--muted);
+  font-size: 12px;
+}
+
 .page {
   position: relative;
   max-width: 760px;
