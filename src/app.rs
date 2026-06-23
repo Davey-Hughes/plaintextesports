@@ -1421,10 +1421,20 @@ fn SwissBracket(rounds: Vec<SwissRound>, tournament_id: i64) -> impl IntoView {
                     >
                         {team_link(name)}
                         {score_view(score)}
-                        <span class="sw-badge-cell">
-                            {(scores && !rec.is_empty())
-                                .then(|| view! { <span class="sw-badge">{rec}</span> })}
-                        </span>
+                        {(scores && !rec.is_empty())
+                            .then(move || {
+                                // "W-L": advanced (green) if more wins than losses,
+                                // else eliminated (red).
+                                let pass = rec
+                                    .split_once('-')
+                                    .and_then(|(w, l)| {
+                                        Some(w.trim().parse::<i32>().ok()? > l.trim().parse::<i32>().ok()?)
+                                    })
+                                    .unwrap_or(false);
+                                let cls =
+                                    if pass { "sw-badge sw-pass" } else { "sw-badge sw-exit" };
+                                view! { <span class=cls>{rec}</span> }
+                            })}
                     </div>
                 }
                 .into_any()
