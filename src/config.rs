@@ -137,11 +137,20 @@ impl Config {
     }
 }
 
+/// The process-wide config, loaded once (reads `config.toml` on first access).
+static CACHE: Lazy<Config> = Lazy::new(Config::load);
+
+/// Borrow the loaded config without cloning — for the request hot paths that
+/// only read a few (mostly `Copy`) fields.
+#[must_use]
+pub fn config() -> &'static Config {
+    &CACHE
+}
+
 impl Config {
-    /// Load once (reads `config.toml` on first access) and reuse.
+    /// The loaded config, cloned. Prefer [`config`] on hot paths.
     #[must_use]
     pub fn from_env() -> Self {
-        static CACHE: Lazy<Config> = Lazy::new(Config::load);
         CACHE.clone()
     }
 
