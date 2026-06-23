@@ -9,8 +9,8 @@
 use crate::config::Config;
 use crate::pandascore::{fetch_game, FetchResult, NormTeam, NormalizedMatch};
 use crate::types::{
-    full_event_name, BracketMatch, BracketRound, DayGroup, EventInfo, Game, LeagueGroup,
-    MatchStatus, MatchView, ScheduleView, StandingRow, StreamView, TeamView,
+    event_name_eq, BracketMatch, BracketRound, DayGroup, EventInfo, Game, LeagueGroup, MatchStatus,
+    MatchView, ScheduleView, StandingRow, StreamView, TeamView,
 };
 use chrono::{DateTime, Datelike, Duration, NaiveDate, TimeZone, Timelike, Utc};
 use chrono_tz::Tz;
@@ -935,7 +935,7 @@ pub fn event_view(event: &str, tz_name: &str, hour24: bool) -> ScheduleView {
         .matches
         .iter()
         .filter(|m| m.status != MatchStatus::Canceled)
-        .filter(|m| full_event_name(&m.league, &m.serie_name) == event)
+        .filter(|m| event_name_eq(&m.league, &m.serie_name, event))
         .map(|m| to_view(m, &tz, now, hour24))
         .collect();
 
@@ -1042,55 +1042,47 @@ pub fn match_basics(
 /// stage started — so a multi-stage event (e.g. Swiss stages → playoffs) renders
 /// its stages in order. `event` is the full edition name (league + serie).
 #[must_use]
-pub fn event_stages(event: &str) -> Vec<i64> {
-    let snap = SNAPSHOT.read().unwrap_or_else(PoisonError::into_inner);
-    let mut earliest: std::collections::HashMap<i64, i64> = std::collections::HashMap::new();
-    for m in &snap.matches {
-        if full_event_name(&m.league, &m.serie_name) == event {
-            if let Some(tid) = m.tournament_id {
-                let ms = m.begin_at.timestamp_millis();
-                earliest
-                    .entry(tid)
-                    .and_modify(|e| *e = (*e).min(ms))
-                    .or_insert(ms);
-            }
-        }
-    }
-    let mut stages: Vec<(i64, i64)> = earliest.into_iter().collect();
-    stages.sort_by_key(|&(_, ms)| ms);
-    stages.into_iter().map(|(tid, _)| tid).collect()
+pub fn event_stages(event: &str) -> Vec<(i64, Game)> {
+    stages_matching(|m| event_name_eq(&m.league, &m.serie_name, event))
 }
 
-/// The stage tournament ids of a league filter's cached matches, ordered by when
-/// each stage started. Like [`event_stages`] but keyed on the (short) league
-/// name, which is what the front-page event filter selects.
+/// The stage tournament ids of a league filter's cached matches. Like
+/// [`event_stages`] but keyed on the (short) league name, which is what the
+/// front-page event filter selects.
 #[must_use]
-pub fn league_stages(league: &str) -> Vec<i64> {
+pub fn league_stages(league: &str) -> Vec<(i64, Game)> {
+    stages_matching(|m| m.league == league)
+}
+
+/// Distinct `(tournament id, game)` of the cached matches passing `pred`, ordered
+/// by when each stage started (its earliest match). Capturing the game here saves
+/// [`event_info`] a per-stage snapshot scan to look it up.
+fn stages_matching(pred: impl Fn(&NormalizedMatch) -> bool) -> Vec<(i64, Game)> {
     let snap = SNAPSHOT.read().unwrap_or_else(PoisonError::into_inner);
-    let mut earliest: std::collections::HashMap<i64, i64> = std::collections::HashMap::new();
+    let mut earliest: std::collections::HashMap<i64, (i64, Game)> = std::collections::HashMap::new();
     for m in &snap.matches {
-        if m.league == league {
+        if pred(m) {
             if let Some(tid) = m.tournament_id {
                 let ms = m.begin_at.timestamp_millis();
                 earliest
                     .entry(tid)
-                    .and_modify(|e| *e = (*e).min(ms))
-                    .or_insert(ms);
+                    .and_modify(|e| e.0 = e.0.min(ms))
+                    .or_insert((ms, m.game));
             }
         }
     }
-    let mut stages: Vec<(i64, i64)> = earliest.into_iter().collect();
-    stages.sort_by_key(|&(_, ms)| ms);
-    stages.into_iter().map(|(tid, _)| tid).collect()
+    let mut stages: Vec<(i64, (i64, Game))> = earliest.into_iter().collect();
+    stages.sort_by_key(|&(_, (ms, _))| ms);
+    stages.into_iter().map(|(tid, (_, game))| (tid, game)).collect()
 }
 
-/// Resolve a list of stage tournament ids to their [`EventInfo`]s (standings +
-/// brackets), dropping empties and tagging each with the event name. Order is
-/// preserved so stages render Swiss → playoffs.
-pub async fn stages_info(tids: Vec<i64>, event: &str) -> Vec<EventInfo> {
+/// Resolve a list of `(stage tournament id, game)` to their [`EventInfo`]s
+/// (standings + brackets), dropping empties and tagging each with the event
+/// name. Order is preserved so stages render Swiss → playoffs.
+pub async fn stages_info(stages: Vec<(i64, Game)>, event: &str) -> Vec<EventInfo> {
     // Fetch every stage concurrently (each is an independent set of API calls),
     // preserving order, so a multi-stage event isn't N round-trips deep.
-    futures::future::join_all(tids.into_iter().map(event_info))
+    futures::future::join_all(stages.into_iter().map(|(tid, game)| event_info(tid, game)))
         .await
         .into_iter()
         .filter(|info| !info.is_empty())
@@ -1103,7 +1095,7 @@ pub async fn stages_info(tids: Vec<i64>, event: &str) -> Vec<EventInfo> {
 
 /// Standings + bracket for a tournament, cached with a TTL. Fetches live when a
 /// token is configured; in demo mode returns the pre-seeded fixture.
-pub async fn event_info(tournament_id: i64) -> EventInfo {
+pub async fn event_info(tournament_id: i64, game: Game) -> EventInfo {
     let now = Utc::now();
     {
         let cache = EVENTS.read().unwrap_or_else(PoisonError::into_inner);
@@ -1113,14 +1105,8 @@ pub async fn event_info(tournament_id: i64) -> EventInfo {
             }
         }
     }
-    // The game backing this tournament (for game-appropriate standings labels).
-    let game = SNAPSHOT
-        .read()
-        .unwrap_or_else(PoisonError::into_inner)
-        .matches
-        .iter()
-        .find(|m| m.tournament_id == Some(tournament_id))
-        .map_or(Game::Cs2, |m| m.game);
+    // `game` (for game-appropriate standings labels) is passed in by the caller,
+    // which already scanned the snapshot to find this stage.
     let Some(token) = Config::from_env().token.clone() else {
         // No token (demo / unconfigured): serve whatever's seeded, else nothing.
         return EVENTS
@@ -1853,7 +1839,10 @@ mod tests {
             .find(|l| l.serie_name == "Cologne Major")
             .expect("Cologne group");
         assert_eq!(cologne.matches.len(), 2, "both Cologne matches grouped");
-        assert_eq!(full_event_name(&cologne.league, &cologne.serie_name), "IEM Cologne Major");
+        assert_eq!(
+            crate::types::full_event_name(&cologne.league, &cologne.serie_name),
+            "IEM Cologne Major"
+        );
     }
 
     #[test]

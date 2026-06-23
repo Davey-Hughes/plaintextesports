@@ -78,7 +78,7 @@ pub async fn get_match_detail(
             return Ok(MatchDetail::default());
         };
         let mut event = match tournament_id {
-            Some(tid) => crate::cache::event_info(tid).await,
+            Some(tid) => crate::cache::event_info(tid, match_view.game).await,
             None => EventInfo::default(),
         };
         event.event = league;
