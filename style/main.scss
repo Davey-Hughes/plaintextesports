@@ -775,8 +775,11 @@ a {
   }
 }
 
-// Hovering the row draws one connected underline under the whole matchup.
+// Hovering the row draws one connected underline under the whole matchup — and
+// suppress the link's own (segmented) text underline so it isn't doubled up.
 .row-body:hover {
+  text-decoration: none;
+
   .row-a,
   .row-mid,
   .row-b {
@@ -996,6 +999,8 @@ a {
   a {
     color: var(--link);
     text-decoration: none;
+    // Match the lowercase "schedule" link (stage names come in title-case).
+    text-transform: lowercase;
 
     &:hover {
       text-decoration: underline;

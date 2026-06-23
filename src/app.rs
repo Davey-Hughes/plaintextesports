@@ -1449,7 +1449,8 @@ fn SwissBracket(rounds: Vec<SwissRound>, tournament_id: i64) -> impl IntoView {
                         on:mouseleave=move |_| hovered.set(String::new())
                     >
                         {team_link(name)}
-                        {score_view(score)}
+                        // The record badge sits left of the score (which stays
+                        // pinned to the box edge) so the row reads less cluttered.
                         {(scores && !rec.is_empty())
                             .then(move || {
                                 // "W-L": advanced (green) if more wins than losses,
@@ -1464,6 +1465,7 @@ fn SwissBracket(rounds: Vec<SwissRound>, tournament_id: i64) -> impl IntoView {
                                     if pass { "sw-badge sw-pass" } else { "sw-badge sw-exit" };
                                 view! { <span class=cls>{rec}</span> }
                             })}
+                        {score_view(score)}
                     </div>
                 }
                 .into_any()
