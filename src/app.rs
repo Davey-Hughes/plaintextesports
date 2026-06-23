@@ -1212,8 +1212,8 @@ struct BkRender {
     i: usize,
     ta: String,
     tb: String,
-    sa: Option<i32>,
-    sb: Option<i32>,
+    sa: Option<i64>,
+    sb: Option<i64>,
     winner: String,
     max: u8,
     mid: i64,
@@ -1262,8 +1262,8 @@ struct SwRender {
     i: usize,
     team_a: String,
     team_b: String,
-    sa: Option<i32>,
-    sb: Option<i32>,
+    sa: Option<i64>,
+    sb: Option<i64>,
     winner: String,
     mid: i64,
     a_record: String,
@@ -1422,7 +1422,7 @@ fn SwissBracket(rounds: Vec<SwissRound>, tournament_id: i64) -> impl IntoView {
             let known_a = if f0.is_some() { fed_shown(f0) } else { st >= 1 };
             let known_b = if f1.is_some() { fed_shown(f1) } else { st >= 1 };
             let scores = st >= 2 && known_a && known_b;
-            let score_view = move |s: Option<i32>| -> leptos::prelude::AnyView {
+            let score_view = move |s: Option<i64>| -> leptos::prelude::AnyView {
                 if scores {
                     view! {
                         <span class="sw-score">{s.map(|v| v.to_string()).unwrap_or_default()}</span>
@@ -1446,7 +1446,7 @@ fn SwissBracket(rounds: Vec<SwissRound>, tournament_id: i64) -> impl IntoView {
                             win: bool,
                             lose: bool,
                             name: String,
-                            score: Option<i32>,
+                            score: Option<i64>,
                             rec: String|
                   -> leptos::prelude::AnyView {
                 if !known {
@@ -1864,7 +1864,7 @@ fn Bracket(
                                     // a result waiting — a played match gets a
                                     // filled dot you can reveal; one not yet played
                                     // gets a faint dash (nothing to reveal).
-                                    let score_view = move |s: Option<i32>| {
+                                    let score_view = move |s: Option<i64>| {
                                         if scores {
                                             view! {
                                                 <span class="bk-score">

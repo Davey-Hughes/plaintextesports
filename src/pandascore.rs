@@ -757,8 +757,8 @@ fn build_swiss(raw: &[RawBracketMatch]) -> Vec<SwissRound> {
             buckets.entry((pw, pl)).or_default().push(SwissMatch {
                 team_a: label_a,
                 team_b: label_b,
-                score_a: score_for(&m.results, id_a).map(|s| s as i32),
-                score_b: score_for(&m.results, id_b).map(|s| s as i32),
+                score_a: score_for(&m.results, id_a),
+                score_b: score_for(&m.results, id_b),
                 winner: winner.to_string(),
                 match_id: m.id,
                 a_record: a_rec,
@@ -992,8 +992,8 @@ fn to_bracket_match(m: &RawBracketMatch, pos: &HashMap<i64, (usize, usize)>) -> 
     BracketMatch {
         team_a: label_a,
         team_b: label_b,
-        score_a: score_for(&m.results, id_a).map(|s| s as i32),
-        score_b: score_for(&m.results, id_b).map(|s| s as i32),
+        score_a: score_for(&m.results, id_a),
+        score_b: score_for(&m.results, id_b),
         winner: winner.to_string(),
         match_id: m.id,
         feeders,

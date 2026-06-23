@@ -1288,7 +1288,7 @@ fn demo_event_info(league: &str) -> EventInfo {
 }
 
 // Shared builders for the larger demo brackets.
-fn dbm(a: &str, b: &str, sa: Option<i32>, sb: Option<i32>, w: &str, feeders: &[(usize, usize)]) -> BracketMatch {
+fn dbm(a: &str, b: &str, sa: Option<i64>, sb: Option<i64>, w: &str, feeders: &[(usize, usize)]) -> BracketMatch {
     BracketMatch {
         team_a: a.to_string(),
         team_b: b.to_string(),
