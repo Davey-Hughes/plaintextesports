@@ -713,26 +713,29 @@ fn build_swiss(raw: &[RawBracketMatch]) -> Vec<SwissRound> {
                 w if w.is_some() && w == id_b => "b",
                 _ => "",
             };
-            // The winner reaching the target advances; the loser reaching the
-            // limit is eliminated.
-            let (mut a_out, mut b_out) = (String::new(), String::new());
+            // Both sides enter with (pw, pl); the winner becomes (pw+1, pl) and
+            // the loser (pw, pl+1). A side that reaches the target wins/losses
+            // finishes here, and we record its final record (e.g. "3-0", "0-3").
+            let win_rec = format!("{}-{}", pw + 1, pl);
+            let loss_rec = format!("{}-{}", pw, pl + 1);
+            let (mut a_rec, mut b_rec) = (String::new(), String::new());
             match winner {
                 "a" => {
                     if pw + 1 >= target {
-                        a_out = "advanced".into();
+                        a_rec = win_rec;
                     }
                     if pl + 1 >= target {
-                        b_out = "eliminated".into();
+                        b_rec = loss_rec;
                     }
                     updates.push((id_a.unwrap_or(0), true));
                     updates.push((id_b.unwrap_or(0), false));
                 }
                 "b" => {
                     if pw + 1 >= target {
-                        b_out = "advanced".into();
+                        b_rec = win_rec;
                     }
                     if pl + 1 >= target {
-                        a_out = "eliminated".into();
+                        a_rec = loss_rec;
                     }
                     updates.push((id_b.unwrap_or(0), true));
                     updates.push((id_a.unwrap_or(0), false));
@@ -746,8 +749,8 @@ fn build_swiss(raw: &[RawBracketMatch]) -> Vec<SwissRound> {
                 score_b: score_for(&m.results, id_b).map(|s| s as i32),
                 winner: winner.to_string(),
                 match_id: m.id,
-                a_outcome: a_out,
-                b_outcome: b_out,
+                a_record: a_rec,
+                b_record: b_rec,
             });
         }
         for (id, won) in updates {
@@ -1159,11 +1162,11 @@ mod tests {
         assert_eq!(recs(&swiss[0]), vec!["0-0"]);
         assert_eq!(recs(&swiss[1]), vec!["1-0", "0-1"]); // most wins first
         assert_eq!(recs(&swiss[2]), vec!["1-1"]);
-        // Round 2: A wins the 1-0 bucket → advances; D loses the 0-1 bucket → out.
-        assert_eq!(swiss[1].buckets[0].matches[0].a_outcome, "advanced");
-        assert_eq!(swiss[1].buckets[1].matches[0].b_outcome, "eliminated");
-        // Round 3 decides the last spots: C advances, B is eliminated.
-        assert_eq!(swiss[2].buckets[0].matches[0].a_outcome, "advanced");
-        assert_eq!(swiss[2].buckets[0].matches[0].b_outcome, "eliminated");
+        // Round 2: A wins the 1-0 bucket → advances 2-0; D loses 0-1 → out 0-2.
+        assert_eq!(swiss[1].buckets[0].matches[0].a_record, "2-0");
+        assert_eq!(swiss[1].buckets[1].matches[0].b_record, "0-2");
+        // Round 3 decides the last spots: C advances 2-1, B is eliminated 1-2.
+        assert_eq!(swiss[2].buckets[0].matches[0].a_record, "2-1");
+        assert_eq!(swiss[2].buckets[0].matches[0].b_record, "1-2");
     }
 }

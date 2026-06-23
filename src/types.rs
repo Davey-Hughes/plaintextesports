@@ -245,12 +245,12 @@ pub struct SwissMatch {
     /// Which side won, if decided: "a", "b", or empty.
     pub winner: String,
     pub match_id: i64,
-    /// Outcome this match triggered for each side: "advanced" (reached the win
-    /// target), "eliminated" (reached the loss limit), or "" (still in).
+    /// The final stage record (e.g. "3-0" advanced, "0-3" eliminated) for a side
+    /// that finished the Swiss in this match; empty while the team is still in.
     #[serde(default)]
-    pub a_outcome: String,
+    pub a_record: String,
     #[serde(default)]
-    pub b_outcome: String,
+    pub b_record: String,
 }
 
 /// A record bucket within a Swiss round — the teams that entered with the same

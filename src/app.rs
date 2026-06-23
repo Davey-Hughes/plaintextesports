@@ -445,8 +445,33 @@ fn EventPage() -> impl IntoView {
     setup_autorefresh(schedule);
     let push = use_context::<RwSignal<Option<String>>>().is_some_and(|v| v.get().is_some());
     // Swiss stages can show as the buchholz grid (default) or the ranking list;
-    // one toggle drives every stage on the page.
+    // one toggle drives every stage on the page. Switching keeps the clicked tab
+    // pinned in place (the two views differ in height), so the page doesn't jump.
     let swiss_grid = RwSignal::new(true);
+    let set_view = move |e: leptos::ev::MouseEvent, grid: bool| {
+        #[cfg(feature = "hydrate")]
+        {
+            use wasm_bindgen::JsCast;
+            let anchor = e
+                .current_target()
+                .and_then(|t| t.dyn_into::<web_sys::Element>().ok());
+            let before = anchor.as_ref().map(|el| el.get_bounding_client_rect().top());
+            swiss_grid.set(grid);
+            if let (Some(el), Some(before)) = (anchor, before) {
+                request_animation_frame(move || {
+                    let after = el.get_bounding_client_rect().top();
+                    if let Some(w) = web_sys::window() {
+                        w.scroll_by_with_x_and_y(0.0, after - before);
+                    }
+                });
+            }
+        }
+        #[cfg(not(feature = "hydrate"))]
+        {
+            let _ = &e;
+            swiss_grid.set(grid);
+        }
+    };
 
     // Render the whole page from inside one Suspense (awaiting both resources),
     // mirroring the match-detail page — so nothing reactive sits at the
@@ -517,14 +542,14 @@ fn EventPage() -> impl IntoView {
                                             <button
                                                 class="swiss-tab"
                                                 class:active=move || swiss_grid.get()
-                                                on:click=move |_| swiss_grid.set(true)
+                                                on:click=move |e| set_view(e, true)
                                             >
                                                 "bracket"
                                             </button>
                                             <button
                                                 class="swiss-tab"
                                                 class:active=move || !swiss_grid.get()
-                                                on:click=move |_| swiss_grid.set(false)
+                                                on:click=move |e| set_view(e, false)
                                             >
                                                 "list"
                                             </button>
@@ -1153,15 +1178,18 @@ fn fmt_date_range(keys: &[String]) -> String {
 }
 
 /// A Swiss / "first to N" stage drawn as a buchholz grid: a column per round,
-/// each round's matches grouped into record buckets (2-0, 1-1, 0-2, …), with
-/// advances (green) and eliminations (red) marked. Shares its reveal state with
-/// the stage's standings table so toggling either view stays in sync.
+/// each round's matches grouped into record buckets (2-0, 1-1, 0-2, …). Styled
+/// like the playoff bracket — winner bold, loser muted, the team that finishes
+/// the stage badged with its final record (3-0 … 0-3). Clicking a box reveals
+/// its scores; clicking a name scrolls to that match's row in the schedule. The
+/// reveal-all toggle shares state with the stage's standings table.
 #[component]
 fn SwissBracket(rounds: Vec<SwissRound>, tournament_id: i64) -> impl IntoView {
     if rounds.is_empty() {
         return ().into_any();
     }
-    let (revealed, toggle) = section_reveal(format!("st:{tournament_id}"));
+    let sections = use_context::<RevealedSections>().map(|s| s.0);
+    let (all_revealed, all_toggle) = section_reveal(format!("st:{tournament_id}"));
     let cols = rounds
         .into_iter()
         .map(|round| {
@@ -1176,19 +1204,66 @@ fn SwissBracket(rounds: Vec<SwissRound>, tournament_id: i64) -> impl IntoView {
                         .into_iter()
                         .map(|m| {
                             let SwissMatch {
-                                team_a,
-                                team_b,
-                                score_a,
-                                score_b,
-                                winner,
-                                a_outcome,
-                                b_outcome,
-                                ..
+                                team_a, team_b, score_a, score_b, winner, match_id, a_record,
+                                b_record,
                             } = m;
-                            // Re-rendered when the reveal toggles: hidden shows a
-                            // skeleton, revealed shows teams + scores + outcome.
+                            let mid = match_id;
+                            // Per-match reveal: this match, the whole stage, or the
+                            // global toggle. Clicking the box flips just this one.
+                            let key = StoredValue::new(format!("swm:{mid}"));
+                            let revealed = move || {
+                                all_revealed.get()
+                                    || sections.is_some_and(|s| {
+                                        s.with(|set| set.contains(&key.get_value()))
+                                    })
+                            };
+                            let toggle = move |_| {
+                                if let Some(s) = sections {
+                                    s.update(|set| {
+                                        let k = key.get_value();
+                                        if !set.remove(&k) {
+                                            set.insert(k);
+                                        }
+                                    });
+                                    #[cfg(feature = "hydrate")]
+                                    save_sections(&s.get_untracked());
+                                }
+                            };
+                            // The name scrolls to this match's schedule row (the
+                            // box reveal stops there); a TBD/demo match (no id) is
+                            // plain text.
+                            let team_link = move |name: String| {
+                                if mid <= 0 {
+                                    return view! { <span class="sw-team">{name}</span> }.into_any();
+                                }
+                                view! {
+                                    <a
+                                        class="sw-team sw-link"
+                                        href=format!("/match/{mid}")
+                                        title="Find this match in the schedule"
+                                        on:click=move |e: leptos::ev::MouseEvent| {
+                                            e.stop_propagation();
+                                            #[cfg(feature = "hydrate")]
+                                            if let Some(row) = web_sys::window()
+                                                .and_then(|w| w.document())
+                                                .and_then(|d| d.get_element_by_id(&format!("m-{mid}")))
+                                            {
+                                                e.prevent_default();
+                                                row.scroll_into_view();
+                                                let cl = row.class_list();
+                                                let _ = cl.remove_1("row-flash");
+                                                let _ = row.client_width();
+                                                let _ = cl.add_1("row-flash");
+                                            }
+                                        }
+                                    >
+                                        {name}
+                                    </a>
+                                }
+                                .into_any()
+                            };
                             let body = move || {
-                                if !revealed.get() {
+                                if !revealed() {
                                     return view! {
                                         <div class="sw-row sw-hidden">
                                             <span class="sw-team">"—"</span>
@@ -1199,42 +1274,25 @@ fn SwissBracket(rounds: Vec<SwissRound>, tournament_id: i64) -> impl IntoView {
                                     }
                                     .into_any();
                                 }
-                                let row_cls = |win: bool, outcome: &str| {
-                                    let mut c = String::from("sw-row");
-                                    if win {
-                                        c.push_str(" win");
+                                let row = |is_win: bool, name: String, score: Option<i32>, rec: String| {
+                                    view! {
+                                        <div class=if is_win { "sw-row win" } else { "sw-row lose" }>
+                                            {team_link(name)}
+                                            <span class="sw-score">
+                                                {score.map(|s| s.to_string()).unwrap_or_default()}
+                                            </span>
+                                            {(!rec.is_empty())
+                                                .then(|| view! { <span class="sw-badge">{rec}</span> })}
+                                        </div>
                                     }
-                                    match outcome {
-                                        "advanced" => c.push_str(" adv"),
-                                        "eliminated" => c.push_str(" elim"),
-                                        _ => {}
-                                    }
-                                    c
-                                };
-                                let mark = |outcome: &str| match outcome {
-                                    "advanced" => "✓",
-                                    "eliminated" => "✗",
-                                    _ => "",
                                 };
                                 view! {
-                                    <div class=row_cls(winner == "a", &a_outcome)>
-                                        <span class="sw-mark">{mark(&a_outcome)}</span>
-                                        <span class="sw-team">{team_a.clone()}</span>
-                                        <span class="sw-score">
-                                            {score_a.map(|s| s.to_string()).unwrap_or_default()}
-                                        </span>
-                                    </div>
-                                    <div class=row_cls(winner == "b", &b_outcome)>
-                                        <span class="sw-mark">{mark(&b_outcome)}</span>
-                                        <span class="sw-team">{team_b.clone()}</span>
-                                        <span class="sw-score">
-                                            {score_b.map(|s| s.to_string()).unwrap_or_default()}
-                                        </span>
-                                    </div>
+                                    {row(winner == "a", team_a.clone(), score_a, a_record.clone())}
+                                    {row(winner == "b", team_b.clone(), score_b, b_record.clone())}
                                 }
                                 .into_any()
                             };
-                            view! { <div class="sw-match">{body}</div> }
+                            view! { <div class="sw-match" on:click=toggle>{body}</div> }
                         })
                         .collect_view();
                     view! {
@@ -1254,17 +1312,19 @@ fn SwissBracket(rounds: Vec<SwissRound>, tournament_id: i64) -> impl IntoView {
         })
         .collect_view();
     view! {
-        <section class="detail-section">
+        <section class="detail-section swiss-section">
             <div class="section-head">
                 <button
                     class="section-title section-toggle"
-                    class:on=move || revealed.get()
-                    title=move || if revealed.get() { "Hide the bracket" } else { "Show the bracket" }
-                    on:click=toggle
+                    class:on=move || all_revealed.get()
+                    title=move || {
+                        if all_revealed.get() { "Hide the bracket" } else { "Show the bracket" }
+                    }
+                    on:click=all_toggle
                 >
                     "Bracket"
                 </button>
-                {move || (!revealed.get()).then(|| view! { <span class="section-hint">"hidden"</span> })}
+                {move || (!all_revealed.get()).then(|| view! { <span class="section-hint">"hidden"</span> })}
             </div>
             <div class="swiss-scroll">
                 <div class="swiss">{cols}</div>
