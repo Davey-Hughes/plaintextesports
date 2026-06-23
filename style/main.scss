@@ -1331,3 +1331,16 @@ a.bk-team-link {
 .bk-score {
   color: var(--muted);
 }
+
+// Hidden-score markers: a played match has a result waiting (a small filled dot
+// that stands out as "revealable"); one not yet played shows a faint dash.
+.bk-pending {
+  color: var(--fg);
+  font-size: 9px;
+  // Nudge the small dot onto the text baseline.
+  vertical-align: middle;
+}
+
+.bk-unplayed {
+  color: var(--border);
+}
