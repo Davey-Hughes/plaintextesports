@@ -1071,6 +1071,45 @@ pub fn event_stages(event: &str) -> Vec<i64> {
     stages.into_iter().map(|(tid, _)| tid).collect()
 }
 
+/// The stage tournament ids of a league filter's cached matches, ordered by when
+/// each stage started. Like [`event_stages`] but keyed on the (short) league
+/// name, which is what the front-page event filter selects.
+#[must_use]
+pub fn league_stages(league: &str) -> Vec<i64> {
+    let snap = SNAPSHOT.read().unwrap_or_else(PoisonError::into_inner);
+    let mut earliest: std::collections::HashMap<i64, i64> = std::collections::HashMap::new();
+    for m in &snap.matches {
+        if m.league == league {
+            if let Some(tid) = m.tournament_id {
+                let ms = m.begin_at.timestamp_millis();
+                earliest
+                    .entry(tid)
+                    .and_modify(|e| *e = (*e).min(ms))
+                    .or_insert(ms);
+            }
+        }
+    }
+    let mut stages: Vec<(i64, i64)> = earliest.into_iter().collect();
+    stages.sort_by_key(|&(_, ms)| ms);
+    stages.into_iter().map(|(tid, _)| tid).collect()
+}
+
+/// Resolve a list of stage tournament ids to their [`EventInfo`]s (standings +
+/// brackets), dropping empties and tagging each with the event name. Order is
+/// preserved so stages render Swiss → playoffs.
+pub async fn stages_info(tids: Vec<i64>, event: &str) -> Vec<EventInfo> {
+    let mut out = Vec::with_capacity(tids.len());
+    for tid in tids {
+        let mut info = event_info(tid).await;
+        if info.is_empty() {
+            continue;
+        }
+        info.event = event.to_string();
+        out.push(info);
+    }
+    out
+}
+
 /// Standings + bracket for a tournament, cached with a TTL. Fetches live when a
 /// token is configured; in demo mode returns the pre-seeded fixture.
 pub async fn event_info(tournament_id: i64) -> EventInfo {
