@@ -232,8 +232,8 @@ pub struct StandingRow {
 pub struct BracketMatch {
     pub team_a: String,
     pub team_b: String,
-    pub score_a: Option<i32>,
-    pub score_b: Option<i32>,
+    pub score_a: Option<i64>,
+    pub score_b: Option<i64>,
     /// Which side won, if decided: "a", "b", or empty.
     pub winner: String,
     /// PandaScore match id, for linking to the match detail page. 0 when unknown
@@ -254,8 +254,8 @@ pub struct BracketMatch {
 pub struct SwissMatch {
     pub team_a: String,
     pub team_b: String,
-    pub score_a: Option<i32>,
-    pub score_b: Option<i32>,
+    pub score_a: Option<i64>,
+    pub score_b: Option<i64>,
     /// Which side won, if decided: "a", "b", or empty.
     pub winner: String,
     pub match_id: i64,
