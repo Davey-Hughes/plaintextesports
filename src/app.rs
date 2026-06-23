@@ -1502,8 +1502,20 @@ fn SwissBracket(rounds: Vec<SwissRound>, tournament_id: i64) -> impl IntoView {
             <div
                 class="sw-match"
                 class:sw-locked=max == 0
+                role="button"
+                tabindex=if max == 0 { "-1" } else { "0" }
                 title=title
+                aria-label=title
                 on:click=move |_| do_op(BkOp::Series(r, i))
+                on:keydown=move |e: leptos::ev::KeyboardEvent| {
+                    #[cfg(feature = "hydrate")]
+                    if matches!(e.key().as_str(), "Enter" | " ") {
+                        e.prevent_default();
+                        do_op(BkOp::Series(r, i));
+                    }
+                    #[cfg(not(feature = "hydrate"))]
+                    let _ = &e;
+                }
                 on:mouseleave=move |_| hovered.set(String::new())
             >
                 {body}
@@ -1803,8 +1815,20 @@ fn Bracket(
                         <div class="bk-match" class:bk-locked=max == 0>
                             <div
                                 class="bk-box"
-                                title=box_title
+                                role="button"
+                                tabindex=if max == 0 { "-1" } else { "0" }
+                                title=box_title.clone()
+                                aria-label=box_title
                                 on:click=move |_| do_op(BkOp::Series(r, i))
+                                on:keydown=move |e: leptos::ev::KeyboardEvent| {
+                                    #[cfg(feature = "hydrate")]
+                                    if matches!(e.key().as_str(), "Enter" | " ") {
+                                        e.prevent_default();
+                                        do_op(BkOp::Series(r, i));
+                                    }
+                                    #[cfg(not(feature = "hydrate"))]
+                                    let _ = &e;
+                                }
                             >
                                 {move || {
                                     let st = stage();
