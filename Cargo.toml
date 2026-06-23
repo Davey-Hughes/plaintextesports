@@ -20,6 +20,7 @@ tower-http = { version = "0.6", features = [
   "fs",
   "set-header",
   "compression-gzip",
+  "compression-br",
 ], optional = true }
 wasm-bindgen = { version = "0.2", optional = true }
 wasm-bindgen-futures = { version = "0.4", optional = true }
