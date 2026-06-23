@@ -1054,17 +1054,15 @@ a {
   border-color: var(--muted);
 }
 
+// A match is one light box holding its two team rows (no inner divider, so it
+// doesn't read as a box-in-a-box).
 .sw-row {
   display: flex;
   align-items: baseline;
   gap: 0.3rem;
-  padding: 0.08rem 0.35rem;
+  padding: 0.12rem 0.4rem;
   font-size: 12px;
   white-space: nowrap;
-
-  & + & {
-    border-top: 1px solid var(--border);
-  }
 
   // Match the playoff bracket: winner bold/white, loser muted.
   &.win .sw-team {
@@ -1079,6 +1077,20 @@ a {
   &.sw-hidden .sw-team {
     color: var(--muted);
   }
+}
+
+// Trace a team's run: hovering it lights its row in every round and dims the
+// rest, so its path through the buckets stands out.
+.swiss.sw-tracing .sw-match:not(:has(.sw-path)) {
+  opacity: 0.22;
+}
+
+.swiss.sw-tracing .sw-match:has(.sw-path) .sw-row:not(.sw-path) {
+  opacity: 0.35;
+}
+
+.sw-path {
+  background: rgba(127, 127, 127, 0.12);
 }
 
 .sw-team {

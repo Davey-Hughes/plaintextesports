@@ -1190,6 +1190,8 @@ fn SwissBracket(rounds: Vec<SwissRound>, tournament_id: i64) -> impl IntoView {
     }
     let sections = use_context::<RevealedSections>().map(|s| s.0);
     let (all_revealed, all_toggle) = section_reveal(format!("st:{tournament_id}"));
+    // The team whose path is being traced (hovered), keyed by name.
+    let hovered = RwSignal::new(String::new());
     let cols = rounds
         .into_iter()
         .map(|round| {
@@ -1274,9 +1276,20 @@ fn SwissBracket(rounds: Vec<SwissRound>, tournament_id: i64) -> impl IntoView {
                                     }
                                     .into_any();
                                 }
-                                let row = |is_win: bool, name: String, score: Option<i32>, rec: String| {
+                                let row = move |is_win: bool, name: String, score: Option<i32>, rec: String| {
+                                    let base = if is_win { "sw-row win" } else { "sw-row lose" };
+                                    // Hovering a team lights its row in every round
+                                    // (and dims the rest), so you can trace its run.
+                                    let (n_class, n_enter) = (name.clone(), name.clone());
                                     view! {
-                                        <div class=if is_win { "sw-row win" } else { "sw-row lose" }>
+                                        <div
+                                            class=base
+                                            class:sw-path=move || {
+                                                hovered.with(|h| !h.is_empty() && *h == n_class)
+                                            }
+                                            on:mouseenter=move |_| hovered.set(n_enter.clone())
+                                            on:mouseleave=move |_| hovered.set(String::new())
+                                        >
                                             {team_link(name)}
                                             <span class="sw-score">
                                                 {score.map(|s| s.to_string()).unwrap_or_default()}
@@ -1327,7 +1340,9 @@ fn SwissBracket(rounds: Vec<SwissRound>, tournament_id: i64) -> impl IntoView {
                 {move || (!all_revealed.get()).then(|| view! { <span class="section-hint">"hidden"</span> })}
             </div>
             <div class="swiss-scroll">
-                <div class="swiss">{cols}</div>
+                <div class="swiss" class:sw-tracing=move || hovered.with(|h| !h.is_empty())>
+                    {cols}
+                </div>
             </div>
         </section>
     }
