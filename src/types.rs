@@ -173,6 +173,9 @@ pub struct SiteLink {
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SiteInfo {
     pub copyright: Option<String>,
+    /// When set, the copyright line links to this URL.
+    #[serde(default)]
+    pub copyright_url: Option<String>,
     pub links: Vec<SiteLink>,
 }
 

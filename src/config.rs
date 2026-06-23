@@ -40,6 +40,8 @@ struct VapidFile {
 #[derive(Debug, Default, Deserialize)]
 struct SiteFile {
     copyright: Option<String>,
+    /// Optional URL — when set, the copyright line links to it.
+    copyright_url: Option<String>,
     #[serde(default)]
     links: Vec<SiteLink>,
 }
@@ -115,6 +117,8 @@ pub struct Config {
     pub vapid_subject: String,
     /// Footer copyright line (optional).
     pub copyright: Option<String>,
+    /// Optional URL the copyright line links to (otherwise plain text).
+    pub copyright_url: Option<String>,
     /// Footer links (GitHub, social, …).
     pub links: Vec<SiteLink>,
 }
@@ -179,6 +183,7 @@ impl Config {
         // Site/footer settings aren't string-flat, so apply them directly.
         if let Some(site) = file.site {
             cfg.copyright = site.copyright;
+            cfg.copyright_url = site.copyright_url;
             cfg.links = site.links;
         }
         cfg
@@ -268,6 +273,7 @@ impl Config {
             vapid_private,
             vapid_subject,
             copyright: None,
+            copyright_url: None,
             links: Vec::new(),
         }
     }
