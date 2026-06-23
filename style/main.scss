@@ -1014,7 +1014,9 @@ a {
 .swiss {
   display: flex;
   gap: 0.55rem;
-  align-items: flex-start;
+  // Stretch every column to the tallest so the shorter later rounds can centre
+  // their buckets instead of hanging from the top.
+  align-items: stretch;
   min-width: min-content;
 }
 
@@ -1033,14 +1035,30 @@ a {
   margin-bottom: 0.3rem;
 }
 
+// Each record bucket is a clearly-labelled group (that's how Swiss reads —
+// teams paired by their W-L), set off from the next by a generous gap.
 .sw-record {
-  font-size: 9px;
+  font-size: 10px;
   color: var(--muted);
-  margin-bottom: 0.15rem;
+  letter-spacing: 0.03em;
+  margin-bottom: 0.25rem;
+  padding-left: 0.1rem;
 }
 
 .sw-bucket + .sw-bucket {
-  margin-top: 0.5rem;
+  margin-top: 0.9rem;
+}
+
+// Centre the bucket group vertically under the header (auto margins split the
+// slack above the first bucket and below the last), so fewer-match rounds sit
+// balanced in the middle rather than top-aligned. Pure CSS — no wrapper node,
+// which would break hydration.
+.sw-col-head + .sw-bucket {
+  margin-top: auto;
+}
+
+.sw-bucket:last-child {
+  margin-bottom: auto;
 }
 
 .sw-match {
