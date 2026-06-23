@@ -6,7 +6,7 @@
 //! they never touch the network. When no API token is configured we populate a
 //! demo fixture (relative to "now") so the UI is always usable.
 
-use crate::config::Config;
+use crate::config::config;
 use crate::pandascore::{fetch_game, FetchResult, NormTeam, NormalizedMatch};
 use crate::types::{
     event_name_eq, BracketMatch, BracketRound, DayGroup, EventInfo, Game, LeagueGroup, MatchStatus,
@@ -82,7 +82,7 @@ static HTTP: Lazy<reqwest::Client> = Lazy::new(|| {
 /// serves data immediately), then either polls PandaScore or, with no token,
 /// falls back to demo data.
 pub fn spawn_poller() {
-    let cfg = Config::from_env();
+    let cfg = config();
 
     // DEMO mode: serve fixture data regardless of token/DB (and don't poll).
     if cfg.demo {
@@ -821,7 +821,7 @@ fn resolve_tz(name: &str, default: Tz) -> Tz {
 /// Homepage: live matches pinned, then the next `upcoming_days` grouped by day.
 #[must_use]
 pub fn homepage_view(game_filter: &str, tz_name: &str, hour24: bool) -> ScheduleView {
-    let cfg = Config::from_env();
+    let cfg = config();
     let tz = resolve_tz(tz_name, cfg.tz);
     let game = Game::from_filter(game_filter);
     let now = Utc::now();
@@ -848,7 +848,7 @@ pub fn homepage_view(game_filter: &str, tz_name: &str, hour24: bool) -> Schedule
 /// Single-day view with prev/next navigation.
 #[must_use]
 pub fn day_view(date: &str, game_filter: &str, tz_name: &str, hour24: bool) -> ScheduleView {
-    let cfg = Config::from_env();
+    let cfg = config();
     let tz = resolve_tz(tz_name, cfg.tz);
     let game = Game::from_filter(game_filter);
     let now = Utc::now();
@@ -890,7 +890,7 @@ pub fn range_view(
     tz_name: &str,
     hour24: bool,
 ) -> ScheduleView {
-    let cfg = Config::from_env();
+    let cfg = config();
     let tz = resolve_tz(tz_name, cfg.tz);
     let game = Game::from_filter(game_filter);
     let now = Utc::now();
@@ -924,7 +924,7 @@ pub fn range_view(
 /// Backs the internal event page.
 #[must_use]
 pub fn event_view(event: &str, tz_name: &str, hour24: bool) -> ScheduleView {
-    let cfg = Config::from_env();
+    let cfg = config();
     let tz = resolve_tz(tz_name, cfg.tz);
     let now = Utc::now();
 
@@ -986,7 +986,7 @@ fn reminder_seed(m: &NormalizedMatch, lead_ms: i64, tz: &Tz) -> ReminderSeed {
 /// "game" (value = "cs2"/"lol") or "league" (value = league name).
 #[must_use]
 pub fn scope_reminder_seeds(kind: &str, value: &str, lead_ms: i64) -> Vec<ReminderSeed> {
-    let cfg = Config::from_env();
+    let cfg = config();
     let now = Utc::now();
     let snap = SNAPSHOT.read().unwrap_or_else(PoisonError::into_inner);
     snap.matches
@@ -1006,7 +1006,7 @@ pub fn scope_reminder_seeds(kind: &str, value: &str, lead_ms: i64) -> Vec<Remind
 /// notification's time/title/body/url for a starred match.
 #[must_use]
 pub fn reminder_seed_for_match(match_id: i64, lead_ms: i64) -> Option<ReminderSeed> {
-    let cfg = Config::from_env();
+    let cfg = config();
     let now = Utc::now();
     let snap = SNAPSHOT.read().unwrap_or_else(PoisonError::into_inner);
     snap.matches
@@ -1025,7 +1025,7 @@ pub fn match_basics(
     tz_name: &str,
     hour24: bool,
 ) -> Option<(MatchView, Vec<StreamView>, Option<i64>, String)> {
-    let cfg = Config::from_env();
+    let cfg = config();
     let tz = resolve_tz(tz_name, cfg.tz);
     let now = Utc::now();
     let snap = SNAPSHOT.read().unwrap_or_else(PoisonError::into_inner);
@@ -1107,7 +1107,7 @@ pub async fn event_info(tournament_id: i64, game: Game) -> EventInfo {
     }
     // `game` (for game-appropriate standings labels) is passed in by the caller,
     // which already scanned the snapshot to find this stage.
-    let Some(token) = Config::from_env().token.clone() else {
+    let Some(token) = config().token.clone() else {
         // No token (demo / unconfigured): serve whatever's seeded, else nothing.
         return EVENTS
             .read()
