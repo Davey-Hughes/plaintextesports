@@ -6,7 +6,10 @@
 //! `/lol/`. Docs: https://developers.pandascore.co
 
 use crate::tiering::{is_tier_one, TierInput};
-use crate::types::{BracketMatch, BracketRound, Game, MatchStatus, StandingRow, StreamView};
+use crate::types::{
+    BracketMatch, BracketRound, Game, MatchStatus, StandingRow, StreamView, SwissBucket,
+    SwissMatch, SwissRound,
+};
 use chrono::{DateTime, Utc};
 use serde::Deserialize;
 use std::collections::HashMap;
@@ -641,12 +644,14 @@ struct RawPrevMatch {
     match_id: Option<i64>,
 }
 
-/// Fetch a tournament's bracket and reconstruct it as ordered rounds (columns).
+/// Fetch a tournament's bracket and reconstruct it: an elimination tree
+/// (`rounds`) for a playoff, or a Swiss buchholz grid (`swiss`) for a "Round N"
+/// group stage. At most one is non-empty.
 pub async fn fetch_bracket(
     client: &reqwest::Client,
     token: &str,
     tournament_id: i64,
-) -> Result<Vec<BracketRound>, DynError> {
+) -> Result<(Vec<BracketRound>, Vec<SwissRound>), DynError> {
     let url = format!("{BASE_URL}/tournaments/{tournament_id}/brackets");
     let body = client
         .get(&url)
@@ -657,7 +662,132 @@ pub async fn fetch_bracket(
         .text()
         .await?;
     let raw: Vec<RawBracketMatch> = serde_json::from_str(&body)?;
-    Ok(build_rounds(&raw))
+    Ok((build_rounds(&raw), build_swiss(&raw)))
+}
+
+/// Reconstruct a Swiss stage from its flat match list. Each match name carries
+/// its round ("Round N: A vs B"); replaying the rounds in order recovers every
+/// team's running record, which buckets the matches (the 2-0 teams play each
+/// other, etc.) and marks who advanced (hit the win target) or was eliminated
+/// (hit the loss limit). Returns empty when the matches aren't "Round N"-named
+/// (e.g. a playoff), so a non-Swiss stage falls through to the tree/standings.
+fn build_swiss(raw: &[RawBracketMatch]) -> Vec<SwissRound> {
+    // Parse the round number out of each name; bail unless every match has one.
+    let mut by_round: std::collections::BTreeMap<u32, Vec<&RawBracketMatch>> =
+        std::collections::BTreeMap::new();
+    for m in raw {
+        let Some(round) = m.name.as_deref().and_then(parse_round) else {
+            return Vec::new();
+        };
+        by_round.entry(round).or_default().push(m);
+    }
+    if by_round.is_empty() {
+        return Vec::new();
+    }
+    // The win target / loss limit: a Swiss stage runs until a record reaches N
+    // (3 for a first-to-3). Infer it from the deepest record seen + 1 isn't
+    // reliable, so derive it as ceil(rounds / 2)+? — simplest: it's the max
+    // wins or losses any team finishes with. Compute after replay; meanwhile use
+    // a generous cap and mark outcomes by "no further matches" too.
+    let mut records: HashMap<i64, (i32, i32)> = HashMap::new();
+    let mut labels: HashMap<i64, String> = HashMap::new();
+    let target = win_target(by_round.len());
+    let mut out = Vec::with_capacity(by_round.len());
+    for (number, matches) in by_round {
+        // Bucket the round's matches by the (shared) entering record, computing
+        // each result and the advance/eliminate outcome from the pre-round
+        // record (so later matches in the round still see the pre-round state).
+        let mut buckets: std::collections::BTreeMap<(i32, i32), Vec<SwissMatch>> =
+            std::collections::BTreeMap::new();
+        let mut updates: Vec<(i64, bool)> = Vec::new();
+        for m in matches {
+            let (label_a, id_a) = team_label(m.opponents.first().and_then(|o| o.opponent.as_ref()));
+            let (label_b, id_b) = team_label(m.opponents.get(1).and_then(|o| o.opponent.as_ref()));
+            if let (Some(a), Some(b)) = (id_a, id_b) {
+                labels.entry(a).or_insert_with(|| label_a.clone());
+                labels.entry(b).or_insert_with(|| label_b.clone());
+            }
+            let (pw, pl) = id_a.and_then(|a| records.get(&a).copied()).unwrap_or((0, 0));
+            let winner = match m.winner_id {
+                w if w.is_some() && w == id_a => "a",
+                w if w.is_some() && w == id_b => "b",
+                _ => "",
+            };
+            // The winner reaching the target advances; the loser reaching the
+            // limit is eliminated.
+            let (mut a_out, mut b_out) = (String::new(), String::new());
+            match winner {
+                "a" => {
+                    if pw + 1 >= target {
+                        a_out = "advanced".into();
+                    }
+                    if pl + 1 >= target {
+                        b_out = "eliminated".into();
+                    }
+                    updates.push((id_a.unwrap_or(0), true));
+                    updates.push((id_b.unwrap_or(0), false));
+                }
+                "b" => {
+                    if pw + 1 >= target {
+                        b_out = "advanced".into();
+                    }
+                    if pl + 1 >= target {
+                        a_out = "eliminated".into();
+                    }
+                    updates.push((id_b.unwrap_or(0), true));
+                    updates.push((id_a.unwrap_or(0), false));
+                }
+                _ => {}
+            }
+            buckets.entry((pw, pl)).or_default().push(SwissMatch {
+                team_a: label_a,
+                team_b: label_b,
+                score_a: score_for(&m.results, id_a).map(|s| s as i32),
+                score_b: score_for(&m.results, id_b).map(|s| s as i32),
+                winner: winner.to_string(),
+                match_id: m.id,
+                a_outcome: a_out,
+                b_outcome: b_out,
+            });
+        }
+        for (id, won) in updates {
+            let e = records.entry(id).or_insert((0, 0));
+            if won {
+                e.0 += 1;
+            } else {
+                e.1 += 1;
+            }
+        }
+        // Buckets ordered most-wins-first (then fewest-losses), like the grid.
+        let mut bucket_vec: Vec<((i32, i32), Vec<SwissMatch>)> = buckets.into_iter().collect();
+        bucket_vec.sort_by_key(|&((w, l), _)| (-w, l));
+        out.push(SwissRound {
+            number,
+            buckets: bucket_vec
+                .into_iter()
+                .map(|((w, l), matches)| SwissBucket {
+                    record: format!("{w}-{l}"),
+                    matches,
+                })
+                .collect(),
+        });
+    }
+    out
+}
+
+/// Parse the round number from a Swiss match name like "Round 5: NRG vs BIG".
+fn parse_round(name: &str) -> Option<u32> {
+    name.strip_prefix("Round ")?
+        .split([':', ' '])
+        .next()?
+        .parse()
+        .ok()
+}
+
+/// The win/loss target for a Swiss stage with `rounds` rounds: a first-to-N
+/// Swiss runs 2N-1 rounds, so N = (rounds + 1) / 2 (3 for the usual 5 rounds).
+fn win_target(rounds: usize) -> i32 {
+    ((rounds as i32) + 1) / 2
 }
 
 /// Depth of a bracket match = rounds of feeders beneath it (0 for first-round
@@ -995,5 +1125,45 @@ mod tests {
         // the quarterfinal column so each semifinal sits between its feeders.
         let qf_a: Vec<&str> = rounds[0].matches.iter().map(|m| m.team_a.as_str()).collect();
         assert_eq!(qf_a, vec!["C1", "D1", "A1", "B1"]);
+    }
+
+    #[test]
+    fn build_swiss_buckets_and_outcomes() {
+        // A 4-team, first-to-2 Swiss: rounds parse from names, records replay
+        // into buckets, and 2-0 / 0-2 trigger advance / eliminate.
+        let g = |id: i64, name: &str, a: (i64, &str), b: (i64, &str), wa: i64, wb: i64, win: i64| {
+            format!(
+                r#"{{"id":{id},"name":"{name}",
+                  "opponents":[{{"opponent":{{"id":{},"acronym":"{}"}}}},
+                               {{"opponent":{{"id":{},"acronym":"{}"}}}}],
+                  "results":[{{"team_id":{},"score":{wa}}},{{"team_id":{},"score":{wb}}}],
+                  "winner_id":{win}}}"#,
+                a.0, a.1, b.0, b.1, a.0, b.0
+            )
+        };
+        let json = format!(
+            "[{}]",
+            [
+                g(1, "Round 1: A vs B", (1, "A"), (2, "B"), 1, 0, 1),
+                g(2, "Round 1: C vs D", (3, "C"), (4, "D"), 1, 0, 3),
+                g(3, "Round 2: A vs C", (1, "A"), (3, "C"), 1, 0, 1),
+                g(4, "Round 2: B vs D", (2, "B"), (4, "D"), 1, 0, 2),
+                g(5, "Round 3: C vs B", (3, "C"), (2, "B"), 1, 0, 3),
+            ]
+            .join(",")
+        );
+        let raw: Vec<RawBracketMatch> = serde_json::from_str(&json).expect("valid json");
+        let swiss = build_swiss(&raw);
+        assert_eq!(swiss.len(), 3, "three rounds");
+        let recs = |r: &SwissRound| r.buckets.iter().map(|b| b.record.clone()).collect::<Vec<_>>();
+        assert_eq!(recs(&swiss[0]), vec!["0-0"]);
+        assert_eq!(recs(&swiss[1]), vec!["1-0", "0-1"]); // most wins first
+        assert_eq!(recs(&swiss[2]), vec!["1-1"]);
+        // Round 2: A wins the 1-0 bucket → advances; D loses the 0-1 bucket → out.
+        assert_eq!(swiss[1].buckets[0].matches[0].a_outcome, "advanced");
+        assert_eq!(swiss[1].buckets[1].matches[0].b_outcome, "eliminated");
+        // Round 3 decides the last spots: C advances, B is eliminated.
+        assert_eq!(swiss[2].buckets[0].matches[0].a_outcome, "advanced");
+        assert_eq!(swiss[2].buckets[0].matches[0].b_outcome, "eliminated");
     }
 }

@@ -10,6 +10,8 @@
   --link: #7aa2f7;
   --card-bg: #131313;
   --win: #ffffff;
+  --adv: #3fb950; // advanced (Swiss grid)
+  --elim: #f85149; // eliminated
 
   // League/event palette (tuned for the dark background).
   --c0: #e06c75;
@@ -33,6 +35,8 @@
   --link: #2a4fb0;
   --card-bg: #ffffff;
   --win: #000000;
+  --adv: #1a7f37;
+  --elim: #cf222e;
 
   // League/event palette (darker, for the light background).
   --c0: #c0392b;
@@ -958,6 +962,133 @@ a {
   margin: 0 0 0.4rem;
   padding-bottom: 0.2rem;
   border-bottom: 1px dashed var(--border);
+}
+
+// The stage heading shares its line with the Swiss grid/list toggle.
+.stage-bar {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.5rem;
+
+  .stage-head {
+    margin-bottom: 0;
+    border-bottom: none;
+  }
+}
+
+.swiss-tabs {
+  display: flex;
+  gap: 0.25rem;
+}
+
+.swiss-tab {
+  background: none;
+  border: 1px solid var(--border);
+  color: var(--muted);
+  font: inherit;
+  font-size: 11px;
+  padding: 0.05rem 0.4rem;
+  cursor: pointer;
+
+  &:hover {
+    color: var(--fg);
+  }
+
+  &.active {
+    color: var(--fg);
+    border-color: var(--muted);
+  }
+}
+
+// Swiss / "first to N" stage as a buchholz grid: a column per round, each round
+// a stack of record buckets. Scrolls horizontally if it outgrows the column.
+.swiss-scroll {
+  overflow-x: auto;
+  padding-bottom: 0.3rem;
+}
+
+.swiss {
+  display: flex;
+  gap: 0.55rem;
+  align-items: flex-start;
+  min-width: min-content;
+}
+
+.sw-col {
+  display: flex;
+  flex-direction: column;
+  flex: 0 0 auto;
+}
+
+.sw-col-head {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--muted);
+  text-align: center;
+  margin-bottom: 0.3rem;
+}
+
+.sw-record {
+  font-size: 9px;
+  color: var(--muted);
+  margin-bottom: 0.15rem;
+}
+
+.sw-bucket + .sw-bucket {
+  margin-top: 0.5rem;
+}
+
+.sw-match {
+  border: 1px solid var(--border);
+  background: var(--card-bg);
+  margin-bottom: 0.3rem;
+}
+
+.sw-row {
+  display: flex;
+  align-items: baseline;
+  gap: 0.25rem;
+  padding: 0.08rem 0.35rem;
+  font-size: 12px;
+  white-space: nowrap;
+
+  & + & {
+    border-top: 1px solid var(--border);
+  }
+
+  &.win .sw-team {
+    font-weight: 700;
+  }
+
+  &.adv .sw-team,
+  &.adv .sw-mark {
+    color: var(--adv);
+  }
+
+  &.elim .sw-team,
+  &.elim .sw-mark {
+    color: var(--elim);
+  }
+
+  &.sw-hidden .sw-team {
+    color: var(--muted);
+  }
+}
+
+.sw-mark {
+  width: 0.7rem;
+  font-size: 10px;
+}
+
+.sw-team {
+  flex: 1;
+  padding-right: 0.5rem;
+}
+
+.sw-score {
+  color: var(--muted);
 }
 
 .section-head {

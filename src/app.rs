@@ -4,7 +4,7 @@ use crate::server::{
 };
 use crate::types::{
     full_event_name, BracketMatch, BracketRound, DayGroup, EventInfo, Game, MatchDetail,
-    MatchStatus, MatchView, ScheduleView, StandingRow, StreamView,
+    MatchStatus, MatchView, ScheduleView, StandingRow, StreamView, SwissMatch, SwissRound,
 };
 use leptos::prelude::*;
 use std::collections::HashSet;
@@ -444,6 +444,9 @@ fn EventPage() -> impl IntoView {
     });
     setup_autorefresh(schedule);
     let push = use_context::<RwSignal<Option<String>>>().is_some_and(|v| v.get().is_some());
+    // Swiss stages can show as the buchholz grid (default) or the ranking list;
+    // one toggle drives every stage on the page.
+    let swiss_grid = RwSignal::new(true);
 
     // Render the whole page from inside one Suspense (awaiting both resources),
     // mirroring the match-detail page — so nothing reactive sits at the
@@ -499,14 +502,54 @@ fn EventPage() -> impl IntoView {
                         let extra = stage_list
                             .into_iter()
                             .map(|e| {
-                                let EventInfo { tournament_id, stage, game, standings, rounds, .. } = e;
+                                let EventInfo {
+                                    tournament_id, stage, game, standings, rounds, swiss, ..
+                                } = e;
                                 let bracket_only = standings.is_empty();
+                                let has_swiss = !swiss.is_empty();
                                 let label = (!stage.is_empty())
                                     .then(|| view! { <h2 class="stage-head">{stage}</h2> });
+                                // A Swiss stage gets a grid/list toggle; otherwise
+                                // just the standings (+ any playoff bracket).
+                                let tabs = has_swiss.then(|| {
+                                    view! {
+                                        <div class="swiss-tabs">
+                                            <button
+                                                class="swiss-tab"
+                                                class:active=move || swiss_grid.get()
+                                                on:click=move |_| swiss_grid.set(true)
+                                            >
+                                                "bracket"
+                                            </button>
+                                            <button
+                                                class="swiss-tab"
+                                                class:active=move || !swiss_grid.get()
+                                                on:click=move |_| swiss_grid.set(false)
+                                            >
+                                                "list"
+                                            </button>
+                                        </div>
+                                    }
+                                });
+                                let body = move || {
+                                    if has_swiss && swiss_grid.get() {
+                                        view! { <SwissBracket rounds=swiss.clone() tournament_id /> }
+                                            .into_any()
+                                    } else {
+                                        view! {
+                                            <StandingsTable
+                                                rows=standings.clone()
+                                                tournament_id
+                                                game
+                                            />
+                                        }
+                                        .into_any()
+                                    }
+                                };
                                 view! {
                                     <div class="event-extra">
-                                        {label}
-                                        <StandingsTable rows=standings tournament_id game />
+                                        <div class="stage-bar">{label} {tabs}</div>
+                                        {body}
                                         <Bracket rounds=rounds tournament_id bracket_only times=times.clone() />
                                     </div>
                                 }
@@ -1107,6 +1150,128 @@ fn fmt_date_range(keys: &[String]) -> String {
     } else {
         format!("{} – {}", fmt_day_short(first), fmt_day_short(last))
     }
+}
+
+/// A Swiss / "first to N" stage drawn as a buchholz grid: a column per round,
+/// each round's matches grouped into record buckets (2-0, 1-1, 0-2, …), with
+/// advances (green) and eliminations (red) marked. Shares its reveal state with
+/// the stage's standings table so toggling either view stays in sync.
+#[component]
+fn SwissBracket(rounds: Vec<SwissRound>, tournament_id: i64) -> impl IntoView {
+    if rounds.is_empty() {
+        return ().into_any();
+    }
+    let (revealed, toggle) = section_reveal(format!("st:{tournament_id}"));
+    let cols = rounds
+        .into_iter()
+        .map(|round| {
+            let head = format!("Round {}", round.number);
+            let buckets = round
+                .buckets
+                .into_iter()
+                .map(|bucket| {
+                    let record = bucket.record;
+                    let matches = bucket
+                        .matches
+                        .into_iter()
+                        .map(|m| {
+                            let SwissMatch {
+                                team_a,
+                                team_b,
+                                score_a,
+                                score_b,
+                                winner,
+                                a_outcome,
+                                b_outcome,
+                                ..
+                            } = m;
+                            // Re-rendered when the reveal toggles: hidden shows a
+                            // skeleton, revealed shows teams + scores + outcome.
+                            let body = move || {
+                                if !revealed.get() {
+                                    return view! {
+                                        <div class="sw-row sw-hidden">
+                                            <span class="sw-team">"—"</span>
+                                        </div>
+                                        <div class="sw-row sw-hidden">
+                                            <span class="sw-team">"—"</span>
+                                        </div>
+                                    }
+                                    .into_any();
+                                }
+                                let row_cls = |win: bool, outcome: &str| {
+                                    let mut c = String::from("sw-row");
+                                    if win {
+                                        c.push_str(" win");
+                                    }
+                                    match outcome {
+                                        "advanced" => c.push_str(" adv"),
+                                        "eliminated" => c.push_str(" elim"),
+                                        _ => {}
+                                    }
+                                    c
+                                };
+                                let mark = |outcome: &str| match outcome {
+                                    "advanced" => "✓",
+                                    "eliminated" => "✗",
+                                    _ => "",
+                                };
+                                view! {
+                                    <div class=row_cls(winner == "a", &a_outcome)>
+                                        <span class="sw-mark">{mark(&a_outcome)}</span>
+                                        <span class="sw-team">{team_a.clone()}</span>
+                                        <span class="sw-score">
+                                            {score_a.map(|s| s.to_string()).unwrap_or_default()}
+                                        </span>
+                                    </div>
+                                    <div class=row_cls(winner == "b", &b_outcome)>
+                                        <span class="sw-mark">{mark(&b_outcome)}</span>
+                                        <span class="sw-team">{team_b.clone()}</span>
+                                        <span class="sw-score">
+                                            {score_b.map(|s| s.to_string()).unwrap_or_default()}
+                                        </span>
+                                    </div>
+                                }
+                                .into_any()
+                            };
+                            view! { <div class="sw-match">{body}</div> }
+                        })
+                        .collect_view();
+                    view! {
+                        <div class="sw-bucket">
+                            <div class="sw-record">{record}</div>
+                            {matches}
+                        </div>
+                    }
+                })
+                .collect_view();
+            view! {
+                <div class="sw-col">
+                    <div class="sw-col-head">{head}</div>
+                    {buckets}
+                </div>
+            }
+        })
+        .collect_view();
+    view! {
+        <section class="detail-section">
+            <div class="section-head">
+                <button
+                    class="section-title section-toggle"
+                    class:on=move || revealed.get()
+                    title=move || if revealed.get() { "Hide the bracket" } else { "Show the bracket" }
+                    on:click=toggle
+                >
+                    "Bracket"
+                </button>
+                {move || (!revealed.get()).then(|| view! { <span class="section-hint">"hidden"</span> })}
+            </div>
+            <div class="swiss-scroll">
+                <div class="swiss">{cols}</div>
+            </div>
+        </section>
+    }
+    .into_any()
 }
 
 #[component]
