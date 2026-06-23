@@ -1,3 +1,4 @@
+use crate::bracket;
 use crate::server::{
     get_day, get_event_schedule, get_event_stages, get_event_stages_by_league, get_match_detail,
     get_range, get_schedule, get_site,
@@ -1667,6 +1668,16 @@ fn Bracket(
     let sections = use_context::<RevealedSections>().map(|s| s.0);
     let tid = tournament_id;
 
+    // Position every match from the feeder graph; the render places boxes
+    // absolutely at these slots and draws an SVG connector per edge. Slot units →
+    // em: `HEAD_EM` reserves top room for the section label + round title.
+    let layout = bracket::layout(&rounds);
+    const HEAD_EM: f64 = 6.0;
+    const TITLE_EM: f64 = 2.6;
+    const LABEL_EM: f64 = 1.6;
+    let half_h = bracket::BOX_H_EM / 2.0;
+    let center_em = move |y: f64| y * bracket::ROW_EM + HEAD_EM;
+
     // Build the reveal grid (keys/max/feeders, for stage computation + clicks)
     // and the parallel render data, once. `winners` holds each match's advancing
     // team so a fed match can show a single feeder's winner before its other
@@ -1729,10 +1740,20 @@ fn Bracket(
         }
     };
 
-    let cols = render
+    let positions = &layout.positions;
+    let group_rows = &layout.group_rows;
+    // Each round (column) contributes a positioned title header plus its boxes,
+    // all absolutely placed in one canvas (no flex columns).
+    let nodes = render
         .into_iter()
         .enumerate()
         .map(|(r, (section, title, sres))| {
+            let x_em = positions[r].first().map_or(0, |p| p.col) as f64 * bracket::COL_EM;
+            let sec_ymin = group_rows
+                .iter()
+                .find(|(s, _, _)| s == &section)
+                .map_or(0.0, |(_, lo, _)| *lo);
+            let title_top = center_em(sec_ymin) - half_h - TITLE_EM;
             let round_on = move || eff.with(|e| e.get(r).is_some_and(|row| row.iter().any(|&s| s >= 1)));
             // The round's date span, from its matches' schedule days.
             let round_date = {
@@ -1744,6 +1765,20 @@ fn Bracket(
                 keys.dedup();
                 fmt_date_range(&keys)
             };
+            let header = view! {
+                <div class="bk-round-title" style=format!("left:{x_em}em;top:{title_top}em")>
+                    <button
+                        class="bk-round-toggle"
+                        class:on=round_on
+                        title="Reveal this round"
+                        on:click=move |_| do_op(BkOp::Round(r))
+                    >
+                        {title}
+                    </button>
+                    {(!round_date.is_empty())
+                        .then(|| view! { <span class="bk-round-date">{round_date}</span> })}
+                </div>
+            };
             let ms = sres
                 .into_iter()
                 .map(|s| {
@@ -1752,6 +1787,7 @@ fn Bracket(
                     let (sa, sb) = (s.sa, s.sb);
                     let winner = s.winner;
                     let mid = s.mid;
+                    let top_em = center_em(positions[r][i].y) - half_h;
                     let match_title = if max == 0 { "Not decided yet" } else { "Reveal this match" };
                     // Box tooltip shows the match time when known (the schedule is
                     // on the page), else the reveal hint.
@@ -1830,10 +1866,14 @@ fn Bracket(
                         f.is_some_and(|(fr, fi)| eff.with(|e| e[fr][fi] >= 2))
                     };
                     view! {
-                        // The slice fills the column for connector alignment, but
-                        // only the visible box is the click target (the tall slice
-                        // around it isn't), so the hit area matches what's drawn.
-                        <div class="bk-match" class:bk-locked=max == 0>
+                        // The box is absolutely placed at its computed slot; only
+                        // the visible box is the click target (the SVG connectors
+                        // behind it are `pointer-events:none`).
+                        <div
+                            class="bk-match"
+                            class:bk-locked=max == 0
+                            style=format!("left:{x_em}em;top:{top_em}em")
+                        >
                             <div
                                 class="bk-box"
                                 role="button"
@@ -1957,77 +1997,69 @@ fn Bracket(
                     }
                 })
                 .collect_view();
-            let col = view! {
-                <div class="bk-round">
-                    <div class="bk-round-title">
-                        <button
-                            class="bk-round-toggle"
-                            class:on=round_on
-                            title="Reveal this round"
-                            on:click=move |_| do_op(BkOp::Round(r))
-                        >
-                            {title}
-                        </button>
-                        {(!round_date.is_empty())
-                            .then(|| view! { <span class="bk-round-date">{round_date}</span> })}
-                    </div>
-                    <div class="bk-matches">{ms}</div>
-                </div>
-            };
-            (section, col.into_any())
-        })
-        .collect::<Vec<(String, AnyView)>>();
-
-    // Group consecutive columns by their section so a double-elimination bracket
-    // renders as a labelled upper bracket, then lower bracket, then grand final —
-    // instead of one linear column run. A single-elim bracket has one "" group.
-    let mut groups: Vec<(String, Vec<AnyView>)> = Vec::new();
-    for (section, col) in cols {
-        match groups.last_mut() {
-            Some((s, items)) if *s == section => items.push(col),
-            _ => groups.push((section, vec![col])),
-        }
-    }
-    let single = groups.len() == 1 && groups[0].0.is_empty();
-    let body = if single {
-        let cols = groups.into_iter().next().map(|g| g.1).unwrap_or_default();
-        view! { <div class="bracket">{cols}</div> }.into_any()
-    } else {
-        // Double-elimination: winner's bracket and loser's bracket stack on the
-        // left as their own trees; the grand final sits to the right, centred
-        // between them (like a printed double-elim bracket).
-        let group_view = |section: &str, cols: Vec<AnyView>| {
-            let label = match section {
-                "upper" => "Winner's Bracket",
-                "lower" => "Loser's Bracket",
-                "final" => "Grand Final",
-                _ => "",
-            };
             view! {
-                <div class="bk-bracket-group">
-                    {(!label.is_empty())
-                        .then(|| view! { <div class="bk-group-label">{label}</div> })}
-                    <div class="bracket">{cols}</div>
-                </div>
+                {header}
+                {ms}
             }
-        };
-        let mut left: Vec<AnyView> = Vec::new();
-        let mut grand: Option<AnyView> = None;
-        for (section, cols) in groups {
-            if section == "final" {
-                grand = Some(group_view(&section, cols).into_any());
-            } else {
-                left.push(group_view(&section, cols).into_any());
-            }
-        }
-        view! {
-            <div class="bracket-de">
-                <div class="bk-de-left">{left}</div>
-                {grand}
+            .into_any()
+        })
+        .collect::<Vec<AnyView>>();
+
+    // Connector overlay: one elbow path per feeder edge, drawn behind the boxes in
+    // the same em coordinate space, so it stays attached at any shape or zoom.
+    let w_em = layout.cols as f64 * bracket::COL_EM;
+    let h_em = positions
+        .iter()
+        .flatten()
+        .map(|p| center_em(p.y) + half_h)
+        .fold(0.0_f64, f64::max)
+        + 0.4;
+    let paths = layout
+        .edges
+        .iter()
+        .map(|e| {
+            let (fr, fi) = e.from;
+            let (tr, ti) = e.to;
+            let x1 = positions[fr][fi].col as f64 * bracket::COL_EM + bracket::BOX_W_EM;
+            let y1 = center_em(positions[fr][fi].y);
+            let x2 = positions[tr][ti].col as f64 * bracket::COL_EM;
+            let y2 = center_em(positions[tr][ti].y);
+            let xm = (x1 + x2) / 2.0;
+            view! { <path d=format!("M {x1:.2} {y1:.2} H {xm:.2} V {y2:.2} H {x2:.2}") /> }
+        })
+        .collect_view();
+
+    // Section labels for double-elim (Winner's / Loser's / Grand Final).
+    let multi = group_rows.len() > 1 || group_rows.first().is_some_and(|(s, _, _)| !s.is_empty());
+    let labels = multi.then(|| {
+        group_rows
+            .iter()
+            .filter_map(|(sec, lo, _)| {
+                // The grand final's own round title labels it; a full-width banner
+                // would cut across the brackets it sits between.
+                let label = match sec.as_str() {
+                    "upper" => "Winner's Bracket",
+                    "lower" => "Loser's Bracket",
+                    _ => return None,
+                };
+                let top = center_em(*lo) - half_h - TITLE_EM - LABEL_EM;
+                Some(view! { <div class="bk-group-label" style=format!("top:{top}em")>{label}</div> })
+            })
+            .collect_view()
+    });
+
+    let body = view! {
+        <div class="bracket-scroll">
+            <div class="bracket" style=format!("width:{w_em:.2}em;height:{h_em:.2}em")>
+                <svg class="bk-connectors" viewBox=format!("0 0 {w_em:.2} {h_em:.2}")>
+                    {paths}
+                </svg>
+                {labels}
+                {nodes}
             </div>
-        }
-        .into_any()
-    };
+        </div>
+    }
+    .into_any();
 
     // The "Bracket" title cascades the whole bracket: each click advances the
     // earliest revealable round (names → scores), unlocking the next round's

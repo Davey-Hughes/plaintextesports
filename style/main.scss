@@ -1447,49 +1447,47 @@ a.sw-link {
 // Bracket: rounds as side-by-side columns; matches distributed with space-around
 // so each later round centers between its feeders, with horizontal connector
 // stubs between columns.
+// Horizontal-scroll wrapper around the fixed-width bracket canvas (wide brackets
+// scroll here, not the whole page).
+.bracket-scroll {
+  overflow-x: auto;
+  padding: 0.3rem 0;
+}
+
+// One canvas: every match box is absolutely positioned at its computed slot and
+// the connector lines are an SVG overlay, so they stay aligned at any bracket
+// shape or zoom. The em geometry here MUST match the BOX_W_EM / BOX_H_EM /
+// COL_EM / ROW_EM constants in `src/bracket.rs`.
 .bracket {
-  display: flex;
-  overflow-x: auto;
-  padding: 0.3rem 0;
-  font-size: 12px;
-}
-
-// Double-elimination layout: the winner's and loser's brackets stack on the
-// left (each its own tree); the grand final sits to the right, vertically
-// centred between them — like a printed double-elim bracket.
-.bracket-de {
-  display: flex;
-  align-items: center;
-  gap: 1.5rem;
-  overflow-x: auto;
-  padding: 0.3rem 0;
-}
-
-.bk-de-left {
   position: relative;
-  display: flex;
-  flex-direction: column;
-  gap: 1.2rem;
+  font-size: 12px;
+  --bk-box-w: 7.6em;
+  --bk-box-h: 3.3em;
 }
 
-// The inner brackets shouldn't scroll on their own — the outer wrapper does.
-.bracket-de .bracket {
-  overflow-x: visible;
-  padding: 0;
+// The connector overlay sits behind the boxes and never intercepts clicks; the
+// stroke stays a crisp device pixel regardless of the viewBox scaling.
+.bk-connectors {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+  pointer-events: none;
+
+  path {
+    fill: none;
+    stroke: var(--border);
+    stroke-width: 1px;
+    vector-effect: non-scaling-stroke;
+  }
 }
 
-// Right-align the winner's/loser's brackets so each one's final lands at the
-// same edge (next to the grand final), whatever the bracket's width — so the
-// grand-final connector works for any bracket size.
-.bk-de-left .bracket {
-  justify-content: flex-end;
-}
-
-.bk-bracket-group .bracket {
-  padding-top: 0;
-}
-
+// Section banner for double-elim (absolutely placed above each stacked bracket).
 .bk-group-label {
+  position: absolute;
+  left: 0;
+  right: 0;
   color: var(--muted);
   font-size: 11px;
   font-weight: 600;
@@ -1497,25 +1495,16 @@ a.sw-link {
   letter-spacing: 0.03em;
   border-bottom: 1px solid var(--border);
   padding-bottom: 0.15rem;
-  margin-bottom: 0.55rem;
 }
 
-.bk-round {
-  display: flex;
-  flex-direction: column;
-  flex: 0 0 auto;
-  // A fixed column width so every box is identical across rounds (the box fills
-  // the column minus its margins). The title is stacked, not inline, so a long
-  // round name + date can't widen one column and enlarge its boxes.
-  width: 9.5em;
-}
-
+// Round heading, absolutely placed above and centred over its column of boxes.
 .bk-round-title {
+  position: absolute;
+  width: var(--bk-box-w);
   display: flex;
   flex-direction: column;
   align-items: center;
   gap: 0.1rem;
-  margin-bottom: 0.3rem;
 }
 
 // The round's date span, beside the round title — muted and small so it reads
@@ -1549,27 +1538,19 @@ a.sw-link {
   }
 }
 
-.bk-matches {
-  display: flex;
-  flex-direction: column;
-  flex: 1;
-}
-
+// Absolutely placed at its computed slot (left/top come from an inline style).
 .bk-match {
-  position: relative;
-  // Each match fills an equal vertical slice of the column (content centred), so
-  // the connector lines below line up across rounds by percentage.
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  justify-content: center;
-  margin: 0.35rem 0.8rem;
+  position: absolute;
+  width: var(--bk-box-w);
 }
 
-// The visible match box; the slice around it carries the connector lines. The
-// box (not the whole slice) is the click target, so the hit area matches what's
-// drawn.
+// The visible match box; its fixed height makes a slot map to a known centre so
+// the SVG connectors meet it exactly. Two rows divide it evenly.
 .bk-box {
+  height: var(--bk-box-h);
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
   border: 1px solid var(--border);
   background: var(--card-bg);
   cursor: pointer;
@@ -1598,103 +1579,8 @@ a.bk-team-link {
   text-decoration: underline;
 }
 
-// Bracket connectors. A feeding match sends a line out to the gutter; the two
-// feeders of a pair also drop/raise a vertical line so they join before the next
-// round, where the fed match receives a flat line. A lone feeder (no pair) just
-// sends a flat line straight across.
-.bracket .bk-round:not(:last-child) .bk-match::after {
-  content: "";
-  position: absolute;
-  right: -0.8rem;
-  width: 0.8rem;
-}
-
-.bracket .bk-round:not(:last-child) .bk-match:nth-child(odd):not(:last-child)::after {
-  top: 50%;
-  bottom: -0.35rem;
-  border-top: 1px solid var(--border);
-  border-right: 1px solid var(--border);
-}
-
-.bracket .bk-round:not(:last-child) .bk-match:nth-child(even)::after {
-  top: -0.35rem;
-  bottom: 50%;
-  border-bottom: 1px solid var(--border);
-  border-right: 1px solid var(--border);
-}
-
-.bracket .bk-round:not(:last-child) .bk-match:nth-child(odd):last-child::after {
-  top: 50%;
-  border-top: 1px solid var(--border);
-}
-
-.bracket .bk-round:not(:first-child) .bk-match::before {
-  content: "";
-  position: absolute;
-  left: -0.8rem;
-  top: 50%;
-  width: 0.8rem;
-  border-top: 1px solid var(--border);
-}
-
-// Link the winner's-bracket final and loser's-bracket final to the grand final
-// along a rail in the gap (right of the section-title lines, so it never touches
-// them). The vertical is assembled from pieces anchored to the actual finals, so
-// it spans exactly final-to-final with no stray tail, plus a fixed bridge across
-// the gap+label between the two stacked brackets. Because the per-final pieces
-// follow each bracket's own height, it stays correct at any bracket size.
-.bk-bracket-group {
-  position: relative;
-}
-
-// Winner's final: flat stub to the rail + a line down to its column's bottom edge
-// (the -0.35rem reaches past the match's margin to the slice edge).
-.bk-de-left .bk-bracket-group:first-child .bracket .bk-round:last-child .bk-match::after {
-  content: "";
-  position: absolute;
-  right: -1.55rem;
-  width: 1.55rem;
-  top: 50%;
-  bottom: -0.35rem;
-  border-top: 1px solid var(--border);
-  border-right: 1px solid var(--border);
-}
-
-// Loser's final: flat stub to the rail + a line up to its column's top edge.
-.bk-de-left .bk-bracket-group:last-child .bracket .bk-round:last-child .bk-match::after {
-  content: "";
-  position: absolute;
-  right: -1.55rem;
-  width: 1.55rem;
-  top: -0.35rem;
-  bottom: 50%;
-  border-bottom: 1px solid var(--border);
-  border-right: 1px solid var(--border);
-}
-
-// Bridge the (fixed) gap + loser's label + loser's final-round title (the title
-// stacks the round name over its date, two lines) between the two brackets — a
-// constant distance, so it holds at any bracket size.
-.bk-de-left .bk-bracket-group:last-child::before {
-  content: "";
-  position: absolute;
-  right: -0.75rem;
-  top: -1.2rem;
-  height: 5.4rem;
-  border-left: 1px solid var(--border);
-}
-
-// Grand final: flat stub left to the rail.
-.bracket-de > .bk-bracket-group:last-child .bk-match::before {
-  content: "";
-  position: absolute;
-  left: -1.55rem;
-  top: 50%;
-  width: 1.55rem;
-  border-top: 1px solid var(--border);
-}
-
 .bk-row {
+  flex: 1;
   display: flex;
   align-items: center;
   justify-content: space-between;
