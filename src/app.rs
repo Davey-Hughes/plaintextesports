@@ -3,8 +3,8 @@ use crate::server::{
     get_schedule, get_site,
 };
 use crate::types::{
-    BracketMatch, BracketRound, EventInfo, Game, MatchDetail, MatchStatus, MatchView, ScheduleView,
-    StandingRow, StreamView,
+    full_event_name, BracketMatch, BracketRound, EventInfo, Game, MatchDetail, MatchStatus,
+    MatchView, ScheduleView, StandingRow, StreamView,
 };
 use leptos::prelude::*;
 use std::collections::HashSet;
@@ -463,17 +463,8 @@ fn EventPage() -> impl IntoView {
                 let lg_name = league();
                 match sched {
                     Some(Ok(s)) => {
-                        // The full event name (league + edition), taking the
-                        // serie from any of the event's cached matches.
-                        let serie = s
-                            .days
-                            .iter()
-                            .flat_map(|d| &d.leagues)
-                            .flat_map(|lg| &lg.matches)
-                            .map(|m| m.serie_name.clone())
-                            .find(|n| !n.is_empty())
-                            .unwrap_or_default();
-                        let title = event_full_name(&lg_name, &serie);
+                        // The route segment is already the full edition name.
+                        let title = lg_name.clone();
                         // The event's external (Liquipedia/official) link, pulled
                         // from any of its league groups.
                         let url = s
@@ -566,17 +557,6 @@ fn MatchDetailPage() -> impl IntoView {
     }
 }
 
-/// Combine a league with its serie/edition for an event/match-page title, e.g.
-/// ("IEM", "Cologne Major") -> "IEM Cologne Major". An empty serie -> the league
-/// alone (league seasons already name themselves).
-fn event_full_name(league: &str, serie: &str) -> String {
-    if serie.is_empty() {
-        league.to_string()
-    } else {
-        format!("{league} {serie}")
-    }
-}
-
 fn detail_view(d: MatchDetail) -> impl IntoView {
     let MatchDetail {
         match_view,
@@ -592,7 +572,7 @@ fn detail_view(d: MatchDetail) -> impl IntoView {
         MatchStatus::Upcoming => "",
     };
     let meta = [
-        event_full_name(&m.league, &m.serie_name),
+        full_event_name(&m.league, &m.serie_name),
         m.clock_label.clone(),
         m.best_of.clone(),
         status_label.to_string(),
@@ -2333,21 +2313,18 @@ fn render_schedule(s: ScheduleView, show_nav: bool, push: bool, event_mode: bool
                     };
                     let league_name = lg.league.clone();
                     // Title the group with the full event name (league + edition,
-                    // e.g. "IEM Katowice"); the link/subscribe key stay the short
-                    // league name. The edition is uniform across a group's matches.
-                    let serie = lg
-                        .matches
-                        .first()
-                        .map(|m| m.serie_name.clone())
-                        .unwrap_or_default();
+                    // e.g. "IEM Katowice"); the subscribe key stays the short
+                    // league name, while the full name keys the event link.
+                    let serie = lg.serie_name.clone();
                     let head = (!event_mode).then(move || {
-                        let display = event_full_name(&league_name, &serie);
+                        let display = full_event_name(&league_name, &serie);
                         let header = match &bo_label {
                             Some(bo) => format!("{display} · {bo}"),
-                            None => display,
+                            None => display.clone(),
                         };
-                        // The league name links to its internal event page.
-                        let event_href = format!("/event/{}", enc_segment(&league_name));
+                        // The full edition name keys its event page, so distinct
+                        // editions get distinct URLs.
+                        let event_href = format!("/event/{}", enc_segment(&display));
                         view! {
                             <div class="league-head">
                                 <SubscribeStar kind="league" value=league_name.clone() />
@@ -2801,6 +2778,7 @@ mod tests {
                     .into_iter()
                     .map(|l| LeagueGroup {
                         league: l.into(),
+                        serie_name: String::new(),
                         event_url: String::new(),
                         bo: None,
                         matches: vec![mv(l)],

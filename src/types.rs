@@ -110,10 +110,27 @@ pub struct MatchView {
     pub begin_at_ms: i64,
 }
 
+/// The display name for an event: the league plus its serie/edition, e.g.
+/// ("IEM", "Cologne Major") -> "IEM Cologne Major". An empty serie returns the
+/// league alone (league seasons already name themselves). Also the key for the
+/// `/event` page, so each edition is addressed distinctly.
+#[must_use]
+pub fn full_event_name(league: &str, serie: &str) -> String {
+    if serie.is_empty() {
+        league.to_string()
+    } else {
+        format!("{league} {serie}")
+    }
+}
+
 /// Matches for one league/event within a day.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LeagueGroup {
     pub league: String,
+    /// The serie/edition name within the league (e.g. "Cologne Major"); empty
+    /// for league seasons. Combined with `league` for the header + event link.
+    #[serde(default)]
+    pub serie_name: String,
     /// Event-page link shown on the league header (see `MatchView::event_url`).
     pub event_url: String,
     /// Best-of label shown in the header when uniform across the group (e.g.
