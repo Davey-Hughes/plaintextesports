@@ -1098,16 +1098,17 @@ pub fn league_stages(league: &str) -> Vec<i64> {
 /// brackets), dropping empties and tagging each with the event name. Order is
 /// preserved so stages render Swiss → playoffs.
 pub async fn stages_info(tids: Vec<i64>, event: &str) -> Vec<EventInfo> {
-    let mut out = Vec::with_capacity(tids.len());
-    for tid in tids {
-        let mut info = event_info(tid).await;
-        if info.is_empty() {
-            continue;
-        }
-        info.event = event.to_string();
-        out.push(info);
-    }
-    out
+    // Fetch every stage concurrently (each is an independent set of API calls),
+    // preserving order, so a multi-stage event isn't N round-trips deep.
+    futures::future::join_all(tids.into_iter().map(event_info))
+        .await
+        .into_iter()
+        .filter(|info| !info.is_empty())
+        .map(|mut info| {
+            info.event = event.to_string();
+            info
+        })
+        .collect()
 }
 
 /// Standings + bracket for a tournament, cached with a TTL. Fetches live when a
@@ -1139,22 +1140,24 @@ pub async fn event_info(tournament_id: i64) -> EventInfo {
             .map(|c| c.info.clone())
             .unwrap_or_default();
     };
-    // Stage name + whether it's an elimination bracket (vs a Swiss/group stage).
-    let (stage, has_bracket) =
-        match crate::pandascore::fetch_tournament_meta(&HTTP, &token, tournament_id).await {
-            Ok((name, hb)) => (name, Some(hb)),
-            Err(e) => {
-                leptos::logging::log!("tournament meta failed (tournament {tournament_id}): {e}");
-                (String::new(), None)
-            }
-        };
-    // Fetch live (best-effort; an endpoint failure just yields an empty section).
-    let standings = crate::pandascore::fetch_standings(&HTTP, &token, tournament_id)
-        .await
-        .unwrap_or_else(|e| {
-            leptos::logging::log!("standings fetch failed (tournament {tournament_id}): {e}");
-            Vec::new()
-        });
+    // Stage meta (name + whether it's an elimination bracket) and standings are
+    // independent, so fetch them together (best-effort; a failure just yields an
+    // empty section). The bracket call depends on both, so it follows.
+    let (meta_res, standings_res) = tokio::join!(
+        crate::pandascore::fetch_tournament_meta(&HTTP, &token, tournament_id),
+        crate::pandascore::fetch_standings(&HTTP, &token, tournament_id),
+    );
+    let (stage, has_bracket) = match meta_res {
+        Ok((name, hb)) => (name, Some(hb)),
+        Err(e) => {
+            leptos::logging::log!("tournament meta failed (tournament {tournament_id}): {e}");
+            (String::new(), None)
+        }
+    };
+    let standings = standings_res.unwrap_or_else(|e| {
+        leptos::logging::log!("standings fetch failed (tournament {tournament_id}): {e}");
+        Vec::new()
+    });
     // Fetch the brackets endpoint when the stage has a tree bracket *or* a
     // standings table — a Swiss stage reports `has_bracket=false` but still
     // exposes its matches there (which `build_swiss` turns into the grid).
