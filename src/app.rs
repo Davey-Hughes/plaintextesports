@@ -3,8 +3,8 @@ use crate::server::{
     get_schedule, get_site,
 };
 use crate::types::{
-    full_event_name, BracketMatch, BracketRound, EventInfo, Game, MatchDetail, MatchStatus,
-    MatchView, ScheduleView, StandingRow, StreamView,
+    full_event_name, BracketMatch, BracketRound, DayGroup, EventInfo, Game, MatchDetail,
+    MatchStatus, MatchView, ScheduleView, StandingRow, StreamView,
 };
 use leptos::prelude::*;
 use std::collections::HashSet;
@@ -2255,6 +2255,104 @@ fn league_color_class(name: &str) -> String {
     format!("lc-{}", h % LEAGUE_COLORS)
 }
 
+/// A compact "up next" bar pinned to the bottom of the event page, previewing
+/// the current/next day's matches. Clicking it scrolls to that day in the list;
+/// it hides once that day scrolls into view, so it never duplicates what's shown.
+#[component]
+fn UpNextBar(day: DayGroup) -> impl IntoView {
+    let anchor = format!("day-{}", day.day_key);
+    let hidden = RwSignal::new(false);
+    // Flatten the day's matches (time + teams), capped so the bar stays slim.
+    const CAP: usize = 4;
+    let all: Vec<MatchView> = day.leagues.into_iter().flat_map(|lg| lg.matches).collect();
+    // "Up next" while the day still has unplayed matches; "Latest" once it's a
+    // finished event and we're pointing at its most recent day instead.
+    let upcoming = all
+        .iter()
+        .any(|m| matches!(m.status, MatchStatus::Live | MatchStatus::Upcoming));
+    let label = format!(
+        "{} · {}",
+        if upcoming { "▸ Up next" } else { "▸ Latest" },
+        day.day_label
+    );
+    let more = all.len().saturating_sub(CAP);
+    let rows = all
+        .into_iter()
+        .take(CAP)
+        .map(|m| {
+            // The whole bar scrolls to the day; a match still links to its page
+            // (stopping propagation so it doesn't also trigger the scroll).
+            view! {
+                <a
+                    class="upnext-match"
+                    href=format!("/match/{}", m.id)
+                    on:click=|e: leptos::ev::MouseEvent| e.stop_propagation()
+                >
+                    <span class="upnext-time">{m.clock_label}</span>
+                    <span class="upnext-team">{m.team_a.label}</span>
+                    <span class="upnext-vs">"vs"</span>
+                    <span class="upnext-team">{m.team_b.label}</span>
+                </a>
+            }
+        })
+        .collect_view();
+
+    let jump = {
+        let anchor = anchor.clone();
+        move |_| {
+            let _ = &anchor;
+            #[cfg(feature = "hydrate")]
+            if let Some(el) = web_sys::window()
+                .and_then(|w| w.document())
+                .and_then(|d| d.get_element_by_id(&anchor))
+            {
+                el.scroll_into_view();
+            }
+        }
+    };
+
+    #[cfg(feature = "hydrate")]
+    {
+        use wasm_bindgen::closure::Closure;
+        use wasm_bindgen::JsCast;
+        Effect::new(move |_| {
+            let Some(el) = web_sys::window()
+                .and_then(|w| w.document())
+                .and_then(|d| d.get_element_by_id(&anchor))
+            else {
+                return;
+            };
+            let cb = Closure::<dyn FnMut(js_sys::Array)>::new(move |entries: js_sys::Array| {
+                let first = entries.get(0).unchecked_into::<web_sys::IntersectionObserverEntry>();
+                hidden.set(first.is_intersecting());
+            });
+            if let Ok(obs) = web_sys::IntersectionObserver::new(cb.as_ref().unchecked_ref()) {
+                obs.observe(&el);
+            }
+            // The observer keeps firing as long as its callback is alive; leak it
+            // for the page's lifetime (web-sys handles can't ride on_cleanup,
+            // which requires Send + Sync).
+            cb.forget();
+        });
+    }
+
+    view! {
+        <div
+            class="upnext"
+            class:upnext-hidden=move || hidden.get()
+            on:click=jump
+            title="Jump to these matches"
+        >
+            <div class="upnext-head">{label}</div>
+            <div class="upnext-list">
+                {rows}
+                {(more > 0)
+                    .then(|| view! { <span class="upnext-more">{format!("+{more} more")}</span> })}
+            </div>
+        </div>
+    }
+}
+
 fn render_schedule(s: ScheduleView, show_nav: bool, push: bool, event_mode: bool) -> impl IntoView {
     let ScheduleView {
         days,
@@ -2286,6 +2384,23 @@ fn render_schedule(s: ScheduleView, show_nav: bool, push: bool, event_mode: bool
             </nav>
         }
     });
+
+    // On the event page, pick the "current/next" day — the earliest day that
+    // still has an unfinished (live/upcoming) match, else the most recent day —
+    // to surface in a pinned "up next" bar so it's reachable without scrolling
+    // past the whole history.
+    let upnext_day: Option<DayGroup> = event_mode
+        .then(|| {
+            days.iter()
+                .position(|d| {
+                    d.leagues.iter().flat_map(|lg| &lg.matches).any(|m| {
+                        matches!(m.status, MatchStatus::Live | MatchStatus::Upcoming)
+                    })
+                })
+                .or_else(|| days.len().checked_sub(1))
+                .and_then(|i| days.get(i).cloned())
+        })
+        .flatten();
 
     let day_sections = days
         .into_iter()
@@ -2369,7 +2484,7 @@ fn render_schedule(s: ScheduleView, show_nav: bool, push: bool, event_mode: bool
                 view! { <h2 class="day-title">{d.day_label}</h2> }.into_any()
             };
             view! {
-                <section class="day">
+                <section class="day" id=format!("day-{}", d.day_key)>
                     {head}
                     {leagues}
                 </section>
@@ -2397,6 +2512,7 @@ fn render_schedule(s: ScheduleView, show_nav: bool, push: bool, event_mode: bool
         {(show_earlier && !has_days).then(|| view! { <EarlierControl /> })}
         {day_sections}
         {empty.then(|| view! { <p class="empty">"No tier-1 matches in this window."</p> })}
+        {upnext_day.map(|day| view! { <UpNextBar day=day /> })}
     }
 }
 

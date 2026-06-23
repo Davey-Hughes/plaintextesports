@@ -31,6 +31,8 @@ web-sys = { version = "0.3", features = [
   "HtmlElement",
   "DomTokenList",
   "MediaQueryList",
+  "IntersectionObserver",
+  "IntersectionObserverEntry",
 ], optional = true }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = { version = "1.0", optional = true }
