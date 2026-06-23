@@ -2332,10 +2332,19 @@ fn render_schedule(s: ScheduleView, show_nav: bool, push: bool, event_mode: bool
                         }
                     };
                     let league_name = lg.league.clone();
+                    // Title the group with the full event name (league + edition,
+                    // e.g. "IEM Katowice"); the link/subscribe key stay the short
+                    // league name. The edition is uniform across a group's matches.
+                    let serie = lg
+                        .matches
+                        .first()
+                        .map(|m| m.serie_name.clone())
+                        .unwrap_or_default();
                     let head = (!event_mode).then(move || {
+                        let display = event_full_name(&league_name, &serie);
                         let header = match &bo_label {
-                            Some(bo) => format!("{league_name} · {bo}"),
-                            None => league_name.clone(),
+                            Some(bo) => format!("{display} · {bo}"),
+                            None => display,
                         };
                         // The league name links to its internal event page.
                         let event_href = format!("/event/{}", enc_segment(&league_name));
