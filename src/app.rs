@@ -1148,9 +1148,6 @@ fn Bracket(rounds: Vec<BracketRound>, tournament_id: i64, bracket_only: bool) ->
                     let (sa, sb) = (s.sa, s.sb);
                     let winner = s.winner;
                     let mid = s.mid;
-                    // At the names stage show "-" for the score (a played match's
-                    // hidden score, or an unplayed match that has none).
-                    let dash = "-";
                     let match_title = if max == 0 { "Not decided yet" } else { "Reveal this match" };
                     let stage = move || eff.with(|e| e.get(r).and_then(|row| row.get(i)).copied().unwrap_or(0));
                     // A revealed team name links to its match page; the rest of
@@ -1240,21 +1237,45 @@ fn Bracket(rounds: Vec<BracketRound>, tournament_id: i64, bracket_only: bool) ->
                                     } else {
                                         "bk-row"
                                     };
-                                    let sa_txt = if scores {
-                                        sa.map(|s| s.to_string()).unwrap_or_default()
-                                    } else {
-                                        dash.to_string()
-                                    };
-                                    let sb_txt = if scores {
-                                        sb.map(|s| s.to_string()).unwrap_or_default()
-                                    } else {
-                                        dash.to_string()
+                                    // When a score is hidden, show whether there's
+                                    // a result waiting — a played match gets a
+                                    // filled dot you can reveal; one not yet played
+                                    // gets a faint dash (nothing to reveal).
+                                    let score_view = move |s: Option<i32>| {
+                                        if scores {
+                                            view! {
+                                                <span class="bk-score">
+                                                    {s.map(|v| v.to_string()).unwrap_or_default()}
+                                                </span>
+                                            }
+                                            .into_any()
+                                        } else if max >= 2 {
+                                            view! {
+                                                <span
+                                                    class="bk-score bk-pending"
+                                                    title="Result hidden — click to reveal"
+                                                >
+                                                    "●"
+                                                </span>
+                                            }
+                                            .into_any()
+                                        } else {
+                                            view! {
+                                                <span
+                                                    class="bk-score bk-unplayed"
+                                                    title="Not played yet"
+                                                >
+                                                    "-"
+                                                </span>
+                                            }
+                                            .into_any()
+                                        }
                                     };
                                     let row_a = if show_a {
                                         view! {
                                             <div class=cls_a>
                                                 {team_cell(label_a.clone())}
-                                                <span class="bk-score">{sa_txt}</span>
+                                                {score_view(sa)}
                                             </div>
                                         }
                                         .into_any()
@@ -1270,7 +1291,7 @@ fn Bracket(rounds: Vec<BracketRound>, tournament_id: i64, bracket_only: bool) ->
                                         view! {
                                             <div class=cls_b>
                                                 {team_cell(label_b.clone())}
-                                                <span class="bk-score">{sb_txt}</span>
+                                                {score_view(sb)}
                                             </div>
                                         }
                                         .into_any()
