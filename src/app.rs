@@ -1152,11 +1152,13 @@ fn Bracket(rounds: Vec<BracketRound>, tournament_id: i64, bracket_only: bool) ->
                     let stage = move || eff.with(|e| e.get(r).and_then(|row| row.get(i)).copied().unwrap_or(0));
                     // A revealed team name links to its match page; the rest of
                     // the box still reveals on click (the link stops that
-                    // propagation). The detail page gates its own score, so this
-                    // never spoils. TBD/demo matches (no id) stay plain text.
+                    // propagation). TBD/demo matches (no id) stay plain text.
                     // Both names share one title and highlight together (via
                     // `:has` in CSS) so they read as a single link to the match.
-                    let link_title = format!("Open the {ta} vs {tb} match page");
+                    // A click scrolls to this match's row in the schedule above
+                    // (so you see it in context, then open it from there); where
+                    // that row isn't on the page, the href opens the match page.
+                    let link_title = format!("Find {ta} vs {tb} in the schedule");
                     let team_cell = move |name: String| {
                         if mid > 0 {
                             view! {
@@ -1164,7 +1166,26 @@ fn Bracket(rounds: Vec<BracketRound>, tournament_id: i64, bracket_only: bool) ->
                                     class="bk-team bk-team-link"
                                     href=format!("/match/{mid}")
                                     title=link_title.clone()
-                                    on:click=move |e: leptos::ev::MouseEvent| e.stop_propagation()
+                                    on:click=move |e: leptos::ev::MouseEvent| {
+                                        e.stop_propagation();
+                                        #[cfg(feature = "hydrate")]
+                                        if let Some(row) = web_sys::window()
+                                            .and_then(|w| w.document())
+                                            .and_then(|d| {
+                                                d.get_element_by_id(&format!("m-{mid}"))
+                                            })
+                                        {
+                                            e.prevent_default();
+                                            row.scroll_into_view();
+                                            // Flash the row so it's easy to spot;
+                                            // remove + reflow + re-add restarts the
+                                            // animation on a repeat click.
+                                            let cl = row.class_list();
+                                            let _ = cl.remove_1("row-flash");
+                                            let _ = row.client_width();
+                                            let _ = cl.add_1("row-flash");
+                                        }
+                                    }
                                 >
                                     {name}
                                 </a>
@@ -2672,14 +2693,19 @@ fn MatchRow(m: MatchView, show_bo: bool, push: bool) -> impl IntoView {
             MatchStatus::Canceled => view! { <span class="star star-empty"></span> }.into_any(),
         };
         view! {
-            <div class=format!("row has-star {status_class}")>
+            <div class=format!("row has-star {status_class}") id=format!("m-{}", m.id)>
                 {lead}
                 {body}
             </div>
         }
         .into_any()
     } else {
-        view! { <div class=format!("row {status_class}")>{body}</div> }.into_any()
+        view! {
+            <div class=format!("row {status_class}") id=format!("m-{}", m.id)>
+                {body}
+            </div>
+        }
+        .into_any()
     }
 }
 

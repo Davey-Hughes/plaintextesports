@@ -592,6 +592,16 @@ a {
   flex-direction: column;
 }
 
+@keyframes row-flash {
+  0%,
+  35% {
+    box-shadow: inset 0 0 0 9999px rgba(127, 127, 127, 0.18);
+  }
+  100% {
+    box-shadow: inset 0 0 0 9999px rgba(127, 127, 127, 0);
+  }
+}
+
 .row {
   // Star column (optional) + the link body. The content grid lives on the body
   // (.row-body) so the whole body — gaps included — is clickable.
@@ -599,6 +609,8 @@ a {
   grid-template-columns: 1fr;
   align-items: baseline;
   gap: 0.5rem;
+  // When scrolled to (from a bracket name), clear the sticky toggle bar.
+  scroll-margin-top: 3.5rem;
   padding: 0.22rem 0.3rem;
   color: var(--fg);
 
@@ -610,6 +622,11 @@ a {
   // Finished matches dim their time/teams slightly since the match is over.
   &.final .row-time {
     opacity: 0.75;
+  }
+
+  // Brief tint when a bracket name scrolls you to this row, so it's easy to spot.
+  &.row-flash {
+    animation: row-flash 1.4s ease-out;
   }
 
   // With a ★ button, prepend a fixed column for it. The live/final side bar
