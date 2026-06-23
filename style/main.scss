@@ -1354,14 +1354,17 @@ a.sw-link {
   display: flex;
   flex-direction: column;
   flex: 0 0 auto;
-  min-width: 9.5em;
+  // A fixed column width so every box is identical across rounds (the box fills
+  // the column minus its margins). The title is stacked, not inline, so a long
+  // round name + date can't widen one column and enlarge its boxes.
+  width: 9.5em;
 }
 
 .bk-round-title {
   display: flex;
-  align-items: baseline;
-  justify-content: center;
-  gap: 0.4rem;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.1rem;
   margin-bottom: 0.3rem;
 }
 
@@ -1381,6 +1384,7 @@ a.sw-link {
   color: var(--muted);
   font-size: 11px;
   text-transform: uppercase;
+  white-space: nowrap;
   cursor: pointer;
   text-decoration: underline dotted;
   text-underline-offset: 2px;
@@ -1541,6 +1545,7 @@ a.bk-team-link {
 
 .bk-row {
   display: flex;
+  align-items: center;
   justify-content: space-between;
   gap: 0.6rem;
   padding: 0.12rem 0.4rem;
