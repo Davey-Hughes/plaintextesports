@@ -663,7 +663,9 @@ a {
   align-self: stretch;
   justify-self: center;
   width: 2px;
-  margin-block: -0.22rem;
+  // Overshoot the row's vertical padding by a hair so consecutive bars overlap
+  // and never leave a sub-pixel seam at fractional zoom levels.
+  margin-block: calc(-0.22rem - 1px);
   // Match the ☆'s shift so both line up with the event-header ★.
   transform: translateX(-7.5px);
 
@@ -1109,13 +1111,29 @@ a {
   flex: 0 0 auto;
 }
 
+// The round header doubles as a toggle that reveals/hides the whole round.
 .sw-col-head {
+  background: none;
+  border: none;
+  font: inherit;
   font-size: 10px;
   text-transform: uppercase;
   letter-spacing: 0.03em;
   color: var(--muted);
   text-align: center;
   margin-bottom: 0.3rem;
+  cursor: pointer;
+  text-decoration: underline dotted;
+  text-underline-offset: 2px;
+
+  &:hover {
+    color: var(--fg);
+  }
+
+  &.on {
+    color: var(--fg);
+    text-decoration-style: solid;
+  }
 }
 
 // Each record bucket is a clearly-labelled group (that's how Swiss reads —
@@ -1201,8 +1219,9 @@ a {
 }
 
 .swiss.sw-tracing .sw-match:has(.sw-path) .sw-row:not(.sw-path) {
-  // Dim the traced team's opponent like everything else, so only one path shows.
-  opacity: 0.22;
+  // Hide the traced team's opponent entirely (its space is kept) so only the
+  // one team's path is visible at a time.
+  visibility: hidden;
 }
 
 .sw-path {

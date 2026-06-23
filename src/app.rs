@@ -986,10 +986,22 @@ fn compute_effective(grid: &[Vec<BkCell>], set: &HashSet<String>, global: bool) 
                 if global {
                     return c.max;
                 }
-                stage_of(set, &c.bn, &c.bs)
+                let raw = stage_of(set, &c.bn, &c.bs)
                     .max(auto_stage(&eff, &c.feeders))
                     .max(c.floor)
-                    .min(c.max)
+                    .min(c.max);
+                // Cascade hiding: a series can't show its score until its own
+                // teams are known (every feeder's score is shown). So hiding an
+                // early round pulls its lineup, which pulls every later round it
+                // feeds — not just the immediately next one.
+                let teams_known = c.feeders.iter().all(|&(r, i)| {
+                    eff.get(r).and_then(|row| row.get(i)).copied().unwrap_or(0) >= 2
+                });
+                if teams_known {
+                    raw
+                } else {
+                    raw.min(1)
+                }
             })
             .collect();
         eff.push(stages);
@@ -1492,7 +1504,8 @@ fn SwissBracket(rounds: Vec<SwissRound>, tournament_id: i64) -> impl IntoView {
 
     let cols = render
         .into_iter()
-        .map(move |(head, buckets_r)| {
+        .enumerate()
+        .map(move |(r, (head, buckets_r))| {
             let buckets = buckets_r
                 .into_iter()
                 .map(move |(record, ms)| {
@@ -1505,9 +1518,20 @@ fn SwissBracket(rounds: Vec<SwissRound>, tournament_id: i64) -> impl IntoView {
                     }
                 })
                 .collect_view();
+            // The round header reveals/hides this whole round (names → scores),
+            // like the playoff bracket's round titles.
+            let round_on =
+                move || eff.with(|e| e.get(r).is_some_and(|row| row.iter().any(|&s| s >= 1)));
             view! {
                 <div class="sw-col">
-                    <div class="sw-col-head">{head}</div>
+                    <button
+                        class="sw-col-head sw-round-toggle"
+                        class:on=round_on
+                        title="Reveal this round"
+                        on:click=move |_| do_op(BkOp::Round(r))
+                    >
+                        {head}
+                    </button>
                     {buckets}
                 </div>
             }
@@ -2975,23 +2999,9 @@ fn render_schedule(s: ScheduleView, show_nav: bool, push: bool, event_mode: bool
                     } else {
                         format!("league {}", league_color_class(&lg.league))
                     };
-                    let show_bo = event_mode || lg.bo.is_none();
-                    // Header best-of: the single format when the event is uniform,
-                    // else the distinct formats joined (e.g. "Bo1 | Bo3"). Per-row
-                    // bo still shows for mixed events so you can tell which is which.
-                    let bo_label = match &lg.bo {
-                        Some(bo) => Some(bo.clone()),
-                        None => {
-                            let mut bos: Vec<String> = Vec::new();
-                            for m in &lg.matches {
-                                if !m.best_of.is_empty() && !bos.contains(&m.best_of) {
-                                    bos.push(m.best_of.clone());
-                                }
-                            }
-                            bos.sort();
-                            (!bos.is_empty()).then(|| bos.join(" | "))
-                        }
-                    };
+                    // The best-of always shows per row (right of each match); the
+                    // event title no longer repeats it.
+                    let show_bo = true;
                     let league_name = lg.league.clone();
                     // Title the group with the full event name (league + edition,
                     // e.g. "IEM Katowice"); the subscribe key stays the short
@@ -2999,10 +3009,6 @@ fn render_schedule(s: ScheduleView, show_nav: bool, push: bool, event_mode: bool
                     let serie = lg.serie_name.clone();
                     let head = (!event_mode).then(move || {
                         let display = full_event_name(&league_name, &serie);
-                        let header = match &bo_label {
-                            Some(bo) => format!("{display} · {bo}"),
-                            None => display.clone(),
-                        };
                         // The full edition name keys its event page, so distinct
                         // editions get distinct URLs.
                         let event_href = format!("/event/{}", enc_segment(&display));
@@ -3010,7 +3016,7 @@ fn render_schedule(s: ScheduleView, show_nav: bool, push: bool, event_mode: bool
                             <div class="league-head">
                                 <SubscribeStar kind="league" value=league_name.clone() />
                                 <h3 class="league-title">
-                                    <A href=event_href>{header}</A>
+                                    <A href=event_href>{display}</A>
                                 </h3>
                             </div>
                         }
