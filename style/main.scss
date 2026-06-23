@@ -480,6 +480,9 @@ a {
 
 .day {
   margin: 1.6rem 0;
+  // Clear the sticky toggle bar (plus headroom) when jumped to from the up-next
+  // bar, so the day heading isn't tucked right under it.
+  scroll-margin-top: 4.5rem;
 }
 
 .day-title {
@@ -631,7 +634,7 @@ a {
   align-items: baseline;
   gap: 0.5rem;
   // When scrolled to (from a bracket name), clear the sticky toggle bar.
-  scroll-margin-top: 3.5rem;
+  scroll-margin-top: 4.5rem;
   padding: 0.22rem 0.3rem;
   color: var(--fg);
 
@@ -995,15 +998,22 @@ a {
   margin: 1.4rem 0;
 }
 
+// A dotted rule separating the event's schedule from its brackets/standings.
+.section-sep {
+  border: none;
+  border-top: 1px dotted var(--border);
+  margin: 2rem 0 0.5rem;
+}
+
 // Standings/bracket shown beneath the schedule when one event is filtered.
 .event-extra {
   margin-top: 2rem;
   // Clear the sticky top toggle bar when jumped to from the nav.
-  scroll-margin-top: 3.5rem;
+  scroll-margin-top: 4.5rem;
 }
 
 #sched {
-  scroll-margin-top: 3.5rem;
+  scroll-margin-top: 4.5rem;
 }
 
 // Jump links to each section (schedule + every stage) on a long event page.
@@ -1157,10 +1167,15 @@ a {
 // teams paired by their W-L), set off from the next by a generous gap. The
 // entering record (e.g. 2-0) plus the outcomes teams reach from it once shown.
 .sw-record {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  // Match the rows' horizontal padding so the entering record lines up with the
+  // team names and the outcomes line up with the scores (the box's right edge).
+  padding: 0 0.4rem;
   font-size: 10px;
   letter-spacing: 0.03em;
   margin-bottom: 0.25rem;
-  padding-left: 0.1rem;
 }
 
 .sw-record-in {
@@ -1168,14 +1183,18 @@ a {
 }
 
 // The finishing record(s) reached from this bucket (green advance / red out),
-// shown above the boxes instead of inside them.
+// shown above the boxes, right-aligned to the box edge.
+.sw-outs {
+  display: flex;
+  gap: 0.35rem;
+}
+
 .sw-out {
   font-weight: 700;
-  margin-left: 0.35rem;
 }
 
 .sw-bucket + .sw-bucket {
-  margin-top: 0.9rem;
+  margin-top: 1.4rem;
 }
 
 // Centre the bucket group vertically under the header (auto margins split the
@@ -1196,8 +1215,8 @@ a {
   margin-bottom: 0.3rem;
   cursor: pointer;
   // A fixed width so every box is identical — hidden or revealed — and toggling
-  // never resizes anything. Narrow, since the record now sits above the group.
-  width: 5rem;
+  // never resizes anything. Sized to match the playoff bracket boxes.
+  width: 5.5rem;
 }
 
 // A TBD match (teams undecided) can't be revealed.
@@ -1253,9 +1272,10 @@ a {
 }
 
 .swiss.sw-tracing .sw-match:has(.sw-path) .sw-row:not(.sw-path) {
-  // Hide the traced team's opponent entirely (its space is kept) so only the
-  // one team's path is visible at a time.
-  visibility: hidden;
+  // Hide the traced team's opponent so only the one path shows — but with
+  // opacity (not visibility), so it stays hoverable: moving the cursor across it
+  // switches the trace to that team.
+  opacity: 0;
 }
 
 .sw-path {
