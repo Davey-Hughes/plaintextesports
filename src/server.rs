@@ -146,26 +146,6 @@ pub async fn get_event_stages_by_league(league: String) -> Result<Vec<EventInfo>
     }
 }
 
-/// Standings + bracket for one tournament stage (by league name), kept for the
-/// API surface; the single-event filter uses [`get_event_stages_by_league`].
-#[server(GetEventInfo, "/api")]
-pub async fn get_event_info(league: String) -> Result<EventInfo, ServerFnError> {
-    #[cfg(feature = "ssr")]
-    {
-        let Some(tid) = crate::cache::league_tournament(&league) else {
-            return Ok(EventInfo::default());
-        };
-        let mut event = crate::cache::event_info(tid).await;
-        event.event = league;
-        Ok(event)
-    }
-    #[cfg(not(feature = "ssr"))]
-    {
-        let _ = league;
-        Ok(EventInfo::default())
-    }
-}
-
 /// Footer copyright + links from config.
 #[server(GetSite, "/api")]
 pub async fn get_site() -> Result<SiteInfo, ServerFnError> {

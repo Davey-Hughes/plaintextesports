@@ -1038,16 +1038,6 @@ pub fn match_basics(
     ))
 }
 
-/// The tournament id backing a league filter (the first match in that league).
-#[must_use]
-pub fn league_tournament(league: &str) -> Option<i64> {
-    let snap = SNAPSHOT.read().unwrap_or_else(PoisonError::into_inner);
-    snap.matches
-        .iter()
-        .find(|m| m.league == league)
-        .and_then(|m| m.tournament_id)
-}
-
 /// The tournament (stage) ids of an event's cached matches, ordered by when each
 /// stage started — so a multi-stage event (e.g. Swiss stages → playoffs) renders
 /// its stages in order. `event` is the full edition name (league + serie).
