@@ -976,6 +976,38 @@ a {
 // Standings/bracket shown beneath the schedule when one event is filtered.
 .event-extra {
   margin-top: 2rem;
+  // Clear the sticky top toggle bar when jumped to from the nav.
+  scroll-margin-top: 3.5rem;
+}
+
+#sched {
+  scroll-margin-top: 3.5rem;
+}
+
+// Jump links to each section (schedule + every stage) on a long event page.
+.event-nav {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.3rem 0.75rem;
+  margin: 0.6rem 0 0.2rem;
+  font-size: 12px;
+
+  a {
+    color: var(--link);
+    text-decoration: none;
+
+    &:hover {
+      text-decoration: underline;
+    }
+  }
+}
+
+.event-nav-label {
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-size: 11px;
 }
 
 // The stage's section (bracket grid or standings) sits right under the stage
@@ -1035,6 +1067,23 @@ a {
 
 // Swiss / "first to N" stage as a buchholz grid: a column per round, each round
 // a stack of record buckets. Scrolls horizontally if it outgrows the column.
+// The bracket and the list are stacked in one grid cell so the taller of the
+// two fixes the height — toggling between them never changes the page height.
+.swiss-views {
+  display: grid;
+}
+
+.swiss-view {
+  grid-area: 1 / 1;
+  min-width: 0;
+}
+
+// The inactive view stays in the layout (so it keeps reserving its height) but
+// is invisible and non-interactive.
+.swiss-view-off {
+  visibility: hidden;
+}
+
 .swiss-scroll {
   overflow-x: auto;
   padding-bottom: 0.3rem;
