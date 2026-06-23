@@ -1457,15 +1457,15 @@ fn SwissBracket(rounds: Vec<SwissRound>, tournament_id: i64) -> impl IntoView {
                     "sw-row"
                 };
                 // Hovering a team lights its row in every round (and dims the
-                // rest), so you can trace its run. The record badge sits in a
-                // reserved cell so every box is the same width with or without it.
+                // rest), so you can trace its run. `mouseenter` is per-row but
+                // `mouseleave` is on the box (below), so moving between the two
+                // rows never clears the trace — no flash across the row gap.
                 let (n_class, n_enter) = (name.clone(), name.clone());
                 view! {
                     <div
                         class=cls
                         class:sw-path=move || hovered.with(|h| !h.is_empty() && *h == n_class)
                         on:mouseenter=move |_| hovered.set(n_enter.clone())
-                        on:mouseleave=move |_| hovered.set(String::new())
                     >
                         {team_link(name)}
                         // The record badge sits left of the score (which stays
@@ -1502,6 +1502,7 @@ fn SwissBracket(rounds: Vec<SwissRound>, tournament_id: i64) -> impl IntoView {
                 class:sw-locked=max == 0
                 title=title
                 on:click=move |_| do_op(BkOp::Series(r, i))
+                on:mouseleave=move |_| hovered.set(String::new())
             >
                 {body}
             </div>
@@ -2738,7 +2739,11 @@ fn ScheduleSection(
     show_nav: bool,
 ) -> impl IntoView {
     view! {
-        <Suspense fallback=|| view! { <p class="loading">"loading…"</p> }>
+        // Transition (not Suspense) so re-keying the resource — e.g. "show
+        // earlier days" extends the range — keeps the current schedule on screen
+        // while the next loads, instead of blanking the page (which flashed the
+        // footer up to the top).
+        <Transition fallback=|| view! { <p class="loading">"loading…"</p> }>
             {move || {
                 resource
                     .get()
@@ -2765,7 +2770,7 @@ fn ScheduleSection(
                         }
                     })
             }}
-        </Suspense>
+        </Transition>
         // When exactly one event is selected, show its standings/bracket below.
         <EventSection leagues=leagues />
     }
