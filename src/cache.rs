@@ -9,8 +9,8 @@
 use crate::config::config;
 use crate::pandascore::{fetch_game, FetchResult, NormTeam, NormalizedMatch};
 use crate::types::{
-    event_name_eq, BracketMatch, BracketRound, DayGroup, EventInfo, Game, LeagueGroup, MatchStatus,
-    MatchView, ScheduleView, StandingRow, StreamView, TeamView,
+    event_name_eq, full_event_name, BracketMatch, BracketRound, DayGroup, EventInfo, Game,
+    LeagueGroup, MatchStatus, MatchView, ScheduleView, StandingRow, StreamView, TeamView,
 };
 use chrono::{DateTime, Datelike, Duration, NaiveDate, TimeZone, Timelike, Utc};
 use chrono_tz::Tz;
@@ -68,6 +68,14 @@ struct CachedEvent {
 
 /// Re-fetch a tournament's standings/bracket at most this often.
 const EVENT_TTL_MIN: i64 = 15;
+
+/// The poller pre-warms an active event's standings/bracket once it's older than
+/// this (below the serve TTL, so a page request always finds a hot entry).
+const PREWARM_TTL_MIN: i64 = 11;
+
+/// Cap the pre-warm fetches per poll cycle so a burst of new events can't blow
+/// the API budget; the rest catch up over the next cycles.
+const MAX_PREWARM_PER_CYCLE: usize = 8;
 
 /// Shared HTTP client for on-demand standings/bracket fetches.
 static HTTP: Lazy<reqwest::Client> = Lazy::new(|| {
@@ -220,6 +228,13 @@ pub fn spawn_poller() {
                     }
                     apply_resolutions(&results, store.as_mut(), Utc::now());
                 }
+            }
+
+            // Keep recent/upcoming events' standings + brackets hot so an event
+            // page is a cache hit (~1ms) rather than a cold PandaScore fetch
+            // (~800ms) during server render. Bounded + budget-gated.
+            if headroom_ok(rate_remaining, cfg.rate_limit_floor) {
+                prewarm_active(now).await;
             }
 
             // Low-priority past-day work: only when nothing is live/imminent and
@@ -1096,15 +1111,22 @@ pub async fn stages_info(stages: Vec<(i64, Game)>, event: &str) -> Vec<EventInfo
 /// Standings + bracket for a tournament, cached with a TTL. Fetches live when a
 /// token is configured; in demo mode returns the pre-seeded fixture.
 pub async fn event_info(tournament_id: i64, game: Game) -> EventInfo {
-    let now = Utc::now();
     {
         let cache = EVENTS.read().unwrap_or_else(PoisonError::into_inner);
         if let Some(c) = cache.get(&tournament_id) {
-            if now - c.fetched_at < Duration::minutes(EVENT_TTL_MIN) {
+            if Utc::now() - c.fetched_at < Duration::minutes(EVENT_TTL_MIN) {
                 return c.info.clone();
             }
         }
     }
+    fetch_event(tournament_id, game).await
+}
+
+/// Fetch a tournament's standings + bracket from the API unconditionally and
+/// store it in the EVENTS cache. The poller's pre-warm calls this directly (with
+/// its own freshness check) to keep active events hot below the serve TTL.
+async fn fetch_event(tournament_id: i64, game: Game) -> EventInfo {
+    let now = Utc::now();
     // `game` (for game-appropriate standings labels) is passed in by the caller,
     // which already scanned the snapshot to find this stage.
     let Some(token) = config().token.clone() else {
@@ -1165,6 +1187,52 @@ pub async fn event_info(tournament_id: i64, game: Game) -> EventInfo {
         },
     );
     info
+}
+
+/// Every stage `(tournament id, game)` of an edition that has a recent or
+/// upcoming match — the events a visitor is likely to open. All stages, so a
+/// recently-finished event's older group stages are warmed too (the event page
+/// loads them all).
+fn active_tournaments(now: DateTime<Utc>) -> Vec<(i64, Game)> {
+    let lo = (now - Duration::days(4)).timestamp_millis();
+    let hi = (now + Duration::days(config().upcoming_days)).timestamp_millis();
+    let snap = SNAPSHOT.read().unwrap_or_else(PoisonError::into_inner);
+    // Editions with a recent/upcoming match.
+    let mut active: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for m in &snap.matches {
+        if (lo..=hi).contains(&m.begin_at.timestamp_millis()) {
+            active.insert(full_event_name(&m.league, &m.serie_name));
+        }
+    }
+    // Every stage tournament of those editions.
+    let mut seen = std::collections::HashSet::new();
+    let mut out = Vec::new();
+    for m in &snap.matches {
+        if let Some(tid) = m.tournament_id {
+            if !seen.contains(&tid) && active.contains(&full_event_name(&m.league, &m.serie_name)) {
+                seen.insert(tid);
+                out.push((tid, m.game));
+            }
+        }
+    }
+    out
+}
+
+/// Keep recent/upcoming events' standings + brackets hot in the EVENTS cache so
+/// a page request is a cache hit, not a cold ~800 ms PandaScore fetch. Refreshes
+/// stale entries (past the pre-warm TTL) concurrently, bounded per cycle so a
+/// cold start can't blow the API budget; the rest catch up over the next cycles.
+async fn prewarm_active(now: DateTime<Utc>) {
+    let prewarm = Duration::minutes(PREWARM_TTL_MIN);
+    let stale: Vec<(i64, Game)> = active_tournaments(now)
+        .into_iter()
+        .filter(|(tid, _)| {
+            let cache = EVENTS.read().unwrap_or_else(PoisonError::into_inner);
+            cache.get(tid).is_none_or(|c| now - c.fetched_at >= prewarm)
+        })
+        .take(MAX_PREWARM_PER_CYCLE)
+        .collect();
+    futures::future::join_all(stale.into_iter().map(|(tid, game)| fetch_event(tid, game))).await;
 }
 
 /// Seed the EVENTS cache with demo standings/brackets for the demo tournaments.
