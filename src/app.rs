@@ -3600,6 +3600,55 @@ mod tests {
         assert!(set.is_empty());
     }
 
+    // Quarterfinals → semifinals → final (4 → 2 → 1), all best-of decided.
+    fn qf_sf_final_grid() -> Vec<Vec<BkCell>> {
+        let cell = |r, i, feeders: &[(usize, usize)]| BkCell {
+            bn: format!("bn:1:{r}:{i}"),
+            bs: format!("bs:1:{r}:{i}"),
+            max: 2,
+            floor: 0,
+            feeders: feeders.to_vec(),
+        };
+        vec![
+            vec![cell(0, 0, &[]), cell(0, 1, &[]), cell(0, 2, &[]), cell(0, 3, &[])],
+            vec![cell(1, 0, &[(0, 0), (0, 1)]), cell(1, 1, &[(0, 2), (0, 3)])],
+            vec![cell(2, 0, &[(1, 0), (1, 1)])],
+        ]
+    }
+
+    #[test]
+    fn bracket_hide_cascades_through_all_rounds() {
+        let grid = qf_sf_final_grid();
+        let mut set = HashSet::new();
+        // Reveal every match's score.
+        for row in &grid {
+            for c in row {
+                apply_stage(&mut set, &c.bn, &c.bs, 2);
+            }
+        }
+        assert_eq!(
+            compute_effective(&grid, &set, false),
+            vec![vec![2, 2, 2, 2], vec![2, 2], vec![2]]
+        );
+        // Hide one quarterfinal's score: its fed semifinal can no longer show a
+        // score (a team is unknown), and that cascades to the final too — not
+        // just the semifinal. Both drop to their lineup stage (1).
+        apply_stage(&mut set, "bn:1:0:0", "bs:1:0:0", 0);
+        assert_eq!(
+            compute_effective(&grid, &set, false),
+            vec![vec![0, 2, 2, 2], vec![1, 2], vec![1]]
+        );
+    }
+
+    #[test]
+    fn enc_dec_segment_round_trips() {
+        // Includes names that encode to a trailing %XX (trailing space) and a
+        // literal '%', to confirm the decoder handles the end-of-string case.
+        for name in ["IEM Cologne", "Cologne ", "100% Pro", "A-B_C.D~E", "x%"] {
+            assert_eq!(dec_segment(&enc_segment(name)), name, "round-trip {name:?}");
+        }
+    }
+
     fn names(items: &[&str]) -> HashSet<String> {
         items.iter().map(|s| (*s).to_string()).collect()
     }
