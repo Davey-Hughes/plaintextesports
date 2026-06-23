@@ -522,6 +522,27 @@ fn EventPage() -> impl IntoView {
                                 }
                             }
                         }
+                        // Jump links to each named stage section, for a long event
+                        // page with several stages + a bracket.
+                        let nav_items: Vec<(String, String)> = stage_list
+                            .iter()
+                            .filter(|e| !e.stage.is_empty())
+                            .map(|e| (format!("stage-{}", e.tournament_id), e.stage.clone()))
+                            .collect();
+                        let nav = (!nav_items.is_empty()).then(|| {
+                            view! {
+                                <nav class="event-nav">
+                                    <span class="event-nav-label">"jump to"</span>
+                                    <a href="#sched">"schedule"</a>
+                                    {nav_items
+                                        .into_iter()
+                                        .map(|(anchor, name)| {
+                                            view! { <a href=format!("#{anchor}")>{name}</a> }
+                                        })
+                                        .collect_view()}
+                                </nav>
+                            }
+                        });
                         // One section per stage: a Swiss/group stage shows its
                         // standings, the playoffs its bracket — each labelled.
                         let extra = stage_list
@@ -556,25 +577,32 @@ fn EventPage() -> impl IntoView {
                                         </div>
                                     }
                                 });
-                                let body = move || {
-                                    if has_swiss && swiss_grid.get() {
-                                        view! { <SwissBracket rounds=swiss.clone() tournament_id /> }
-                                            .into_any()
-                                    } else {
-                                        view! {
-                                            <StandingsTable
-                                                rows=standings.clone()
-                                                tournament_id
-                                                game
-                                            />
-                                        }
-                                        .into_any()
+                                // Stack the grid and the list in one cell so the
+                                // taller one fixes the height — switching tabs never
+                                // changes the page height. The inactive view is
+                                // hidden but still occupies its space.
+                                let grid_view = has_swiss.then(|| {
+                                    view! {
+                                        <div
+                                            class="swiss-view"
+                                            class:swiss-view-off=move || !swiss_grid.get()
+                                        >
+                                            <SwissBracket rounds=swiss tournament_id />
+                                        </div>
                                     }
+                                });
+                                let list_view = view! {
+                                    <div
+                                        class="swiss-view"
+                                        class:swiss-view-off=move || has_swiss && swiss_grid.get()
+                                    >
+                                        <StandingsTable rows=standings tournament_id game />
+                                    </div>
                                 };
                                 view! {
-                                    <div class="event-extra">
+                                    <div class="event-extra" id=format!("stage-{tournament_id}")>
                                         <div class="stage-bar">{label} {tabs}</div>
-                                        {body}
+                                        <div class="swiss-views">{grid_view} {list_view}</div>
                                         <Bracket rounds=rounds tournament_id bracket_only times=times.clone() />
                                     </div>
                                 }
@@ -585,7 +613,8 @@ fn EventPage() -> impl IntoView {
                                 <A href="/">"← schedule"</A>
                                 <h1 class="detail-title">{title}</h1>
                                 {link}
-                                {render_schedule(s, false, push, true)}
+                                {nav}
+                                <div id="sched">{render_schedule(s, false, push, true)}</div>
                                 {extra}
                             </article>
                         }
