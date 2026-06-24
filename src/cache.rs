@@ -1055,6 +1055,37 @@ pub fn event_view(event: &str, tz_name: &str, hour24: bool) -> ScheduleView {
     }
 }
 
+/// All cached matches involving a team (matched on its full name), past +
+/// upcoming, grouped by day. Backs the team page.
+#[must_use]
+pub fn team_view(team: &str, tz_name: &str, hour24: bool) -> ScheduleView {
+    let cfg = config();
+    let tz = resolve_tz(tz_name, cfg.tz);
+    let now = Utc::now();
+
+    let snap = SNAPSHOT.read().unwrap_or_else(PoisonError::into_inner);
+    let all: Vec<MatchView> = snap
+        .matches
+        .iter()
+        .filter(|m| m.status != MatchStatus::Canceled)
+        .filter(|m| m.team_a.name == team || m.team_b.name == team)
+        .map(|m| to_view(m, &tz, now, hour24))
+        .collect();
+
+    ScheduleView {
+        days: group_days(all, &tz),
+        today_key: now.with_timezone(&tz).date_naive().format("%Y-%m-%d").to_string(),
+        fetched_at_ms: snap.fetched_at.timestamp_millis(),
+        fetched_label: time_label(snap.fetched_at.with_timezone(&tz), hour24),
+        stale: snap.stale,
+        using_fixture: snap.using_fixture,
+        demo_forced: cfg.demo,
+        date_label: None,
+        prev_date: None,
+        next_date: None,
+    }
+}
+
 // ----- Game/event subscription expansion -----------------------------------
 
 /// A reminder to create for one upcoming match (from a game/event subscription).

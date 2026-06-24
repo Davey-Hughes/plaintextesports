@@ -124,6 +124,25 @@ pub async fn get_event_schedule(
     }
 }
 
+/// All cached matches involving a team (by full name), past + upcoming, for the
+/// team page.
+#[server(GetTeamSchedule, "/api")]
+pub async fn get_team_schedule(
+    team: String,
+    tz: String,
+    hour24: bool,
+) -> Result<ScheduleView, ServerFnError> {
+    #[cfg(feature = "ssr")]
+    {
+        Ok(crate::cache::team_view(&team, &tz, hour24))
+    }
+    #[cfg(not(feature = "ssr"))]
+    {
+        let _ = (team, tz, hour24);
+        Ok(ScheduleView::default())
+    }
+}
+
 /// Standings/bracket for every stage of an event (by league name), in order —
 /// e.g. Swiss Stage 1/2/3 then the Playoffs bracket. Empty stages are dropped.
 #[server(GetEventStages, "/api")]
