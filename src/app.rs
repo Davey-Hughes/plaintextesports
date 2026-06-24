@@ -1196,6 +1196,18 @@ fn reveal_round_uniform(set: &mut HashSet<String>, grid: &[Vec<BkCell>], eff: &[
     }
 }
 
+/// Drop every manual reveal in the rounds after `r`, so an outer control (a round
+/// toggle or the cascade) is authoritative over everything past it — cycling it
+/// never leaves a later round revealed from earlier clicks. Auto-revealed lineups
+/// aren't in the set, so they're untouched.
+fn hide_rounds_after(set: &mut HashSet<String>, grid: &[Vec<BkCell>], r: usize) {
+    for later in &grid[r + 1..] {
+        for c in later {
+            apply_stage(set, &c.bn, &c.bs, 0);
+        }
+    }
+}
+
 /// Apply a bracket reveal action to the shared set, respecting feeder gating so a
 /// later round's lineup can't be revealed before its feeders' scores are shown.
 fn apply_bracket_op(set: &mut HashSet<String>, grid: &[Vec<BkCell>], op: BkOp) {
@@ -1245,6 +1257,9 @@ fn apply_bracket_op(set: &mut HashSet<String>, grid: &[Vec<BkCell>], op: BkOp) {
                     apply_stage(set, &c.bn, &c.bs, 0);
                 }
             }
+            // The round toggle owns everything after it: cycling it shouldn't keep
+            // later rounds revealed from earlier granular clicks.
+            hide_rounds_after(set, grid, r);
         }
         BkOp::Cascade => {
             let frontier =
@@ -1252,15 +1267,9 @@ fn apply_bracket_op(set: &mut HashSet<String>, grid: &[Vec<BkCell>], op: BkOp) {
             match frontier {
                 Some(r) => {
                     reveal_round_uniform(set, grid, &eff, r);
-                    // Forget any individually-revealed matches further along, so
-                    // the cascade reveals strictly front-to-back and doesn't keep
-                    // those granular reveals out of order ("hiding is bigger-picture").
-                    // Auto-revealed lineups aren't in the set, so they're unaffected.
-                    for later in &grid[r + 1..] {
-                        for c in later {
-                            apply_stage(set, &c.bn, &c.bs, 0);
-                        }
-                    }
+                    // Reveal strictly front-to-back: forget any granular reveals
+                    // further along ("hiding is bigger-picture").
+                    hide_rounds_after(set, grid, r);
                 }
                 None => {
                     for row in grid {
@@ -2529,19 +2538,42 @@ fn subscribe_scope(kind: String, value: String, subscribing: bool, keys: Vec<Str
 
 /// Refetch the schedule periodically so a left-open tab stays current.
 fn setup_autorefresh(resource: Resource<Result<ScheduleView, ServerFnError>>) {
+    // The silent refresh re-renders (replaces) the schedule subtree, which drops
+    // the browser's scroll anchor and can jump the page. Remember the scroll
+    // position when the timer fires and restore it once the new schedule renders.
+    let pending = StoredValue::new(None::<f64>);
     Effect::new(move |_| {
         #[cfg(feature = "hydrate")]
         {
             use std::time::Duration;
             // Keep the handle so client-side route changes clear the timer instead
             // of leaking a new 60s refetch loop on every page mount.
-            if let Ok(handle) =
-                set_interval_with_handle(move || resource.refetch(), Duration::from_secs(60))
-            {
+            if let Ok(handle) = set_interval_with_handle(
+                move || {
+                    pending.set_value(web_sys::window().and_then(|w| w.scroll_y().ok()));
+                    resource.refetch();
+                },
+                Duration::from_secs(60),
+            ) {
                 on_cleanup(move || handle.clear());
             }
         }
-        let _ = resource;
+        let _ = (resource, pending);
+    });
+    // After the refreshed schedule renders, put the scroll back — only for the
+    // silent auto-refresh; user-driven refetches leave `pending` unset.
+    Effect::new(move |_| {
+        resource.track();
+        #[cfg(feature = "hydrate")]
+        if let Some(y) = pending.get_value() {
+            pending.set_value(None);
+            request_animation_frame(move || {
+                if let Some(w) = web_sys::window() {
+                    w.scroll_to_with_x_and_y(0.0, y);
+                }
+            });
+        }
+        let _ = pending;
     });
 }
 
@@ -3938,6 +3970,33 @@ mod tests {
             vec![vec![1, 1, 1, 1], vec![0, 0], vec![0]]
         );
         assert!(!set.contains("bs:1:1:0"), "the ahead semifinal reveal is forgotten");
+    }
+
+    #[test]
+    fn round_toggle_owns_later_rounds() {
+        // Everything revealed (later rounds remembered from earlier clicks).
+        let grid = qf_sf_final_grid();
+        let mut set = HashSet::new();
+        for row in &grid {
+            for c in row {
+                apply_stage(&mut set, &c.bn, &c.bs, 2);
+            }
+        }
+        // Cycling the first round hides it and drops the later rounds with it.
+        apply_bracket_op(&mut set, &grid, BkOp::Round(0));
+        assert_eq!(
+            compute_effective(&grid, &set, false),
+            vec![vec![0, 0, 0, 0], vec![0, 0], vec![0]]
+        );
+        assert!(set.is_empty());
+        // Re-revealing the round doesn't bring the later rounds' scores back —
+        // only the next round's auto-revealed lineup follows.
+        apply_bracket_op(&mut set, &grid, BkOp::Round(0)); // names
+        apply_bracket_op(&mut set, &grid, BkOp::Round(0)); // scores
+        assert_eq!(
+            compute_effective(&grid, &set, false),
+            vec![vec![2, 2, 2, 2], vec![1, 1], vec![0]]
+        );
     }
 
     #[test]
