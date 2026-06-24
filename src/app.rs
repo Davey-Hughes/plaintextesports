@@ -403,7 +403,7 @@ fn RefreshButton() -> impl IntoView {
             view! {
                 <button class="refresh-btn" title=title on:click=bump>
                     <span class="refresh-icon">"\u{21bb}"</span>
-                    {label}
+                    {format!("updated {label}")}
                 </button>
             }
         })
