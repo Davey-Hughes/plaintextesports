@@ -1466,17 +1466,18 @@ fn SeriesRow(game: SeriesGame) -> impl IntoView {
         view! { <span class="row-meta"><span class=badge_cls>{badge}</span></span> }.into_any()
     };
 
-    // The series spans several days, so each row leads with its date and the
-    // start time on one line (both in the viewer's tz, so they always agree). When
-    // the venue tz is known it's clickable to also show the ballpark's local
-    // date+time — the same shared `ShowVenue` toggle the schedule uses.
+    // Each row leads with its date and start time on one line, both in the
+    // viewer's tz so they always agree. When the venue tz is known it's clickable
+    // to *swap* the whole label to the ballpark's local date+time (rather than
+    // appending it) — so the row width and the team highlighting stay put. The
+    // toggle is the shared `ShowVenue` one the schedule uses.
     let when_text = if clock_label.is_empty() {
         day_label.clone()
     } else {
         format!("{day_label} · {clock_label}")
     };
     let when_view = if venue_label.is_empty() {
-        view! { <span class="row-time series-when"><span class="series-when-local">{when_text}</span></span> }.into_any()
+        view! { <span class="row-time series-when">{when_text}</span> }.into_any()
     } else {
         let show_venue = use_context::<ShowVenue>().map(|s| s.0);
         let toggle_venue = move |ev: leptos::ev::MouseEvent| {
@@ -1489,7 +1490,7 @@ fn SeriesRow(game: SeriesGame) -> impl IntoView {
         let shown = move || show_venue.is_some_and(|sv| sv.get());
         let title = move || {
             if shown() {
-                "Click to hide the local time at the ballpark"
+                "Showing the time at the ballpark — click for your local time"
             } else {
                 "Click to show the local time at the ballpark"
             }
@@ -1501,10 +1502,7 @@ fn SeriesRow(game: SeriesGame) -> impl IntoView {
                 title=title
                 on:click=toggle_venue
             >
-                <span class="series-when-local">{when_text}</span>
-                {move || {
-                    shown().then(|| view! { <span class="row-time-venue">{venue_label.clone()}</span> })
-                }}
+                {move || if shown() { venue_label.clone() } else { when_text.clone() }}
             </span>
         }
         .into_any()

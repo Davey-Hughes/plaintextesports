@@ -134,16 +134,17 @@ pub async fn mlb_series(match_id: i64, tz_name: &str, hour24: bool) -> Option<cr
     };
     // Build each game's labels: the date + time in the viewer's tz (always
     // mutually consistent), and the same instant in the ballpark's tz as a full
-    // "date · time tz" for the venue toggle. The venue label is omitted when the
-    // venue tz is unknown or shows the very same wall-clock as the viewer's
-    // (nothing to add).
+    // "date · time tz" for the venue toggle, which *swaps* the label. Both states
+    // carry a tz abbreviation so the swap clearly reads as two timezones (and you
+    // always know which one you're looking at). The venue label is omitted when
+    // the venue tz is unknown or shows the very same wall-clock as the viewer's.
     let fmt_labels = move |utc: DateTime<Utc>, venue_tz: Option<&str>| {
         let local = utc.with_timezone(&tz);
         let venue = venue_tz
             .and_then(|id| id.parse::<Tz>().ok())
             .map(|vtz| utc.with_timezone(&vtz))
             .filter(|vlocal| {
-                // Only worth showing when it differs from the viewer's wall clock.
+                // Only worth swapping to when it differs from the viewer's clock.
                 vlocal.naive_local() != local.naive_local()
             })
             .map(|vlocal| {
@@ -155,9 +156,17 @@ pub async fn mlb_series(match_id: i64, tz_name: &str, hour24: bool) -> Option<cr
                 )
             })
             .unwrap_or_default();
+        // Suffix the viewer's tz abbreviation onto the local time *only* when a
+        // venue swap is available, so the two states are symmetric (each names its
+        // zone) without cluttering rows that have no venue toggle.
+        let clock = if venue.is_empty() {
+            time_label(local, hour24)
+        } else {
+            format!("{} {}", time_label(local, hour24), local.format("%Z"))
+        };
         crate::mlb::SeriesLabels {
             day: short_day_label(local),
-            clock: time_label(local, hour24),
+            clock,
             venue,
         }
     };

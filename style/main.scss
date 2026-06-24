@@ -1655,20 +1655,29 @@ a.sw-link {
 
   // Each row leads with the date and time on one line ("Mon, Jun 22 · 1:07 PM"),
   // wider than the schedule's clock-only column. The remaining columns match the
-  // schedule, so the series spans the same width as the regular schedule.
+  // schedule, so the series spans the same width as the regular schedule. The
+  // venue toggle swaps the label in place (it doesn't append), so the width is
+  // fixed whether local or ballpark time is shown.
   .row-body {
-    grid-template-columns: 11.5em minmax(0, 1fr) auto minmax(0, 1fr) 5.2em;
+    grid-template-columns: 12.5em minmax(0, 1fr) auto minmax(0, 1fr) 5.2em;
   }
 
-  // The date+time sits on one line ("Mon, Jun 22 · 1:07 PM"). The venue label
-  // (when toggled on) trails after it and may wrap to a second line within the
-  // leading column rather than colliding with the team name.
-  .series-when-local {
+  // The date+time stays on one line whichever tz is shown. A dotted underline
+  // hints it's clickable (to swap to ballpark time); it goes solid + brightens
+  // via .row-time-tz.on when the venue time is shown.
+  .series-when {
     white-space: nowrap;
   }
 
-  .series-when .row-time-venue {
-    white-space: nowrap;
+  .series-when.row-time-tz {
+    text-decoration: underline dotted;
+    text-underline-offset: 2px;
+    text-decoration-color: var(--border);
+
+    &.on {
+      text-decoration-style: solid;
+      text-decoration-color: currentColor;
+    }
   }
 
   // The game this page is about: an accent rail + bolder date, and no hover
