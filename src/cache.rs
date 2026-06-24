@@ -1908,6 +1908,7 @@ fn demo_streams() -> Vec<StreamView> {
         language: language.to_string(),
         official,
         main,
+        group: if official { "official" } else { "costream" }.to_string(),
         ..Default::default()
     };
     vec![

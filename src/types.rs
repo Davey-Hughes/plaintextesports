@@ -254,6 +254,11 @@ pub struct StreamView {
     /// for esports streams, whose tags are derived from language/main/official.
     #[serde(default)]
     pub tag: String,
+    /// Grouping key for the broadcast list, so kinds are visually separated:
+    /// "official"/"costream" for esports, "tv"/"streaming"/"radio" for MLB. The
+    /// producers emit entries already ordered by group.
+    #[serde(default)]
+    pub group: String,
 }
 
 /// One row of a group-stage / Swiss standings table.
