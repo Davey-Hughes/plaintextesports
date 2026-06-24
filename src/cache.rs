@@ -1035,9 +1035,14 @@ fn matches_in_window(
 }
 
 /// The mode (traditional vs esports) and optional within-mode game for a filter
-/// slug: "mlb" ⇒ traditional MLB; "cs2"/"lol" ⇒ that esports title; anything else
-/// (incl. "all") ⇒ all esports.
+/// slug: "trad" ⇒ all traditional sports; "mlb"/"f1" ⇒ that one traditional
+/// sport; "cs2"/"lol" ⇒ that esports title; anything else (incl. "all") ⇒ all
+/// esports. The client filters traditional sports further (the sport tabs), so
+/// the homepage uses "trad" and narrows client-side.
 fn mode_filter(game_filter: &str) -> (bool, Option<Game>) {
+    if game_filter == "trad" {
+        return (true, None);
+    }
     let game = Game::from_filter(game_filter);
     (game.is_some_and(Game::traditional), game)
 }

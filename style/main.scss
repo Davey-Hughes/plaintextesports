@@ -855,6 +855,15 @@ a {
     justify-self: start;
   }
 
+  // A single-entity row (F1 session): one label spanning the two team columns
+  // and the middle, left-aligned where the first competitor would sit.
+  &.row-solo {
+    grid-column: 2 / 5;
+    text-align: left;
+    justify-self: start;
+    color: var(--fg);
+  }
+
   &.winner {
     color: var(--win);
     font-weight: 700;
