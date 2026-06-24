@@ -856,11 +856,10 @@ a {
   }
 
   // A single-entity row (F1 session): one label spanning the two team columns
-  // and the middle, left-aligned where the first competitor would sit.
+  // and the middle, centred where the "vs"/score sits on team rows.
   &.row-solo {
     grid-column: 2 / 5;
-    text-align: left;
-    justify-self: start;
+    text-align: center;
     color: var(--fg);
   }
 

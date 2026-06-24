@@ -38,6 +38,8 @@ struct RawRace {
     round: String,
     #[serde(rename = "raceName")]
     race_name: String,
+    #[serde(rename = "Circuit", default)]
+    circuit: RawCircuit,
     /// The race session's own date/time.
     date: String,
     #[serde(default)]
@@ -61,6 +63,42 @@ struct RawSession {
     date: String,
     #[serde(default)]
     time: Option<String>,
+}
+
+#[derive(Deserialize, Default)]
+struct RawCircuit {
+    #[serde(rename = "circuitId", default)]
+    circuit_id: String,
+}
+
+/// The IANA timezone of each Grand Prix circuit (Jolpica gives only a locality,
+/// not a tz), so the schedule can show the local time at the track. Keyed on the
+/// stable `circuitId`.
+fn circuit_tz(circuit_id: &str) -> Option<&'static str> {
+    Some(match circuit_id {
+        "albert_park" => "Australia/Melbourne",
+        "shanghai" => "Asia/Shanghai",
+        "suzuka" => "Asia/Tokyo",
+        "miami" => "America/New_York",
+        "villeneuve" => "America/Toronto",
+        "monaco" => "Europe/Monaco",
+        "catalunya" | "madring" => "Europe/Madrid",
+        "red_bull_ring" => "Europe/Vienna",
+        "silverstone" => "Europe/London",
+        "spa" => "Europe/Brussels",
+        "hungaroring" => "Europe/Budapest",
+        "zandvoort" => "Europe/Amsterdam",
+        "monza" => "Europe/Rome",
+        "baku" => "Asia/Baku",
+        "marina_bay" => "Asia/Singapore",
+        "americas" => "America/Chicago",
+        "rodriguez" => "America/Mexico_City",
+        "interlagos" => "America/Sao_Paulo",
+        "vegas" => "America/Los_Angeles",
+        "losail" => "Asia/Qatar",
+        "yas_marina" => "Asia/Dubai",
+        _ => return None,
+    })
 }
 
 /// One session of a weekend: its order (for a stable id + display sort), label,
@@ -104,6 +142,9 @@ fn sessions(r: &RawRace) -> Vec<Session> {
 fn to_matches(r: &RawRace, now: DateTime<Utc>) -> Vec<NormalizedMatch> {
     let season: i64 = r.season.parse().unwrap_or(0);
     let round: i64 = r.round.parse().unwrap_or(0);
+    // The circuit's local timezone, so the row's time is clickable to show the
+    // local time at the track (like the venue time on other sports).
+    let venue_tz = circuit_tz(&r.circuit.circuit_id).map(str::to_string);
     sessions(r)
         .into_iter()
         .filter_map(|s| {
@@ -140,7 +181,7 @@ fn to_matches(r: &RawRace, now: DateTime<Utc>) -> Vec<NormalizedMatch> {
                 },
                 stream_url: None,
                 tournament_id: None,
-                venue_tz: None,
+                venue_tz: venue_tz.clone(),
                 streams: Vec::new(),
                 // MLB-only (the series ref); F1 has no opposing-team series.
                 mlb_series: None,
