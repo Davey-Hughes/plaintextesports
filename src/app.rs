@@ -99,6 +99,11 @@ struct LastUpdated(RwSignal<Option<String>>);
 #[derive(Clone, Copy)]
 struct RefreshTrigger(RwSignal<u64>);
 
+/// Top-level mode: `false` = esports, `true` = traditional sports (MLB). Switched
+/// by the header toggle; persisted across navigation.
+#[derive(Clone, Copy)]
+struct SportMode(RwSignal<bool>);
+
 #[component]
 #[must_use]
 pub fn App() -> impl IntoView {
@@ -126,6 +131,8 @@ pub fn App() -> impl IntoView {
     // Header data-freshness label + a manual-refresh trigger.
     let last_updated = RwSignal::new(None::<String>);
     let refresh_trigger = RwSignal::new(0u64);
+    // Top-level sport mode (esports vs traditional/MLB).
+    let traditional = RwSignal::new(false);
     provide_context(hour24);
     provide_context(tz);
     provide_context(starred);
@@ -140,6 +147,7 @@ pub fn App() -> impl IntoView {
     provide_context(Leagues(leagues));
     provide_context(LastUpdated(last_updated));
     provide_context(RefreshTrigger(refresh_trigger));
+    provide_context(SportMode(traditional));
 
     // After hydration, pick up the browser's timezone + saved preferences and
     // the push key. (Client-side only; the initial render uses the defaults
@@ -154,6 +162,7 @@ pub fn App() -> impl IntoView {
                 hour24.set(h);
             }
             show_scores.set(load_scores_pref());
+            traditional.set(load_sport_pref());
             starred.set(load_starred());
             subscribed.set(load_subs());
             revealed.set(load_revealed());
@@ -375,6 +384,7 @@ fn SiteHeader() -> impl IntoView {
             // clear of the brand.
             <ScrollTopButton />
             <RefreshButton />
+            <SportToggle />
             <CalendarPicker />
             <ScoresToggle />
             <HourToggle />
@@ -459,13 +469,22 @@ fn ScrollTopButton() -> impl IntoView {
 #[component]
 fn SiteFooter() -> impl IntoView {
     let site = Resource::new(|| (), |()| async { get_site().await });
+    let traditional = use_context::<SportMode>().expect("sport mode context").0;
     view! {
         <footer class="footer" id="site-footer">
             <A href="/about">"about"</A>
             <span class="sep">" · "</span>
-            <span>"tier-1 cs2 + lol schedules"</span>
+            <span>
+                {move || {
+                    if traditional.get() { "MLB schedules" } else { "tier-1 cs2 + lol schedules" }
+                }}
+            </span>
             <span class="sep">" · "</span>
-            <span>"data via PandaScore"</span>
+            <span>
+                {move || {
+                    if traditional.get() { "data via MLB Stats API" } else { "data via PandaScore" }
+                }}
+            </span>
             <Suspense>
                 {move || {
                     site.get()
@@ -1407,6 +1426,7 @@ fn StandingsTable(rows: Vec<StandingRow>, tournament_id: i64, game: Game) -> imp
     let record_label = match game {
         Game::Lol => "Games",
         Game::Cs2 => "Maps",
+        Game::Mlb => "Games",
     };
     // Click the "Standings" title to reveal/hide the table.
     let (revealed, toggle) = section_reveal(format!("st:{tournament_id}"));
@@ -2445,6 +2465,28 @@ fn ScoresToggle() -> impl IntoView {
     }
 }
 
+/// Switch between esports and traditional sports (MLB). Sits by the calendar.
+#[component]
+fn SportToggle() -> impl IntoView {
+    let traditional = use_context::<SportMode>().expect("sport mode context").0;
+    let toggle = move |_| {
+        let next = !traditional.get_untracked();
+        traditional.set(next);
+        #[cfg(feature = "hydrate")]
+        save_sport_pref(next);
+    };
+    view! {
+        <button
+            class="toggle"
+            class:on=move || traditional.get()
+            title="Switch between esports and traditional sports"
+            on:click=toggle
+        >
+            {move || if traditional.get() { "MLB" } else { "esports" }}
+        </button>
+    }
+}
+
 /// ★ toggle to subscribe to a whole game (`kind="game"`, value "cs2"/"lol") or
 /// event (`kind="league"`, value = league name). Used inside a game filter tab
 /// and in event headers. Hidden unless push is on.
@@ -2524,6 +2566,24 @@ fn load_scores_pref() -> bool {
         .and_then(|w| w.local_storage().ok().flatten())
         .and_then(|s| s.get_item("scores").ok().flatten())
         .is_some_and(|v| v == "1")
+}
+
+#[cfg(feature = "hydrate")]
+fn load_sport_pref() -> bool {
+    web_sys::window()
+        .and_then(|w| w.local_storage().ok().flatten())
+        .and_then(|s| s.get_item("sport").ok().flatten())
+        .as_deref()
+        == Some("mlb")
+}
+
+#[cfg(feature = "hydrate")]
+fn save_sport_pref(traditional: bool) {
+    if let Some(win) = web_sys::window() {
+        if let Ok(Some(storage)) = win.local_storage() {
+            let _ = storage.set_item("sport", if traditional { "mlb" } else { "esports" });
+        }
+    }
 }
 
 #[cfg(feature = "hydrate")]
@@ -2700,18 +2760,21 @@ fn HomePage() -> impl IntoView {
     let tz = use_context::<RwSignal<String>>().expect("tz context");
     let range = use_context::<DateRange>().expect("range context").0;
     let earlier = use_context::<EarlierDays>().expect("earlier context").0;
+    let traditional = use_context::<SportMode>().expect("sport mode context").0;
     // Default = today + future (get_schedule). A calendar range, else an
-    // "earlier days" expansion, switches to the range view.
+    // "earlier days" expansion, switches to the range view. The sport mode picks
+    // esports ("all") vs MLB and re-fetches when toggled.
     let schedule = Resource::new(
-        move || (range.get(), earlier.get(), tz.get(), hour24.get()),
-        |(r, e, z, h)| async move {
+        move || (range.get(), earlier.get(), tz.get(), hour24.get(), traditional.get()),
+        |(r, e, z, h, trad)| async move {
+            let f = if trad { "mlb" } else { "all" }.to_string();
             match r {
-                Some((start, end)) => get_range(start, end, "all".into(), z, h).await,
+                Some((start, end)) => get_range(start, end, f, z, h).await,
                 None if e > 0 => {
                     let (start, end) = earlier_window(e);
-                    get_range(start, end, "all".into(), z, h).await
+                    get_range(start, end, f, z, h).await
                 }
-                None => get_schedule("all".into(), z, h).await,
+                None => get_schedule(f, z, h).await,
             }
         },
     );
@@ -3024,9 +3087,12 @@ fn DayPage() -> impl IntoView {
     let leagues = use_context::<Leagues>().expect("leagues context").0;
     let hour24 = use_context::<RwSignal<bool>>().expect("hour24 context");
     let tz = use_context::<RwSignal<String>>().expect("tz context");
+    let traditional = use_context::<SportMode>().expect("sport mode context").0;
     let schedule = Resource::new(
-        move || (date(), tz.get(), hour24.get()),
-        |(d, z, h)| async move { get_day(d, "all".into(), z, h).await },
+        move || (date(), tz.get(), hour24.get(), traditional.get()),
+        |(d, z, h, trad)| async move {
+            get_day(d, if trad { "mlb" } else { "all" }.into(), z, h).await
+        },
     );
     setup_autorefresh(schedule);
 
@@ -3041,6 +3107,8 @@ fn GameTabs(
     games: RwSignal<HashSet<String>>,
     leagues: RwSignal<HashSet<String>>,
 ) -> impl IntoView {
+    // The CS2/LoL tabs are esports-only — hidden in MLB mode.
+    let traditional = use_context::<SportMode>().expect("sport mode context").0;
     // Filters are multi-select and additive: no selection means "all". Click a
     // game to include it; click again to drop it.
     let toggle = move |value: &'static str| {
@@ -3077,7 +3145,7 @@ fn GameTabs(
         }
     };
     view! {
-        <div class="tabs">
+        <div class="tabs" class:tabs-off=move || traditional.get()>
             <div class="tabs-list">
                 {with_star("CS2", "cs2")}
                 {with_star("LoL", "lol")}
@@ -3132,6 +3200,9 @@ fn ScheduleSection(
     leagues: RwSignal<HashSet<String>>,
     show_nav: bool,
 ) -> impl IntoView {
+    // The game/event filters and per-event standings are esports-only; MLB mode
+    // shows the whole MLB schedule unfiltered.
+    let traditional = use_context::<SportMode>().expect("sport mode context").0;
     view! {
         // Transition (not Suspense) so re-keying the resource — e.g. "show
         // earlier days" extends the range — keeps the current schedule on screen
@@ -3139,22 +3210,25 @@ fn ScheduleSection(
         // footer up to the top).
         <Transition fallback=|| view! { <p class="loading">"loading…"</p> }>
             {move || {
+                let trad = traditional.get();
                 resource
                     .get()
                     .map(|res| match res {
                         Ok(s) => {
                             // Event chips reflect the selected games; the schedule
-                            // is then narrowed by both games and events.
-                            let available = leagues_for_games(&s, &games.get());
-                            let filtered = filter_schedule(s, &games.get(), &leagues.get());
+                            // is then narrowed by both games and events (esports only).
+                            let available = if trad { Vec::new() } else { leagues_for_games(&s, &games.get()) };
+                            let filtered = if trad {
+                                s
+                            } else {
+                                filter_schedule(s, &games.get(), &leagues.get())
+                            };
                             // Show ★ reminder buttons only when Web Push is configured.
                             let push = use_context::<RwSignal<Option<String>>>()
                                 .is_some_and(|v| v.get().is_some());
-                            // Always render the event-chip row (even with a single
-                            // event, or none) so its space stays reserved and the
-                            // page doesn't jump as the game filter narrows it.
                             view! {
-                                <LeagueChips leagues=available selected=leagues />
+                                {(!trad)
+                                    .then(|| view! { <LeagueChips leagues=available selected=leagues /> })}
                                 {render_schedule(filtered, show_nav, push, false)}
                             }
                                 .into_any()
@@ -3165,8 +3239,8 @@ fn ScheduleSection(
                     })
             }}
         </Transition>
-        // When exactly one event is selected, show its standings/bracket below.
-        <EventSection leagues=leagues />
+        // When exactly one esports event is selected, show its standings/bracket.
+        {move || (!traditional.get()).then(|| view! { <EventSection leagues=leagues /> })}
     }
 }
 

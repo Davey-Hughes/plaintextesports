@@ -193,14 +193,17 @@ pub fn spawn_poller() {
             let window_end = now + Duration::days(cfg.upcoming_days);
 
             // Fetch (network) first, then apply synchronously so we never hold
-            // the (non-Sync) DB connection across an await point.
-            let (cs_res, lol_res) = tokio::join!(
+            // the (non-Sync) DB connection across an await point. MLB comes from
+            // its own (keyless) API and joins the same apply path.
+            let mlb_window = ((now - Duration::days(2)).date_naive(), window_end.date_naive());
+            let (cs_res, lol_res, mlb_raw) = tokio::join!(
                 fetch_game(&client, &token, Game::Cs2, window_end, deep),
                 fetch_game(&client, &token, Game::Lol, window_end, deep),
+                crate::mlb::fetch_schedule(&client, mlb_window.0, mlb_window.1),
             );
+            let mlb_res: FetchResult = mlb_raw.map_err(Into::into);
             apply_poll(
-                cs_res,
-                lol_res,
+                vec![(Game::Cs2, cs_res), (Game::Lol, lol_res), (Game::Mlb, mlb_res)],
                 store.as_mut(),
                 cfg.archive_cutoff(now).timestamp_millis(),
             );
@@ -356,8 +359,7 @@ fn is_active_window(
 /// Persist freshly polled matches (if a store is present) and refresh the
 /// in-memory snapshot. Synchronous — no `.await` while touching the DB.
 fn apply_poll(
-    cs_res: FetchResult,
-    lol_res: FetchResult,
+    results: Vec<(Game, FetchResult)>,
     store: Option<&mut rusqlite::Connection>,
     cutoff_ms: i64,
 ) {
@@ -366,7 +368,7 @@ fn apply_poll(
     let mut errored: Vec<Game> = Vec::new();
     let mut any_ok = false;
 
-    for (game, res) in [(Game::Cs2, cs_res), (Game::Lol, lol_res)] {
+    for (game, res) in results {
         match res {
             Ok(mut v) => {
                 any_ok = true;
@@ -561,6 +563,10 @@ fn collect_resolution_candidates() -> Vec<Candidate> {
     let mut seen = std::collections::HashSet::new();
     let mut out = Vec::new();
     for m in &snap.matches {
+        // Traditional sports (MLB) aren't on Liquipedia — never resolve them.
+        if m.game.traditional() {
+            continue;
+        }
         let year = m.begin_at.year();
         let key = event_key(m.game, &m.league, year);
         if !seen.insert(key.clone()) {
@@ -730,6 +736,7 @@ fn event_link(game: Game, league: &str, official: Option<&str>) -> String {
     let wiki = match game {
         Game::Cs2 => "counterstrike",
         Game::Lol => "leagueoflegends",
+        Game::Mlb => "counterstrike", // MLB has no Liquipedia link; unused
     };
     format!(
         "https://liquipedia.net/{wiki}/index.php?search={}",
@@ -803,7 +810,8 @@ fn group_days(views: Vec<MatchView>, tz: &Tz) -> Vec<DayGroup> {
         day.leagues.sort_by_key(|lg| match lg.matches.first().map(|m| m.game) {
             Some(Game::Cs2) => 0u8,
             Some(Game::Lol) => 1,
-            None => 2,
+            Some(Game::Mlb) => 2,
+            None => 3,
         });
     }
     days
@@ -812,6 +820,7 @@ fn group_days(views: Vec<MatchView>, tz: &Tz) -> Vec<DayGroup> {
 #[allow(clippy::too_many_arguments)]
 fn matches_in_window(
     snap: &Snapshot,
+    traditional: bool,
     game: Option<Game>,
     start: DateTime<Utc>,
     end: DateTime<Utc>,
@@ -822,10 +831,20 @@ fn matches_in_window(
     snap.matches
         .iter()
         .filter(|m| m.status != MatchStatus::Canceled)
+        // Esports and traditional sports are separate top-level modes.
+        .filter(|m| m.game.traditional() == traditional)
         .filter(|m| game.is_none_or(|g| m.game == g))
         .filter(|m| m.begin_at >= start && m.begin_at < end)
         .map(|m| to_view(m, tz, now, hour24))
         .collect()
+}
+
+/// The mode (traditional vs esports) and optional within-mode game for a filter
+/// slug: "mlb" ⇒ traditional MLB; "cs2"/"lol" ⇒ that esports title; anything else
+/// (incl. "all") ⇒ all esports.
+fn mode_filter(game_filter: &str) -> (bool, Option<Game>) {
+    let game = Game::from_filter(game_filter);
+    (game.is_some_and(Game::traditional), game)
 }
 
 /// Parse an IANA tz name, falling back to the configured default.
@@ -838,13 +857,13 @@ fn resolve_tz(name: &str, default: Tz) -> Tz {
 pub fn homepage_view(game_filter: &str, tz_name: &str, hour24: bool) -> ScheduleView {
     let cfg = config();
     let tz = resolve_tz(tz_name, cfg.tz);
-    let game = Game::from_filter(game_filter);
+    let (traditional, game) = mode_filter(game_filter);
     let now = Utc::now();
     let start = local_day_start(&tz, now.with_timezone(&tz).date_naive());
     let end = now + Duration::days(cfg.upcoming_days);
 
     let snap = SNAPSHOT.read().unwrap_or_else(PoisonError::into_inner);
-    let all = matches_in_window(&snap, game, start, end, &tz, now, hour24);
+    let all = matches_in_window(&snap, traditional, game, start, end, &tz, now, hour24);
 
     ScheduleView {
         days: group_days(all, &tz),
@@ -865,7 +884,7 @@ pub fn homepage_view(game_filter: &str, tz_name: &str, hour24: bool) -> Schedule
 pub fn day_view(date: &str, game_filter: &str, tz_name: &str, hour24: bool) -> ScheduleView {
     let cfg = config();
     let tz = resolve_tz(tz_name, cfg.tz);
-    let game = Game::from_filter(game_filter);
+    let (traditional, game) = mode_filter(game_filter);
     let now = Utc::now();
 
     let day = NaiveDate::parse_from_str(date, "%Y-%m-%d")
@@ -874,7 +893,7 @@ pub fn day_view(date: &str, game_filter: &str, tz_name: &str, hour24: bool) -> S
     let end = local_day_start(&tz, day + Duration::days(1));
 
     let snap = SNAPSHOT.read().unwrap_or_else(PoisonError::into_inner);
-    let all = matches_in_window(&snap, game, start, end, &tz, now, hour24);
+    let all = matches_in_window(&snap, traditional, game, start, end, &tz, now, hour24);
 
     let local_noon = tz
         .from_local_datetime(&day.and_hms_opt(12, 0, 0).unwrap())
@@ -907,7 +926,7 @@ pub fn range_view(
 ) -> ScheduleView {
     let cfg = config();
     let tz = resolve_tz(tz_name, cfg.tz);
-    let game = Game::from_filter(game_filter);
+    let (traditional, game) = mode_filter(game_filter);
     let now = Utc::now();
     let today = now.with_timezone(&tz).date_naive();
 
@@ -919,7 +938,7 @@ pub fn range_view(
     let end = local_day_start(&tz, end_day + Duration::days(1));
 
     let snap = SNAPSHOT.read().unwrap_or_else(PoisonError::into_inner);
-    let all = matches_in_window(&snap, game, start, end, &tz, now, hour24);
+    let all = matches_in_window(&snap, traditional, game, start, end, &tz, now, hour24);
 
     ScheduleView {
         days: group_days(all, &tz),

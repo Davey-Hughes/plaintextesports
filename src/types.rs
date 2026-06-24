@@ -12,6 +12,9 @@ pub enum Game {
     #[default]
     Cs2,
     Lol,
+    /// Major League Baseball — a traditional sport, fetched from the MLB Stats
+    /// API rather than PandaScore. Lives behind the esports/traditional toggle.
+    Mlb,
 }
 
 impl Game {
@@ -20,6 +23,7 @@ impl Game {
         match self {
             Self::Cs2 => "CS2",
             Self::Lol => "LoL",
+            Self::Mlb => "MLB",
         }
     }
 
@@ -28,7 +32,14 @@ impl Game {
         match self {
             Self::Cs2 => "cs2",
             Self::Lol => "lol",
+            Self::Mlb => "mlb",
         }
+    }
+
+    /// A traditional sport (vs an esports title) — drives the top-bar mode toggle.
+    #[must_use]
+    pub const fn traditional(self) -> bool {
+        matches!(self, Self::Mlb)
     }
 
     /// Parse a UI filter slug. Unknown values (incl. "all") map to `None`.
@@ -37,6 +48,7 @@ impl Game {
         match s {
             "cs2" => Some(Self::Cs2),
             "lol" => Some(Self::Lol),
+            "mlb" => Some(Self::Mlb),
             _ => None,
         }
     }
