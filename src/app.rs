@@ -150,6 +150,7 @@ pub fn App() -> impl IntoView {
             range.set(load_range());
             // `games`/`leagues` are initialised by `FilterUrlSync` (URL query, else
             // localStorage) since it needs the router context.
+            setup_scrollspy();
             leptos::task::spawn_local(async move {
                 if let Ok(k) = crate::server::get_vapid_key().await {
                     vapid.set(k);
@@ -178,6 +179,82 @@ pub fn App() -> impl IntoView {
             </div>
         </Router>
     }
+}
+
+/// Update the URL hash to the `.spy` section currently scrolled into view (its
+/// `id` becomes the hash) via `replaceState`, so it neither scrolls nor stacks
+/// history. Targets are the homepage day groups and the event page's sections.
+#[cfg(feature = "hydrate")]
+fn scrollspy_update() {
+    use wasm_bindgen::JsCast;
+    let Some(win) = web_sys::window() else {
+        return;
+    };
+    let Some(doc) = win.document() else {
+        return;
+    };
+    let Ok(nodes) = doc.query_selector_all(".spy[id]") else {
+        return;
+    };
+    // Sections come in document order. The active one spans the line just below
+    // the sticky header (matching the jump anchors' scroll-margin); if that line
+    // falls in a gap, keep the section above it.
+    let trigger = 80.0;
+    let mut last_above = String::new();
+    let mut contained = String::new();
+    for i in 0..nodes.length() {
+        let Some(el) = nodes.item(i).and_then(|n| n.dyn_into::<web_sys::Element>().ok()) else {
+            continue;
+        };
+        let r = el.get_bounding_client_rect();
+        if r.top() <= trigger {
+            last_above = el.id();
+            if r.bottom() > trigger {
+                contained = last_above.clone();
+            }
+        }
+    }
+    let active = if contained.is_empty() { last_above } else { contained };
+    let loc = win.location();
+    let want = if active.is_empty() { String::new() } else { format!("#{active}") };
+    if loc.hash().unwrap_or_default() == want {
+        return;
+    }
+    let url = if want.is_empty() {
+        // Strip the hash, keeping the path + query.
+        format!("{}{}", loc.pathname().unwrap_or_default(), loc.search().unwrap_or_default())
+    } else {
+        want
+    };
+    if let Ok(hist) = win.history() {
+        let _ = hist.replace_state_with_url(&wasm_bindgen::JsValue::NULL, "", Some(&url));
+    }
+}
+
+/// Install a global, rAF-throttled scroll listener that keeps the URL hash in
+/// sync with the visible `.spy` section. Lives for the app's lifetime.
+#[cfg(feature = "hydrate")]
+fn setup_scrollspy() {
+    use std::cell::Cell;
+    use wasm_bindgen::closure::Closure;
+    use wasm_bindgen::JsCast;
+    thread_local! {
+        static TICKING: Cell<bool> = const { Cell::new(false) };
+    }
+    let Some(win) = web_sys::window() else {
+        return;
+    };
+    let cb = Closure::<dyn FnMut()>::new(|| {
+        if !TICKING.with(Cell::get) {
+            TICKING.with(|t| t.set(true));
+            request_animation_frame(|| {
+                scrollspy_update();
+                TICKING.with(|t| t.set(false));
+            });
+        }
+    });
+    let _ = win.add_event_listener_with_callback("scroll", cb.as_ref().unchecked_ref());
+    cb.forget();
 }
 
 /// Keeps the schedule filter (games + events) in sync with the URL query so a
@@ -565,7 +642,7 @@ fn EventStageCombo(
         </div>
     };
     view! {
-        <div class="event-extra" id=format!("stage-{tournament_id}")>
+        <div class="event-extra spy" id=format!("stage-{tournament_id}")>
             <div class="stage-bar">{label}</div>
             // The grid/list toggle sits at the top-right of the views, on the
             // "Bracket"/"Standings" title row (just above its underline).
@@ -703,7 +780,7 @@ fn EventPage() -> impl IntoView {
                                 <h1 class="detail-title">{title}</h1>
                                 {link}
                                 {nav}
-                                <div id="sched">{render_schedule(s, false, push, true)}</div>
+                                <div id="sched" class="spy">{render_schedule(s, false, push, true)}</div>
                                 {sep}
                                 <EventStages stages=stage_list times=times />
                             </article>
@@ -3310,20 +3387,41 @@ fn render_schedule(s: ScheduleView, show_nav: bool, push: bool, event_mode: bool
                     "day-title"
                 }
             });
+            // On the homepage the date heading doubles as a share link: clicking it
+            // writes #day-<date> to the URL (handy for the last days, which you
+            // can't scroll far enough for the scrollspy to reach).
+            let key = d.day_key.clone();
+            let heading = view! {
+                <h2
+                    class=day_cls
+                    class:day-share=!event_mode
+                    title=(!event_mode).then_some("Link to this day")
+                    on:click=move |_| {
+                        #[cfg(feature = "hydrate")]
+                        if !event_mode {
+                            if let Some(h) = web_sys::window().and_then(|w| w.history().ok()) {
+                                let _ = h.replace_state_with_url(
+                                    &wasm_bindgen::JsValue::NULL,
+                                    "",
+                                    Some(&format!("#day-{key}")),
+                                );
+                            }
+                        }
+                        #[cfg(not(feature = "hydrate"))]
+                        let _ = &key;
+                    }
+                >
+                    {d.day_label}
+                </h2>
+            };
             // The first day carries the "show earlier days" control beside its date.
             let head = if idx == 0 && show_earlier {
-                view! {
-                    <div class="day-head">
-                        <h2 class=day_cls>{d.day_label}</h2>
-                        <EarlierControl />
-                    </div>
-                }
-                    .into_any()
+                view! { <div class="day-head">{heading}<EarlierControl /></div> }.into_any()
             } else {
-                view! { <h2 class=day_cls>{d.day_label}</h2> }.into_any()
+                heading.into_any()
             };
             view! {
-                <section class="day" id=format!("day-{}", d.day_key)>
+                <section class="day" class:spy=!event_mode id=format!("day-{}", d.day_key)>
                     {head}
                     {leagues}
                 </section>

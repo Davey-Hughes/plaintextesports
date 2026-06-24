@@ -516,6 +516,17 @@ a {
     color: var(--accent);
     border-bottom-color: var(--accent);
   }
+
+  // On the homepage the heading links to this day; a "#" hints it on hover.
+  &.day-share {
+    cursor: pointer;
+  }
+
+  &.day-share:hover::after {
+    content: " #";
+    color: var(--muted);
+    font-weight: 400;
+  }
 }
 
 // The first day shares its title line with the "show earlier days" control; the
