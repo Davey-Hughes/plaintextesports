@@ -61,6 +61,34 @@ fn event_key(game: Game, league: &str, year: i32) -> String {
 static EVENTS: Lazy<RwLock<HashMap<i64, CachedEvent>>> =
     Lazy::new(|| RwLock::new(HashMap::new()));
 
+/// Current MLB division standings (six tables), refreshed by the poller from the
+/// keyless MLB Stats API. Empty until the first successful fetch.
+static MLB_STANDINGS: Lazy<RwLock<Vec<EventInfo>>> = Lazy::new(|| RwLock::new(Vec::new()));
+
+/// The MLB division standings (all six divisions), for the `/event/MLB` page.
+pub fn mlb_standings() -> Vec<EventInfo> {
+    MLB_STANDINGS
+        .read()
+        .unwrap_or_else(PoisonError::into_inner)
+        .clone()
+}
+
+/// The standings tables for the divisions of `team_a`/`team_b` (one or two
+/// tables), for an MLB match page. Order follows the league-wide ordering.
+pub fn mlb_team_divisions(team_a: &str, team_b: &str) -> Vec<EventInfo> {
+    MLB_STANDINGS
+        .read()
+        .unwrap_or_else(PoisonError::into_inner)
+        .iter()
+        .filter(|div| {
+            div.standings
+                .iter()
+                .any(|r| r.team == team_a || r.team == team_b)
+        })
+        .cloned()
+        .collect()
+}
+
 struct CachedEvent {
     info: EventInfo,
     fetched_at: DateTime<Utc>,
@@ -196,10 +224,11 @@ pub fn spawn_poller() {
             // the (non-Sync) DB connection across an await point. MLB comes from
             // its own (keyless) API and joins the same apply path.
             let mlb_window = ((now - Duration::days(2)).date_naive(), window_end.date_naive());
-            let (cs_res, lol_res, mlb_raw) = tokio::join!(
+            let (cs_res, lol_res, mlb_raw, mlb_standings_raw) = tokio::join!(
                 fetch_game(&client, &token, Game::Cs2, window_end, deep),
                 fetch_game(&client, &token, Game::Lol, window_end, deep),
                 crate::mlb::fetch_schedule(&client, mlb_window.0, mlb_window.1),
+                crate::mlb::fetch_standings(&client, now.year()),
             );
             let mlb_res: FetchResult = mlb_raw.map_err(Into::into);
             apply_poll(
@@ -207,6 +236,15 @@ pub fn spawn_poller() {
                 store.as_mut(),
                 cfg.archive_cutoff(now).timestamp_millis(),
             );
+            // Refresh the MLB standings cache (keep the old tables on error or an
+            // empty off-season response, rather than blanking the page).
+            match mlb_standings_raw {
+                Ok(divs) if !divs.is_empty() => {
+                    *MLB_STANDINGS.write().unwrap_or_else(PoisonError::into_inner) = divs;
+                }
+                Ok(_) => {}
+                Err(e) => leptos::logging::log!("MLB standings fetch failed: {e}"),
+            }
 
             // Resolve exact Liquipedia links for any new events. The async
             // lookups hold no DB connection; persistence happens synchronously
@@ -395,6 +433,19 @@ fn apply_poll(
         match crate::store::load_all(conn) {
             Ok(mut all) => {
                 all.sort_by_key(|m| m.begin_at);
+                // Streams/broadcasts aren't persisted to the DB, so the reload
+                // drops them; re-attach them from this poll's fresh fetch (keyed
+                // by match id) so the detail page still has them.
+                let mut live: HashMap<i64, Vec<StreamView>> = fresh
+                    .into_iter()
+                    .filter(|m| !m.streams.is_empty())
+                    .map(|m| (m.id, m.streams))
+                    .collect();
+                for m in &mut all {
+                    if let Some(s) = live.remove(&m.id) {
+                        m.streams = s;
+                    }
+                }
                 let mut snap = SNAPSHOT.write().unwrap_or_else(PoisonError::into_inner);
                 let n = all.len();
                 snap.matches = all;
@@ -522,6 +573,11 @@ fn next_due_refresh_bucket(conn: &rusqlite::Connection, now: DateTime<Utc>) -> O
         let snap = SNAPSHOT.read().unwrap_or_else(PoisonError::into_inner);
         let mut set = std::collections::HashSet::new();
         for m in &snap.matches {
+            // Past-refresh re-fetches a day from PandaScore; traditional sports
+            // (MLB) come from their own feed and have no PandaScore endpoint.
+            if m.game.traditional() {
+                continue;
+            }
             let day = m.begin_at.date_naive();
             if (1..=7).contains(&(today - day).num_days()) {
                 set.insert((m.game, day));
@@ -1359,6 +1415,7 @@ fn demo_event_info(league: &str) -> EventInfo {
         ties: 0,
         game_wins: gw,
         game_losses: gl,
+        ..Default::default()
     };
     let standings = vec![
         row(1, t[2], 3, 0, 9, 3),
@@ -1407,6 +1464,7 @@ fn drow(rank: i32, team: &str, w: i32, l: i32, gw: i32, gl: i32) -> StandingRow 
         ties: 0,
         game_wins: gw,
         game_losses: gl,
+        ..Default::default()
     }
 }
 
@@ -1756,6 +1814,7 @@ fn demo_streams() -> Vec<StreamView> {
         language: language.to_string(),
         official,
         main,
+        ..Default::default()
     };
     vec![
         s("https://www.twitch.tv/esl_csgo", "en", true, true),

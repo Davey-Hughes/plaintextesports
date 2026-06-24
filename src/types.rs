@@ -219,7 +219,9 @@ pub struct SubscribeReq {
     pub value: String,
 }
 
-/// One broadcast/stream for a match (from PandaScore `streams_list`).
+/// One broadcast/stream for a match. Esports entries (from PandaScore
+/// `streams_list`) carry a clickable `url`; MLB TV/radio broadcasts carry no
+/// link, just a network `name` and a pre-formatted `tag` (e.g. "national · TV").
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StreamView {
     pub url: String,
@@ -227,6 +229,14 @@ pub struct StreamView {
     pub language: String,
     pub official: bool,
     pub main: bool,
+    /// Display label for a link-less broadcast (the network name). Empty for
+    /// esports streams, whose label is derived from the `url`.
+    #[serde(default)]
+    pub name: String,
+    /// Pre-formatted tag for a link-less broadcast (e.g. "national · TV"). Empty
+    /// for esports streams, whose tags are derived from language/main/official.
+    #[serde(default)]
+    pub tag: String,
 }
 
 /// One row of a group-stage / Swiss standings table.
@@ -240,6 +250,10 @@ pub struct StandingRow {
     /// Maps/games won and lost (the "map diff"); zeroed when unavailable.
     pub game_wins: i32,
     pub game_losses: i32,
+    /// Games back from the division leader (MLB), e.g. "3.5" or "-" for the
+    /// leader. Empty for esports standings, which don't use it.
+    #[serde(default)]
+    pub gb: String,
 }
 
 /// One match within a bracket round.
@@ -354,6 +368,10 @@ pub struct MatchDetail {
     pub match_view: Option<MatchView>,
     pub streams: Vec<StreamView>,
     pub event: EventInfo,
+    /// Extra standings tables shown below `event` — used by MLB to show each
+    /// team's division table. Empty for esports (which use `event`).
+    #[serde(default)]
+    pub stages: Vec<EventInfo>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]

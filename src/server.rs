@@ -2,6 +2,8 @@
 //! on the client the `#[server]` macro replaces them with a network call.
 
 use crate::types::{EventInfo, MatchDetail, ReminderReq, ScheduleView, SiteInfo, SubscribeReq};
+#[cfg(feature = "ssr")]
+use crate::types::Game;
 use leptos::prelude::*;
 
 /// Homepage schedule. `game` is "all"/"cs2"/"lol"; `tz` is an IANA name (empty
@@ -82,11 +84,19 @@ pub async fn get_match_detail(
             None => EventInfo::default(),
         };
         event.event = league;
+        // MLB matches have no per-tournament event; show the two teams' division
+        // standings instead.
+        let stages = if match_view.game == Game::Mlb {
+            crate::cache::mlb_team_divisions(&match_view.team_a.label, &match_view.team_b.label)
+        } else {
+            Vec::new()
+        };
         Ok(MatchDetail {
             found: true,
             match_view: Some(match_view),
             streams,
             event,
+            stages,
         })
     }
     #[cfg(not(feature = "ssr"))]
@@ -120,6 +130,11 @@ pub async fn get_event_schedule(
 pub async fn get_event_stages(league: String) -> Result<Vec<EventInfo>, ServerFnError> {
     #[cfg(feature = "ssr")]
     {
+        // MLB has no per-tournament standings; its event page shows the league's
+        // six division tables instead.
+        if league == "MLB" {
+            return Ok(crate::cache::mlb_standings());
+        }
         let tids = crate::cache::event_stages(&league);
         Ok(crate::cache::stages_info(tids, &league).await)
     }
