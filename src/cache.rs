@@ -132,9 +132,37 @@ pub async fn mlb_series(match_id: i64, tz_name: &str, hour24: bool) -> Option<cr
         let sref = m.mlb_series?;
         (sref, m.team_a.label.clone(), m.team_b.label.clone(), m.begin_at)
     };
-    // Format each game's time in the display tz, exactly like the schedule rows.
-    let fmt_time = move |utc: DateTime<Utc>| time_label(utc.with_timezone(&tz), hour24);
-    match crate::mlb::fetch_series(&HTTP, match_id, begin_at, &team_a, &team_b, sref, fmt_time).await
+    // Build each game's labels: the date + time in the viewer's tz (always
+    // mutually consistent), and the same instant in the ballpark's tz as a full
+    // "date · time tz" for the venue toggle. The venue label is omitted when the
+    // venue tz is unknown or shows the very same wall-clock as the viewer's
+    // (nothing to add).
+    let fmt_labels = move |utc: DateTime<Utc>, venue_tz: Option<&str>| {
+        let local = utc.with_timezone(&tz);
+        let venue = venue_tz
+            .and_then(|id| id.parse::<Tz>().ok())
+            .map(|vtz| utc.with_timezone(&vtz))
+            .filter(|vlocal| {
+                // Only worth showing when it differs from the viewer's wall clock.
+                vlocal.naive_local() != local.naive_local()
+            })
+            .map(|vlocal| {
+                format!(
+                    "{} · {} {}",
+                    short_day_label(vlocal),
+                    time_label(vlocal, hour24),
+                    vlocal.format("%Z"),
+                )
+            })
+            .unwrap_or_default();
+        crate::mlb::SeriesLabels {
+            day: short_day_label(local),
+            clock: time_label(local, hour24),
+            venue,
+        }
+    };
+    match crate::mlb::fetch_series(&HTTP, match_id, begin_at, &team_a, &team_b, sref, fmt_labels)
+        .await
     {
         Ok(series) if !series.games.is_empty() => {
             MLB_SERIES.write().unwrap_or_else(PoisonError::into_inner).insert(
@@ -777,6 +805,12 @@ fn day_label(local: DateTime<Tz>) -> String {
         local.format("%B"),
         local.day()
     )
+}
+
+/// Compact day label, e.g. "Mon, Jun 23" — used by the series rows, where the
+/// date sits inline with the time rather than as a day heading.
+fn short_day_label(local: DateTime<Tz>) -> String {
+    format!("{}, {} {}", local.format("%a"), local.format("%b"), local.day())
 }
 
 /// Resolve the effective view status, applying the "started but not marked

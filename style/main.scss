@@ -1653,24 +1653,22 @@ a.sw-link {
 .series-games {
   margin: 0.4rem 0 0;
 
-  // Dates ("Mon, Jun 22") are wider than clock times, so widen the leading
-  // column the schedule reserves for the time. The rest matches the schedule
-  // row exactly, so the series spans the same width as the regular schedule.
+  // Each row leads with the date and time on one line ("Mon, Jun 22 · 1:07 PM"),
+  // wider than the schedule's clock-only column. The remaining columns match the
+  // schedule, so the series spans the same width as the regular schedule.
   .row-body {
-    grid-template-columns: 6.5em minmax(0, 1fr) auto minmax(0, 1fr) 5.2em;
+    grid-template-columns: 11.5em minmax(0, 1fr) auto minmax(0, 1fr) 5.2em;
   }
 
-  // The leading column stacks the date over the start time (the series runs
-  // across several days, so each row carries both).
-  .series-when {
-    display: inline-flex;
-    flex-direction: column;
-    line-height: 1.25;
+  // The date+time sits on one line ("Mon, Jun 22 · 1:07 PM"). The venue label
+  // (when toggled on) trails after it and may wrap to a second line within the
+  // leading column rather than colliding with the team name.
+  .series-when-local {
+    white-space: nowrap;
   }
 
-  .series-time {
-    color: var(--muted);
-    font-size: 12px;
+  .series-when .row-time-venue {
+    white-space: nowrap;
   }
 
   // The game this page is about: an accent rail + bolder date, and no hover

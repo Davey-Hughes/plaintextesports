@@ -406,12 +406,20 @@ pub struct MlbSeriesRef {
 /// reveal toggle is on, so nothing leaks past the spoiler gate.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SeriesGame {
-    /// Short day label for the game, e.g. "Mon, Jun 23".
+    /// Date label in the viewer's display tz, e.g. "Mon, Jun 23". Derived from the
+    /// same tz as `clock_label`, so the date and time always agree (a late game can
+    /// fall on a different calendar day in the viewer's tz than at the ballpark).
     pub day_label: String,
     /// Start time in the display tz, e.g. "6:40 PM" (formatted server-side, like
     /// the schedule rows). Empty when the start time can't be parsed.
     #[serde(default)]
     pub clock_label: String,
+    /// The same start as `day_label`/`clock_label` but in the ballpark's local tz,
+    /// as a full "date · time tz" (e.g. "Mon, Jun 23 · 7:10 PM EDT") — shown when
+    /// the viewer clicks the time, like the schedule's venue toggle. Empty when the
+    /// venue tz is unknown or matches the display tz (nothing to add).
+    #[serde(default)]
+    pub venue_label: String,
     /// The two sides' short labels, in the same order as the headline match
     /// (`team_a` is the headline's left team), so each row reads consistently.
     pub team_a: String,
