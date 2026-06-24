@@ -519,7 +519,7 @@ fn SiteFooter() -> impl IntoView {
                 <span>
                     {move || {
                         if traditional.get() {
-                            "MLB schedules"
+                            "MLB + F1 schedules"
                         } else {
                             "tier-1 cs2 + lol schedules"
                         }
@@ -528,7 +528,11 @@ fn SiteFooter() -> impl IntoView {
                 <span class="sep">" · "</span>
                 <span>
                     {move || {
-                        if traditional.get() { "data via MLB Stats API" } else { "data via PandaScore" }
+                        if traditional.get() {
+                            "data via MLB Stats API & Jolpica"
+                        } else {
+                            "data via PandaScore"
+                        }
                     }}
                 </span>
             </div>
