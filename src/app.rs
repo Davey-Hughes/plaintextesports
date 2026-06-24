@@ -484,62 +484,74 @@ fn SiteFooter() -> impl IntoView {
     let vapid = use_context::<RwSignal<Option<String>>>().expect("vapid context");
     view! {
         <footer class="footer" id="site-footer">
-            <A href="/about">"about"</A>
-            {move || {
-                vapid
-                    .with(|v| v.is_some())
-                    .then(|| {
-                        view! {
-                            <span class="sep">" · "</span>
-                            <A href="/notifications">"notifications"</A>
+            // Line 1: navigation + what/where the data is.
+            <div class="footer-line">
+                <A href="/about">"about"</A>
+                {move || {
+                    vapid
+                        .with(|v| v.is_some())
+                        .then(|| {
+                            view! {
+                                <span class="sep">" · "</span>
+                                <A href="/notifications">"notifications"</A>
+                            }
+                        })
+                }}
+                <span class="sep">" · "</span>
+                <span>
+                    {move || {
+                        if traditional.get() {
+                            "MLB schedules"
+                        } else {
+                            "tier-1 cs2 + lol schedules"
                         }
-                    })
-            }}
-            <span class="sep">" · "</span>
-            <span>
-                {move || {
-                    if traditional.get() { "MLB schedules" } else { "tier-1 cs2 + lol schedules" }
-                }}
-            </span>
-            <span class="sep">" · "</span>
-            <span>
-                {move || {
-                    if traditional.get() { "data via MLB Stats API" } else { "data via PandaScore" }
-                }}
-            </span>
+                    }}
+                </span>
+                <span class="sep">" · "</span>
+                <span>
+                    {move || {
+                        if traditional.get() { "data via MLB Stats API" } else { "data via PandaScore" }
+                    }}
+                </span>
+            </div>
+            // Line 2: copyright + external links, joined by separators (no
+            // leading one, so the centred line reads cleanly).
             <Suspense>
                 {move || {
                     site.get()
                         .and_then(Result::ok)
                         .map(|s| {
-                            // The copyright links out when a URL is configured,
-                            // otherwise it's plain text.
-                            let copyright = s.copyright.map(|c| {
+                            let mut items: Vec<AnyView> = Vec::new();
+                            // The copyright links out when a URL is configured.
+                            if let Some(c) = s.copyright {
                                 let url = s.copyright_url.filter(|u| !u.trim().is_empty());
-                                let inner = match url {
+                                items.push(match url {
                                     Some(u) => {
-                                        view! {
-                                            <a href=u target="_blank" rel="noreferrer">{c}</a>
-                                        }
+                                        view! { <a href=u target="_blank" rel="noreferrer">{c}</a> }
                                             .into_any()
                                     }
                                     None => view! { <span>{c}</span> }.into_any(),
-                                };
-                                view! { <span class="sep">" · "</span>{inner} }
-                            });
-                            let links = s
-                                .links
-                                .into_iter()
-                                .map(|l| {
+                                });
+                            }
+                            for l in s.links {
+                                items.push(
                                     view! {
-                                        <span class="sep">" · "</span>
-                                        <a href=l.url target="_blank" rel="noreferrer">
-                                            {l.label}
-                                        </a>
+                                        <a href=l.url target="_blank" rel="noreferrer">{l.label}</a>
+                                    }
+                                        .into_any(),
+                                );
+                            }
+                            let joined = items
+                                .into_iter()
+                                .enumerate()
+                                .map(|(i, it)| {
+                                    view! {
+                                        {(i > 0).then(|| view! { <span class="sep">" · "</span> })}
+                                        {it}
                                     }
                                 })
                                 .collect_view();
-                            view! { {copyright}{links} }
+                            view! { <div class="footer-line">{joined}</div> }
                         })
                 }}
             </Suspense>
