@@ -207,6 +207,8 @@ fn expand_subscriptions(conn: &rusqlite::Connection) {
                 url: seed.url,
                 game: seed.game,
                 league: seed.league,
+                team_a: seed.team_a,
+                team_b: seed.team_b,
             };
             if let Err(e) = store::add_reminder_if_absent(conn, &r) {
                 leptos::logging::log!("expand_subscriptions: add_reminder_if_absent failed: {e}");
@@ -258,6 +260,8 @@ mod tests {
             url: "https://example.com/".into(),
             game: "lol".into(),
             league: "LCK".into(),
+            team_a: "T1".into(),
+            team_b: "Gen.G".into(),
         };
 
         let req = build_push_request(&key, "mailto:dev@example.com", &r).expect("build");

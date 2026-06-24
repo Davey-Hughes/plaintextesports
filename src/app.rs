@@ -4042,7 +4042,16 @@ fn MatchRow(m: MatchView, show_bo: bool, push: bool) -> impl IntoView {
         MatchStatus::Live => view! { <span class="row-bar live"></span> }.into_any(),
         MatchStatus::Finished => view! { <span class="row-bar final"></span> }.into_any(),
         MatchStatus::Upcoming if push => {
-            view! { <StarButton id=m.id game=m.game league=m.league.clone() /> }.into_any()
+            view! {
+                <StarButton
+                    id=m.id
+                    game=m.game
+                    league=m.league.clone()
+                    team_a=m.team_a.name.clone()
+                    team_b=m.team_b.name.clone()
+                />
+            }
+                .into_any()
         }
         _ => view! { <span class="row-lead-empty"></span> }.into_any(),
     };
@@ -4056,18 +4065,22 @@ fn MatchRow(m: MatchView, show_bo: bool, push: bool) -> impl IntoView {
 }
 
 #[component]
-fn StarButton(id: i64, game: Game, league: String) -> impl IntoView {
+fn StarButton(id: i64, game: Game, league: String, team_a: String, team_b: String) -> impl IntoView {
     let starred = use_context::<RwSignal<HashSet<i64>>>().expect("starred context");
     let subscribed = use_context::<Subscribed>().expect("subscribed context").0;
     let vapid = use_context::<RwSignal<Option<String>>>().expect("vapid context");
     // The ★ lights up if this match is starred individually *or* a higher-level
-    // subscription (the whole game, or this event) already covers it — so the
-    // star reflects everything you'll be notified about.
-    let game_key = format!("game|{}", game.slug());
-    let league_key = format!("league|{league}");
+    // subscription (the whole game, this event, or either team) already covers
+    // it — so the star reflects everything you'll be notified about.
+    let keys = [
+        format!("game|{}", game.slug()),
+        format!("league|{league}"),
+        format!("team|{team_a}"),
+        format!("team|{team_b}"),
+    ];
     let is_on = Memo::new(move |_| {
         starred.with(|s| s.contains(&id))
-            || subscribed.with(|s| s.contains(&game_key) || s.contains(&league_key))
+            || subscribed.with(|s| keys.iter().any(|k| s.contains(k)))
     });
 
     let on_click = move |_| {

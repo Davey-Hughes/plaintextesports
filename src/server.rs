@@ -241,6 +241,8 @@ pub async fn add_reminder(req: ReminderReq) -> Result<(), ServerFnError> {
             url: seed.url,
             game: seed.game,
             league: seed.league,
+            team_a: seed.team_a,
+            team_b: seed.team_b,
         };
         crate::store::add_reminder(&conn, &r).map_err(|e| ServerFnError::new(format!("db: {e}")))?;
         Ok(())
