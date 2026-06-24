@@ -87,11 +87,18 @@ pub async fn get_match_detail(
         };
         event.event = league;
         // MLB matches have no per-tournament event; show the two teams' division
-        // standings instead.
-        let stages = if match_view.game == Game::Mlb {
-            crate::cache::mlb_team_divisions(&match_view.team_a.label, &match_view.team_b.label)
+        // standings instead, plus the series between them (fetched on demand,
+        // request-time, TTL-cached so it doesn't hammer the MLB API).
+        let (stages, series) = if match_view.game == Game::Mlb {
+            (
+                crate::cache::mlb_team_divisions(
+                    &match_view.team_a.label,
+                    &match_view.team_b.label,
+                ),
+                crate::cache::mlb_series(id).await.unwrap_or_default(),
+            )
         } else {
-            Vec::new()
+            (Vec::new(), crate::types::Series::default())
         };
         Ok(MatchDetail {
             found: true,
@@ -99,6 +106,7 @@ pub async fn get_match_detail(
             streams,
             event,
             stages,
+            series,
         })
     }
     #[cfg(not(feature = "ssr"))]

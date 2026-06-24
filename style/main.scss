@@ -1637,6 +1637,95 @@ a.sw-link {
   }
 }
 
+// The MLB "Series" section: one row per game of the set between the two teams.
+// "Game N of M" rides the section title; the record line sits below the list.
+.series-meta {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 400;
+  text-transform: none;
+  letter-spacing: 0;
+  margin-left: 0.5rem;
+}
+
+.series-games {
+  list-style: none;
+  margin: 0.4rem 0 0;
+  padding: 0;
+  font-size: 13px;
+  max-width: 26rem;
+}
+
+.series-game {
+  // date | team a | score | team b — score centred between the two names.
+  display: grid;
+  grid-template-columns: 6.5rem 1fr auto 1fr;
+  align-items: baseline;
+  gap: 0.4rem;
+  padding: 0.2rem 0;
+  border-left: 2px solid transparent;
+  padding-left: 0.4rem;
+
+  // The game the page is about, marked with an accent rail + bolder date.
+  &.series-current {
+    border-left-color: var(--accent);
+
+    .series-day {
+      color: var(--fg);
+      font-weight: 600;
+    }
+  }
+
+  .series-day {
+    color: var(--muted);
+
+    a {
+      color: inherit;
+      text-decoration: none;
+
+      &:hover {
+        text-decoration: underline;
+      }
+    }
+  }
+
+  .series-team-a {
+    text-align: right;
+  }
+
+  .series-team-b {
+    text-align: left;
+  }
+
+  // Reuse the headline winner/loser emphasis (revealed only).
+  .series-team.winner {
+    color: var(--win);
+    font-weight: 700;
+  }
+
+  .series-team.loser {
+    color: var(--muted);
+  }
+
+  .series-score {
+    color: var(--muted);
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+  }
+}
+
+// The series standing (e.g. "Blue Jays lead 2–1") — a revealed spoiler.
+.series-record {
+  margin: 0.55rem 0 0;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--fg);
+
+  &.series-hidden {
+    display: none;
+  }
+}
+
 .standings {
   border-collapse: collapse;
   font-size: 13px;

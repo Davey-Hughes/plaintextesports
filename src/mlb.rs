@@ -28,12 +28,21 @@ struct RawGame {
     game_pk: i64,
     #[serde(rename = "gameDate", default)]
     game_date: String,
+    /// Calendar date of the game in the venue's local sense (e.g. "2026-06-23"),
+    /// stable across timezones — used to label and order the series games.
+    #[serde(rename = "officialDate", default)]
+    official_date: String,
     #[serde(default)]
     status: RawStatus,
     #[serde(default)]
     teams: RawTeams,
     #[serde(rename = "seriesDescription", default)]
     series: String,
+    /// This game's 1-based position within its series, and the series length.
+    #[serde(rename = "seriesGameNumber", default)]
+    series_game_number: i32,
+    #[serde(rename = "gamesInSeries", default)]
+    games_in_series: i32,
     #[serde(default)]
     broadcasts: Vec<RawBroadcast>,
     #[serde(default)]
@@ -93,6 +102,8 @@ struct RawSide {
 
 #[derive(Deserialize, Default)]
 struct RawTeamRef {
+    #[serde(default)]
+    id: i64,
     #[serde(default)]
     name: String,
     #[serde(rename = "teamName", default)]
@@ -297,6 +308,18 @@ fn to_match(g: RawGame) -> Option<NormalizedMatch> {
         // ballpark (handles cross-country and neutral-site games).
         venue_tz: Some(g.venue.time_zone.id).filter(|s| !s.is_empty()),
         streams: broadcasts(&g.broadcasts),
+        // Carry the two teams' ids + this game's series position so the detail
+        // page can fetch the whole series between them. Only when both ids and a
+        // sane series length are present.
+        mlb_series: (g.teams.away.team.id > 0
+            && g.teams.home.team.id > 0
+            && g.games_in_series > 0)
+            .then_some(crate::types::MlbSeriesRef {
+                team_id_a: g.teams.away.team.id,
+                team_id_b: g.teams.home.team.id,
+                game_number: g.series_game_number,
+                games_in_series: g.games_in_series,
+            }),
     })
 }
 
@@ -313,6 +336,174 @@ pub async fn fetch_schedule(
     );
     let resp: ScheduleResp = client.get(&url).send().await?.error_for_status()?.json().await?;
     Ok(resp.dates.into_iter().flat_map(|d| d.games).filter_map(to_match).collect())
+}
+
+// ----- Series (the multi-game set between two teams) ------------------------
+
+/// Short day label for a series game, e.g. "Mon, Jun 23", from the API's
+/// timezone-stable `officialDate` ("2026-06-23"). Falls back to the raw date.
+fn series_day_label(official_date: &str, game_date: &str) -> String {
+    NaiveDate::parse_from_str(official_date, "%Y-%m-%d")
+        .ok()
+        .or_else(|| {
+            DateTime::parse_from_rfc3339(game_date)
+                .ok()
+                .map(|d| d.date_naive())
+        })
+        .map_or_else(|| official_date.to_string(), |d| d.format("%a, %b %-d").to_string())
+}
+
+/// Build the [`Series`] view for the headline game `game_pk`, given the raw games
+/// of the series (already fetched, in any order) and the headline orientation:
+/// `(team_a_id, team_a_label)` is the headline's left side, `team_b_label` the
+/// right (any game side that isn't `team_a_id` is team B). Games are oriented to
+/// the headline (so each row reads `team_a` vs `team_b` consistently), ordered by
+/// series game number, the current game flagged, and the spoiler-bearing record
+/// computed from finished games.
+fn build_series(
+    games: Vec<RawGame>,
+    game_pk: i64,
+    team_a_id: i64,
+    team_a_label: &str,
+    team_b_label: &str,
+) -> crate::types::Series {
+    use crate::types::SeriesGame;
+
+    // Keep only games of *this* series (same length + a real series number), so a
+    // padded window can't pull in an adjacent series between the same two teams.
+    let anchor_len = games
+        .iter()
+        .find(|g| g.game_pk == game_pk)
+        .map(|g| g.games_in_series)
+        .unwrap_or(0);
+    let mut raw: Vec<RawGame> = games
+        .into_iter()
+        .filter(|g| g.series_game_number > 0 && (anchor_len == 0 || g.games_in_series == anchor_len))
+        .collect();
+    // Order by series game number, then start time (doubleheaders share a number
+    // only across series, but keep a stable tiebreak by date/pk).
+    raw.sort_by(|x, y| {
+        x.series_game_number
+            .cmp(&y.series_game_number)
+            .then_with(|| x.game_date.cmp(&y.game_date))
+            .then_with(|| x.game_pk.cmp(&y.game_pk))
+    });
+
+    let mut games_out: Vec<SeriesGame> = Vec::with_capacity(raw.len());
+    // Series record from the headline-A side's perspective, counting only final
+    // games (ties don't move the count).
+    let (mut wins_a, mut wins_b) = (0i32, 0i32);
+    for g in &raw {
+        // Align the API's home/away sides to the headline orientation by team id,
+        // so `team_a`/`score_a` always refer to the headline's left team.
+        let away_is_a = g.teams.away.team.id == team_a_id;
+        let (sa, sb) = if away_is_a {
+            (g.teams.away.score, g.teams.home.score)
+        } else {
+            (g.teams.home.score, g.teams.away.score)
+        };
+        let status = status_of(&g.status);
+        let mut winner = String::new();
+        if status == MatchStatus::Finished {
+            if let (Some(a), Some(b)) = (sa, sb) {
+                if a > b {
+                    wins_a += 1;
+                    winner = "a".to_string();
+                } else if b > a {
+                    wins_b += 1;
+                    winner = "b".to_string();
+                }
+            }
+        }
+        games_out.push(SeriesGame {
+            day_label: series_day_label(&g.official_date, &g.game_date),
+            team_a: team_a_label.to_string(),
+            team_b: team_b_label.to_string(),
+            score_a: sa,
+            score_b: sb,
+            winner,
+            status,
+            current: g.game_pk == game_pk,
+            match_id: g.game_pk,
+        });
+    }
+
+    // "Game 2 of 3" — the current game's place. Prefer the anchor's own series
+    // number; fall back to its index among the ordered games.
+    let game_label = raw
+        .iter()
+        .find(|g| g.game_pk == game_pk)
+        .map(|g| (g.series_game_number, g.games_in_series))
+        .filter(|&(n, total)| n > 0 && total > 0)
+        .map(|(n, total)| format!("Game {n} of {total}"))
+        .unwrap_or_default();
+
+    crate::types::Series {
+        games: games_out,
+        game_label,
+        record_label: series_record_label(wins_a, wins_b, team_a_label, team_b_label, anchor_len),
+    }
+}
+
+/// The spoiler-bearing series standing from the headline-A side's win counts:
+/// "Astros win series 2–1" once one side clinches, else "Blue Jays lead 2–1",
+/// "Series tied 1–1", or "" when no game is final yet. A side has clinched once
+/// its wins exceed half the series length.
+fn series_record_label(
+    wins_a: i32,
+    wins_b: i32,
+    team_a: &str,
+    team_b: &str,
+    games_in_series: i32,
+) -> String {
+    if wins_a == 0 && wins_b == 0 {
+        return String::new();
+    }
+    let (hi, lo) = (wins_a.max(wins_b), wins_a.min(wins_b));
+    let leader = if wins_a >= wins_b { team_a } else { team_b };
+    // Majority of the series clinches it (e.g. 2 of 3, 3 of 5, but never on a
+    // 2-game set where 2–0 still "wins").
+    let clinched = games_in_series > 0 && hi * 2 > games_in_series;
+    if wins_a == wins_b {
+        format!("Series tied {hi}\u{2013}{lo}")
+    } else if clinched {
+        format!("{leader} win series {hi}\u{2013}{lo}")
+    } else {
+        format!("{leader} lead {hi}\u{2013}{lo}")
+    }
+}
+
+/// Fetch the whole series between the two teams for the headline game and build
+/// its [`Series`] view. `begin_at` anchors a tight date window (the series can't
+/// span more than `games_in_series` days plus a doubleheader, so pad generously).
+/// `team_a`/`team_b` are the headline's away/home labels; `series` carries the
+/// team ids + this game's series position.
+pub async fn fetch_series(
+    client: &reqwest::Client,
+    game_pk: i64,
+    begin_at: DateTime<Utc>,
+    team_a_label: &str,
+    team_b_label: &str,
+    series: crate::types::MlbSeriesRef,
+) -> Result<crate::types::Series, reqwest::Error> {
+    let date = begin_at.date_naive();
+    // The series spans from (this game - (n-1)) to (this game + (total-n)) days.
+    // Pad ±1 day for late-night/cross-midnight starts; build_series then filters
+    // to the contiguous series of the right length.
+    let before = i64::from((series.game_number - 1).max(0)) + 1;
+    let after = i64::from((series.games_in_series - series.game_number).max(0)) + 1;
+    let start = date - chrono::Duration::days(before);
+    let end = date + chrono::Duration::days(after);
+    let url = format!(
+        "{BASE}/schedule?sportId=1&teamId={}&opponentId={}&startDate={}&endDate={}&hydrate=team",
+        series.team_id_a,
+        series.team_id_b,
+        start.format("%Y-%m-%d"),
+        end.format("%Y-%m-%d"),
+    );
+    let resp: ScheduleResp = client.get(&url).send().await?.error_for_status()?.json().await?;
+    let games: Vec<RawGame> = resp.dates.into_iter().flat_map(|d| d.games).collect();
+    Ok(build_series(games, game_pk, series.team_id_a, team_a_label, team_b_label))
 }
 
 // ----- Standings -----------------------------------------------------------
@@ -530,5 +721,122 @@ mod tests {
         assert_eq!(divs[1].standings.len(), 2);
         assert_eq!(divs[1].standings[0].team, "Mets");
         assert_eq!(divs[1].standings[1].gb, "5.0");
+    }
+
+    /// A 3-game Astros(117, away) @ Blue Jays(141, home) series: G1/G2 final,
+    /// G3 upcoming — the headline game is G2. Mirrors the live API shape.
+    fn sample_series_json() -> &'static str {
+        r#"{"dates":[
+          {"games":[{"gamePk":822800,"gameDate":"2026-06-22T20:07:00Z","officialDate":"2026-06-22",
+            "seriesGameNumber":1,"gamesInSeries":3,"seriesDescription":"Regular Season",
+            "status":{"abstractGameState":"Final","detailedState":"Final"},
+            "teams":{"away":{"score":2,"team":{"id":117,"teamName":"Astros"}},
+                     "home":{"score":4,"team":{"id":141,"teamName":"Blue Jays"}}}}]},
+          {"games":[{"gamePk":822799,"gameDate":"2026-06-23T20:07:00Z","officialDate":"2026-06-23",
+            "seriesGameNumber":2,"gamesInSeries":3,"seriesDescription":"Regular Season",
+            "status":{"abstractGameState":"Final","detailedState":"Final"},
+            "teams":{"away":{"score":9,"team":{"id":117,"teamName":"Astros"}},
+                     "home":{"score":7,"team":{"id":141,"teamName":"Blue Jays"}}}}]},
+          {"games":[{"gamePk":822798,"gameDate":"2026-06-24T20:07:00Z","officialDate":"2026-06-24",
+            "seriesGameNumber":3,"gamesInSeries":3,"seriesDescription":"Regular Season",
+            "status":{"abstractGameState":"Preview","detailedState":"Scheduled"},
+            "teams":{"away":{"team":{"id":117,"teamName":"Astros"}},
+                     "home":{"team":{"id":141,"teamName":"Blue Jays"}}}}]}
+        ]}"#
+    }
+
+    fn raw_series_games(json: &str) -> Vec<RawGame> {
+        let resp: ScheduleResp = serde_json::from_str(json).unwrap();
+        resp.dates.into_iter().flat_map(|d| d.games).collect()
+    }
+
+    #[test]
+    fn series_orients_to_headline_orders_and_flags_current() {
+        // Headline is G2 (gamePk 822799); team_a = away Astros(117), team_b = home Jays(141).
+        let series = build_series(
+            raw_series_games(sample_series_json()),
+            822799,
+            117,
+            "Astros",
+            "Blue Jays",
+        );
+        assert_eq!(series.games.len(), 3);
+        // Ordered by series game number; each row oriented to the headline (a=Astros).
+        assert_eq!(series.games[0].day_label, "Mon, Jun 22");
+        assert_eq!((series.games[0].score_a, series.games[0].score_b), (Some(2), Some(4)));
+        assert_eq!(series.games[0].winner, "b"); // Jays won G1
+        assert!(!series.games[0].current);
+        // G2 is the current game; Astros won it.
+        assert!(series.games[1].current);
+        assert_eq!((series.games[1].score_a, series.games[1].score_b), (Some(9), Some(7)));
+        assert_eq!(series.games[1].winner, "a");
+        // G3 upcoming — no scores, no winner.
+        assert_eq!(series.games[2].status, MatchStatus::Upcoming);
+        assert_eq!(series.games[2].score_a, None);
+        assert_eq!(series.games[2].winner, "");
+        // 1 win each so far → tied, and "Game 2 of 3".
+        assert_eq!(series.game_label, "Game 2 of 3");
+        assert_eq!(series.record_label, "Series tied 1\u{2013}1");
+    }
+
+    #[test]
+    fn series_orients_when_headline_team_a_is_home() {
+        // Flip the headline orientation: team_a = home Jays(141), team_b = away Astros(117).
+        let series = build_series(
+            raw_series_games(sample_series_json()),
+            822799,
+            141,
+            "Blue Jays",
+            "Astros",
+        );
+        // G1: Jays beat Astros 4-2 → a=4, b=2, winner "a".
+        assert_eq!((series.games[0].score_a, series.games[0].score_b), (Some(4), Some(2)));
+        assert_eq!(series.games[0].winner, "a");
+        // G2 (current): Astros beat Jays 9-7 → a=7, b=9, winner "b".
+        assert_eq!((series.games[1].score_a, series.games[1].score_b), (Some(7), Some(9)));
+        assert_eq!(series.games[1].winner, "b");
+    }
+
+    #[test]
+    fn series_filters_out_an_adjacent_series_in_a_padded_window() {
+        // Padded window pulls in a stray game from a *different* (2-game) series
+        // between the same teams; it must be dropped (wrong gamesInSeries).
+        let mut games = raw_series_games(sample_series_json());
+        games.push(RawGame {
+            game_pk: 999999,
+            game_date: "2026-06-25T20:07:00Z".into(),
+            official_date: "2026-06-25".into(),
+            status: RawStatus { abstract_state: "Final".into(), detailed_state: "Final".into() },
+            teams: RawTeams {
+                away: RawSide { score: Some(1), team: RawTeamRef { id: 117, team_name: "Astros".into(), ..Default::default() } },
+                home: RawSide { score: Some(0), team: RawTeamRef { id: 141, team_name: "Blue Jays".into(), ..Default::default() } },
+            },
+            series: "Regular Season".into(),
+            series_game_number: 1,
+            games_in_series: 2,
+            broadcasts: Vec::new(),
+            venue: RawVenue::default(),
+        });
+        let series = build_series(games, 822799, 117, "Astros", "Blue Jays");
+        // Only the three 3-game-series games survive.
+        assert_eq!(series.games.len(), 3);
+        assert!(series.games.iter().all(|g| g.match_id != 999999));
+    }
+
+    #[test]
+    fn record_label_wording() {
+        // No final games yet → empty.
+        assert_eq!(series_record_label(0, 0, "A", "B", 3), "");
+        // Tie.
+        assert_eq!(series_record_label(1, 1, "A", "B", 3), "Series tied 1\u{2013}1");
+        // Lead without clinching (1-0 of a 3-game set).
+        assert_eq!(series_record_label(1, 0, "A", "B", 3), "A lead 1\u{2013}0");
+        // Clinched a 3-game set (2-1).
+        assert_eq!(series_record_label(2, 1, "A", "B", 3), "A win series 2\u{2013}1");
+        assert_eq!(series_record_label(1, 2, "A", "B", 3), "B win series 2\u{2013}1");
+        // A 2-game set: at 1-0 there's still a game to play (lead); at 2-0 it's
+        // a completed sweep (won).
+        assert_eq!(series_record_label(1, 0, "A", "B", 2), "A lead 1\u{2013}0");
+        assert_eq!(series_record_label(2, 0, "A", "B", 2), "A win series 2\u{2013}0");
     }
 }
