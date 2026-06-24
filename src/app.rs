@@ -1208,10 +1208,32 @@ fn detail_view(d: MatchDetail) -> impl IntoView {
                 }}
             </div>
             <StreamsList streams=streams />
-            // MLB series between the two teams. Its scores + record share this
-            // match's reveal gate, so nothing leaks past the spoiler toggle.
+            // MLB series between the two teams. Each game row reveals on its own
+            // (shared with the schedule); the record line waits until every played
+            // game is revealed, so it never leaks the leader ahead of the scores.
             {(!series.games.is_empty())
-                .then(|| view! { <SeriesSection series=series reveal=reveal /> })}
+                .then(|| {
+                    let played_ids: Vec<i64> = series
+                        .games
+                        .iter()
+                        .filter(|g| {
+                            matches!(g.status, MatchStatus::Live | MatchStatus::Finished)
+                                && g.score_a.is_some()
+                                && g.score_b.is_some()
+                        })
+                        .map(|g| g.match_id)
+                        .collect();
+                    let global = use_context::<ShowScores>().map(|s| s.0);
+                    let revealed = use_context::<RevealedMatches>().map(|r| r.0);
+                    let record_reveal = Memo::new(move |_| {
+                        global.is_some_and(|g| g.get())
+                            || (!played_ids.is_empty()
+                                && revealed.is_some_and(|r| {
+                                    r.with(|set| played_ids.iter().all(|id| set.contains(id)))
+                                }))
+                    });
+                    view! { <SeriesSection series=series record_reveal=record_reveal /> }
+                })}
             // The event's stage combo (Swiss grid/list + playoff bracket), same as
             // the event page; each section self-gates its own reveal (shared,
             // persisted). Empty sections render nothing.
@@ -1327,79 +1349,29 @@ fn StreamsList(streams: Vec<StreamView>) -> impl IntoView {
     .into_any()
 }
 
-/// The MLB "Series" section: each game of the series between the two teams (date,
-/// matchup, score) and the overall series standing. Scores, the per-game winner
-/// emphasis, and the record line all share the page's `reveal` memo — when scores
-/// are hidden, the matchups show but nothing leaks who's leading.
+/// The MLB "Series" section: each game of the series between the two teams as a
+/// schedule-style row — date, status badge ("Final"/"LIVE"), the matchup, and a
+/// score you reveal by clicking the badge (no need to open the game first). Each
+/// row gates on its OWN game's reveal (the same per-match set the schedule uses),
+/// so revealing here reveals it on the homepage too, and vice versa. The series
+/// record only shows once every played game in the series is revealed, so it
+/// never leaks the leader ahead of the scores it's derived from.
 #[component]
-fn SeriesSection(series: Series, reveal: Memo<bool>) -> impl IntoView {
+fn SeriesSection(series: Series, record_reveal: Memo<bool>) -> impl IntoView {
     let Series { games, game_label, record_label } = series;
     let rows = games
         .into_iter()
-        .map(|g| {
-            let SeriesGame {
-                day_label,
-                team_a,
-                team_b,
-                score_a,
-                score_b,
-                winner,
-                status,
-                current,
-                match_id,
-            } = g;
-            // "Played" = under way or done (an upcoming game's score is absent).
-            let played = matches!(status, MatchStatus::Live | MatchStatus::Finished)
-                && score_a.is_some()
-                && score_b.is_some();
-            let (win_a, win_b) = (winner == "a", winner == "b");
-            // The score cell: the result once revealed and played, else a dash —
-            // mirroring the headline score's gate.
-            let score_cell = move || {
-                if reveal.get() && played {
-                    format!("{} \u{2013} {}", score_a.unwrap_or(0), score_b.unwrap_or(0))
-                } else {
-                    "at".to_string()
-                }
-            };
-            let mut cls = String::from("series-game");
-            if current {
-                cls.push_str(" series-current");
-            }
-            // Link a row to that game's own detail page (not the current one).
-            let day_cell = if match_id != 0 && !current {
-                view! { <A href=format!("/match/{match_id}")>{day_label}</A> }.into_any()
-            } else {
-                day_label.into_any()
-            };
-            view! {
-                <li class=cls>
-                    <span class="series-day">{day_cell}</span>
-                    <span
-                        class="series-team series-team-a"
-                        class:winner=move || reveal.get() && win_a
-                        class:loser=move || reveal.get() && win_b
-                    >
-                        {team_a}
-                    </span>
-                    <span class="series-score">{score_cell}</span>
-                    <span
-                        class="series-team series-team-b"
-                        class:winner=move || reveal.get() && win_b
-                        class:loser=move || reveal.get() && win_a
-                    >
-                        {team_b}
-                    </span>
-                </li>
-            }
-        })
+        .map(|g| view! { <SeriesRow game=g /> })
         .collect_view();
-    // The record line is a spoiler (it names the leader); show it only when
-    // revealed and non-empty. The "Game N of M" label is always safe.
+    // The record line is a spoiler (it names the leader). Show it (when present)
+    // only once every played game in the series is revealed — `record_reveal`,
+    // computed by the parent from the shared per-game reveal set. The line always
+    // occupies its height (a blank placeholder when hidden) so revealing it never
+    // shifts the page layout.
     let record = (!record_label.is_empty()).then(|| {
         view! {
-            <p class="series-record" class:series-hidden=move || !reveal.get()>
-                {move || if reveal.get() { record_label.clone() } else { String::new() }}
+            <p class="series-record" class:series-hidden=move || !record_reveal.get()>
+                {move || if record_reveal.get() { record_label.clone() } else { "\u{00a0}".to_string() }}
             </p>
         }
     });
@@ -1408,9 +1380,148 @@ fn SeriesSection(series: Series, reveal: Memo<bool>) -> impl IntoView {
     view! {
         <section class="detail-section">
             <h2 class="section-title">"Series" {game_label}</h2>
-            <ul class="series-games">{rows}</ul>
+            <div class="series-games">{rows}</div>
             {record}
         </section>
+    }
+}
+
+/// One schedule-style row in the Series section. Mirrors `MatchRow`'s per-game
+/// score reveal: the status badge is clickable to toggle just this game's score,
+/// keyed on its own `match_id` in the shared `RevealedMatches` set (so it stays
+/// in sync with the homepage). The whole row links to that game's detail page.
+#[component]
+fn SeriesRow(game: SeriesGame) -> impl IntoView {
+    let SeriesGame {
+        day_label,
+        clock_label,
+        team_a,
+        team_b,
+        score_a,
+        score_b,
+        winner,
+        status,
+        current,
+        match_id,
+    } = game;
+    let status_class = match status {
+        MatchStatus::Live => "live",
+        MatchStatus::Finished => "final",
+        MatchStatus::Canceled => "canceled",
+        MatchStatus::Upcoming => "upcoming",
+    };
+    let badge = match status {
+        MatchStatus::Live => "LIVE",
+        MatchStatus::Finished => "Final",
+        MatchStatus::Canceled => "Canc.",
+        MatchStatus::Upcoming => "",
+    };
+    let has = score_a.is_some() && score_b.is_some();
+    let played = matches!(status, MatchStatus::Live | MatchStatus::Finished) && has;
+    let (win_a, win_b) = (winner == "a", winner == "b");
+
+    // This game's own reveal (global toggle OR this game individually revealed),
+    // shared with the schedule via the per-match set keyed on its gamePk.
+    let global = use_context::<ShowScores>().map(|s| s.0);
+    let revealed = use_context::<RevealedMatches>().map(|r| r.0);
+    let reveal = Memo::new(move |_| {
+        global.is_some_and(|g| g.get())
+            || revealed.is_some_and(|r| r.with(|set| set.contains(&match_id)))
+    });
+    let toggle_reveal = move |ev: leptos::ev::MouseEvent| {
+        // Don't let the click fall through to the row's match link.
+        ev.prevent_default();
+        ev.stop_propagation();
+        if let Some(r) = revealed {
+            r.update(|s| {
+                if !s.insert(match_id) {
+                    s.remove(&match_id);
+                }
+            });
+            #[cfg(feature = "hydrate")]
+            save_revealed(&r.get_untracked());
+        }
+    };
+    let score_noun = if matches!(status, MatchStatus::Live) { "live score" } else { "final score" };
+    let show_title = format!("Show the {score_noun}");
+    let hide_title = format!("Hide the {score_noun}");
+    let badge_cls = format!("row-badge {status_class}");
+    // A played game's badge is the reveal control; an unplayed game's is static.
+    let meta_view = if played {
+        view! {
+            <span class="row-meta">
+                <span
+                    class="reveal-meta"
+                    class:on=move || reveal.get()
+                    title=move || if reveal.get() { hide_title.clone() } else { show_title.clone() }
+                    on:click=toggle_reveal
+                >
+                    <span class=badge_cls>{badge}</span>
+                </span>
+            </span>
+        }
+        .into_any()
+    } else {
+        view! { <span class="row-meta"><span class=badge_cls>{badge}</span></span> }.into_any()
+    };
+
+    // The series spans several days, so each row leads with its date and, below
+    // it, the start time in the viewer's tz (like the schedule rows).
+    let clock = (!clock_label.is_empty())
+        .then(|| view! { <span class="series-time">{clock_label}</span> });
+    let inner = view! {
+        <span class="row-time series-when">
+            <span class="series-date">{day_label}</span>
+            {clock}
+        </span>
+        <span
+            class="row-team row-a"
+            class:winner=move || reveal.get() && win_a
+            class:loser=move || reveal.get() && win_b
+        >
+            {team_a}
+        </span>
+        <span class="row-mid" class:scored=move || reveal.get() && has>
+            {move || {
+                if reveal.get() && has {
+                    format!("{} \u{2013} {}", score_a.unwrap_or(0), score_b.unwrap_or(0))
+                } else {
+                    "at".to_string()
+                }
+            }}
+        </span>
+        <span
+            class="row-team row-b"
+            class:winner=move || reveal.get() && win_b
+            class:loser=move || reveal.get() && win_a
+        >
+            {team_b}
+        </span>
+        {meta_view}
+    };
+
+    // The row links to this game's detail page; the current game (this page)
+    // isn't a link — it's marked instead. `display: contents` lets the body's
+    // children sit in the row grid.
+    let body = if current {
+        view! { <span class="row-body">{inner}</span> }.into_any()
+    } else {
+        view! { <a class="row-body" href=format!("/match/{match_id}")>{inner}</a> }.into_any()
+    };
+    let mut row_cls = format!("row {status_class}");
+    if current {
+        row_cls.push_str(" series-current");
+    }
+    let lead = match status {
+        MatchStatus::Live => view! { <span class="row-bar live"></span> }.into_any(),
+        MatchStatus::Finished => view! { <span class="row-bar final"></span> }.into_any(),
+        _ => view! { <span class="row-lead-empty"></span> }.into_any(),
+    };
+    view! {
+        <div class=format!("{row_cls} has-star")>
+            {lead}
+            {body}
+        </div>
     }
 }
 

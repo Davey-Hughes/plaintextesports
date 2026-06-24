@@ -359,13 +359,16 @@ fn series_day_label(official_date: &str, game_date: &str) -> String {
 /// right (any game side that isn't `team_a_id` is team B). Games are oriented to
 /// the headline (so each row reads `team_a` vs `team_b` consistently), ordered by
 /// series game number, the current game flagged, and the spoiler-bearing record
-/// computed from finished games.
+/// computed from finished games. `fmt_time` formats a game's UTC start into the
+/// display tz's clock label (supplied by the caller, which owns the tz/12h-24h
+/// preference), so each row shows its time like the schedule.
 fn build_series(
     games: Vec<RawGame>,
     game_pk: i64,
     team_a_id: i64,
     team_a_label: &str,
     team_b_label: &str,
+    fmt_time: impl Fn(DateTime<Utc>) -> String,
 ) -> crate::types::Series {
     use crate::types::SeriesGame;
 
@@ -415,8 +418,13 @@ fn build_series(
                 }
             }
         }
+        let clock_label = DateTime::parse_from_rfc3339(&g.game_date)
+            .ok()
+            .map(|d| fmt_time(d.with_timezone(&Utc)))
+            .unwrap_or_default();
         games_out.push(SeriesGame {
             day_label: series_day_label(&g.official_date, &g.game_date),
+            clock_label,
             team_a: team_a_label.to_string(),
             team_b: team_b_label.to_string(),
             score_a: sa,
@@ -477,7 +485,8 @@ fn series_record_label(
 /// its [`Series`] view. `begin_at` anchors a tight date window (the series can't
 /// span more than `games_in_series` days plus a doubleheader, so pad generously).
 /// `team_a`/`team_b` are the headline's away/home labels; `series` carries the
-/// team ids + this game's series position.
+/// team ids + this game's series position. `fmt_time` formats each game's UTC
+/// start into the viewer's display-tz clock label (the caller owns the tz pref).
 pub async fn fetch_series(
     client: &reqwest::Client,
     game_pk: i64,
@@ -485,6 +494,7 @@ pub async fn fetch_series(
     team_a_label: &str,
     team_b_label: &str,
     series: crate::types::MlbSeriesRef,
+    fmt_time: impl Fn(DateTime<Utc>) -> String,
 ) -> Result<crate::types::Series, reqwest::Error> {
     let date = begin_at.date_naive();
     // The series spans from (this game - (n-1)) to (this game + (total-n)) days.
@@ -503,7 +513,7 @@ pub async fn fetch_series(
     );
     let resp: ScheduleResp = client.get(&url).send().await?.error_for_status()?.json().await?;
     let games: Vec<RawGame> = resp.dates.into_iter().flat_map(|d| d.games).collect();
-    Ok(build_series(games, game_pk, series.team_id_a, team_a_label, team_b_label))
+    Ok(build_series(games, game_pk, series.team_id_a, team_a_label, team_b_label, fmt_time))
 }
 
 // ----- Standings -----------------------------------------------------------
@@ -750,6 +760,12 @@ mod tests {
         resp.dates.into_iter().flat_map(|d| d.games).collect()
     }
 
+    /// Test time formatter: a plain UTC "HH:MM" so we can assert on clock_label
+    /// without a tz dependency (the real caller formats in the display tz).
+    fn utc_hhmm(d: DateTime<Utc>) -> String {
+        d.format("%H:%M").to_string()
+    }
+
     #[test]
     fn series_orients_to_headline_orders_and_flags_current() {
         // Headline is G2 (gamePk 822799); team_a = away Astros(117), team_b = home Jays(141).
@@ -759,10 +775,13 @@ mod tests {
             117,
             "Astros",
             "Blue Jays",
+            utc_hhmm,
         );
         assert_eq!(series.games.len(), 3);
         // Ordered by series game number; each row oriented to the headline (a=Astros).
         assert_eq!(series.games[0].day_label, "Mon, Jun 22");
+        // The start time is formatted via the supplied formatter (UTC here).
+        assert_eq!(series.games[0].clock_label, "20:07");
         assert_eq!((series.games[0].score_a, series.games[0].score_b), (Some(2), Some(4)));
         assert_eq!(series.games[0].winner, "b"); // Jays won G1
         assert!(!series.games[0].current);
@@ -788,6 +807,7 @@ mod tests {
             141,
             "Blue Jays",
             "Astros",
+            utc_hhmm,
         );
         // G1: Jays beat Astros 4-2 → a=4, b=2, winner "a".
         assert_eq!((series.games[0].score_a, series.games[0].score_b), (Some(4), Some(2)));
@@ -817,7 +837,7 @@ mod tests {
             broadcasts: Vec::new(),
             venue: RawVenue::default(),
         });
-        let series = build_series(games, 822799, 117, "Astros", "Blue Jays");
+        let series = build_series(games, 822799, 117, "Astros", "Blue Jays", utc_hhmm);
         // Only the three 3-game-series games survive.
         assert_eq!(series.games.len(), 3);
         assert!(series.games.iter().all(|g| g.match_id != 999999));

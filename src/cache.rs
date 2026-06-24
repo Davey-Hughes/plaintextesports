@@ -90,8 +90,9 @@ pub fn mlb_team_divisions(team_a: &str, team_b: &str) -> Vec<EventInfo> {
 }
 
 /// Per-game MLB series, fetched on demand (detail page) and cached with a short
-/// TTL keyed by gamePk, so repeated page views don't re-hit the MLB API.
-static MLB_SERIES: Lazy<RwLock<HashMap<i64, CachedSeries>>> =
+/// TTL keyed by "gamePk|tz|hour24" (the tz/12h-24h pref affects the game times),
+/// so repeated page views don't re-hit the MLB API.
+static MLB_SERIES: Lazy<RwLock<HashMap<String, CachedSeries>>> =
     Lazy::new(|| RwLock::new(HashMap::new()));
 
 struct CachedSeries {
@@ -104,15 +105,20 @@ struct CachedSeries {
 const SERIES_TTL_MIN: i64 = 2;
 
 /// The MLB series between the two teams of `match_id`, fetched on demand and
-/// cached with a short TTL. `None` for esports, an unknown match, an MLB match
-/// with no series ref, or when the fetch fails (the detail page then omits the
-/// section). The snapshot read (for the ref + labels) is released before the
-/// await so the future stays `Send`.
-pub async fn mlb_series(match_id: i64) -> Option<crate::types::Series> {
+/// cached with a short TTL. Each game's time is formatted in the display tz
+/// (`tz_name`/`hour24`), so the cache key folds those in. `None` for esports, an
+/// unknown match, an MLB match with no series ref, or when the fetch fails (the
+/// detail page then omits the section). The snapshot read (for the ref + labels)
+/// is released before the await so the future stays `Send`.
+pub async fn mlb_series(match_id: i64, tz_name: &str, hour24: bool) -> Option<crate::types::Series> {
+    let cfg = config();
+    let tz = resolve_tz(tz_name, cfg.tz);
+    // Fold the display-tz preference into the key, since the clock labels differ.
+    let key = format!("{match_id}|{tz}|{hour24}");
     // Serve a fresh cached series without touching the network.
     {
         let cache = MLB_SERIES.read().unwrap_or_else(PoisonError::into_inner);
-        if let Some(c) = cache.get(&match_id) {
+        if let Some(c) = cache.get(&key) {
             if Utc::now() - c.fetched_at < Duration::minutes(SERIES_TTL_MIN) {
                 return Some(c.series.clone());
             }
@@ -126,10 +132,13 @@ pub async fn mlb_series(match_id: i64) -> Option<crate::types::Series> {
         let sref = m.mlb_series?;
         (sref, m.team_a.label.clone(), m.team_b.label.clone(), m.begin_at)
     };
-    match crate::mlb::fetch_series(&HTTP, match_id, begin_at, &team_a, &team_b, sref).await {
+    // Format each game's time in the display tz, exactly like the schedule rows.
+    let fmt_time = move |utc: DateTime<Utc>| time_label(utc.with_timezone(&tz), hour24);
+    match crate::mlb::fetch_series(&HTTP, match_id, begin_at, &team_a, &team_b, sref, fmt_time).await
+    {
         Ok(series) if !series.games.is_empty() => {
             MLB_SERIES.write().unwrap_or_else(PoisonError::into_inner).insert(
-                match_id,
+                key,
                 CachedSeries { series: series.clone(), fetched_at: Utc::now() },
             );
             Some(series)
