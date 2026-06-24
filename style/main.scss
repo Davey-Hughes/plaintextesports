@@ -1483,11 +1483,11 @@ a.sw-link {
   }
 }
 
-// Section banner for double-elim (absolutely placed above each stacked bracket).
+// Section banner for double-elim (absolutely placed above each stacked bracket;
+// its width is set inline so the underline stops before the grand-final rail).
 .bk-group-label {
   position: absolute;
   left: 0;
-  right: 0;
   color: var(--muted);
   font-size: 11px;
   font-weight: 600;
@@ -1579,8 +1579,19 @@ a.bk-team-link {
   text-decoration: underline;
 }
 
+// The box is a fixed width, so a long team name truncates with an ellipsis on a
+// single line rather than overflowing the box or wrapping past its fixed height.
+.bk-team {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .bk-row {
   flex: 1;
+  min-height: 0;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -1609,6 +1620,7 @@ a.bk-team-link {
 }
 
 .bk-score {
+  flex: 0 0 auto;
   color: var(--muted);
 }
 

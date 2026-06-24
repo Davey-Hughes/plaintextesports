@@ -1260,6 +1260,7 @@ fn demo_event_info(league: &str) -> EventInfo {
         "Reset Cup" => return demo_event_reset(),
         "Gauntlet" => return demo_event_gauntlet(),
         "Mega Bracket" => return demo_event_wide(),
+        "Long Names Cup" => return demo_event_long_names(),
         _ => {}
     }
     let lol = matches!(
@@ -1615,6 +1616,25 @@ fn demo_event_wide() -> EventInfo {
     demo_bracket_event("Mega Bracket", demo_se_rounds(&teams))
 }
 
+/// Long / multi-word team names, to check they truncate inside the fixed box
+/// rather than overflowing it (the score) or wrapping past its height.
+fn demo_event_long_names() -> EventInfo {
+    let teams: Vec<String> = [
+        "kukkosoosi",
+        "EEC",
+        "EnRo GRIFFINS",
+        "dobrywieczor",
+        "Power Rangers",
+        "LeoGaming",
+        "ENCE Academy",
+        "FcottoNd",
+    ]
+    .iter()
+    .map(|s| (*s).to_string())
+    .collect();
+    demo_bracket_event("Long Names Cup", demo_se_rounds(&teams))
+}
+
 /// Build a clean single-elimination tree from a power-of-two team list; each
 /// match's winner is its `team_a`, folded up to the final.
 fn demo_se_rounds(teams: &[String]) -> Vec<BracketRound> {
@@ -1774,6 +1794,8 @@ fn demo_matches(now: DateTime<Utc>) -> Vec<NormalizedMatch> {
             demo_team("A", None), demo_team("B", None)),
         demo_match(43, Game::Cs2, "Mega Bracket", "S", now + h(10), Upcoming, 3,
             demo_team("T01", None), demo_team("T32", None)),
+        demo_match(44, Game::Cs2, "Long Names Cup", "S", now + h(11), Upcoming, 3,
+            demo_team("kukkosoosi", None), demo_team("FcottoNd", None)),
         // LoL — LCK: a result + upcoming.
         demo_match(7, Game::Lol, "LCK", "A", now - m(35), Finished, 3,
             demo_team("T1", Some(2)), demo_team("GEN", Some(1))),

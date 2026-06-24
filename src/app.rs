@@ -2110,11 +2110,14 @@ fn Bracket(
 
     // Section labels for double-elim (Winner's / Loser's / Grand Final).
     let multi = group_rows.len() > 1 || group_rows.first().is_some_and(|(s, _, _)| !s.is_empty());
+    // Stop the banner at the winner's/loser's-bracket edge so its underline never
+    // reaches the grand-final rail to its right.
+    let banner_w = bracket::banner_width_em(layout.bracket_cols);
     let labels = multi.then(|| {
         group_rows
             .iter()
             .filter_map(|(sec, lo, _)| {
-                // The grand final's own round title labels it; a full-width banner
+                // The grand final's own round title labels it; a banner over it
                 // would cut across the brackets it sits between.
                 let label = match sec.as_str() {
                     "upper" => "Winner's Bracket",
@@ -2122,7 +2125,11 @@ fn Bracket(
                     _ => return None,
                 };
                 let top = center_em(*lo) - half_h - TITLE_EM - LABEL_EM;
-                Some(view! { <div class="bk-group-label" style=format!("top:{top}em")>{label}</div> })
+                Some(view! {
+                    <div class="bk-group-label" style=format!("top:{top}em;width:{banner_w:.2}em")>
+                        {label}
+                    </div>
+                })
             })
             .collect_view()
     });
