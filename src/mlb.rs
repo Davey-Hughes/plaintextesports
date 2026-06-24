@@ -97,6 +97,16 @@ impl RawTeamRef {
             self.name.clone()
         }
     }
+
+    /// Full name ("Miami Marlins") to key the team page/subscription; falls back
+    /// to the short label when absent.
+    fn full_name(&self) -> String {
+        if self.name.is_empty() {
+            self.label()
+        } else {
+            self.name.clone()
+        }
+    }
 }
 
 fn status_of(s: &RawStatus) -> MatchStatus {
@@ -201,8 +211,16 @@ fn to_match(g: RawGame) -> Option<NormalizedMatch> {
         status: status_of(&g.status),
         // No best-of label: each MLB game is a single game, not an esports series.
         best_of: None,
-        team_a: NormTeam { label: g.teams.away.team.label(), score: g.teams.away.score },
-        team_b: NormTeam { label: g.teams.home.team.label(), score: g.teams.home.score },
+        team_a: NormTeam {
+            label: g.teams.away.team.label(),
+            name: g.teams.away.team.full_name(),
+            score: g.teams.away.score,
+        },
+        team_b: NormTeam {
+            label: g.teams.home.team.label(),
+            name: g.teams.home.team.full_name(),
+            score: g.teams.home.score,
+        },
         stream_url: None,
         tournament_id: None,
         streams: broadcasts(&g.broadcasts),

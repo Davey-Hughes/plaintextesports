@@ -48,7 +48,12 @@ pub struct NormalizedMatch {
 
 #[derive(Debug, Clone)]
 pub struct NormTeam {
+    /// Short display label (acronym/nickname) shown in compact rows.
     pub label: String,
+    /// Full team name — keys the team page + per-team subscription, and titles
+    /// the team page. Falls back to the label when the source has no distinct
+    /// full name; "TBD" when the opponent isn't decided yet.
+    pub name: String,
     pub score: Option<i64>,
 }
 
@@ -179,20 +184,19 @@ fn map_status(raw: Option<&str>) -> MatchStatus {
     }
 }
 
-fn team_label(team: Option<&RawTeam>) -> (String, Option<i64>) {
+/// `(short label, full name, id)` for an opponent. The label prefers the
+/// acronym; the full name prefers the long name — both fall back to the other,
+/// then "TBD" when the opponent isn't set.
+fn team_label(team: Option<&RawTeam>) -> (String, String, Option<i64>) {
     match team {
         Some(t) => {
-            let label = t
-                .acronym
-                .as_deref()
-                .filter(|s| !s.trim().is_empty())
-                .or(t.name.as_deref())
-                .filter(|s| !s.trim().is_empty())
-                .unwrap_or("TBD")
-                .to_string();
-            (label, t.id)
+            let acronym = t.acronym.as_deref().map(str::trim).filter(|s| !s.is_empty());
+            let name = t.name.as_deref().map(str::trim).filter(|s| !s.is_empty());
+            let label = acronym.or(name).unwrap_or("TBD").to_string();
+            let full = name.or(acronym).unwrap_or("TBD").to_string();
+            (label, full, t.id)
         }
-        None => ("TBD".to_string(), None),
+        None => ("TBD".to_string(), "TBD".to_string(), None),
     }
 }
 
@@ -239,8 +243,10 @@ fn normalize(game: Game, raw: &RawMatch) -> Option<NormalizedMatch> {
         .unwrap_or_default()
         .to_string();
 
-    let (label_a, id_a) = team_label(raw.opponents.first().and_then(|o| o.opponent.as_ref()));
-    let (label_b, id_b) = team_label(raw.opponents.get(1).and_then(|o| o.opponent.as_ref()));
+    let (label_a, name_a, id_a) =
+        team_label(raw.opponents.first().and_then(|o| o.opponent.as_ref()));
+    let (label_b, name_b, id_b) =
+        team_label(raw.opponents.get(1).and_then(|o| o.opponent.as_ref()));
 
     let tier = raw
         .tournament
@@ -269,10 +275,12 @@ fn normalize(game: Game, raw: &RawMatch) -> Option<NormalizedMatch> {
         best_of: raw.number_of_games,
         team_a: NormTeam {
             label: label_a,
+            name: name_a,
             score: score_for(&raw.results, id_a),
         },
         team_b: NormTeam {
             label: label_b,
+            name: name_b,
             score: score_for(&raw.results, id_b),
         },
         stream_url,
@@ -706,8 +714,10 @@ fn build_swiss(raw: &[RawBracketMatch]) -> Vec<SwissRound> {
             std::collections::BTreeMap::new();
         let mut updates: Vec<(i64, bool)> = Vec::new();
         for m in matches {
-            let (label_a, id_a) = team_label(m.opponents.first().and_then(|o| o.opponent.as_ref()));
-            let (label_b, id_b) = team_label(m.opponents.get(1).and_then(|o| o.opponent.as_ref()));
+            let (label_a, _, id_a) =
+                team_label(m.opponents.first().and_then(|o| o.opponent.as_ref()));
+            let (label_b, _, id_b) =
+                team_label(m.opponents.get(1).and_then(|o| o.opponent.as_ref()));
             if let (Some(a), Some(b)) = (id_a, id_b) {
                 labels.entry(a).or_insert_with(|| label_a.clone());
                 labels.entry(b).or_insert_with(|| label_b.clone());
@@ -1027,8 +1037,8 @@ fn build_rounds(raw: &[RawBracketMatch]) -> Vec<BracketRound> {
 }
 
 fn to_bracket_match(m: &RawBracketMatch, pos: &HashMap<i64, (usize, usize)>) -> BracketMatch {
-    let (label_a, id_a) = team_label(m.opponents.first().and_then(|o| o.opponent.as_ref()));
-    let (label_b, id_b) = team_label(m.opponents.get(1).and_then(|o| o.opponent.as_ref()));
+    let (label_a, _, id_a) = team_label(m.opponents.first().and_then(|o| o.opponent.as_ref()));
+    let (label_b, _, id_b) = team_label(m.opponents.get(1).and_then(|o| o.opponent.as_ref()));
     let winner = match m.winner_id {
         w if w.is_some() && w == id_a => "a",
         w if w.is_some() && w == id_b => "b",
