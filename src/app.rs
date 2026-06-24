@@ -2954,14 +2954,25 @@ fn SportToggle() -> impl IntoView {
     let traditional = use_context::<SportMode>().expect("sport mode context").0;
     let earlier = use_context::<EarlierDays>().expect("earlier context").0;
     let later = use_context::<LaterDays>().expect("later context").0;
+    let games = use_context::<Games>().expect("games context").0;
+    let leagues = use_context::<Leagues>().expect("leagues context").0;
     let toggle = move |_| {
         let next = !traditional.get_untracked();
         traditional.set(next);
         // Start each mode from its default window (the forward cap differs).
         earlier.set(0);
         later.set(0);
+        // The game/sport tabs share the `games` set, so clear it (and the esports
+        // event chips) on a mode switch — a stale "cs2"/"mlb" slug would otherwise
+        // filter out everything in the other mode.
+        games.update(HashSet::clear);
+        leagues.update(HashSet::clear);
         #[cfg(feature = "hydrate")]
-        save_sport_pref(next);
+        {
+            save_sport_pref(next);
+            save_str_set("games", &games.get_untracked());
+            save_str_set("leagues", &leagues.get_untracked());
+        }
     };
     view! {
         <button
@@ -2970,7 +2981,7 @@ fn SportToggle() -> impl IntoView {
             title="Switch between esports and traditional sports"
             on:click=toggle
         >
-            {move || if traditional.get() { "MLB" } else { "esports" }}
+            {move || if traditional.get() { "sports" } else { "esports" }}
         </button>
     }
 }
@@ -3524,7 +3535,8 @@ fn HomePage() -> impl IntoView {
     let schedule = Resource::new(
         move || (range.get(), earlier.get(), later.get(), tz.get(), hour24.get(), traditional.get()),
         |(r, e, l, z, h, trad)| async move {
-            let f = if trad { "mlb" } else { "all" }.to_string();
+            // "trad" = all traditional sports; the sport tabs narrow it client-side.
+            let f = if trad { "trad" } else { "all" }.to_string();
             match r {
                 Some((start, end)) => get_range(start, end, f, z, h).await,
                 None if trad && (e > 0 || l > 0) => {
@@ -3543,6 +3555,7 @@ fn HomePage() -> impl IntoView {
 
     view! {
         <GameTabs games leagues />
+        <SportTabs games leagues />
         <ScheduleSection resource=schedule games leagues show_nav=false />
     }
 }
@@ -3939,13 +3952,14 @@ fn DayPage() -> impl IntoView {
     let schedule = Resource::new(
         move || (date(), tz.get(), hour24.get(), traditional.get()),
         |(d, z, h, trad)| async move {
-            get_day(d, if trad { "mlb" } else { "all" }.into(), z, h).await
+            get_day(d, if trad { "trad" } else { "all" }.into(), z, h).await
         },
     );
     setup_autorefresh(schedule);
 
     view! {
         <GameTabs games leagues />
+        <SportTabs games leagues />
         <ScheduleSection resource=schedule games leagues show_nav=true />
     }
 }
@@ -3997,6 +4011,60 @@ fn GameTabs(
             <div class="tabs-list">
                 {with_star("CS2", "cs2")}
                 {with_star("LoL", "lol")}
+            </div>
+            {move || {
+                any_active()
+                    .then(|| view! { <button class="filter-clear" on:click=clear>"clear"</button> })
+            }}
+        </div>
+    }
+}
+
+/// The traditional-sports analogue of [`GameTabs`]: MLB / F1 filter tabs (each
+/// with a subscribe ★ for the whole sport), shown only in traditional mode.
+/// Shares the `games` set, so a selection narrows the combined traditional
+/// schedule to those sports.
+#[component]
+fn SportTabs(
+    games: RwSignal<HashSet<String>>,
+    leagues: RwSignal<HashSet<String>>,
+) -> impl IntoView {
+    let traditional = use_context::<SportMode>().expect("sport mode context").0;
+    let toggle = move |value: &'static str| {
+        games.update(|g| {
+            if !g.remove(value) {
+                g.insert(value.to_string());
+            }
+        });
+        #[cfg(feature = "hydrate")]
+        save_str_set("games", &games.get_untracked());
+    };
+    let with_star = move |label: &'static str, value: &'static str| {
+        view! {
+            <span class="tab tab-with-star" class:active=move || games.with(|g| g.contains(value))>
+                <button class="tab-label" on:click=move |_| toggle(value)>
+                    {label}
+                </button>
+                <SubscribeStar kind="game" value=value.to_string() />
+            </span>
+        }
+    };
+    let any_active = move || games.with(|g| !g.is_empty());
+    let clear = move |_| {
+        games.update(HashSet::clear);
+        leagues.update(HashSet::clear);
+        #[cfg(feature = "hydrate")]
+        {
+            save_str_set("games", &games.get_untracked());
+            save_str_set("leagues", &leagues.get_untracked());
+        }
+    };
+    view! {
+        // Hidden in esports mode (the inverse of GameTabs).
+        <div class="tabs" class:tabs-off=move || !traditional.get()>
+            <div class="tabs-list">
+                {with_star("MLB", "mlb")}
+                {with_star("F1", "f1")}
             </div>
             {move || {
                 any_active()
@@ -4063,14 +4131,13 @@ fn ScheduleSection(
                     .get()
                     .map(|res| match res {
                         Ok(s) => {
-                            // Event chips reflect the selected games; the schedule
-                            // is then narrowed by both games and events (esports only).
+                            // Event chips reflect the selected games (esports only).
+                            // The schedule is narrowed by the selected games — for
+                            // esports the CS2/LoL tabs + event chips, for traditional
+                            // the MLB/F1 sport tabs (both live in the `games` set).
                             let available = if trad { Vec::new() } else { leagues_for_games(&s, &games.get()) };
-                            let filtered = if trad {
-                                s
-                            } else {
-                                filter_schedule(s, &games.get(), &leagues.get())
-                            };
+                            let leagues_filter = if trad { HashSet::new() } else { leagues.get() };
+                            let filtered = filter_schedule(s, &games.get(), &leagues_filter);
                             // Show ★ reminder buttons only when Web Push is configured.
                             let push = use_context::<RwSignal<Option<String>>>()
                                 .is_some_and(|v| v.get().is_some());
@@ -4584,32 +4651,44 @@ fn MatchRow(m: MatchView, show_bo: bool, push: bool) -> impl IntoView {
         .into_any()
     };
 
-    let inner = view! {
-        {time_view}
-        <span
-            class="row-team row-a"
-            class:winner=move || reveal.get() && win_a
-            class:loser=move || reveal.get() && win_b
-        >
-            {m.team_a.label}
-        </span>
-        <span class="row-mid" class:scored=move || reveal.get() && has>
-            {move || {
-                if reveal.get() && has {
-                    format!("{} – {}", sa.unwrap_or(0), sb.unwrap_or(0))
-                } else {
-                    sep.to_string()
-                }
-            }}
-        </span>
-        <span
-            class="row-team row-b"
-            class:winner=move || reveal.get() && win_b
-            class:loser=move || reveal.get() && win_a
-        >
-            {m.team_b.label}
-        </span>
-        {meta_view}
+    // F1 (and any single-entity sport) has no opponent: the one label is the
+    // session (e.g. "Race"), spanning the team columns with no "vs"/score middle.
+    let inner = if m.game.single_entity() {
+        view! {
+            {time_view}
+            <span class="row-team row-solo">{m.team_a.label}</span>
+            {meta_view}
+        }
+        .into_any()
+    } else {
+        view! {
+            {time_view}
+            <span
+                class="row-team row-a"
+                class:winner=move || reveal.get() && win_a
+                class:loser=move || reveal.get() && win_b
+            >
+                {m.team_a.label}
+            </span>
+            <span class="row-mid" class:scored=move || reveal.get() && has>
+                {move || {
+                    if reveal.get() && has {
+                        format!("{} – {}", sa.unwrap_or(0), sb.unwrap_or(0))
+                    } else {
+                        sep.to_string()
+                    }
+                }}
+            </span>
+            <span
+                class="row-team row-b"
+                class:winner=move || reveal.get() && win_b
+                class:loser=move || reveal.get() && win_a
+            >
+                {m.team_b.label}
+            </span>
+            {meta_view}
+        }
+        .into_any()
     };
 
     // The whole row links to the match detail page; `display: contents` lets its
