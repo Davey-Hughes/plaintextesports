@@ -1,12 +1,13 @@
 use crate::bracket;
 use crate::server::{
     get_day, get_event_schedule, get_event_stages, get_event_stages_by_league, get_f1_results,
-    get_match_detail, get_notifications, get_range, get_schedule, get_site, get_team_schedule,
+    get_f1_standings, get_match_detail, get_notifications, get_range, get_schedule, get_site,
+    get_team_schedule,
 };
 use crate::types::{
-    full_event_name, BracketMatch, BracketRound, DayGroup, EventInfo, F1Result, Game, MatchDetail,
-    MatchStatus, MatchView, ScheduleView, Series, SeriesGame, StandingRow, StreamView, SwissMatch,
-    SwissRound,
+    full_event_name, BracketMatch, BracketRound, DayGroup, EventInfo, F1Result, F1Standings, Game,
+    MatchDetail, MatchStatus, MatchView, ScheduleView, Series, SeriesGame, StandingRow, StreamView,
+    SwissMatch, SwissRound,
 };
 use leptos::prelude::*;
 use std::collections::HashSet;
@@ -880,6 +881,75 @@ fn F1Results(results: Vec<F1Result>, season: i64, round: i64) -> impl IntoView {
     }
 }
 
+/// The drivers' and constructors' championship standings as of a GP's round,
+/// shown on the F1 event page. Spoiler-gated as one block (it encodes results).
+#[component]
+fn F1StandingsView(standings: F1Standings, season: i64, round: i64) -> impl IntoView {
+    let (revealed, toggle) = section_reveal(format!("f1stand:{season}:{round}"));
+    let asof = standings.round;
+    let drivers = StoredValue::new(standings.drivers);
+    let constructors = StoredValue::new(standings.constructors);
+    let body = move || {
+        revealed.get().then(|| {
+            let drv = drivers
+                .get_value()
+                .into_iter()
+                .map(|r| {
+                    view! {
+                        <li class="f1-standing-row">
+                            <span class="f1-pos">{r.pos}</span>
+                            <span class="f1-standing-name">{r.name}</span>
+                            <span class="f1-standing-con">{r.detail}</span>
+                            <span class="f1-standing-pts">{r.points}</span>
+                        </li>
+                    }
+                })
+                .collect_view();
+            let con = constructors
+                .get_value()
+                .into_iter()
+                .map(|r| {
+                    view! {
+                        <li class="f1-standing-row f1-standing-row-con">
+                            <span class="f1-pos">{r.pos}</span>
+                            <span class="f1-standing-name">{r.name}</span>
+                            <span class="f1-standing-pts">{r.points}</span>
+                        </li>
+                    }
+                })
+                .collect_view();
+            view! {
+                <div class="f1-standings-tables">
+                    <div class="f1-standings-table">
+                        <h3 class="f1-standings-sub">"Drivers"</h3>
+                        <ol class="f1-standings">{drv}</ol>
+                    </div>
+                    <div class="f1-standings-table">
+                        <h3 class="f1-standings-sub">"Constructors"</h3>
+                        <ol class="f1-standings f1-standings-con">{con}</ol>
+                    </div>
+                </div>
+            }
+        })
+    };
+    view! {
+        <section class="detail-section">
+            <h2 class="section-title f1-results-title">
+                "Standings"
+                <span class="f1-standings-asof">{format!(" · after Round {asof}")}</span>
+            </h2>
+            <button class="f1-session-head" on:click=toggle>
+                <span class="f1-session-toggle">
+                    {move || {
+                        if revealed.get() { "hide".to_string() } else { "reveal standings".to_string() }
+                    }}
+                </span>
+            </button>
+            {body}
+        </section>
+    }
+}
+
 /// Internal event page: the event's standings/bracket, its full schedule, and a
 /// link out to the event's Liquipedia/official page.
 #[component]
@@ -919,6 +989,19 @@ fn EventPage() -> impl IntoView {
             match sr {
                 Some((season, round)) => get_f1_results(season, round).await.unwrap_or_default(),
                 None => Vec::new(),
+            }
+        },
+    );
+    // The championship standings as of this GP's round (same source key as the
+    // results), shown below them on an F1 event page.
+    let f1_standings = Resource::new(
+        move || schedule.get().and_then(Result::ok).and_then(|s| f1_season_round(&s)),
+        |sr| async move {
+            match sr {
+                Some((season, round)) => {
+                    get_f1_standings(season, round).await.unwrap_or_default()
+                }
+                None => F1Standings::default(),
             }
         },
     );
@@ -1047,6 +1130,25 @@ fn EventPage() -> impl IntoView {
                                         .filter(|r| !r.is_empty())
                                         .map(move |results| {
                                             view! { <F1Results results=results season=season round=round /> }
+                                        })
+                                }}
+                                // F1: the championship standings as of this round
+                                // (empty for non-F1 events / before any race).
+                                {move || {
+                                    let (season, round) = f1_sr.unwrap_or((0, 0));
+                                    f1_standings
+                                        .get()
+                                        .filter(|s| {
+                                            !s.drivers.is_empty() || !s.constructors.is_empty()
+                                        })
+                                        .map(move |standings| {
+                                            view! {
+                                                <F1StandingsView
+                                                    standings=standings
+                                                    season=season
+                                                    round=round
+                                                />
+                                            }
                                         })
                                 }}
                             </article>
