@@ -1086,6 +1086,27 @@ pub fn team_view(team: &str, tz_name: &str, hour24: bool) -> ScheduleView {
     }
 }
 
+/// The given match ids that are still upcoming, as views sorted by start time.
+/// Backs the notifications page — started/finished/canceled matches are dropped
+/// so the list only shows reminders that can still fire.
+#[must_use]
+pub fn upcoming_matches_by_ids(ids: &[i64], tz_name: &str, hour24: bool) -> Vec<MatchView> {
+    let cfg = config();
+    let tz = resolve_tz(tz_name, cfg.tz);
+    let now = Utc::now();
+    let wanted: std::collections::HashSet<i64> = ids.iter().copied().collect();
+    let snap = SNAPSHOT.read().unwrap_or_else(PoisonError::into_inner);
+    let mut out: Vec<MatchView> = snap
+        .matches
+        .iter()
+        .filter(|m| wanted.contains(&m.id))
+        .filter(|m| m.status == MatchStatus::Upcoming && m.begin_at > now)
+        .map(|m| to_view(m, &tz, now, hour24))
+        .collect();
+    out.sort_by_key(|v| v.begin_at_ms);
+    out
+}
+
 // ----- Game/event subscription expansion -----------------------------------
 
 /// A reminder to create for one upcoming match (from a game/event subscription).

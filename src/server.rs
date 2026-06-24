@@ -1,7 +1,9 @@
 //! Leptos server functions. The bodies read the in-memory cache on the server;
 //! on the client the `#[server]` macro replaces them with a network call.
 
-use crate::types::{EventInfo, MatchDetail, ReminderReq, ScheduleView, SiteInfo, SubscribeReq};
+use crate::types::{
+    EventInfo, MatchDetail, MatchView, ReminderReq, ScheduleView, SiteInfo, SubscribeReq,
+};
 #[cfg(feature = "ssr")]
 use crate::types::Game;
 use leptos::prelude::*;
@@ -121,6 +123,25 @@ pub async fn get_event_schedule(
     {
         let _ = (league, tz, hour24);
         Ok(ScheduleView::default())
+    }
+}
+
+/// The given (starred) match ids that are still upcoming, sorted by start, for
+/// the notifications page. Started/finished matches are dropped server-side.
+#[server(GetNotifications, "/api")]
+pub async fn get_notifications(
+    ids: Vec<i64>,
+    tz: String,
+    hour24: bool,
+) -> Result<Vec<MatchView>, ServerFnError> {
+    #[cfg(feature = "ssr")]
+    {
+        Ok(crate::cache::upcoming_matches_by_ids(&ids, &tz, hour24))
+    }
+    #[cfg(not(feature = "ssr"))]
+    {
+        let _ = (ids, tz, hour24);
+        Ok(Vec::new())
     }
 }
 
