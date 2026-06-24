@@ -159,6 +159,7 @@ fn streams(raw: &[RawStream]) -> Vec<StreamView> {
                 language: s.language.clone().unwrap_or_default(),
                 official: s.official.unwrap_or(false),
                 main: s.main.unwrap_or(false),
+                ..Default::default()
             })
         })
         .collect();
@@ -618,6 +619,7 @@ pub async fn fetch_standings(
             ties: r.ties.unwrap_or(0),
             game_wins: r.game_wins.unwrap_or(0),
             game_losses: r.game_losses.unwrap_or(0),
+            ..Default::default()
         })
         .collect())
 }

@@ -918,6 +918,7 @@ fn detail_view(d: MatchDetail) -> impl IntoView {
         match_view,
         streams,
         event,
+        stages,
         ..
     } = d;
     let m = match_view.expect("found implies match_view");
@@ -1016,7 +1017,10 @@ fn detail_view(d: MatchDetail) -> impl IntoView {
             // The event's stage combo (Swiss grid/list + playoff bracket), same as
             // the event page; each section self-gates its own reveal (shared,
             // persisted). Empty sections render nothing.
-            <EventStageCombo event=event swiss_grid=RwSignal::new(true) />
+            {(!event.is_empty())
+                .then(|| view! { <EventStageCombo event=event swiss_grid=RwSignal::new(true) /> })}
+            // MLB has no per-event standings; show the two teams' division tables.
+            {(!stages.is_empty()).then(|| view! { <EventStages stages=stages /> })}
         </article>
     }
 }
@@ -1067,27 +1071,46 @@ fn StreamsList(streams: Vec<StreamView>) -> impl IntoView {
     if streams.is_empty() {
         return ().into_any();
     }
+    // MLB broadcasts carry a network `name` and no link; esports streams carry a
+    // clickable `url`. Title the section to match what it's listing.
+    let broadcast = streams.iter().any(|s| !s.name.is_empty());
+    let title = if broadcast { "Broadcasts" } else { "Streams" };
     let items = streams
         .into_iter()
         .map(|s| {
-            let (site, channel) = stream_parts(&s.url);
-            let tags = stream_tags(&s);
-            let cls = if s.official { "stream official" } else { "stream" };
-            view! {
-                <li class=cls>
-                    <a href=s.url target="_blank" rel="noreferrer">
-                        <span class="stream-site">{site}</span>
-                        {(!channel.is_empty())
-                            .then(|| view! { <span class="stream-chan">{format!("/{channel}")}</span> })}
-                    </a>
-                    {(!tags.is_empty()).then(|| view! { <span class="stream-tags">{tags}</span> })}
-                </li>
+            if !s.name.is_empty() {
+                // Link-less broadcast (MLB): network name + a "national · TV" tag.
+                view! {
+                    <li class="stream">
+                        <span class="stream-site">{s.name}</span>
+                        {(!s.tag.is_empty())
+                            .then(|| view! { <span class="stream-tags">{s.tag}</span> })}
+                    </li>
+                }
+                .into_any()
+            } else {
+                let (site, channel) = stream_parts(&s.url);
+                let tags = stream_tags(&s);
+                let cls = if s.official { "stream official" } else { "stream" };
+                view! {
+                    <li class=cls>
+                        <a href=s.url target="_blank" rel="noreferrer">
+                            <span class="stream-site">{site}</span>
+                            {(!channel.is_empty())
+                                .then(|| {
+                                    view! { <span class="stream-chan">{format!("/{channel}")}</span> }
+                                })}
+                        </a>
+                        {(!tags.is_empty()).then(|| view! { <span class="stream-tags">{tags}</span> })}
+                    </li>
+                }
+                .into_any()
             }
         })
         .collect_view();
     view! {
         <section class="detail-section">
-            <h2 class="section-title">"Streams"</h2>
+            <h2 class="section-title">{title}</h2>
             <ul class="streams">{items}</ul>
         </section>
     }
@@ -1422,12 +1445,13 @@ fn StandingsTable(rows: Vec<StandingRow>, tournament_id: i64, game: Game) -> imp
     if rows.is_empty() {
         return ().into_any();
     }
-    // The game/map record column: CS2 plays maps, LoL plays games.
+    // The fourth column: CS2 counts maps, LoL counts games, MLB shows games-back.
     let record_label = match game {
         Game::Lol => "Games",
         Game::Cs2 => "Maps",
-        Game::Mlb => "Games",
+        Game::Mlb => "GB",
     };
+    let mlb = matches!(game, Game::Mlb);
     // Click the "Standings" title to reveal/hide the table.
     let (revealed, toggle) = section_reveal(format!("st:{tournament_id}"));
     // Always render every row so the table reserves its height — when hidden, the
@@ -1438,11 +1462,12 @@ fn StandingsTable(rows: Vec<StandingRow>, tournament_id: i64, game: Game) -> imp
             .into_iter()
             .map(|r| {
                 let (team, wl, maps) = if show {
-                    (
-                        r.team,
-                        format!("{}-{}", r.wins, r.losses),
-                        format!("{}-{}", r.game_wins, r.game_losses),
-                    )
+                    let last = if mlb {
+                        r.gb
+                    } else {
+                        format!("{}-{}", r.game_wins, r.game_losses)
+                    };
+                    (r.team, format!("{}-{}", r.wins, r.losses), last)
                 } else {
                     ("—".to_string(), "—".to_string(), "—".to_string())
                 };
