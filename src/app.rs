@@ -373,130 +373,59 @@ fn AboutPage() -> impl IntoView {
         <article class="about">
             <h1>"about"</h1>
             <p>
-                "plaintextesports is a fast, no-frills schedule for "
+                "A fast schedule for "
                 <strong>"tier-1 Counter-Strike 2 and League of Legends"</strong>
-                " — only the top events, no lower-tier noise. Match times are shown in your "
-                "own timezone, and your light/dark and 12h/24h choices are remembered."
+                " — just the top events. Times are in your timezone; your theme and "
+                "12h/24h choices are remembered."
             </p>
 
-            <h2>"filtering the schedule"</h2>
-            <p>
-                "By default you see every tier-1 match. The filters are additive — pick "
-                "any number of them and the schedule narrows to what you chose:"
-            </p>
+            <h2>"Results are hidden by default"</h2>
+            <p>"So you can browse finished matches without spoilers. To reveal:"</p>
             <ul>
                 <li>
-                    "Click a game tab (" <span class="kbd">"CS2"</span> " / "
-                    <span class="kbd">"LoL"</span> ") to include that game."
+                    <span class="kbd">"show scores"</span>
+                    " at the top reveals every score, standing, and bracket at once."
                 </li>
+                <li>"Click a single match's result to reveal just that one (again to hide)."</li>
                 <li>
-                    "Click an event chip (" <span class="kbd">"IEM"</span> ", "
-                    <span class="kbd">"LCK"</span> ", …) to include that event. The chips "
-                    "shown follow the games you've picked."
-                </li>
-                <li>
-                    "When any filter is active a blue " <span class="kbd">"clear"</span>
-                    " appears on the right — click it to reset everything."
+                    "On a bracket, click " <span class="kbd">"Bracket"</span>
+                    " to step through it round by round — names, then scores. Or click a "
+                    "round title, or one match, to reveal just that. A later round's teams "
+                    "show only once its feeder matches' scores are out, so you can't spoil "
+                    "who advanced."
                 </li>
             </ul>
 
-            <h2>"browsing other days"</h2>
+            <h2>"Match reminders"</h2>
             <p>
-                "The schedule leads with today and what's upcoming. To look back, use "
-                <span class="kbd">"‹ show earlier days"</span>
-                " above the first day to pull in recent days a few at a time. For an exact "
-                "window, open the calendar button at the top and pick a start and end date."
-            </p>
-
-            <h2>"event pages"</h2>
-            <p>
-                "Click an event's name (e.g. " <span class="kbd">"IEM"</span>
-                ") to open its page: the full run of that event's matches, its group-stage "
-                "standings and playoff bracket, and a link out to its Liquipedia/official "
-                "page."
-            </p>
-
-            <h2>"seeing scores"</h2>
-            <p>
-                "Scores are hidden by default so you can browse finished matches without "
-                "spoilers. To reveal them:"
+                "Tap a star for a browser notification before a match starts (your browser "
+                "asks permission the first time). A filled " <span class="kbd">"★"</span>
+                " means you're following it."
             </p>
             <ul>
-                <li>
-                    "Click a match's " <span class="kbd">"Final"</span> " (or "
-                    <span class="kbd">"LIVE"</span>
-                    ") label to reveal just that match's score (click again to hide it)."
-                </li>
-                <li>
-                    "Use the " <span class="kbd">"show scores"</span>
-                    " toggle at the top to reveal every score, standing, and bracket at once."
-                </li>
-            </ul>
-
-            <h2>"standings & brackets"</h2>
-            <p>
-                "On an event page (or a match's detail page) the standings and bracket are "
-                "hidden too, and reveal in stages so you control how much you see:"
-            </p>
-            <ul>
-                <li>
-                    "Click the " <span class="kbd">"Standings"</span>
-                    " heading to show the table. Until then it holds blank rows, so the page "
-                    "doesn't jump when you reveal it."
-                </li>
-                <li>
-                    "Click the " <span class="kbd">"Bracket"</span>
-                    " heading to walk the whole bracket forward one step at a time — team "
-                    "names first, then scores, round by round."
-                </li>
-                <li>
-                    "Or reveal a single round by its title (e.g. "
-                    <span class="kbd">"Quarterfinals"</span>
-                    "), or a single series by clicking it. The first click shows the team "
-                    "names, the next shows the score."
-                </li>
-            </ul>
-            <p>
-                "A later round's teams only appear once the matches feeding it have had "
-                "their scores revealed — so you can't accidentally spoil who advanced. What "
-                "you've revealed is remembered and shared everywhere the same event appears."
-            </p>
-
-            <h2>"getting notifications"</h2>
-            <p>
-                "You can get a browser notification shortly before a match starts. Tap a "
-                "star to follow something; the first time, your browser will ask permission "
-                "to show notifications."
-            </p>
-            <ul>
+                <li><span class="kbd">"☆"</span> " on a match — just that match."</li>
                 <li>
                     <span class="kbd">"☆"</span>
-                    " on a match — remind me about just this match."
-                </li>
-                <li>
-                    <span class="kbd">"☆"</span>
-                    " next to a game tab (CS2 / LoL) — notify me about every match in that game."
-                </li>
-                <li>
-                    <span class="kbd">"☆"</span>
-                    " in an event's header — notify me about every match in that event."
+                    " by a game tab or in an event's header — every match in that game or "
+                    "event, including ones added later."
                 </li>
             </ul>
+            <p class="about-note">"(No stars means reminders aren't enabled on this instance.)"</p>
+
+            <h2>"Finding matches"</h2>
             <p>
-                "A filled " <span class="kbd">"★"</span>
-                " means you're following it. Game and event subscriptions automatically "
-                "include matches added to that game or event later — you don't need to "
-                "re-subscribe. (If you don't see any stars, notifications aren't enabled "
-                "on this instance.)"
+                "You start with every tier-1 match. Click game tabs ("
+                <span class="kbd">"CS2"</span> " / " <span class="kbd">"LoL"</span>
+                ") and event chips to narrow it — the address bar updates so a filtered view "
+                "is shareable. Use " <span class="kbd">"‹ show earlier days"</span>
+                " or the calendar to look back, and click an event's name for its full "
+                "schedule, standings, and bracket."
             </p>
 
-            <h2>"about the data"</h2>
-            <p>
-                "Schedules come from PandaScore and refresh in the background. "
-                "A " <span class="kbd">"LIVE"</span>
-                " badge is inferred (a match has started but isn't finished); exact live "
-                "scores aren't available on the free data tier, so they fill in shortly "
-                "after a match ends."
+            <p class="about-note">
+                "Data is from PandaScore and refreshes in the background; a "
+                <span class="kbd">"LIVE"</span>
+                " badge is inferred, and scores fill in shortly after a match ends."
             </p>
 
             <p class="about-back">
