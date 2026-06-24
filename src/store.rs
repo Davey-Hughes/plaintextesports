@@ -83,6 +83,8 @@ pub fn open(path: &str) -> rusqlite::Result<Connection> {
             url          TEXT    NOT NULL,
             game         TEXT    NOT NULL DEFAULT '',
             league       TEXT    NOT NULL DEFAULT '',
+            team_a       TEXT    NOT NULL DEFAULT '',
+            team_b       TEXT    NOT NULL DEFAULT '',
             sent         INTEGER NOT NULL DEFAULT 0,
             PRIMARY KEY (endpoint, match_id)
         );
@@ -104,6 +106,8 @@ pub fn open(path: &str) -> rusqlite::Result<Connection> {
     let _ = conn.execute("ALTER TABLE matches ADD COLUMN team_b_name TEXT", []);
     let _ = conn.execute("ALTER TABLE reminders ADD COLUMN game TEXT NOT NULL DEFAULT ''", []);
     let _ = conn.execute("ALTER TABLE reminders ADD COLUMN league TEXT NOT NULL DEFAULT ''", []);
+    let _ = conn.execute("ALTER TABLE reminders ADD COLUMN team_a TEXT NOT NULL DEFAULT ''", []);
+    let _ = conn.execute("ALTER TABLE reminders ADD COLUMN team_b TEXT NOT NULL DEFAULT ''", []);
     Ok(conn)
 }
 
@@ -276,15 +280,17 @@ pub struct Reminder {
     pub title: String,
     pub body: String,
     pub url: String,
-    /// Game/league the match belongs to (for scope-based cleanup).
+    /// Game/league/teams the match belongs to (for scope-based cleanup).
     pub game: String,
     pub league: String,
+    pub team_a: String,
+    pub team_b: String,
 }
 
 const REMINDER_COLS: &str =
-    "endpoint, p256dh, auth, match_id, notify_at_ms, title, body, url, game, league";
+    "endpoint, p256dh, auth, match_id, notify_at_ms, title, body, url, game, league, team_a, team_b";
 
-fn reminder_params(r: &Reminder) -> [&dyn rusqlite::ToSql; 10] {
+fn reminder_params(r: &Reminder) -> [&dyn rusqlite::ToSql; 12] {
     [
         &r.endpoint,
         &r.p256dh,
@@ -296,6 +302,8 @@ fn reminder_params(r: &Reminder) -> [&dyn rusqlite::ToSql; 10] {
         &r.url,
         &r.game,
         &r.league,
+        &r.team_a,
+        &r.team_b,
     ]
 }
 
@@ -304,12 +312,13 @@ pub fn add_reminder(conn: &Connection, r: &Reminder) -> rusqlite::Result<()> {
     conn.execute(
         &format!(
             "INSERT INTO reminders ({REMINDER_COLS}, sent)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 0)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, 0)
              ON CONFLICT(endpoint, match_id) DO UPDATE SET
                 p256dh=excluded.p256dh, auth=excluded.auth,
                 notify_at_ms=excluded.notify_at_ms, title=excluded.title,
                 body=excluded.body, url=excluded.url, game=excluded.game,
-                league=excluded.league, sent=0"
+                league=excluded.league, team_a=excluded.team_a,
+                team_b=excluded.team_b, sent=0"
         ),
         &reminder_params(r)[..],
     )?;
@@ -322,7 +331,7 @@ pub fn add_reminder_if_absent(conn: &Connection, r: &Reminder) -> rusqlite::Resu
     conn.execute(
         &format!(
             "INSERT INTO reminders ({REMINDER_COLS}, sent)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 0)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, 0)
              ON CONFLICT(endpoint, match_id) DO NOTHING"
         ),
         &reminder_params(r)[..],
@@ -357,6 +366,8 @@ pub fn due_reminders(conn: &Connection, now_ms: i64) -> rusqlite::Result<Vec<Rem
             // Not needed for sending.
             game: String::new(),
             league: String::new(),
+            team_a: String::new(),
+            team_b: String::new(),
         })
     })?;
     rows.collect()
@@ -442,16 +453,21 @@ pub fn list_subscriptions(conn: &Connection) -> rusqlite::Result<Vec<Subscriptio
     rows.collect()
 }
 
-/// On unsubscribe, drop unsent reminders this endpoint got from that scope.
+/// On unsubscribe, drop unsent reminders this endpoint got from that scope. A
+/// team matches either side; game/league match their single column.
 pub fn delete_unsent_reminders_by_scope(
     conn: &Connection,
     endpoint: &str,
     kind: &str,
     value: &str,
 ) -> rusqlite::Result<()> {
-    let col = if kind == "game" { "game" } else { "league" };
+    let where_scope = match kind {
+        "game" => "game=?2",
+        "team" => "(team_a=?2 OR team_b=?2)",
+        _ => "league=?2",
+    };
     conn.execute(
-        &format!("DELETE FROM reminders WHERE endpoint=?1 AND sent=0 AND {col}=?2"),
+        &format!("DELETE FROM reminders WHERE endpoint=?1 AND sent=0 AND {where_scope}"),
         params![endpoint, value],
     )?;
     Ok(())
