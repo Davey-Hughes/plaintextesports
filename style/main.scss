@@ -1663,8 +1663,9 @@ a.sw-link {
   }
 
   // The date+time stays on one line whichever tz is shown. A dotted underline
-  // hints it's clickable (to swap to ballpark time); it goes solid + brightens
-  // via .row-time-tz.on when the venue time is shown.
+  // hints it's clickable (to swap to ballpark time); it goes solid when the venue
+  // time is shown, which also turns the label blue — the link colour we use for
+  // venue-local times everywhere else (e.g. .row-time-venue in the schedule).
   .series-when {
     white-space: nowrap;
   }
@@ -1674,7 +1675,11 @@ a.sw-link {
     text-underline-offset: 2px;
     text-decoration-color: var(--border);
 
+    // Showing the ballpark's time: blue label + solid underline, so it matches
+    // how venue times read elsewhere (override the generic .row-time-tz.on, which
+    // uses the max-contrast colour).
     &.on {
+      color: var(--link);
       text-decoration-style: solid;
       text-decoration-color: currentColor;
     }
