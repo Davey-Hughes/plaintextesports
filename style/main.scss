@@ -1650,6 +1650,17 @@ a.sw-link {
   margin-left: 0.5rem;
 }
 
+// "venue time" hint by the Series title while the ballpark time is shown — blue,
+// matching the swapped venue-time labels in the rows.
+.series-venue-hint {
+  color: var(--link);
+  font-size: 12px;
+  font-weight: 400;
+  text-transform: none;
+  letter-spacing: 0;
+  margin-left: 0.5rem;
+}
+
 .series-games {
   margin: 0.4rem 0 0;
 
@@ -1675,13 +1686,13 @@ a.sw-link {
     text-underline-offset: 2px;
     text-decoration-color: var(--border);
 
-    // Showing the ballpark's time: blue label + solid underline, so it matches
-    // how venue times read elsewhere (override the generic .row-time-tz.on, which
-    // uses the max-contrast colour).
+    // Showing the ballpark's time: blue label (matching venue times elsewhere)
+    // and no underline — the colour carries the state, so the dotted "clickable"
+    // hint is no longer needed. Overrides the generic .row-time-tz.on, which uses
+    // the max-contrast colour.
     &.on {
       color: var(--link);
-      text-decoration-style: solid;
-      text-decoration-color: currentColor;
+      text-decoration: none;
     }
   }
 
