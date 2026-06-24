@@ -160,6 +160,17 @@ a {
   max-width: 760px;
   margin: 0 auto;
   padding: 1rem 1rem 3rem;
+  // Sticky-footer layout: the page fills the viewport and the main grows to
+  // take up the slack, so the footer stays pinned to the bottom. Without this,
+  // a route that loads asynchronously (event/match pages) briefly has a short
+  // body, letting the footer flash near the top before the data fills in.
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+}
+
+.main {
+  flex: 1 0 auto;
 }
 
 // The brand shares the first line with the sticky toggle bar but is absolutely
