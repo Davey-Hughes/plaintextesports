@@ -942,7 +942,7 @@ fn EventPage() -> impl IntoView {
                         // today + later-extended] and show the earlier/later
                         // expanders. Reading earlier/later here re-windows when
                         // they change. Esports events show their full history.
-                        let windowed = schedule_is_traditional(&s);
+                        let windowed = schedule_needs_window(&s);
                         if windowed {
                             let (lo, hi) =
                                 trad_day_bounds(&s.today_key, earlier.get(), later.get());
@@ -1032,7 +1032,7 @@ fn TeamPage() -> impl IntoView {
                     Some(Ok(mut s)) => {
                         // Traditional-sport teams cap their forward horizon and show
                         // the earlier/later expanders, like the event page.
-                        let windowed = schedule_is_traditional(&s);
+                        let windowed = schedule_needs_window(&s);
                         if windowed {
                             let (lo, hi) =
                                 trad_day_bounds(&s.today_key, earlier.get(), later.get());
@@ -3604,6 +3604,18 @@ fn trad_forward(later: i64) -> i64 {
 /// hydrate — the event page filters its days by this without a browser clock.
 fn trad_day_bounds(today: &str, earlier: i64, later: i64) -> (String, String) {
     (iso_add_days(today, -earlier), iso_add_days(today, trad_forward(later)))
+}
+
+/// Whether an event/team page should cap its forward window. Only MLB needs it:
+/// its event page (`/event/MLB`) is the whole season, so it windows like the
+/// homepage. An F1 event is a single Grand Prix weekend and esports events are
+/// finite, so both show in full.
+fn schedule_needs_window(s: &ScheduleView) -> bool {
+    s.days
+        .iter()
+        .flat_map(|d| &d.leagues)
+        .flat_map(|lg| &lg.matches)
+        .any(|m| m.game == Game::Mlb)
 }
 
 /// Whether a loaded schedule is a traditional sport (any match is, e.g. MLB) —
