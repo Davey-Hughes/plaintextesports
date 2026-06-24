@@ -59,7 +59,8 @@ fn allowlist(game: Game) -> &'static [&'static str] {
     match game {
         Game::Lol => LOL_ALLOWLIST,
         Game::Cs2 => CS_ALLOWLIST,
-        Game::Mlb => &[], // MLB isn't tier-filtered (every game is shown)
+        // Traditional sports aren't tier-filtered (every game/session is shown).
+        Game::Mlb | Game::F1 => &[],
     }
 }
 
@@ -67,7 +68,7 @@ fn denylist(game: Game) -> &'static [&'static str] {
     match game {
         Game::Lol => LOL_DENYLIST,
         Game::Cs2 => CS_DENYLIST,
-        Game::Mlb => &[],
+        Game::Mlb | Game::F1 => &[],
     }
 }
 

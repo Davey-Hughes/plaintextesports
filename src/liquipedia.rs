@@ -24,7 +24,8 @@ const fn wiki(game: Game) -> &'static str {
     match game {
         Game::Cs2 => "counterstrike",
         Game::Lol => "leagueoflegends",
-        Game::Mlb => "", // MLB events aren't resolved against Liquipedia
+        // Traditional sports aren't resolved against Liquipedia.
+        Game::Mlb | Game::F1 => "",
     }
 }
 
