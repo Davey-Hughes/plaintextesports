@@ -1742,6 +1742,72 @@ a.sw-link {
   min-height: 1.2em;
 }
 
+// ----- F1 results (GP event page) -------------------------------------------
+.f1-session {
+  margin-bottom: 0.9rem;
+}
+
+// Click the session name to reveal/hide its finishing order (spoiler-gated).
+.f1-session-head {
+  display: flex;
+  align-items: baseline;
+  gap: 0.6rem;
+  background: none;
+  border: none;
+  color: inherit;
+  font: inherit;
+  padding: 0.2rem 0;
+  cursor: pointer;
+}
+
+.f1-session-name {
+  font-weight: 600;
+}
+
+.f1-session-toggle {
+  color: var(--link);
+  font-size: 12px;
+}
+
+.f1-order {
+  list-style: none;
+  margin: 0.2rem 0 0;
+  padding: 0;
+}
+
+.f1-row {
+  display: grid;
+  grid-template-columns: 1.8em minmax(0, 1fr) minmax(0, 1fr) auto;
+  gap: 0.6rem;
+  align-items: baseline;
+  padding: 0.1rem 0;
+  font-size: 13px;
+}
+
+.f1-pos {
+  color: var(--muted);
+  text-align: right;
+}
+
+.f1-driver {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.f1-con {
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.f1-detail {
+  color: var(--muted);
+  text-align: right;
+  white-space: nowrap;
+}
+
 .standings {
   border-collapse: collapse;
   font-size: 13px;

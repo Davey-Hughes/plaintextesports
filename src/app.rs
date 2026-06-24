@@ -1,10 +1,10 @@
 use crate::bracket;
 use crate::server::{
-    get_day, get_event_schedule, get_event_stages, get_event_stages_by_league, get_match_detail,
-    get_notifications, get_range, get_schedule, get_site, get_team_schedule,
+    get_day, get_event_schedule, get_event_stages, get_event_stages_by_league, get_f1_results,
+    get_match_detail, get_notifications, get_range, get_schedule, get_site, get_team_schedule,
 };
 use crate::types::{
-    full_event_name, BracketMatch, BracketRound, DayGroup, EventInfo, Game, MatchDetail,
+    full_event_name, BracketMatch, BracketRound, DayGroup, EventInfo, F1Result, Game, MatchDetail,
     MatchStatus, MatchView, ScheduleView, Series, SeriesGame, StandingRow, StreamView, SwissMatch,
     SwissRound,
 };
@@ -821,6 +821,61 @@ fn EventStages(
         .collect_view()
 }
 
+/// A Grand Prix's results — each finished session's full finishing order, each
+/// spoiler-gated (hidden until revealed, like the rest of the site's scores).
+#[component]
+fn F1Results(results: Vec<F1Result>, season: i64, round: i64) -> impl IntoView {
+    let sections = results
+        .into_iter()
+        .map(|r| {
+            let (revealed, toggle) =
+                section_reveal(format!("f1res:{season}:{round}:{}", r.session));
+            let count = r.rows.len();
+            let rows = StoredValue::new(r.rows);
+            let order = move || {
+                revealed.get().then(|| {
+                    rows.get_value()
+                        .into_iter()
+                        .map(|row| {
+                            view! {
+                                <li class="f1-row">
+                                    <span class="f1-pos">{row.pos}</span>
+                                    <span class="f1-driver">{row.driver}</span>
+                                    <span class="f1-con">{row.constructor}</span>
+                                    <span class="f1-detail">{row.detail}</span>
+                                </li>
+                            }
+                        })
+                        .collect_view()
+                })
+            };
+            view! {
+                <div class="f1-session">
+                    <button class="f1-session-head" on:click=toggle>
+                        <span class="f1-session-name">{r.session}</span>
+                        <span class="f1-session-toggle">
+                            {move || {
+                                if revealed.get() {
+                                    "hide".to_string()
+                                } else {
+                                    format!("reveal results ({count})")
+                                }
+                            }}
+                        </span>
+                    </button>
+                    <ol class="f1-order">{order}</ol>
+                </div>
+            }
+        })
+        .collect_view();
+    view! {
+        <section class="detail-section">
+            <h2 class="section-title">"Results"</h2>
+            {sections}
+        </section>
+    }
+}
+
 /// Internal event page: the event's standings/bracket, its full schedule, and a
 /// link out to the event's Liquipedia/official page.
 #[component]
@@ -852,6 +907,17 @@ fn EventPage() -> impl IntoView {
             get_event_stages(lg).await
         }
     });
+    // An F1 GP event page shows each finished session's full finishing order,
+    // fetched on demand once the schedule reveals which (season, round) it is.
+    let f1_results = Resource::new(
+        move || schedule.get().and_then(Result::ok).and_then(|s| f1_season_round(&s)),
+        |sr| async move {
+            match sr {
+                Some((season, round)) => get_f1_results(season, round).await.unwrap_or_default(),
+                None => Vec::new(),
+            }
+        },
+    );
     setup_autorefresh(schedule);
 
     // Keep the global sport mode in sync with the event being viewed, so the
@@ -955,6 +1021,8 @@ fn EventPage() -> impl IntoView {
                         // VAPID key resolves after hydration — this closure re-runs.
                         let push = use_context::<RwSignal<Option<String>>>()
                             .is_some_and(|v| v.get().is_some());
+                        // (season, round) for an F1 GP — keys its results' reveal.
+                        let f1_sr = f1_season_round(&s);
                         view! {
                             <article class="detail">
                                 <A href="/">"← schedule"</A>
@@ -966,6 +1034,17 @@ fn EventPage() -> impl IntoView {
                                 </div>
                                 {sep}
                                 <EventStages stages=stage_list times=times />
+                                // F1: each finished session's full finishing order
+                                // (empty for non-F1 events / upcoming races).
+                                {move || {
+                                    let (season, round) = f1_sr.unwrap_or((0, 0));
+                                    f1_results
+                                        .get()
+                                        .filter(|r| !r.is_empty())
+                                        .map(move |results| {
+                                            view! { <F1Results results=results season=season round=round /> }
+                                        })
+                                }}
                             </article>
                         }
                             .into_any()
@@ -3616,6 +3695,19 @@ fn schedule_needs_window(s: &ScheduleView) -> bool {
         .flat_map(|d| &d.leagues)
         .flat_map(|lg| &lg.matches)
         .any(|m| m.game == Game::Mlb)
+}
+
+/// `(season, round)` for an F1 event's schedule, recovered from a session id
+/// (`season * 100000 + round * 100 + session`, see `f1.rs`). `None` for non-F1.
+fn f1_season_round(s: &ScheduleView) -> Option<(i64, i64)> {
+    let id = s
+        .days
+        .iter()
+        .flat_map(|d| &d.leagues)
+        .flat_map(|lg| &lg.matches)
+        .find(|m| m.game == Game::F1)?
+        .id;
+    Some((id / 100_000, (id / 100) % 1000))
 }
 
 /// Whether a loaded schedule is a traditional sport (any match is, e.g. MLB) —

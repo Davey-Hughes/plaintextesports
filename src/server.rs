@@ -2,7 +2,7 @@
 //! on the client the `#[server]` macro replaces them with a network call.
 
 use crate::types::{
-    EventInfo, MatchDetail, MatchView, ReminderReq, ScheduleView, SiteInfo, SubscribeReq,
+    EventInfo, F1Result, MatchDetail, MatchView, ReminderReq, ScheduleView, SiteInfo, SubscribeReq,
 };
 #[cfg(feature = "ssr")]
 use crate::types::Game;
@@ -205,6 +205,22 @@ pub async fn get_event_stages_by_league(league: String) -> Result<Vec<EventInfo>
     #[cfg(not(feature = "ssr"))]
     {
         let _ = league;
+        Ok(Vec::new())
+    }
+}
+
+/// A Grand Prix's results (full finishing order per finished session) for the F1
+/// event page. Keyed by season + round (the client derives them from a session
+/// id). Fetched on demand from Jolpica and TTL-cached.
+#[server(GetF1Results, "/api")]
+pub async fn get_f1_results(season: i64, round: i64) -> Result<Vec<F1Result>, ServerFnError> {
+    #[cfg(feature = "ssr")]
+    {
+        Ok(crate::cache::f1_results(season, round).await)
+    }
+    #[cfg(not(feature = "ssr"))]
+    {
+        let _ = (season, round);
         Ok(Vec::new())
     }
 }

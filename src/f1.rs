@@ -6,7 +6,7 @@
 //! one label is the session name (e.g. "Race"); results live on the event page.
 
 use crate::pandascore::{NormTeam, NormalizedMatch};
-use crate::types::{Game, MatchStatus};
+use crate::types::{F1Result, F1ResultRow, Game, MatchStatus};
 use chrono::{DateTime, Duration, Utc};
 use serde::Deserialize;
 
@@ -172,6 +172,159 @@ pub async fn fetch_schedule(
         .iter()
         .flat_map(|r| to_matches(r, now))
         .collect())
+}
+
+// ----- Results (full finishing order, for the GP event page) ----------------
+
+#[derive(Deserialize)]
+struct ResultsResp {
+    #[serde(rename = "MRData")]
+    data: ResultsMr,
+}
+#[derive(Deserialize)]
+struct ResultsMr {
+    #[serde(rename = "RaceTable")]
+    table: ResultsTable,
+}
+#[derive(Deserialize)]
+struct ResultsTable {
+    #[serde(rename = "Races", default)]
+    races: Vec<ResultsRace>,
+}
+#[derive(Deserialize, Default)]
+struct ResultsRace {
+    #[serde(rename = "Results", default)]
+    results: Vec<RawResult>,
+    #[serde(rename = "SprintResults", default)]
+    sprint: Vec<RawResult>,
+    #[serde(rename = "QualifyingResults", default)]
+    qualifying: Vec<RawQuali>,
+}
+#[derive(Deserialize)]
+struct RawDriver {
+    #[serde(rename = "givenName", default)]
+    given: String,
+    #[serde(rename = "familyName", default)]
+    family: String,
+}
+#[derive(Deserialize)]
+struct RawConstructor {
+    #[serde(default)]
+    name: String,
+}
+#[derive(Deserialize, Default)]
+struct RawTime {
+    #[serde(default)]
+    time: String,
+}
+#[derive(Deserialize)]
+struct RawResult {
+    #[serde(default)]
+    position: String,
+    #[serde(rename = "Driver")]
+    driver: RawDriver,
+    #[serde(rename = "Constructor")]
+    constructor: RawConstructor,
+    #[serde(default)]
+    status: String,
+    #[serde(rename = "Time", default)]
+    time: Option<RawTime>,
+}
+#[derive(Deserialize)]
+struct RawQuali {
+    #[serde(default)]
+    position: String,
+    #[serde(rename = "Driver")]
+    driver: RawDriver,
+    #[serde(rename = "Constructor")]
+    constructor: RawConstructor,
+    #[serde(rename = "Q1", default)]
+    q1: Option<String>,
+    #[serde(rename = "Q2", default)]
+    q2: Option<String>,
+    #[serde(rename = "Q3", default)]
+    q3: Option<String>,
+}
+
+fn driver_name(d: &RawDriver) -> String {
+    format!("{} {}", d.given, d.family).trim().to_string()
+}
+
+fn race_rows(rs: &[RawResult]) -> Vec<F1ResultRow> {
+    rs.iter()
+        .map(|r| F1ResultRow {
+            pos: r.position.clone(),
+            driver: driver_name(&r.driver),
+            constructor: r.constructor.name.clone(),
+            // The finishing time/gap when classified, else the status (lapped /
+            // DNF reason).
+            detail: r
+                .time
+                .as_ref()
+                .map(|t| t.time.clone())
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| r.status.clone()),
+        })
+        .collect()
+}
+
+fn quali_rows(rs: &[RawQuali]) -> Vec<F1ResultRow> {
+    rs.iter()
+        .map(|q| F1ResultRow {
+            pos: q.position.clone(),
+            driver: driver_name(&q.driver),
+            constructor: q.constructor.name.clone(),
+            // Best lap of the session (the pole time for P1).
+            detail: q
+                .q3
+                .clone()
+                .or_else(|| q.q2.clone())
+                .or_else(|| q.q1.clone())
+                .unwrap_or_default(),
+        })
+        .collect()
+}
+
+async fn get_results(client: &reqwest::Client, url: &str) -> Option<ResultsRace> {
+    let resp: ResultsResp = client
+        .get(url)
+        .header(reqwest::header::USER_AGENT, USER_AGENT)
+        .send()
+        .await
+        .ok()?
+        .error_for_status()
+        .ok()?
+        .json()
+        .await
+        .ok()?;
+    resp.data.table.races.into_iter().next()
+}
+
+/// A Grand Prix's finished-session results as full finishing orders — Race, then
+/// Sprint, then Qualifying. Missing/empty sessions (an upcoming race, or a
+/// non-sprint weekend) are simply absent; any fetch error yields no section.
+pub async fn fetch_results(client: &reqwest::Client, season: i64, round: i64) -> Vec<F1Result> {
+    let base = format!("{BASE}/{season}/{round}");
+    let (race_url, sprint_url, quali_url) = (
+        format!("{base}/results.json?limit=40"),
+        format!("{base}/sprint.json?limit=40"),
+        format!("{base}/qualifying.json?limit=40"),
+    );
+    let (race, sprint, quali) = tokio::join!(
+        get_results(client, &race_url),
+        get_results(client, &sprint_url),
+        get_results(client, &quali_url),
+    );
+    let mut out = Vec::new();
+    let mut push = |session: &str, rows: Vec<F1ResultRow>| {
+        if !rows.is_empty() {
+            out.push(F1Result { session: session.to_string(), rows });
+        }
+    };
+    push("Race", race.map(|r| race_rows(&r.results)).unwrap_or_default());
+    push("Sprint", sprint.map(|s| race_rows(&s.sprint)).unwrap_or_default());
+    push("Qualifying", quali.map(|q| quali_rows(&q.qualifying)).unwrap_or_default());
+    out
 }
 
 #[cfg(test)]
