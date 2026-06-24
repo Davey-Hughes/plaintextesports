@@ -1359,6 +1359,10 @@ fn StreamsList(streams: Vec<StreamView>) -> impl IntoView {
 #[component]
 fn SeriesSection(series: Series, record_reveal: Memo<bool>) -> impl IntoView {
     let Series { games, game_label, record_label } = series;
+    // Whether any game can swap to a ballpark-local time (so the "venue time"
+    // hint by the title only appears when there's actually a venue toggle here,
+    // not just because some other page flipped the shared ShowVenue).
+    let has_venue = games.iter().any(|g| !g.venue_label.is_empty());
     let rows = games
         .into_iter()
         .map(|g| view! { <SeriesRow game=g /> })
@@ -1377,9 +1381,18 @@ fn SeriesSection(series: Series, record_reveal: Memo<bool>) -> impl IntoView {
     });
     let game_label = (!game_label.is_empty())
         .then(|| view! { <span class="series-meta">{game_label}</span> });
+    // When the ballpark time is being shown (and this series has a venue toggle),
+    // a small blue "venue time" hint by the title makes the swapped state obvious.
+    let venue_hint = has_venue.then(|| {
+        let show_venue = use_context::<ShowVenue>().map(|s| s.0);
+        let shown = move || show_venue.is_some_and(|sv| sv.get());
+        view! {
+            {move || shown().then(|| view! { <span class="series-venue-hint">"venue time"</span> })}
+        }
+    });
     view! {
         <section class="detail-section">
-            <h2 class="section-title">"Series" {game_label}</h2>
+            <h2 class="section-title">"Series" {game_label} {venue_hint}</h2>
             <div class="series-games">{rows}</div>
             {record}
         </section>
