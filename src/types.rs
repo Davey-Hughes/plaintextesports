@@ -146,6 +146,11 @@ pub struct MatchView {
     /// Start time in the display tz, e.g. "6:00 PM" (always the clock time; the
     /// live/final state is conveyed separately by `status`).
     pub clock_label: String,
+    /// Start date in the display tz, e.g. "Wednesday, June 24" — shown on the
+    /// detail page, where there's no day heading to carry it. `#[serde(default)]`
+    /// so older cached payloads still load.
+    #[serde(default)]
+    pub date_label: String,
     /// The same start time at the event's venue (e.g. "6:00 PM EDT"), shown when
     /// the user clicks the time. Empty when the venue timezone is unknown
     /// (esports). `#[serde(default)]` so older cached payloads still load.

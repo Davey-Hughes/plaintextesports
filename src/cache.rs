@@ -908,16 +908,23 @@ fn to_view(m: &NormalizedMatch, tz: &Tz, now: DateTime<Utc>, hour24: bool) -> Ma
         }
     }
 
-    // When the venue's timezone is known (MLB), the same instant in that zone,
-    // labelled with its abbreviation (e.g. "6:00 PM EDT") — the local time at the
-    // ballpark. Empty otherwise (esports has no venue tz).
+    // When the venue's timezone is known (MLB/F1), the same instant in that zone,
+    // labelled with its date and abbreviation (e.g. "Wed, Jun 24 · 6:00 PM EDT") —
+    // the local date+time at the venue. The date is included because the venue can
+    // sit on a different calendar day than the viewer, which showing only the time
+    // would silently hide. Empty otherwise (esports has no venue tz).
     let venue_label = m
         .venue_tz
         .as_deref()
         .and_then(|id| id.parse::<Tz>().ok())
         .map(|vtz| {
             let vlocal = m.begin_at.with_timezone(&vtz);
-            format!("{} {}", time_label(vlocal, hour24), vlocal.format("%Z"))
+            format!(
+                "{} · {} {}",
+                vlocal.format("%a, %b %-d"),
+                time_label(vlocal, hour24),
+                vlocal.format("%Z")
+            )
         })
         .unwrap_or_default();
 
@@ -929,6 +936,7 @@ fn to_view(m: &NormalizedMatch, tz: &Tz, now: DateTime<Utc>, hour24: bool) -> Ma
         tier: m.tier.clone(),
         status,
         clock_label: time_label(local, hour24),
+        date_label: day_label(local),
         venue_label,
         best_of: m.best_of.map(|n| format!("Bo{n}")).unwrap_or_default(),
         team_a,
@@ -2363,6 +2371,7 @@ mod tests {
             tier: "S".into(),
             status: MatchStatus::Upcoming,
             clock_label: String::new(),
+            date_label: String::new(),
             venue_label: String::new(),
             best_of: bo.into(),
             team_a: TeamView {
@@ -2414,6 +2423,7 @@ mod tests {
             tier: "S".into(),
             status: MatchStatus::Upcoming,
             clock_label: String::new(),
+            date_label: String::new(),
             venue_label: String::new(),
             best_of: "Bo3".into(),
             team_a: TeamView {
@@ -2461,6 +2471,7 @@ mod tests {
             tier: "S".into(),
             status: MatchStatus::Upcoming,
             clock_label: String::new(),
+            date_label: String::new(),
             venue_label: String::new(),
             best_of: "Bo3".into(),
             team_a: TeamView { label: "A".into(), name: "A".into(), score: None, winner: false },
