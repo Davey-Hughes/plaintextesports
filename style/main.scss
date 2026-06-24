@@ -1702,6 +1702,13 @@ a.sw-link {
     .row-time {
       color: var(--fg);
       font-weight: 600;
+
+      // Like the other rows, the current game's time also goes blue when swapped
+      // to the ballpark's time (more specific than both the white above and the
+      // generic venue rule, so it wins for the current row too).
+      &.on {
+        color: var(--link);
+      }
     }
 
     .row-bar {
