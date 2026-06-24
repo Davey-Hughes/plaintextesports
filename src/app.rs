@@ -1,7 +1,7 @@
 use crate::bracket;
 use crate::server::{
     get_day, get_event_schedule, get_event_stages, get_event_stages_by_league, get_match_detail,
-    get_range, get_schedule, get_site,
+    get_range, get_schedule, get_site, get_team_schedule,
 };
 use crate::types::{
     full_event_name, BracketMatch, BracketRound, DayGroup, EventInfo, Game, MatchDetail,
@@ -199,6 +199,7 @@ pub fn App() -> impl IntoView {
                         <Route path=(StaticSegment("day"), ParamSegment("date")) view=DayPage />
                         <Route path=(StaticSegment("match"), ParamSegment("id")) view=MatchDetailPage />
                         <Route path=(StaticSegment("event"), ParamSegment("league")) view=EventPage />
+                        <Route path=(StaticSegment("team"), ParamSegment("name")) view=TeamPage />
                         <Route path=StaticSegment("about") view=AboutPage />
                     </Routes>
                 </main>
@@ -610,6 +611,11 @@ struct EventParams {
     league: String,
 }
 
+#[derive(Params, PartialEq, Clone)]
+struct TeamParams {
+    name: String,
+}
+
 /// Percent-encode a league name for use as a URL path segment.
 fn enc_segment(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
@@ -641,6 +647,16 @@ fn dec_segment(s: &str) -> String {
         i += 1;
     }
     String::from_utf8_lossy(&out).into_owned()
+}
+
+/// A team name rendered as a link to its team page — or plain text when the
+/// opponent isn't a real team yet (TBD / empty name). `name` keys the page.
+fn team_link(label: String, name: String) -> AnyView {
+    if name.is_empty() || name == "TBD" {
+        label.into_any()
+    } else {
+        view! { <A href=format!("/team/{}", enc_segment(&name))>{label}</A> }.into_any()
+    }
 }
 
 /// An event's stages rendered as labelled sections — each a Swiss/group stage
@@ -922,6 +938,92 @@ fn EventPage() -> impl IntoView {
     }
 }
 
+/// A single team's schedule (past + upcoming), reachable from the match page.
+/// Traditional-sport teams window like the homepage/event page (with the
+/// earlier/later expanders); esports teams show their full tier-1 history.
+#[component]
+fn TeamPage() -> impl IntoView {
+    let params = use_params::<TeamParams>();
+    let team = move || {
+        params
+            .get()
+            .ok()
+            .map(|p| dec_segment(&p.name))
+            .unwrap_or_default()
+    };
+    let hour24 = use_context::<RwSignal<bool>>().expect("hour24 context");
+    let tz = use_context::<RwSignal<String>>().expect("tz context");
+    let earlier = use_context::<EarlierDays>().expect("earlier context").0;
+    let later = use_context::<LaterDays>().expect("later context").0;
+    let sport_mode = use_context::<SportMode>().expect("sport mode context").0;
+    let schedule = Resource::new(
+        move || (team(), tz.get(), hour24.get()),
+        |(t, z, h)| async move { get_team_schedule(t, z, h).await },
+    );
+    setup_autorefresh(schedule);
+    let push = use_context::<RwSignal<Option<String>>>().is_some_and(|v| v.get().is_some());
+
+    // Keep the global sport mode in sync with the team being viewed, so the
+    // header toggle/footer/windowing agree (client-only; never persisted).
+    Effect::new(move |_| {
+        if let Some(Ok(s)) = schedule.get() {
+            sport_mode.set(schedule_is_traditional(&s));
+        }
+    });
+
+    view! {
+        <Suspense fallback=|| {
+            view! {
+                <article class="detail">
+                    <A href="/">"← schedule"</A>
+                    <p class="loading">"loading…"</p>
+                </article>
+            }
+        }>
+            {move || {
+                let name = team();
+                match schedule.get() {
+                    Some(Ok(mut s)) => {
+                        // Traditional-sport teams cap their forward horizon and show
+                        // the earlier/later expanders, like the event page.
+                        let windowed = schedule_is_traditional(&s);
+                        if windowed {
+                            let (lo, hi) =
+                                trad_day_bounds(&s.today_key, earlier.get(), later.get());
+                            s.days.retain(|d| {
+                                d.day_key.as_str() >= lo.as_str()
+                                    && d.day_key.as_str() <= hi.as_str()
+                            });
+                        }
+                        view! {
+                            <article class="detail">
+                                <A href="/">"← schedule"</A>
+                                <div class="team-head">
+                                    <h1 class="detail-title">{name.clone()}</h1>
+                                    <SubscribeStar kind="team" value=name.clone() />
+                                </div>
+                                <div id="sched" class="spy">
+                                    {render_schedule(s, false, push, true, windowed)}
+                                </div>
+                            </article>
+                        }
+                            .into_any()
+                    }
+                    _ => {
+                        view! {
+                            <article class="detail">
+                                <A href="/">"← schedule"</A>
+                                <p class="error">"Failed to load team."</p>
+                            </article>
+                        }
+                            .into_any()
+                    }
+                }
+            }}
+        </Suspense>
+    }
+}
+
 #[component]
 fn MatchDetailPage() -> impl IntoView {
     let params = use_params::<DetailParams>();
@@ -987,6 +1089,7 @@ fn detail_view(d: MatchDetail) -> impl IntoView {
     let (win_a, win_b) = (m.team_a.winner, m.team_b.winner);
     let sep = versus_sep(m.game);
     let (team_a, team_b) = (m.team_a.label, m.team_b.label);
+    let (name_a, name_b) = (m.team_a.name, m.team_b.name);
 
     // Scores/standings/bracket are spoilers: reveal when the global toggle is on
     // or this match was individually revealed (persisted, shared with the list).
@@ -1021,7 +1124,7 @@ fn detail_view(d: MatchDetail) -> impl IntoView {
                     class:winner=move || reveal.get() && win_a
                     class:loser=move || reveal.get() && win_b
                 >
-                    {team_a}
+                    {team_link(team_a, name_a)}
                 </span>
                 <span class="detail-score">
                     {move || {
@@ -1037,7 +1140,7 @@ fn detail_view(d: MatchDetail) -> impl IntoView {
                     class:winner=move || reveal.get() && win_b
                     class:loser=move || reveal.get() && win_a
                 >
-                    {team_b}
+                    {team_link(team_b, name_b)}
                 </span>
             </h1>
             <div class="detail-meta">
