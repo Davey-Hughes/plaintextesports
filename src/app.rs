@@ -86,6 +86,11 @@ struct DateRange(RwSignal<Option<(String, String)>>);
 #[derive(Clone, Copy)]
 struct EarlierDays(RwSignal<i64>);
 
+/// Extra future days the "show later days ›" control has revealed beyond the
+/// default window, for traditional sports (capped at `TRAD_FORWARD_MAX`).
+#[derive(Clone, Copy)]
+struct LaterDays(RwSignal<i64>);
+
 /// Selected game filters (slugs) and event filters (league names) — shared and
 /// persisted so they survive navigating to a match and back.
 #[derive(Clone, Copy)]
@@ -125,6 +130,7 @@ pub fn App() -> impl IntoView {
     // History views: a calendar-selected range, and the "earlier days" expansion.
     let range = RwSignal::new(None::<(String, String)>);
     let earlier = RwSignal::new(0i64);
+    let later = RwSignal::new(0i64);
     // Schedule filters (shared + persisted across navigation).
     let games = RwSignal::new(HashSet::<String>::new());
     let leagues = RwSignal::new(HashSet::<String>::new());
@@ -143,6 +149,7 @@ pub fn App() -> impl IntoView {
     provide_context(Subscribed(subscribed));
     provide_context(DateRange(range));
     provide_context(EarlierDays(earlier));
+    provide_context(LaterDays(later));
     provide_context(Games(games));
     provide_context(Leagues(leagues));
     provide_context(LastUpdated(last_updated));
@@ -2494,9 +2501,14 @@ fn ScoresToggle() -> impl IntoView {
 #[component]
 fn SportToggle() -> impl IntoView {
     let traditional = use_context::<SportMode>().expect("sport mode context").0;
+    let earlier = use_context::<EarlierDays>().expect("earlier context").0;
+    let later = use_context::<LaterDays>().expect("later context").0;
     let toggle = move |_| {
         let next = !traditional.get_untracked();
         traditional.set(next);
+        // Start each mode from its default window (the forward cap differs).
+        earlier.set(0);
+        later.set(0);
         #[cfg(feature = "hydrate")]
         save_sport_pref(next);
     };
@@ -2785,16 +2797,22 @@ fn HomePage() -> impl IntoView {
     let tz = use_context::<RwSignal<String>>().expect("tz context");
     let range = use_context::<DateRange>().expect("range context").0;
     let earlier = use_context::<EarlierDays>().expect("earlier context").0;
+    let later = use_context::<LaterDays>().expect("later context").0;
     let traditional = use_context::<SportMode>().expect("sport mode context").0;
     // Default = today + future (get_schedule). A calendar range, else an
-    // "earlier days" expansion, switches to the range view. The sport mode picks
-    // esports ("all") vs MLB and re-fetches when toggled.
+    // earlier/later expansion, switches to the range view. The sport mode picks
+    // esports ("all") vs MLB and re-fetches when toggled. Traditional sports cap
+    // the forward window and reveal more days with "show later days".
     let schedule = Resource::new(
-        move || (range.get(), earlier.get(), tz.get(), hour24.get(), traditional.get()),
-        |(r, e, z, h, trad)| async move {
+        move || (range.get(), earlier.get(), later.get(), tz.get(), hour24.get(), traditional.get()),
+        |(r, e, l, z, h, trad)| async move {
             let f = if trad { "mlb" } else { "all" }.to_string();
             match r {
                 Some((start, end)) => get_range(start, end, f, z, h).await,
+                None if trad && (e > 0 || l > 0) => {
+                    let (start, end) = trad_window(e, l);
+                    get_range(start, end, f, z, h).await
+                }
                 None if e > 0 => {
                     let (start, end) = earlier_window(e);
                     get_range(start, end, f, z, h).await
@@ -2826,17 +2844,57 @@ fn earlier_window(days_back: i64) -> (String, String) {
     }
 }
 
+/// The window for a traditional-sports schedule: `earlier` days back through a
+/// forward horizon of `TRAD_FORWARD_DAYS + later` days (capped at
+/// `TRAD_FORWARD_MAX`). Computed client-side; only reached after a click, so SSR
+/// never hits it (earlier/later start at 0 → the default `get_schedule`).
+fn trad_window(earlier: i64, later: i64) -> (String, String) {
+    let fwd = (crate::types::TRAD_FORWARD_DAYS + later).min(crate::types::TRAD_FORWARD_MAX);
+    #[cfg(feature = "hydrate")]
+    {
+        (iso_from_today(-earlier), iso_from_today(fwd))
+    }
+    #[cfg(not(feature = "hydrate"))]
+    {
+        let _ = (earlier, fwd);
+        (String::new(), String::new())
+    }
+}
+
+/// Bottom-of-schedule control for traditional sports: a "show later days ›"
+/// expander that reveals more future days, hidden once the forward window hits
+/// `TRAD_FORWARD_MAX`. Renders nothing in esports mode.
+#[component]
+fn LaterControl() -> impl IntoView {
+    let traditional = use_context::<SportMode>().expect("sport mode context").0;
+    let later = use_context::<LaterDays>().expect("later context").0;
+    let on_later = move |_| later.update(|n| *n += 2);
+    move || {
+        let at_cap =
+            crate::types::TRAD_FORWARD_DAYS + later.get() >= crate::types::TRAD_FORWARD_MAX;
+        (traditional.get() && !at_cap).then(|| {
+            view! {
+                <div class="history-bar history-bar-later">
+                    <button class="linkish" on:click=on_later>"show later days ›"</button>
+                </div>
+            }
+        })
+    }
+}
+
 /// Top-of-schedule control: a "‹ show earlier days" expander by default, or the
 /// active calendar range with a "clear" when one is selected.
 #[component]
 fn EarlierControl() -> impl IntoView {
     let range = use_context::<DateRange>().expect("range context").0;
     let earlier = use_context::<EarlierDays>().expect("earlier context").0;
+    let later = use_context::<LaterDays>().expect("later context").0;
 
     let on_earlier = move |_| earlier.update(|n| *n += 3);
     let on_reset = move |_| earlier.set(0);
     let on_clear = move |_| {
         earlier.set(0);
+        later.set(0);
         range.set(None);
         #[cfg(feature = "hydrate")]
         save_range(None);
@@ -3618,6 +3676,9 @@ fn render_schedule(s: ScheduleView, show_nav: bool, push: bool, event_mode: bool
         {(show_earlier && !has_days).then(|| view! { <EarlierControl /> })}
         {day_sections}
         {empty.then(|| view! { <p class="empty">"No tier-1 matches in this window."</p> })}
+        // Traditional sports cap the forward window; let the reader reveal more
+        // (LaterControl self-hides in esports mode and at the 1-week cap).
+        {show_earlier.then(|| view! { <LaterControl /> })}
         {upnext_day.map(|day| view! { <UpNextBar day=day /> })}
     }
 }

@@ -223,7 +223,9 @@ pub fn spawn_poller() {
             // Fetch (network) first, then apply synchronously so we never hold
             // the (non-Sync) DB connection across an await point. MLB comes from
             // its own (keyless) API and joins the same apply path.
-            let mlb_window = ((now - Duration::days(2)).date_naive(), window_end.date_naive());
+            // Keep about a week of past MLB days so "show earlier days" has
+            // something to reveal; the display still defaults to today onward.
+            let mlb_window = ((now - Duration::days(8)).date_naive(), window_end.date_naive());
             let (cs_res, lol_res, mlb_raw, mlb_standings_raw) = tokio::join!(
                 fetch_game(&client, &token, Game::Cs2, window_end, deep),
                 fetch_game(&client, &token, Game::Lol, window_end, deep),
@@ -915,15 +917,23 @@ pub fn homepage_view(game_filter: &str, tz_name: &str, hour24: bool) -> Schedule
     let tz = resolve_tz(tz_name, cfg.tz);
     let (traditional, game) = mode_filter(game_filter);
     let now = Utc::now();
-    let start = local_day_start(&tz, now.with_timezone(&tz).date_naive());
-    let end = now + Duration::days(cfg.upcoming_days);
+    let today = now.with_timezone(&tz).date_naive();
+    let start = local_day_start(&tz, today);
+    // Traditional sports play daily, so cap the default forward window (the
+    // client's "show later days" extends it up to TRAD_FORWARD_MAX). Esports
+    // show the full upcoming horizon.
+    let end = if traditional {
+        local_day_start(&tz, today + Duration::days(crate::types::TRAD_FORWARD_DAYS + 1))
+    } else {
+        now + Duration::days(cfg.upcoming_days)
+    };
 
     let snap = SNAPSHOT.read().unwrap_or_else(PoisonError::into_inner);
     let all = matches_in_window(&snap, traditional, game, start, end, &tz, now, hour24);
 
     ScheduleView {
         days: group_days(all, &tz),
-        today_key: now.with_timezone(&tz).date_naive().format("%Y-%m-%d").to_string(),
+        today_key: today.format("%Y-%m-%d").to_string(),
         fetched_at_ms: snap.fetched_at.timestamp_millis(),
         fetched_label: time_label(snap.fetched_at.with_timezone(&tz), hour24),
         stale: snap.stale,
