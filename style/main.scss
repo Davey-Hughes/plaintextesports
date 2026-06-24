@@ -671,9 +671,9 @@ a {
     opacity: 0.75;
   }
 
-  // Brief tint when a bracket name scrolls you to this row, so it's easy to spot.
+  // Tint when a link scrolls you to this row, so it's easy to spot.
   &.row-flash {
-    animation: row-flash 1.4s ease-out;
+    animation: row-flash 2.8s ease-out;
   }
 
   // With a ★ button, prepend a fixed column for it. The live/final side bar
