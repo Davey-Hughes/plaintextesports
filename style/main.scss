@@ -801,7 +801,9 @@ a {
 }
 
 .row-time {
-  color: var(--muted);
+  // A touch brighter than muted so the time reads clearly, while still sitting
+  // below the team names in emphasis (blend stays theme-aware).
+  color: color-mix(in srgb, var(--muted), var(--fg) 30%);
   font-size: 13px;
   white-space: nowrap;
   // Track the ★/bar's left shift so the time stays tight against it (the time is

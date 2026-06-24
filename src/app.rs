@@ -63,6 +63,11 @@ pub fn shell(options: LeptosOptions) -> impl IntoView {
 #[derive(Clone, Copy)]
 struct ShowScores(RwSignal<bool>);
 
+/// Whether to show the venue-local time on every game's row at once — clicking
+/// any one time toggles it for all of them.
+#[derive(Clone, Copy)]
+struct ShowVenue(RwSignal<bool>);
+
 /// Set of match ids whose scores are individually revealed (by clicking the
 /// match's "Final" badge).
 #[derive(Clone, Copy)]
@@ -131,6 +136,8 @@ pub fn App() -> impl IntoView {
     let vapid = RwSignal::new(None::<String>);
     // Spoiler control: a global reveal + a per-match reveal set.
     let show_scores = RwSignal::new(false);
+    // Shared so clicking any one game's time reveals every venue time at once.
+    let show_venue = RwSignal::new(false);
     let revealed = RwSignal::new(HashSet::<i64>::new());
     let sections = RwSignal::new(HashSet::<String>::new());
     let subscribed = RwSignal::new(HashSet::<String>::new());
@@ -152,6 +159,7 @@ pub fn App() -> impl IntoView {
     provide_context(Excluded(excluded));
     provide_context(vapid);
     provide_context(ShowScores(show_scores));
+    provide_context(ShowVenue(show_venue));
     provide_context(RevealedMatches(revealed));
     provide_context(RevealedSections(sections));
     provide_context(Subscribed(subscribed));
@@ -4270,31 +4278,40 @@ fn MatchRow(m: MatchView, show_bo: bool, push: bool) -> impl IntoView {
     };
 
     // The time can toggle to also show the local time at the venue (MLB stadiums
-    // carry a timezone; esports don't, so there it stays a plain label). Clicking
-    // stops the row's navigation, like the score reveal.
+    // carry a timezone; esports don't, so there it stays a plain label). The
+    // toggle is shared, so clicking any one time reveals every venue time at
+    // once. Clicking stops the row's navigation, like the score reveal.
     let clock = m.clock_label;
     let venue_label = m.venue_label;
     let time_view = if venue_label.is_empty() {
         view! { <span class="row-time">{clock}</span> }.into_any()
     } else {
-        let show_venue = RwSignal::new(false);
+        let show_venue = use_context::<ShowVenue>().map(|s| s.0);
         let toggle_venue = move |ev: leptos::ev::MouseEvent| {
             ev.prevent_default();
             ev.stop_propagation();
-            show_venue.update(|v| *v = !*v);
+            if let Some(sv) = show_venue {
+                sv.update(|v| *v = !*v);
+            }
+        };
+        let shown = move || show_venue.is_some_and(|sv| sv.get());
+        let title = move || {
+            if shown() {
+                "Click to hide the local time at each venue"
+            } else {
+                "Click to show the local time at each venue"
+            }
         };
         view! {
             <span
                 class="row-time row-time-tz"
-                class:on=move || show_venue.get()
-                title="Show the local time at the venue"
+                class:on=shown
+                title=title
                 on:click=toggle_venue
             >
                 {clock}
                 {move || {
-                    show_venue
-                        .get()
-                        .then(|| view! { <span class="row-time-venue">{venue_label.clone()}</span> })
+                    shown().then(|| view! { <span class="row-time-venue">{venue_label.clone()}</span> })
                 }}
             </span>
         }
