@@ -98,6 +98,11 @@ impl MatchStatus {
 pub struct TeamView {
     /// Short label shown in the box (acronym if available, else name).
     pub label: String,
+    /// Full team name — keys the team page + per-team subscription (empty/"TBD"
+    /// when the opponent isn't decided). `#[serde(default)]` so older cached
+    /// payloads without it still deserialize.
+    #[serde(default)]
+    pub name: String,
     pub score: Option<i64>,
     /// True when this team won a finished match (for emphasis).
     pub winner: bool,

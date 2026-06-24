@@ -4168,11 +4168,13 @@ mod tests {
             best_of: "Bo3".into(),
             team_a: TeamView {
                 label: "A".into(),
+                name: "A".into(),
                 score: None,
                 winner: false,
             },
             team_b: TeamView {
                 label: "B".into(),
+                name: "B".into(),
                 score: None,
                 winner: false,
             },

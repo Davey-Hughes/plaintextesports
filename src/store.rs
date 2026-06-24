@@ -56,6 +56,8 @@ pub fn open(path: &str) -> rusqlite::Result<Connection> {
             team_a_score INTEGER,
             team_b_label TEXT    NOT NULL,
             team_b_score INTEGER,
+            team_a_name  TEXT,
+            team_b_name  TEXT,
             stream_url   TEXT,
             tournament_id INTEGER,
             PRIMARY KEY (id, game)
@@ -98,9 +100,20 @@ pub fn open(path: &str) -> rusqlite::Result<Connection> {
     let _ = conn.execute("ALTER TABLE matches ADD COLUMN league_url TEXT", []);
     let _ = conn.execute("ALTER TABLE matches ADD COLUMN tournament_id INTEGER", []);
     let _ = conn.execute("ALTER TABLE matches ADD COLUMN serie_name TEXT", []);
+    let _ = conn.execute("ALTER TABLE matches ADD COLUMN team_a_name TEXT", []);
+    let _ = conn.execute("ALTER TABLE matches ADD COLUMN team_b_name TEXT", []);
     let _ = conn.execute("ALTER TABLE reminders ADD COLUMN game TEXT NOT NULL DEFAULT ''", []);
     let _ = conn.execute("ALTER TABLE reminders ADD COLUMN league TEXT NOT NULL DEFAULT ''", []);
     Ok(conn)
+}
+
+/// The team's full name column, falling back to its short label for rows
+/// written before the name columns existed (or any left NULL).
+fn team_name(row: &rusqlite::Row, name_col: &str, label_col: &str) -> rusqlite::Result<String> {
+    let name: Option<String> = row.get(name_col)?;
+    Ok(name
+        .filter(|s| !s.is_empty())
+        .map_or_else(|| row.get::<_, String>(label_col), Ok)?)
 }
 
 fn row_to_match(row: &rusqlite::Row) -> rusqlite::Result<NormalizedMatch> {
@@ -119,10 +132,13 @@ fn row_to_match(row: &rusqlite::Row) -> rusqlite::Result<NormalizedMatch> {
         best_of: row.get("best_of")?,
         team_a: NormTeam {
             label: row.get("team_a_label")?,
+            // Older rows predate team_a_name; fall back to the label.
+            name: team_name(row, "team_a_name", "team_a_label")?,
             score: row.get("team_a_score")?,
         },
         team_b: NormTeam {
             label: row.get("team_b_label")?,
+            name: team_name(row, "team_b_name", "team_b_label")?,
             score: row.get("team_b_score")?,
         },
         stream_url: row.get("stream_url")?,
@@ -180,8 +196,8 @@ pub fn upsert_and_prune(
             "INSERT INTO matches
                 (id, game, league, tier, begin_at_ms, status, best_of,
                  team_a_label, team_a_score, team_b_label, team_b_score, stream_url,
-                 league_url, tournament_id, serie_name)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
+                 league_url, tournament_id, serie_name, team_a_name, team_b_name)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)
              ON CONFLICT(id, game) DO UPDATE SET
                 league=excluded.league, tier=excluded.tier,
                 begin_at_ms=excluded.begin_at_ms, status=excluded.status,
@@ -189,7 +205,8 @@ pub fn upsert_and_prune(
                 team_a_label=excluded.team_a_label, team_a_score=excluded.team_a_score,
                 team_b_label=excluded.team_b_label, team_b_score=excluded.team_b_score,
                 stream_url=excluded.stream_url, league_url=excluded.league_url,
-                tournament_id=excluded.tournament_id, serie_name=excluded.serie_name",
+                tournament_id=excluded.tournament_id, serie_name=excluded.serie_name,
+                team_a_name=excluded.team_a_name, team_b_name=excluded.team_b_name",
         )?;
         for m in matches {
             up.execute(params![
@@ -208,6 +225,8 @@ pub fn upsert_and_prune(
                 m.league_url,
                 m.tournament_id,
                 m.serie_name,
+                m.team_a.name,
+                m.team_b.name,
             ])?;
         }
         tx.execute(
@@ -455,10 +474,12 @@ mod tests {
             best_of: Some(3),
             team_a: NormTeam {
                 label: "T1".into(),
+                name: "T1".into(),
                 score: None,
             },
             team_b: NormTeam {
                 label: "GEN".into(),
+                name: "Gen.G".into(),
                 score: Some(1),
             },
             stream_url: Some("https://twitch.tv/lck".into()),
@@ -483,6 +504,9 @@ mod tests {
         assert_eq!(all[0].id, 1);
         assert_eq!(all[0].team_b.score, Some(1));
         assert_eq!(all[0].team_a.score, None);
+        // Full team names round-trip (keys the team page + subscriptions).
+        assert_eq!(all[0].team_a.name, "T1");
+        assert_eq!(all[0].team_b.name, "Gen.G");
         assert_eq!(load_fetched_at(&conn), Some(now.timestamp_millis()));
 
         // Upserting the same id updates in place (no duplicate row).

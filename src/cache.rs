@@ -737,11 +737,13 @@ fn to_view(m: &NormalizedMatch, tz: &Tz, now: DateTime<Utc>, hour24: bool) -> Ma
     };
     let mut team_a = TeamView {
         label: m.team_a.label.clone(),
+        name: m.team_a.name.clone(),
         score: trust_scores.then_some(m.team_a.score).flatten(),
         winner: false,
     };
     let mut team_b = TeamView {
         label: m.team_b.label.clone(),
+        name: m.team_b.name.clone(),
         score: trust_scores.then_some(m.team_b.score).flatten(),
         winner: false,
     };
@@ -1781,6 +1783,7 @@ fn demo_bracket_event(name: &str, rounds: Vec<BracketRound>) -> EventInfo {
 fn demo_team(label: &str, score: Option<i64>) -> NormTeam {
     NormTeam {
         label: label.to_string(),
+        name: label.to_string(),
         score,
     }
 }
@@ -1958,10 +1961,12 @@ mod tests {
             best_of: Some(3),
             team_a: NormTeam {
                 label: "A".into(),
+                name: "A".into(),
                 score: None,
             },
             team_b: NormTeam {
                 label: "B".into(),
+                name: "B".into(),
                 score: None,
             },
             stream_url: None,
@@ -2083,11 +2088,13 @@ mod tests {
             best_of: bo.into(),
             team_a: TeamView {
                 label: "A".into(),
+                name: "A".into(),
                 score: None,
                 winner: false,
             },
             team_b: TeamView {
                 label: "B".into(),
+                name: "B".into(),
                 score: None,
                 winner: false,
             },
@@ -2131,11 +2138,13 @@ mod tests {
             best_of: "Bo3".into(),
             team_a: TeamView {
                 label: "A".into(),
+                name: "A".into(),
                 score: None,
                 winner: false,
             },
             team_b: TeamView {
                 label: "B".into(),
+                name: "B".into(),
                 score: None,
                 winner: false,
             },
@@ -2173,8 +2182,8 @@ mod tests {
             status: MatchStatus::Upcoming,
             clock_label: String::new(),
             best_of: "Bo3".into(),
-            team_a: TeamView { label: "A".into(), score: None, winner: false },
-            team_b: TeamView { label: "B".into(), score: None, winner: false },
+            team_a: TeamView { label: "A".into(), name: "A".into(), score: None, winner: false },
+            team_b: TeamView { label: "B".into(), name: "B".into(), score: None, winner: false },
             stream_url: None,
             event_url: String::new(),
             begin_at_ms: at_ms,
