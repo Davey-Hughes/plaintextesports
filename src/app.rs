@@ -262,11 +262,58 @@ fn SiteHeader() -> impl IntoView {
             </div>
         </header>
         <div class="toggles">
+            <ScrollTopButton />
             <CalendarPicker />
             <ScoresToggle />
             <HourToggle />
             <ThemeToggle />
         </div>
+    }
+}
+
+/// A "back to top" arrow that sits on the left of the sticky toggle bar — taking
+/// the place of the brand once it has scrolled away. Hidden at the top of the page.
+#[component]
+fn ScrollTopButton() -> impl IntoView {
+    let scrolled = RwSignal::new(false);
+    Effect::new(move |_| {
+        #[cfg(feature = "hydrate")]
+        {
+            use wasm_bindgen::closure::Closure;
+            use wasm_bindgen::JsCast;
+            let Some(w) = web_sys::window() else {
+                return;
+            };
+            let win = w.clone();
+            let update = move || {
+                let past = win.scroll_y().unwrap_or(0.0) > 60.0;
+                if scrolled.get_untracked() != past {
+                    scrolled.set(past);
+                }
+            };
+            update();
+            let cb = Closure::<dyn FnMut()>::new(update);
+            let _ = w.add_event_listener_with_callback("scroll", cb.as_ref().unchecked_ref());
+            // The header mounts once for the app's lifetime, so keep the listener.
+            cb.forget();
+        }
+    });
+    let to_top = move |_| {
+        #[cfg(feature = "hydrate")]
+        if let Some(w) = web_sys::window() {
+            w.scroll_to_with_x_and_y(0.0, 0.0);
+        }
+    };
+    view! {
+        <button
+            class="toggle scrolltop"
+            class:scrolltop-off=move || !scrolled.get()
+            title="Back to top"
+            aria-label="Back to top"
+            on:click=to_top
+        >
+            "↑"
+        </button>
     }
 }
 
