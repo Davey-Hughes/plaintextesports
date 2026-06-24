@@ -874,7 +874,7 @@ fn F1Results(results: Vec<F1Result>, season: i64, round: i64) -> impl IntoView {
         .collect_view();
     view! {
         <section class="detail-section">
-            <h2 class="section-title">"Results"</h2>
+            <h2 class="section-title f1-results-title">"Results"</h2>
             {sections}
         </section>
     }
@@ -1203,16 +1203,41 @@ fn detail_view(d: MatchDetail) -> impl IntoView {
         MatchStatus::Canceled => "Canceled",
         MatchStatus::Upcoming => "",
     };
-    let meta = [
-        full_event_name(&m.league, &m.serie_name),
-        m.clock_label.clone(),
-        m.best_of.clone(),
-        status_label.to_string(),
-    ]
-    .into_iter()
-    .filter(|s| !s.is_empty())
-    .collect::<Vec<_>>()
-    .join(" · ");
+    // The meta line is split so the date+time can swap to the venue-local time on
+    // click (blue), like the schedule rows. Lead = event name; the middle is the
+    // clickable when; trail = best-of + status.
+    let event_name = full_event_name(&m.league, &m.serie_name);
+    let when_local = [m.date_label.clone(), m.clock_label.clone()]
+        .into_iter()
+        .filter(|s| !s.is_empty())
+        .collect::<Vec<_>>()
+        .join(" · ");
+    let venue_when = m.venue_label.clone();
+    let trail = [m.best_of.clone(), status_label.to_string()]
+        .into_iter()
+        .filter(|s| !s.is_empty())
+        .collect::<Vec<_>>()
+        .join(" · ");
+
+    // Shared venue-time toggle (same one the schedule rows use), so the date+time
+    // swaps to the venue's local date+time when clicked.
+    let show_venue = use_context::<ShowVenue>().map(|s| s.0);
+    let has_venue = !venue_when.is_empty();
+    let venue_shown = move || show_venue.is_some_and(|sv| sv.get());
+    let toggle_venue = move |ev: leptos::ev::MouseEvent| {
+        ev.prevent_default();
+        ev.stop_propagation();
+        if let Some(sv) = show_venue {
+            sv.update(|v| *v = !*v);
+        }
+    };
+    let venue_title = move || {
+        if venue_shown() {
+            "Click to hide the local time at the venue"
+        } else {
+            "Click to show the local time at the venue"
+        }
+    };
 
     let mid = m.id;
     let (sa, sb) = (m.team_a.score, m.team_b.score);
@@ -1222,6 +1247,9 @@ fn detail_view(d: MatchDetail) -> impl IntoView {
     let played = matches!(m.status, MatchStatus::Live | MatchStatus::Finished) && has_score;
     let (win_a, win_b) = (m.team_a.winner, m.team_b.winner);
     let sep = versus_sep(m.game);
+    // F1 (and any single-entity sport) has no opponent: the title is the one
+    // session label, with no "vs"/"at" separator and no empty second team.
+    let is_solo = m.game.single_entity();
     let (team_a, team_b) = (m.team_a.label, m.team_b.label);
     let (name_a, name_b) = (m.team_a.name, m.team_b.name);
 
@@ -1252,33 +1280,60 @@ fn detail_view(d: MatchDetail) -> impl IntoView {
     view! {
         <article class="detail">
             <A href="/">"← schedule"</A>
-            <h1 class="detail-title">
-                <span
-                    class="detail-team"
-                    class:winner=move || reveal.get() && win_a
-                    class:loser=move || reveal.get() && win_b
-                >
-                    {team_link(team_a, name_a)}
-                </span>
-                <span class="detail-score">
-                    {move || {
-                        if reveal.get() && has_score {
-                            format!("{} – {}", sa.unwrap_or(0), sb.unwrap_or(0))
-                        } else {
-                            sep.to_string()
-                        }
-                    }}
-                </span>
-                <span
-                    class="detail-team"
-                    class:winner=move || reveal.get() && win_b
-                    class:loser=move || reveal.get() && win_a
-                >
-                    {team_link(team_b, name_b)}
-                </span>
+            <h1 class="detail-title" class:detail-title-solo=is_solo>
+                {if is_solo {
+                    view! { <span class="detail-team detail-solo">{team_a}</span> }.into_any()
+                } else {
+                    view! {
+                        <span
+                            class="detail-team"
+                            class:winner=move || reveal.get() && win_a
+                            class:loser=move || reveal.get() && win_b
+                        >
+                            {team_link(team_a, name_a)}
+                        </span>
+                        <span class="detail-score">
+                            {move || {
+                                if reveal.get() && has_score {
+                                    format!("{} – {}", sa.unwrap_or(0), sb.unwrap_or(0))
+                                } else {
+                                    sep.to_string()
+                                }
+                            }}
+                        </span>
+                        <span
+                            class="detail-team"
+                            class:winner=move || reveal.get() && win_b
+                            class:loser=move || reveal.get() && win_a
+                        >
+                            {team_link(team_b, name_b)}
+                        </span>
+                    }
+                    .into_any()
+                }}
             </h1>
             <div class="detail-meta">
-                <span>{meta}</span>
+                <span class="detail-meta-line">
+                    <span>{event_name}" · "</span>
+                    {if has_venue {
+                        let local = when_local.clone();
+                        let venue = venue_when.clone();
+                        view! {
+                            <span
+                                class="detail-when row-time-tz"
+                                class:on=venue_shown
+                                title=venue_title
+                                on:click=toggle_venue
+                            >
+                                {move || if venue_shown() { venue.clone() } else { local.clone() }}
+                            </span>
+                        }
+                        .into_any()
+                    } else {
+                        view! { <span>{when_local.clone()}</span> }.into_any()
+                    }}
+                    {(!trail.is_empty()).then(|| format!(" · {trail}"))}
+                </span>
                 {move || {
                     (!toggle_hidden())
                         .then(|| {
@@ -3302,7 +3357,17 @@ fn StarredRow(m: MatchView) -> impl IntoView {
     let subscribed = use_context::<Subscribed>().expect("subscribed context").0;
     let vapid = use_context::<RwSignal<Option<String>>>().expect("vapid context");
     let id = m.id;
-    let line = format!("{} {} {}", m.team_a.label, versus_sep(m.game), m.team_b.label);
+    // F1 (single-entity) has no opponent: show the GP and session (e.g.
+    // "Austrian Grand Prix · Race") instead of a "Race at " matchup.
+    let line = if m.game.single_entity() {
+        if m.serie_name.is_empty() {
+            m.team_a.label.clone()
+        } else {
+            format!("{} · {}", m.serie_name, m.team_a.label)
+        }
+    } else {
+        format!("{} {} {}", m.team_a.label, versus_sep(m.game), m.team_b.label)
+    };
     // The scopes that also cover this match — so removing it actually stops the
     // notification (opt out) rather than just dropping a redundant star.
     let keys = [
@@ -4351,6 +4416,21 @@ fn UpNextBar(day: DayGroup) -> impl IntoView {
         .map(|m| {
             let mid = m.id;
             let sep = versus_sep(m.game);
+            // F1 (single-entity) has no opponent: show just the session label, with
+            // no "at"/"vs" separator and no empty second team.
+            let teams = if m.game.single_entity() {
+                view! {
+                    <span class="upnext-team upnext-solo">{m.team_a.label}</span>
+                }
+                .into_any()
+            } else {
+                view! {
+                    <span class="upnext-team">{m.team_a.label}</span>
+                    <span class="upnext-vs">{sep}</span>
+                    <span class="upnext-team">{m.team_b.label}</span>
+                }
+                .into_any()
+            };
             // A match scrolls to (and flashes) its row in the schedule when it's on
             // the page — same as a bracket name — and otherwise opens its page.
             // Stop propagation so the bar's own jump-to-day doesn't also fire.
@@ -4367,9 +4447,7 @@ fn UpNextBar(day: DayGroup) -> impl IntoView {
                     }
                 >
                     <span class="upnext-time">{m.clock_label}</span>
-                    <span class="upnext-team">{m.team_a.label}</span>
-                    <span class="upnext-vs">{sep}</span>
-                    <span class="upnext-team">{m.team_b.label}</span>
+                    {teams}
                 </a>
             }
         })
@@ -4564,6 +4642,10 @@ fn render_schedule(
             // writes #day-<date> to the URL (handy for the last days, which you
             // can't scroll far enough for the scrollspy to reach).
             let key = d.day_key.clone();
+            // When venue time is shown, annotate each heading so it's clear the
+            // times below are venue-local (the dates can differ from this heading).
+            let show_venue = use_context::<ShowVenue>().map(|s| s.0);
+            let venue_shown = move || show_venue.is_some_and(|sv| sv.get());
             let heading = view! {
                 <h2
                     class=day_cls
@@ -4585,6 +4667,10 @@ fn render_schedule(
                     }
                 >
                     {d.day_label}
+                    {move || {
+                        venue_shown()
+                            .then(|| view! { <span class="day-venue-note">"venue time"</span> })
+                    }}
                 </h2>
             };
             // The first day carries the "show earlier days" control beside its date.
@@ -4750,10 +4836,7 @@ fn MatchRow(m: MatchView, show_bo: bool, push: bool) -> impl IntoView {
                 title=title
                 on:click=toggle_venue
             >
-                {clock}
-                {move || {
-                    shown().then(|| view! { <span class="row-time-venue">{venue_label.clone()}</span> })
-                }}
+                {move || if shown() { venue_label.clone() } else { clock.clone() }}
             </span>
         }
         .into_any()
@@ -5116,6 +5199,7 @@ mod tests {
             tier: "S".into(),
             status: MatchStatus::Upcoming,
             clock_label: String::new(),
+            date_label: String::new(),
             venue_label: String::new(),
             best_of: "Bo3".into(),
             team_a: TeamView {

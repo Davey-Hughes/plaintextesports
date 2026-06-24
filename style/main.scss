@@ -577,6 +577,17 @@ a {
   }
 }
 
+// "venue time" annotation beside a day heading while venue-local times are
+// shown; lowercase + blue so it reads as a note, not part of the date.
+.day-venue-note {
+  margin-left: 0.6rem;
+  color: var(--link);
+  font-size: 11px;
+  font-weight: 400;
+  text-transform: none;
+  letter-spacing: 0;
+}
+
 // The first day shares its title line with the "show earlier days" control; the
 // date underline then spans the whole row beneath both.
 .day-head {
@@ -822,27 +833,24 @@ a {
   transform: translateX(-7.5px);
 }
 
-// A time that toggles the venue-local time. The team names sit far right in
-// their column, so the revealed label overflows into the empty space beside the
-// time without disturbing the grid.
+// A time that toggles the venue-local time. Clicking swaps the grey local time
+// for the blue venue date+time in place (not an append) so a different venue
+// calendar day can't hide. The team names sit far right in their column, so the
+// longer revealed label overflows into the empty space beside the time without
+// disturbing the grid.
 .row-time-tz {
   cursor: pointer;
 
-  // Hover/active jump to the max-contrast emphasis colour (white on dark, black
-  // on light) — brighter than the team names, so it clearly reads as active.
-  &:hover,
-  &.on {
+  // Hovering an un-revealed time brightens it to the max-contrast colour (white
+  // on dark, black on light) to signal it's clickable.
+  &:hover {
     color: var(--win);
   }
-}
 
-// The local time at the venue, revealed beside the user's time (e.g. "· 6:40 PM EDT").
-.row-time-venue {
-  color: var(--link);
-
-  &::before {
-    content: " · ";
-    color: var(--border);
+  // When revealed, the venue date+time replaces the local time in place; blue
+  // (the link colour we use for venue-local times) marks it as the venue reading.
+  &.on {
+    color: var(--link);
   }
 }
 
@@ -1222,6 +1230,19 @@ a {
   color: var(--muted);
   font-size: 12px;
   margin-bottom: 1.2rem;
+}
+
+// The date+time in a detail meta line is clickable to swap to the venue's local
+// date+time (it turns blue via .row-time-tz.on); a dotted underline hints it's
+// clickable, dropped once the colour carries the state.
+.detail-when.row-time-tz {
+  text-decoration: underline dotted;
+  text-underline-offset: 2px;
+  text-decoration-color: var(--border);
+
+  &.on {
+    text-decoration: none;
+  }
 }
 
 .detail-hidden {
@@ -1693,9 +1714,9 @@ a.sw-link {
   }
 
   // The date+time stays on one line whichever tz is shown. A dotted underline
-  // hints it's clickable (to swap to ballpark time); it goes solid when the venue
+  // hints it's clickable (to swap to ballpark time); it drops when the venue
   // time is shown, which also turns the label blue — the link colour we use for
-  // venue-local times everywhere else (e.g. .row-time-venue in the schedule).
+  // venue-local times everywhere else (the schedule rows swap to blue too).
   .series-when {
     white-space: nowrap;
   }
@@ -1705,10 +1726,9 @@ a.sw-link {
     text-underline-offset: 2px;
     text-decoration-color: var(--border);
 
-    // Showing the ballpark's time: blue label (matching venue times elsewhere)
-    // and no underline — the colour carries the state, so the dotted "clickable"
-    // hint is no longer needed. Overrides the generic .row-time-tz.on, which uses
-    // the max-contrast colour.
+    // Showing the ballpark's time: blue label (matching venue times elsewhere,
+    // including the generic .row-time-tz.on) and no underline — the colour carries
+    // the state, so the dotted "clickable" hint is no longer needed.
     &.on {
       color: var(--link);
       text-decoration: none;
@@ -1753,6 +1773,14 @@ a.sw-link {
 }
 
 // ----- F1 results (GP event page) -------------------------------------------
+// A rule under the "Results" heading sets the finishing orders apart from the
+// schedule above them.
+.f1-results-title {
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 0.4rem;
+  margin-bottom: 0.7rem;
+}
+
 .f1-session {
   margin-bottom: 0.9rem;
 }
@@ -1783,15 +1811,20 @@ a.sw-link {
   list-style: none;
   margin: 0.2rem 0 0;
   padding: 0;
+  // One shared grid for every row (rows are display:contents) so the columns
+  // line up regardless of each row's detail width — pos (right), driver, a
+  // flexible constructor column that pushes the detail to the right edge, then
+  // the detail (right-aligned). A per-row grid would let the auto detail column
+  // shift the driver/constructor columns row to row.
+  display: grid;
+  grid-template-columns: 1.8em minmax(0, auto) minmax(0, 1fr) max-content;
+  align-items: baseline;
+  gap: 0.25rem 0.6rem;
+  font-size: 13px;
 }
 
 .f1-row {
-  display: grid;
-  grid-template-columns: 1.8em minmax(0, 1fr) minmax(0, 1fr) auto;
-  gap: 0.6rem;
-  align-items: baseline;
-  padding: 0.1rem 0;
-  font-size: 13px;
+  display: contents;
 }
 
 .f1-pos {
