@@ -936,9 +936,24 @@ a {
   border-top: 1px dashed var(--border);
   color: var(--muted);
   font-size: 12px;
+  text-align: center;
 
   .sep {
     color: var(--border);
+  }
+}
+
+// Each footer line wraps and stays centred independently, so the brand/data
+// line and the copyright/links line balance instead of one item dangling.
+.footer-line {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  align-items: baseline;
+  gap: 0 0.4rem;
+
+  & + .footer-line {
+    margin-top: 0.2rem;
   }
 }
 
