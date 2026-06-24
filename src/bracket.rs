@@ -54,6 +54,10 @@ pub struct BracketLayout {
     pub edges: Vec<Edge>,
     /// Total columns (canvas width = `cols * COL_EM`).
     pub cols: usize,
+    /// Columns occupied by the stacked winner's/loser's brackets (i.e. excluding
+    /// the grand final to their right) — so a section banner can stop before the
+    /// grand-final rail rather than crossing it. Equals `cols` for single-elim.
+    pub bracket_cols: usize,
     /// Total height in slots (canvas height = `height * ROW_EM`).
     pub height: f64,
     /// `(section, y_min, y_max)` per consecutive section run, for the labels.
@@ -177,8 +181,16 @@ pub fn layout(rounds: &[BracketRound]) -> BracketLayout {
     }
 
     let cols = col_of.iter().copied().max().map_or(0, |c| c + 1);
+    let bracket_cols = non_final_cols.max(1);
     let height = positions.iter().flatten().map(|p| p.y).fold(0.0, f64::max) + 1.0;
-    BracketLayout { positions, edges, cols, height, group_rows }
+    BracketLayout { positions, edges, cols, bracket_cols, height, group_rows }
+}
+
+/// Right edge (in em) of the last winner's/loser's-bracket column — where a
+/// section banner should end so it never reaches the grand-final rail.
+#[must_use]
+pub fn banner_width_em(bracket_cols: usize) -> f64 {
+    (bracket_cols.max(1) - 1) as f64 * COL_EM + BOX_W_EM
 }
 
 /// The match's lineage — itself, all its ancestors (feeders, transitively) and
