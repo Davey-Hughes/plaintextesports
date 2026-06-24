@@ -160,20 +160,50 @@ fn broadcast_rank(b: &RawBroadcast) -> (i32, i32, i32) {
     (tv, nat, side)
 }
 
-/// Turn the API's broadcast list into [`StreamView`]s — link-less entries that
-/// carry a network `name` and a "national · TV" style `tag`. Deduped by
-/// name+medium, ordered TV-then-radio / national-then-local.
+/// A national broadcaster's "where to watch" URL, when it's one we recognize.
+/// Only applied to national broadcasts (so a local "FOX Sports <city>" RSN
+/// isn't mislinked to FOX's national page); the API itself provides no URLs.
+fn watch_url(name: &str) -> Option<&'static str> {
+    let n = name.to_ascii_uppercase();
+    Some(if n.contains("ESPN") {
+        "https://www.espn.com/watch/"
+    } else if n.contains("MLB NETWORK") {
+        "https://www.mlb.com/network"
+    } else if n.contains("FOX") || n.contains("FS1") {
+        "https://www.foxsports.com/live"
+    } else if n.contains("TBS") {
+        "https://www.tbs.com/watchtbs/now"
+    } else if n.contains("APPLE") {
+        "https://tv.apple.com/"
+    } else if n.contains("ROKU") {
+        "https://therokuchannel.roku.com/"
+    } else if n.contains("PRIME") || n.contains("AMAZON") {
+        "https://www.amazon.com/gp/video/storefront"
+    } else if n.contains("PEACOCK") {
+        "https://www.peacocktv.com/"
+    } else if n.contains("NETFLIX") {
+        "https://www.netflix.com/"
+    } else {
+        return None;
+    })
+}
+
+/// Turn the API's broadcast list into [`StreamView`]s, plus MLB.tv (every game
+/// streams there). Deduped by name+medium and grouped TV → streaming → radio;
+/// national broadcasters carry a watch link, local networks/radio are text
+/// (the API provides no per-network URL).
 fn broadcasts(raw: &[RawBroadcast]) -> Vec<StreamView> {
     let mut sorted: Vec<&RawBroadcast> = raw.iter().collect();
     sorted.sort_by_key(|b| broadcast_rank(b));
     let mut seen: HashSet<String> = HashSet::new();
-    let mut out = Vec::new();
+    let (mut tv, mut radio) = (Vec::new(), Vec::new());
     for b in sorted {
         let name = clean_network(&b.name);
         if name.is_empty() {
             continue;
         }
-        let medium = if b.kind.eq_ignore_ascii_case("TV") { "TV" } else { "radio" };
+        let is_tv = b.kind.eq_ignore_ascii_case("TV");
+        let medium = if is_tv { "TV" } else { "radio" };
         if !seen.insert(format!("{name}|{medium}")) {
             continue;
         }
@@ -191,15 +221,40 @@ fn broadcasts(raw: &[RawBroadcast]) -> Vec<StreamView> {
         } else {
             format!("{scope} · {medium}")
         };
-        out.push(StreamView {
-            url: String::new(),
+        let url = if b.is_national {
+            watch_url(&name).unwrap_or_default().to_string()
+        } else {
+            String::new()
+        };
+        let sv = StreamView {
+            url,
             language: String::new(),
             official: b.is_national,
-            main: medium == "TV",
+            main: is_tv,
             name,
             tag,
-        });
+            group: if is_tv { "tv" } else { "radio" }.to_string(),
+        };
+        if is_tv {
+            tv.push(sv);
+        } else {
+            radio.push(sv);
+        }
     }
+    // Every MLB game is on MLB.tv — the universal "where to watch", between the
+    // broadcast-TV networks and the radio listings.
+    let mlb_tv = StreamView {
+        url: "https://www.mlb.com/tv".to_string(),
+        language: String::new(),
+        official: true,
+        main: true,
+        name: "MLB.tv".to_string(),
+        tag: "streaming".to_string(),
+        group: "streaming".to_string(),
+    };
+    let mut out = tv;
+    out.push(mlb_tv);
+    out.extend(radio);
     out
 }
 
@@ -440,16 +495,18 @@ mod tests {
             },
         ];
         let out = broadcasts(&raw);
-        // National TV first, then away TV, then the radio entry.
-        assert_eq!(out.len(), 3);
-        assert_eq!(out[0].name, "FOX");
-        assert_eq!(out[0].tag, "national · TV");
-        assert_eq!(out[1].name, "Rangers Sports Network");
-        assert_eq!(out[1].tag, "away · TV");
-        assert_eq!(out[2].name, "560AM WQAM");
-        assert_eq!(out[2].tag, "home · radio");
-        // Broadcasts are link-less.
-        assert!(out.iter().all(|s| s.url.is_empty()));
+        // TV group (national first, then away), then MLB.tv, then radio.
+        assert_eq!(out.len(), 4);
+        assert_eq!((out[0].name.as_str(), out[0].tag.as_str(), out[0].group.as_str()), ("FOX", "national · TV", "tv"));
+        // A national broadcaster gets a watch link; a local network stays text.
+        assert_eq!(out[0].url, "https://www.foxsports.com/live");
+        assert_eq!((out[1].name.as_str(), out[1].tag.as_str(), out[1].group.as_str()), ("Rangers Sports Network", "away · TV", "tv"));
+        assert!(out[1].url.is_empty());
+        // MLB.tv is inserted between TV and radio, with a link.
+        assert_eq!((out[2].name.as_str(), out[2].group.as_str()), ("MLB.tv", "streaming"));
+        assert_eq!(out[2].url, "https://www.mlb.com/tv");
+        assert_eq!((out[3].name.as_str(), out[3].tag.as_str(), out[3].group.as_str()), ("560AM WQAM", "home · radio", "radio"));
+        assert!(out[3].url.is_empty());
     }
 
     #[test]

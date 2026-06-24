@@ -1263,40 +1263,52 @@ fn StreamsList(streams: Vec<StreamView>) -> impl IntoView {
     if streams.is_empty() {
         return ().into_any();
     }
-    // MLB broadcasts carry a network `name` and no link; esports streams carry a
-    // clickable `url`. Title the section to match what it's listing.
+    // MLB broadcasts carry a network `name` (and sometimes a watch link); esports
+    // streams carry a clickable `url`. Title the section to match what it lists.
     let broadcast = streams.iter().any(|s| !s.name.is_empty());
     let title = if broadcast { "Broadcasts" } else { "Streams" };
+    // A small gap leads each new group (after the first), separating official
+    // streams from co-streams, and TV / streaming / radio for broadcasts.
+    let gaps: Vec<bool> = streams
+        .iter()
+        .enumerate()
+        .map(|(i, s)| i > 0 && streams[i - 1].group != s.group)
+        .collect();
     let items = streams
         .into_iter()
-        .map(|s| {
-            if !s.name.is_empty() {
-                // Link-less broadcast (MLB): network name + a "national · TV" tag.
-                view! {
-                    <li class="stream">
-                        <span class="stream-site">{s.name}</span>
-                        {(!s.tag.is_empty())
-                            .then(|| view! { <span class="stream-tags">{s.tag}</span> })}
-                    </li>
-                }
-                .into_any()
+        .zip(gaps)
+        .map(|(s, gap)| {
+            // A broadcast's label is its network name; an esports stream's is
+            // derived from its url (site + channel).
+            let (label, channel) = if s.name.is_empty() {
+                stream_parts(&s.url)
             } else {
-                let (site, channel) = stream_parts(&s.url);
-                let tags = stream_tags(&s);
-                let cls = if s.official { "stream official" } else { "stream" };
-                view! {
-                    <li class=cls>
-                        <a href=s.url target="_blank" rel="noreferrer">
-                            <span class="stream-site">{site}</span>
-                            {(!channel.is_empty())
-                                .then(|| {
-                                    view! { <span class="stream-chan">{format!("/{channel}")}</span> }
-                                })}
-                        </a>
-                        {(!tags.is_empty()).then(|| view! { <span class="stream-tags">{tags}</span> })}
-                    </li>
-                }
-                .into_any()
+                (s.name.clone(), String::new())
+            };
+            let tags = if s.name.is_empty() { stream_tags(&s) } else { s.tag.clone() };
+            let mut cls = String::from("stream");
+            // Highlight an esports official broadcast (not the per-game MLB flag).
+            if s.official && s.name.is_empty() {
+                cls.push_str(" official");
+            }
+            if gap {
+                cls.push_str(" stream-group-start");
+            }
+            let label_view = view! {
+                <span class="stream-site">{label}</span>
+                {(!channel.is_empty())
+                    .then(|| view! { <span class="stream-chan">{format!("/{channel}")}</span> })}
+            };
+            let body = if s.url.is_empty() {
+                label_view.into_any()
+            } else {
+                view! { <a href=s.url target="_blank" rel="noreferrer">{label_view}</a> }.into_any()
+            };
+            view! {
+                <li class=cls>
+                    {body}
+                    {(!tags.is_empty()).then(|| view! { <span class="stream-tags">{tags}</span> })}
+                </li>
             }
         })
         .collect_view();

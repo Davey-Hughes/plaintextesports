@@ -1612,6 +1612,11 @@ a.sw-link {
   gap: 0.5rem;
   padding: 0.15rem 0;
 
+  // A small gap sets off each new group (official vs co-stream; TV/streaming/radio).
+  &.stream-group-start {
+    margin-top: 0.55rem;
+  }
+
   a {
     color: var(--link);
   }

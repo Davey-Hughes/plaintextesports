@@ -174,6 +174,11 @@ fn streams(raw: &[RawStream]) -> Vec<StreamView> {
         .collect();
     // Main/official first, then the rest, so the primary broadcast leads.
     out.sort_by_key(|s| (!s.main, !s.official));
+    // Tag each by group so the list separates official broadcasts from
+    // community co-streams (set after the sort, which keeps groups contiguous).
+    for s in &mut out {
+        s.group = if s.official { "official" } else { "costream" }.to_string();
+    }
     out
 }
 
