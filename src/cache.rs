@@ -1252,10 +1252,14 @@ fn seed_demo_events(matches: &[NormalizedMatch], now: DateTime<Utc>) {
 
 /// A demo standings table + single-elimination bracket for one event.
 fn demo_event_info(league: &str) -> EventInfo {
-    // Two extra demo events exercising bigger brackets.
+    // Extra demo events exercising bigger / contrived brackets.
     match league {
         "ESL One" => return demo_event_large_de(),
         "PGL Major" => return demo_event_large_se(),
+        "Bye Cup" => return demo_event_byes(),
+        "Reset Cup" => return demo_event_reset(),
+        "Gauntlet" => return demo_event_gauntlet(),
+        "Mega Bracket" => return demo_event_wide(),
         _ => {}
     }
     let lol = matches!(
@@ -1502,6 +1506,163 @@ fn demo_event_large_se() -> EventInfo {
     }
 }
 
+// ----- Contrived demo brackets (stress the layout engine) ------------------
+
+/// Single-elim with byes: two first-round matches feed the semifinals, where the
+/// other two semifinalists got byes — so each semifinal has a single feeder.
+/// Exercises lone-feeder centring (a fed match sitting level with its one parent).
+fn demo_event_byes() -> EventInfo {
+    let rounds = vec![
+        dbr(
+            "First Round",
+            "",
+            vec![
+                dbm("Alpha", "Bravo", Some(2), Some(0), "a", &[]),
+                dbm("Charlie", "Delta", Some(2), Some(1), "a", &[]),
+            ],
+        ),
+        dbr(
+            "Semifinals",
+            "",
+            vec![
+                // The second seed in each got a bye (no feeder for that slot).
+                dbm("Alpha", "Echo", Some(2), Some(1), "a", &[(0, 0)]),
+                dbm("Foxtrot", "Charlie", Some(2), Some(0), "a", &[(0, 1)]),
+            ],
+        ),
+        dbr("Final", "", vec![dbm("Alpha", "Foxtrot", None, None, "", &[(1, 0), (1, 1)])]),
+    ];
+    demo_bracket_event("Bye Cup", rounds)
+}
+
+/// Double-elim ending in a bracket reset: the lower-bracket team wins the first
+/// grand final, forcing a decider — so the "final" section has two columns.
+fn demo_event_reset() -> EventInfo {
+    let rounds = vec![
+        dbr(
+            "Semifinals",
+            "upper",
+            vec![
+                dbm("Sun", "Moon", Some(2), Some(0), "a", &[]),
+                dbm("Star", "Comet", Some(2), Some(1), "a", &[]),
+            ],
+        ),
+        dbr("Final", "upper", vec![dbm("Sun", "Star", Some(2), Some(1), "a", &[(0, 0), (0, 1)])]),
+        dbr("Round 1", "lower", vec![dbm("Moon", "Comet", Some(2), Some(0), "a", &[(0, 0), (0, 1)])]),
+        dbr("Final", "lower", vec![dbm("Moon", "Star", Some(2), Some(1), "a", &[(2, 0), (1, 0)])]),
+        // Grand final (lower-bracket team wins) → reset.
+        dbr("Grand Final", "final", vec![dbm("Sun", "Moon", Some(2), Some(3), "b", &[(1, 0), (3, 0)])]),
+        dbr("Reset", "final", vec![dbm("Sun", "Moon", Some(3), Some(2), "a", &[(4, 0)])]),
+    ];
+    demo_bracket_event("Reset Cup", rounds)
+}
+
+/// The full 8-team double-elim: a 3-round winner's bracket and a 4-round loser's
+/// bracket whose major rounds each take a winner's-bracket dropout (feeders from
+/// two different columns) — the shape that broke the old nth-child connectors.
+fn demo_event_gauntlet() -> EventInfo {
+    let rounds = vec![
+        // Winner's bracket: QF → SF → Final.
+        dbr(
+            "Quarterfinals",
+            "upper",
+            vec![
+                dbm("A", "B", Some(2), Some(0), "a", &[]),
+                dbm("C", "D", Some(2), Some(1), "a", &[]),
+                dbm("E", "F", Some(2), Some(0), "a", &[]),
+                dbm("G", "H", Some(2), Some(1), "a", &[]),
+            ],
+        ),
+        dbr(
+            "Semifinals",
+            "upper",
+            vec![
+                dbm("A", "C", Some(2), Some(1), "a", &[(0, 0), (0, 1)]),
+                dbm("E", "G", Some(2), Some(0), "a", &[(0, 2), (0, 3)]),
+            ],
+        ),
+        dbr("Final", "upper", vec![dbm("A", "E", Some(2), Some(1), "a", &[(1, 0), (1, 1)])]),
+        // Loser's bracket: R1 (QF dropouts) → R2 (+ SF dropouts) → R3 → Final (+ WB final dropout).
+        dbr(
+            "Round 1",
+            "lower",
+            vec![
+                dbm("B", "D", Some(2), Some(1), "a", &[(0, 0), (0, 1)]),
+                dbm("F", "H", Some(2), Some(0), "a", &[(0, 2), (0, 3)]),
+            ],
+        ),
+        dbr(
+            "Round 2",
+            "lower",
+            vec![
+                // LB-R1 winner vs the SF dropout (cross-section feeder, not drawn).
+                dbm("B", "C", Some(2), Some(1), "a", &[(3, 0), (1, 0)]),
+                dbm("F", "G", Some(2), Some(0), "a", &[(3, 1), (1, 1)]),
+            ],
+        ),
+        dbr("Round 3", "lower", vec![dbm("B", "F", Some(2), Some(1), "a", &[(4, 0), (4, 1)])]),
+        // LB final: LB-R3 winner vs the WB-final dropout.
+        dbr("Final", "lower", vec![dbm("B", "E", Some(2), Some(0), "a", &[(5, 0), (2, 0)])]),
+        dbr("Grand Final", "final", vec![dbm("A", "B", Some(3), Some(2), "a", &[(2, 0), (6, 0)])]),
+    ];
+    demo_bracket_event("Gauntlet", rounds)
+}
+
+/// A wide 32-team single-elim (Round of 32 → Final), to stress canvas height and
+/// horizontal scroll.
+fn demo_event_wide() -> EventInfo {
+    let teams: Vec<String> = (1..=32).map(|i| format!("T{i:02}")).collect();
+    demo_bracket_event("Mega Bracket", demo_se_rounds(&teams))
+}
+
+/// Build a clean single-elimination tree from a power-of-two team list; each
+/// match's winner is its `team_a`, folded up to the final.
+fn demo_se_rounds(teams: &[String]) -> Vec<BracketRound> {
+    fn title(matches: usize) -> &'static str {
+        match matches {
+            16 => "Round of 32",
+            8 => "Round of 16",
+            4 => "Quarterfinals",
+            2 => "Semifinals",
+            1 => "Final",
+            _ => "Round",
+        }
+    }
+    let first: Vec<BracketMatch> = teams
+        .chunks(2)
+        .map(|c| dbm(&c[0], &c[1], Some(2), Some(1), "a", &[]))
+        .collect();
+    let mut rounds = vec![dbr(title(first.len()), "", first)];
+    while rounds.last().map_or(0, |r| r.matches.len()) > 1 {
+        let r = rounds.len() - 1;
+        let winners: Vec<(String, String)> = rounds[r]
+            .matches
+            .chunks(2)
+            .map(|c| (c[0].team_a.clone(), c[1].team_a.clone()))
+            .collect();
+        let ms: Vec<BracketMatch> = winners
+            .iter()
+            .enumerate()
+            .map(|(i, (a, b))| dbm(a, b, Some(2), Some(1), "a", &[(r, 2 * i), (r, 2 * i + 1)]))
+            .collect();
+        rounds.push(dbr(title(ms.len()), "", ms));
+    }
+    rounds
+}
+
+/// A bracket-only demo event (no standings) for the contrived layouts above.
+fn demo_bracket_event(name: &str, rounds: Vec<BracketRound>) -> EventInfo {
+    EventInfo {
+        event: name.to_string(),
+        tournament_id: 0,
+        stage: String::new(),
+        game: Game::Cs2,
+        standings: Vec::new(),
+        rounds,
+        swiss: Vec::new(),
+    }
+}
+
 // ----- Demo fixture (no token) ---------------------------------------------
 
 fn demo_team(label: &str, score: Option<i64>) -> NormTeam {
@@ -1603,6 +1764,16 @@ fn demo_matches(now: DateTime<Utc>) -> Vec<NormalizedMatch> {
             demo_team("NAVI", Some(2)), demo_team("FaZe", Some(1))),
         demo_match(33, Game::Cs2, "PGL Major", "S", now + h(6), Upcoming, 3,
             demo_team("SPIRIT", None), demo_team("TL", None)),
+        // CS2 — contrived events to examine the bracket layout engine (byes, a
+        // grand-final reset, a full double-elim, and a wide 32-team tree).
+        demo_match(40, Game::Cs2, "Bye Cup", "S", now + h(7), Upcoming, 3,
+            demo_team("Alpha", None), demo_team("Foxtrot", None)),
+        demo_match(41, Game::Cs2, "Reset Cup", "S", now + h(8), Upcoming, 5,
+            demo_team("Sun", None), demo_team("Moon", None)),
+        demo_match(42, Game::Cs2, "Gauntlet", "S", now + h(9), Upcoming, 3,
+            demo_team("A", None), demo_team("B", None)),
+        demo_match(43, Game::Cs2, "Mega Bracket", "S", now + h(10), Upcoming, 3,
+            demo_team("T01", None), demo_team("T32", None)),
         // LoL — LCK: a result + upcoming.
         demo_match(7, Game::Lol, "LCK", "A", now - m(35), Finished, 3,
             demo_team("T1", Some(2)), demo_team("GEN", Some(1))),
