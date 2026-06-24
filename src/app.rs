@@ -985,6 +985,7 @@ fn detail_view(d: MatchDetail) -> impl IntoView {
     // placeholder score, so a score alone isn't enough).
     let played = matches!(m.status, MatchStatus::Live | MatchStatus::Finished) && has_score;
     let (win_a, win_b) = (m.team_a.winner, m.team_b.winner);
+    let sep = versus_sep(m.game);
     let (team_a, team_b) = (m.team_a.label, m.team_b.label);
 
     // Scores/standings/bracket are spoilers: reveal when the global toggle is on
@@ -1027,7 +1028,7 @@ fn detail_view(d: MatchDetail) -> impl IntoView {
                         if reveal.get() && has_score {
                             format!("{} – {}", sa.unwrap_or(0), sb.unwrap_or(0))
                         } else {
-                            "vs".to_string()
+                            sep.to_string()
                         }
                     }}
                 </span>
@@ -2954,6 +2955,17 @@ fn schedule_is_traditional(s: &ScheduleView) -> bool {
         .any(|m| m.game.traditional())
 }
 
+/// The separator between the two teams of a match. Traditional sports list the
+/// away team "at" the home team (team_a is away, team_b home — see `mlb.rs`);
+/// esports use "vs".
+const fn versus_sep(game: Game) -> &'static str {
+    if game.traditional() {
+        "at"
+    } else {
+        "vs"
+    }
+}
+
 /// Bottom-of-schedule control for traditional sports: a "show later days ›"
 /// expander that reveals more future days, hidden once the forward window hits
 /// `TRAD_FORWARD_MAX`. Renders nothing in esports mode.
@@ -3514,6 +3526,7 @@ fn UpNextBar(day: DayGroup) -> impl IntoView {
         .take(CAP)
         .map(|m| {
             let mid = m.id;
+            let sep = versus_sep(m.game);
             // A match scrolls to (and flashes) its row in the schedule when it's on
             // the page — same as a bracket name — and otherwise opens its page.
             // Stop propagation so the bar's own jump-to-day doesn't also fire.
@@ -3531,7 +3544,7 @@ fn UpNextBar(day: DayGroup) -> impl IntoView {
                 >
                     <span class="upnext-time">{m.clock_label}</span>
                     <span class="upnext-team">{m.team_a.label}</span>
-                    <span class="upnext-vs">"vs"</span>
+                    <span class="upnext-vs">{sep}</span>
                     <span class="upnext-team">{m.team_b.label}</span>
                 </a>
             }
@@ -3815,6 +3828,7 @@ fn MatchRow(m: MatchView, show_bo: bool, push: bool) -> impl IntoView {
     let has = sa.is_some() && sb.is_some();
     let win_a = m.team_a.winner;
     let win_b = m.team_b.winner;
+    let sep = versus_sep(m.game);
     let bo = if show_bo { m.best_of } else { String::new() };
 
     // Scores are spoilers: reveal only when the global toggle is on or this
@@ -3894,7 +3908,7 @@ fn MatchRow(m: MatchView, show_bo: bool, push: bool) -> impl IntoView {
                 if reveal.get() && has {
                     format!("{} – {}", sa.unwrap_or(0), sb.unwrap_or(0))
                 } else {
-                    "vs".to_string()
+                    sep.to_string()
                 }
             }}
         </span>

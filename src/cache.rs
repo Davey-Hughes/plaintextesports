@@ -1076,7 +1076,13 @@ fn reminder_seed(m: &NormalizedMatch, lead_ms: i64, tz: &Tz) -> ReminderSeed {
         game: m.game.slug().to_string(),
         league: m.league.clone(),
         notify_at_ms: m.begin_at.timestamp_millis() - lead_ms,
-        title: format!("{} vs {}", m.team_a.label, m.team_b.label),
+        // Traditional sports read "away at home"; esports "vs".
+        title: format!(
+            "{} {} {}",
+            m.team_a.label,
+            if m.game.traditional() { "at" } else { "vs" },
+            m.team_b.label
+        ),
         body: format!("{} · {}", m.league, time_label(local, false)),
         url: resolved_event_url(m.game, &m.league, m.begin_at, m.league_url.as_deref()),
     }
