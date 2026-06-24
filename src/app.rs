@@ -257,6 +257,26 @@ fn setup_scrollspy() {
     cb.forget();
 }
 
+/// If the match's schedule row is on the page, scroll to it and flash it; returns
+/// whether it was found (so a link can suppress its own navigation). Shared by the
+/// bracket team links and the "up next" bar.
+#[cfg(feature = "hydrate")]
+fn flash_match_row(mid: i64) -> bool {
+    let Some(row) = web_sys::window()
+        .and_then(|w| w.document())
+        .and_then(|d| d.get_element_by_id(&format!("m-{mid}")))
+    else {
+        return false;
+    };
+    row.scroll_into_view();
+    // Remove + reflow + re-add restarts the animation on a repeat click.
+    let cl = row.class_list();
+    let _ = cl.remove_1("row-flash");
+    let _ = row.client_width();
+    let _ = cl.add_1("row-flash");
+    true
+}
+
 /// Keeps the schedule filter (games + events) in sync with the URL query so a
 /// filtered view is shareable — `?g=cs2&e=<event>`; no filter ⇒ a clean URL. On
 /// load it initialises the filter from the query (falling back to the saved
@@ -1594,16 +1614,8 @@ fn SwissBracket(rounds: Vec<SwissRound>, tournament_id: i64) -> impl IntoView {
                     on:click=move |e: leptos::ev::MouseEvent| {
                         e.stop_propagation();
                         #[cfg(feature = "hydrate")]
-                        if let Some(row) = web_sys::window()
-                            .and_then(|w| w.document())
-                            .and_then(|d| d.get_element_by_id(&format!("m-{mid}")))
-                        {
+                        if flash_match_row(mid) {
                             e.prevent_default();
-                            row.scroll_into_view();
-                            let cl = row.class_list();
-                            let _ = cl.remove_1("row-flash");
-                            let _ = row.client_width();
-                            let _ = cl.add_1("row-flash");
                         }
                     }
                 >
@@ -2002,21 +2014,8 @@ fn Bracket(
                                     on:click=move |e: leptos::ev::MouseEvent| {
                                         e.stop_propagation();
                                         #[cfg(feature = "hydrate")]
-                                        if let Some(row) = web_sys::window()
-                                            .and_then(|w| w.document())
-                                            .and_then(|d| {
-                                                d.get_element_by_id(&format!("m-{mid}"))
-                                            })
-                                        {
+                                        if flash_match_row(mid) {
                                             e.prevent_default();
-                                            row.scroll_into_view();
-                                            // Flash the row so it's easy to spot;
-                                            // remove + reflow + re-add restarts the
-                                            // animation on a repeat click.
-                                            let cl = row.class_list();
-                                            let _ = cl.remove_1("row-flash");
-                                            let _ = row.client_width();
-                                            let _ = cl.add_1("row-flash");
                                         }
                                     }
                                 >
@@ -3193,13 +3192,21 @@ fn UpNextBar(day: DayGroup) -> impl IntoView {
         .into_iter()
         .take(CAP)
         .map(|m| {
-            // The whole bar scrolls to the day; a match still links to its page
-            // (stopping propagation so it doesn't also trigger the scroll).
+            let mid = m.id;
+            // A match scrolls to (and flashes) its row in the schedule when it's on
+            // the page — same as a bracket name — and otherwise opens its page.
+            // Stop propagation so the bar's own jump-to-day doesn't also fire.
             view! {
                 <a
                     class="upnext-match"
-                    href=format!("/match/{}", m.id)
-                    on:click=|e: leptos::ev::MouseEvent| e.stop_propagation()
+                    href=format!("/match/{mid}")
+                    on:click=move |e: leptos::ev::MouseEvent| {
+                        e.stop_propagation();
+                        #[cfg(feature = "hydrate")]
+                        if flash_match_row(mid) {
+                            e.prevent_default();
+                        }
+                    }
                 >
                     <span class="upnext-time">{m.clock_label}</span>
                     <span class="upnext-team">{m.team_a.label}</span>
