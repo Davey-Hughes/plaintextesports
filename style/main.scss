@@ -393,6 +393,11 @@ a {
   margin-top: 0.3rem;
 }
 
+// The "show later days" control sits at the foot of the schedule.
+.history-bar-later {
+  margin-top: 0.8rem;
+}
+
 // A link-styled inline button (no border/background).
 .linkish {
   background: none;
