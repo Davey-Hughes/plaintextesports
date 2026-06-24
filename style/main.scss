@@ -219,6 +219,18 @@ a {
   }
 }
 
+// "Back to top" arrow: pushed to the left of the toggle bar (the brand's spot),
+// hidden until the page is scrolled.
+.scrolltop {
+  margin-right: auto;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.scrolltop-off {
+  display: none;
+}
+
 .tabs {
   display: flex;
   align-items: center;
