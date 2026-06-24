@@ -36,6 +36,21 @@ struct RawGame {
     series: String,
     #[serde(default)]
     broadcasts: Vec<RawBroadcast>,
+    #[serde(default)]
+    venue: RawVenue,
+}
+
+#[derive(Deserialize, Default)]
+struct RawVenue {
+    #[serde(rename = "timeZone", default)]
+    time_zone: RawTimeZone,
+}
+
+#[derive(Deserialize, Default)]
+struct RawTimeZone {
+    /// IANA id, e.g. "America/Detroit" (from `hydrate=venue(timezone)`).
+    #[serde(default)]
+    id: String,
 }
 
 #[derive(Deserialize, Default)]
@@ -223,6 +238,9 @@ fn to_match(g: RawGame) -> Option<NormalizedMatch> {
         },
         stream_url: None,
         tournament_id: None,
+        // The stadium's IANA timezone, so the UI can show the local time at the
+        // ballpark (handles cross-country and neutral-site games).
+        venue_tz: Some(g.venue.time_zone.id).filter(|s| !s.is_empty()),
         streams: broadcasts(&g.broadcasts),
     })
 }
@@ -234,7 +252,7 @@ pub async fn fetch_schedule(
     end: NaiveDate,
 ) -> Result<Vec<NormalizedMatch>, reqwest::Error> {
     let url = format!(
-        "{BASE}/schedule?sportId=1&startDate={}&endDate={}&hydrate=team,broadcasts(all)",
+        "{BASE}/schedule?sportId=1&startDate={}&endDate={}&hydrate=team,broadcasts(all),venue(timezone)",
         start.format("%Y-%m-%d"),
         end.format("%Y-%m-%d"),
     );

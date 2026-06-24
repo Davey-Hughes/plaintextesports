@@ -4269,8 +4269,40 @@ fn MatchRow(m: MatchView, show_bo: bool, push: bool) -> impl IntoView {
         .into_any()
     };
 
+    // The time can toggle to also show the local time at the venue (MLB stadiums
+    // carry a timezone; esports don't, so there it stays a plain label). Clicking
+    // stops the row's navigation, like the score reveal.
+    let clock = m.clock_label;
+    let venue_label = m.venue_label;
+    let time_view = if venue_label.is_empty() {
+        view! { <span class="row-time">{clock}</span> }.into_any()
+    } else {
+        let show_venue = RwSignal::new(false);
+        let toggle_venue = move |ev: leptos::ev::MouseEvent| {
+            ev.prevent_default();
+            ev.stop_propagation();
+            show_venue.update(|v| *v = !*v);
+        };
+        view! {
+            <span
+                class="row-time row-time-tz"
+                class:on=move || show_venue.get()
+                title="Show the local time at the venue"
+                on:click=toggle_venue
+            >
+                {clock}
+                {move || {
+                    show_venue
+                        .get()
+                        .then(|| view! { <span class="row-time-venue">{venue_label.clone()}</span> })
+                }}
+            </span>
+        }
+        .into_any()
+    };
+
     let inner = view! {
-        <span class="row-time">{m.clock_label}</span>
+        {time_view}
         <span
             class="row-team row-a"
             class:winner=move || reveal.get() && win_a
@@ -4614,6 +4646,7 @@ mod tests {
             tier: "S".into(),
             status: MatchStatus::Upcoming,
             clock_label: String::new(),
+            venue_label: String::new(),
             best_of: "Bo3".into(),
             team_a: TeamView {
                 label: "A".into(),

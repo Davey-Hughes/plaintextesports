@@ -809,6 +809,28 @@ a {
   transform: translateX(-7.5px);
 }
 
+// A time that toggles the venue-local time. The team names sit far right in
+// their column, so the revealed label overflows into the empty space beside the
+// time without disturbing the grid.
+.row-time-tz {
+  cursor: pointer;
+
+  &:hover,
+  &.on {
+    color: var(--fg);
+  }
+}
+
+// The local time at the venue, revealed beside the user's time (e.g. "· 6:40 PM EDT").
+.row-time-venue {
+  color: var(--link);
+
+  &::before {
+    content: " · ";
+    color: var(--border);
+  }
+}
+
 .row-team {
   overflow: hidden;
   text-overflow: ellipsis;

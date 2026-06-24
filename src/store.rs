@@ -58,6 +58,7 @@ pub fn open(path: &str) -> rusqlite::Result<Connection> {
             team_b_score INTEGER,
             team_a_name  TEXT,
             team_b_name  TEXT,
+            venue_tz     TEXT,
             stream_url   TEXT,
             tournament_id INTEGER,
             PRIMARY KEY (id, game)
@@ -108,6 +109,7 @@ pub fn open(path: &str) -> rusqlite::Result<Connection> {
     let _ = conn.execute("ALTER TABLE matches ADD COLUMN serie_name TEXT", []);
     let _ = conn.execute("ALTER TABLE matches ADD COLUMN team_a_name TEXT", []);
     let _ = conn.execute("ALTER TABLE matches ADD COLUMN team_b_name TEXT", []);
+    let _ = conn.execute("ALTER TABLE matches ADD COLUMN venue_tz TEXT", []);
     let _ = conn.execute("ALTER TABLE reminders ADD COLUMN game TEXT NOT NULL DEFAULT ''", []);
     let _ = conn.execute("ALTER TABLE reminders ADD COLUMN league TEXT NOT NULL DEFAULT ''", []);
     let _ = conn.execute("ALTER TABLE reminders ADD COLUMN team_a TEXT NOT NULL DEFAULT ''", []);
@@ -152,6 +154,7 @@ fn row_to_match(row: &rusqlite::Row) -> rusqlite::Result<NormalizedMatch> {
         },
         stream_url: row.get("stream_url")?,
         tournament_id: row.get("tournament_id")?,
+        venue_tz: row.get("venue_tz")?,
         // Streams aren't persisted (in-memory only); repopulated on next poll.
         streams: Vec::new(),
     })
@@ -205,8 +208,8 @@ pub fn upsert_and_prune(
             "INSERT INTO matches
                 (id, game, league, tier, begin_at_ms, status, best_of,
                  team_a_label, team_a_score, team_b_label, team_b_score, stream_url,
-                 league_url, tournament_id, serie_name, team_a_name, team_b_name)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)
+                 league_url, tournament_id, serie_name, team_a_name, team_b_name, venue_tz)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)
              ON CONFLICT(id, game) DO UPDATE SET
                 league=excluded.league, tier=excluded.tier,
                 begin_at_ms=excluded.begin_at_ms, status=excluded.status,
@@ -215,7 +218,8 @@ pub fn upsert_and_prune(
                 team_b_label=excluded.team_b_label, team_b_score=excluded.team_b_score,
                 stream_url=excluded.stream_url, league_url=excluded.league_url,
                 tournament_id=excluded.tournament_id, serie_name=excluded.serie_name,
-                team_a_name=excluded.team_a_name, team_b_name=excluded.team_b_name",
+                team_a_name=excluded.team_a_name, team_b_name=excluded.team_b_name,
+                venue_tz=excluded.venue_tz",
         )?;
         for m in matches {
             up.execute(params![
@@ -236,6 +240,7 @@ pub fn upsert_and_prune(
                 m.serie_name,
                 m.team_a.name,
                 m.team_b.name,
+                m.venue_tz,
             ])?;
         }
         tx.execute(
@@ -533,6 +538,7 @@ mod tests {
             },
             stream_url: Some("https://twitch.tv/lck".into()),
             tournament_id: Some(42),
+            venue_tz: Some("America/New_York".into()),
             streams: Vec::new(),
         }
     }
@@ -556,6 +562,8 @@ mod tests {
         // Full team names round-trip (keys the team page + subscriptions).
         assert_eq!(all[0].team_a.name, "T1");
         assert_eq!(all[0].team_b.name, "Gen.G");
+        // The venue timezone round-trips (drives the local-time toggle).
+        assert_eq!(all[0].venue_tz.as_deref(), Some("America/New_York"));
         assert_eq!(load_fetched_at(&conn), Some(now.timestamp_millis()));
 
         // Upserting the same id updates in place (no duplicate row).

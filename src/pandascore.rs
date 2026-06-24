@@ -41,6 +41,10 @@ pub struct NormalizedMatch {
     pub stream_url: Option<String>,
     /// PandaScore tournament id (used to fetch standings/brackets). Persisted.
     pub tournament_id: Option<i64>,
+    /// IANA timezone of the venue, when the source provides it (MLB stadiums).
+    /// Lets the UI show the local time at the event; `None` for esports (no
+    /// venue tz). Persisted.
+    pub venue_tz: Option<String>,
     /// All broadcasts for the match (from `streams_list`). In-memory only —
     /// repopulated each poll, not persisted, and only used on the detail page.
     pub streams: Vec<StreamView>,
@@ -285,6 +289,8 @@ fn normalize(game: Game, raw: &RawMatch) -> Option<NormalizedMatch> {
         },
         stream_url,
         tournament_id: raw.tournament.as_ref().and_then(|t| t.id),
+        // PandaScore exposes no reliable venue timezone for esports matches.
+        venue_tz: None,
         streams: streams(&raw.streams_list),
     })
 }
