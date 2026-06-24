@@ -1071,7 +1071,18 @@ pub fn homepage_view(game_filter: &str, tz_name: &str, hour24: bool) -> Schedule
     };
 
     let snap = SNAPSHOT.read().unwrap_or_else(PoisonError::into_inner);
-    let all = matches_in_window(&snap, traditional, game, start, end, &tz, now, hour24);
+    let mut all = matches_in_window(&snap, traditional, game, start, end, &tz, now, hour24);
+    // F1 races are weekly, so the short daily window catches only the first
+    // session(s). Always surface the next Grand Prix's whole weekend (MLB stays
+    // compact). The client sport-tabs still filter it down if F1 isn't selected.
+    if traditional {
+        let have: std::collections::HashSet<i64> = all.iter().map(|m| m.id).collect();
+        for mv in next_gp_sessions(&snap, now, &tz, hour24) {
+            if !have.contains(&mv.id) {
+                all.push(mv);
+            }
+        }
+    }
 
     ScheduleView {
         days: group_days(all, &tz),
@@ -1085,6 +1096,34 @@ pub fn homepage_view(game_filter: &str, tz_name: &str, hour24: bool) -> Schedule
         prev_date: None,
         next_date: None,
     }
+}
+
+/// Every session of the next upcoming Grand Prix (its whole weekend) as views.
+/// Empty when no F1 session is upcoming (off-season).
+fn next_gp_sessions(
+    snap: &Snapshot,
+    now: DateTime<Utc>,
+    tz: &Tz,
+    hour24: bool,
+) -> Vec<MatchView> {
+    let next_gp = snap
+        .matches
+        .iter()
+        .filter(|m| {
+            m.game == Game::F1 && m.status != MatchStatus::Canceled && m.begin_at >= now
+        })
+        .min_by_key(|m| m.begin_at)
+        .map(|m| m.serie_name.clone());
+    let Some(next_gp) = next_gp else {
+        return Vec::new();
+    };
+    snap.matches
+        .iter()
+        .filter(|m| {
+            m.game == Game::F1 && m.status != MatchStatus::Canceled && m.serie_name == next_gp
+        })
+        .map(|m| to_view(m, tz, now, hour24))
+        .collect()
 }
 
 /// Single-day view with prev/next navigation.
