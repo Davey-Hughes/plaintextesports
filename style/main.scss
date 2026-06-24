@@ -939,6 +939,12 @@ a {
     white-space: nowrap;
   }
 
+  // Secondary aside (data source, caveats) — quieter than the main copy.
+  .about-note {
+    color: var(--muted);
+    font-size: 13px;
+  }
+
   .about-back {
     margin-top: 1.8rem;
   }
