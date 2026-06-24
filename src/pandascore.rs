@@ -835,7 +835,8 @@ fn bracket_depth(
     depth
 }
 
-/// Name a round by how many matches it has (1 = Final, 2 = Semifinals, …).
+/// Name a round by how many matches it has (1 = Final, 2 = Semifinals, …). Used
+/// only as a fallback when PandaScore doesn't name the matches.
 fn round_title(n_matches: usize) -> String {
     match n_matches {
         1 => "Final".to_string(),
@@ -845,6 +846,51 @@ fn round_title(n_matches: usize) -> String {
         16 => "Round of 32".to_string(),
         n => format!("Round of {}", n * 2),
     }
+}
+
+/// Turn a PandaScore bracket-match name into a round title. The names look like
+/// "Upper bracket semifinal 1: KC vs DCG" / "Lower bracket round 1 match 2: …" /
+/// "Grand final: …", so: drop the matchup, drop the upper/lower prefix (the
+/// bracket already labels those halves) keeping "grand final", drop the per-match
+/// instance number ("semifinal 1" → "semifinal", but keep "round 1"), pluralise a
+/// semi/quarterfinal, and tidy the casing. None for an unusable name.
+fn clean_round_name(name: &str) -> Option<String> {
+    let lower = name.split(':').next().unwrap_or("").trim().to_lowercase();
+    let stripped = lower
+        .strip_prefix("upper bracket ")
+        .or_else(|| lower.strip_prefix("lower bracket "))
+        .unwrap_or(lower.as_str());
+    let mut words: Vec<&str> = stripped.split_whitespace().collect();
+    while let Some(&last) = words.last() {
+        let drop = last == "match"
+            || (last.bytes().all(|b| b.is_ascii_digit())
+                && words.len() >= 2
+                && words[words.len() - 2] != "round");
+        if drop {
+            words.pop();
+        } else {
+            break;
+        }
+    }
+    if words.is_empty() {
+        return None;
+    }
+    let mut title = words.join(" ");
+    if title.ends_with("final") && title != "final" && title != "grand final" {
+        title.push('s'); // semifinal → semifinals, quarterfinal → quarterfinals
+    }
+    Some(
+        title
+            .split(' ')
+            .map(|w| {
+                let mut c = w.chars();
+                c.next()
+                    .map(|f| f.to_uppercase().chain(c).collect::<String>())
+                    .unwrap_or_default()
+            })
+            .collect::<Vec<_>>()
+            .join(" "),
+    )
 }
 
 /// Which half of a double-elimination bracket a match belongs to, from its name.
@@ -966,12 +1012,13 @@ fn build_rounds(raw: &[RawBracketMatch]) -> Vec<BracketRound> {
     columns
         .into_iter()
         .map(|(sec, ms)| {
+            // Prefer PandaScore's own round name; fall back to the match count.
+            let title = ms
+                .iter()
+                .find_map(|m| m.name.as_deref().and_then(clean_round_name))
+                .unwrap_or_else(|| round_title(ms.len()));
             let matches = ms.iter().map(|m| to_bracket_match(m, &pos)).collect::<Vec<_>>();
-            BracketRound {
-                title: round_title(matches.len()),
-                matches,
-                section: sec.to_string(),
-            }
+            BracketRound { title, matches, section: sec.to_string() }
         })
         .collect()
 }
@@ -1191,5 +1238,17 @@ mod tests {
         assert_eq!(swiss[1].buckets[0].matches[0].b_feeder, Some(2));
         assert_eq!(swiss[2].buckets[0].matches[0].a_feeder, Some(3));
         assert_eq!(swiss[2].buckets[0].matches[0].b_feeder, Some(4));
+    }
+
+    #[test]
+    fn clean_round_name_strips_section_and_instance() {
+        let c = |s: &str| clean_round_name(s);
+        assert_eq!(c("Upper bracket semifinal 1: KC vs DCG").as_deref(), Some("Semifinals"));
+        assert_eq!(c("Upper bracket quarterfinal 3: TBD vs TBD").as_deref(), Some("Quarterfinals"));
+        assert_eq!(c("Upper bracket final: TBD vs TBD").as_deref(), Some("Final"));
+        assert_eq!(c("Lower bracket round 1 match 2: TBD vs TBD").as_deref(), Some("Round 1"));
+        assert_eq!(c("Lower bracket final: TBD vs TBD").as_deref(), Some("Final"));
+        assert_eq!(c("Grand final: TBD vs TBD").as_deref(), Some("Grand Final"));
+        assert_eq!(c("").as_deref(), None);
     }
 }
