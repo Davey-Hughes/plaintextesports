@@ -408,6 +408,10 @@ pub struct MlbSeriesRef {
 pub struct SeriesGame {
     /// Short day label for the game, e.g. "Mon, Jun 23".
     pub day_label: String,
+    /// Start time in the display tz, e.g. "6:40 PM" (formatted server-side, like
+    /// the schedule rows). Empty when the start time can't be parsed.
+    #[serde(default)]
+    pub clock_label: String,
     /// The two sides' short labels, in the same order as the headline match
     /// (`team_a` is the headline's left team), so each row reads consistently.
     pub team_a: String,

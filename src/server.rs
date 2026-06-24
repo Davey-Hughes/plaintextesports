@@ -95,7 +95,7 @@ pub async fn get_match_detail(
                     &match_view.team_a.label,
                     &match_view.team_b.label,
                 ),
-                crate::cache::mlb_series(id).await.unwrap_or_default(),
+                crate::cache::mlb_series(id, &tz, hour24).await.unwrap_or_default(),
             )
         } else {
             (Vec::new(), crate::types::Series::default())
