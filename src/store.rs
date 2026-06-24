@@ -157,6 +157,8 @@ fn row_to_match(row: &rusqlite::Row) -> rusqlite::Result<NormalizedMatch> {
         venue_tz: row.get("venue_tz")?,
         // Streams aren't persisted (in-memory only); repopulated on next poll.
         streams: Vec::new(),
+        // Series refs aren't persisted (MLB, in-memory); repopulated on next poll.
+        mlb_series: None,
     })
 }
 
@@ -540,6 +542,7 @@ mod tests {
             tournament_id: Some(42),
             venue_tz: Some("America/New_York".into()),
             streams: Vec::new(),
+            mlb_series: None,
         }
     }
 

@@ -48,6 +48,11 @@ pub struct NormalizedMatch {
     /// All broadcasts for the match (from `streams_list`). In-memory only —
     /// repopulated each poll, not persisted, and only used on the detail page.
     pub streams: Vec<StreamView>,
+    /// MLB-only: the two teams' MLB-Stats-API ids and this game's series position,
+    /// used by the detail page to fetch the whole series between the two teams.
+    /// `None` for esports (and unpersisted — repopulated each poll). See
+    /// [`crate::types::MlbSeriesRef`].
+    pub mlb_series: Option<crate::types::MlbSeriesRef>,
 }
 
 #[derive(Debug, Clone)]
@@ -297,6 +302,8 @@ fn normalize(game: Game, raw: &RawMatch) -> Option<NormalizedMatch> {
         // PandaScore exposes no reliable venue timezone for esports matches.
         venue_tz: None,
         streams: streams(&raw.streams_list),
+        // Series are an MLB concept; esports matches have none.
+        mlb_series: None,
     })
 }
 

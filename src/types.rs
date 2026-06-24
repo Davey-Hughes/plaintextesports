@@ -61,8 +61,10 @@ impl Game {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum MatchStatus {
+    /// Default — also the `from_db` fallback for an unknown value.
+    #[default]
     Upcoming,
     Live,
     Finished,
@@ -383,6 +385,63 @@ impl EventInfo {
     }
 }
 
+/// MLB-only handle for fetching the whole series between the two teams: the two
+/// teams' MLB-Stats-API ids and this game's 1-based position within its series.
+/// Kept on the in-memory match (not serialized to the client, not persisted);
+/// the detail server fn uses it to fetch the series at request time.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct MlbSeriesRef {
+    /// MLB Stats API team ids for the home/away sides (order doesn't matter — the
+    /// fetch uses one as `teamId` and the other as `opponentId`).
+    pub team_id_a: i64,
+    pub team_id_b: i64,
+    /// This game's 1-based number within its series, and the series length, so the
+    /// fetch can bound a tight date window around just this one series.
+    pub game_number: i32,
+    pub games_in_series: i32,
+}
+
+/// One game of an MLB series between the two teams. Scores are raw (the same as
+/// the headline match score); the UI hides them and the leader until the page's
+/// reveal toggle is on, so nothing leaks past the spoiler gate.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SeriesGame {
+    /// Short day label for the game, e.g. "Mon, Jun 23".
+    pub day_label: String,
+    /// The two sides' short labels, in the same order as the headline match
+    /// (`team_a` is the headline's left team), so each row reads consistently.
+    pub team_a: String,
+    pub team_b: String,
+    pub score_a: Option<i64>,
+    pub score_b: Option<i64>,
+    /// Which headline side won this game once final: "a", "b", or "" (not final
+    /// or tied). Only surfaced by the UI when scores are revealed.
+    #[serde(default)]
+    pub winner: String,
+    pub status: MatchStatus,
+    /// True for the game the detail page is about (the "current" game).
+    pub current: bool,
+    /// gamePk, so each row links to that game's own detail page (0 = this game).
+    #[serde(default)]
+    pub match_id: i64,
+}
+
+/// The multi-game series between the two teams of an MLB match: every game and
+/// the overall series standing. Empty `games` ⇒ no series section.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Series {
+    pub games: Vec<SeriesGame>,
+    /// e.g. "Game 2 of 3" — the current game's place in the series (always safe
+    /// to show; reveals nothing about scores).
+    #[serde(default)]
+    pub game_label: String,
+    /// Spoiler-bearing record line computed from the revealed games, e.g.
+    /// "Blue Jays lead 2–1", "Series tied 1–1", or "Astros win series 2–1". The
+    /// UI shows it only when scores are revealed. Empty when no game is final yet.
+    #[serde(default)]
+    pub record_label: String,
+}
+
 /// Everything the per-match detail page shows.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MatchDetail {
@@ -394,6 +453,11 @@ pub struct MatchDetail {
     /// team's division table. Empty for esports (which use `event`).
     #[serde(default)]
     pub stages: Vec<EventInfo>,
+    /// The MLB series between the two teams (every game + the series standing).
+    /// Empty for esports and for MLB games with no resolvable series.
+    /// `#[serde(default)]` so older cached payloads still load.
+    #[serde(default)]
+    pub series: Series,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]

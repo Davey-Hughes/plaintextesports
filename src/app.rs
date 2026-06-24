@@ -5,7 +5,8 @@ use crate::server::{
 };
 use crate::types::{
     full_event_name, BracketMatch, BracketRound, DayGroup, EventInfo, Game, MatchDetail,
-    MatchStatus, MatchView, ScheduleView, StandingRow, StreamView, SwissMatch, SwissRound,
+    MatchStatus, MatchView, ScheduleView, Series, SeriesGame, StandingRow, StreamView, SwissMatch,
+    SwissRound,
 };
 use leptos::prelude::*;
 use std::collections::HashSet;
@@ -1109,6 +1110,7 @@ fn detail_view(d: MatchDetail) -> impl IntoView {
         streams,
         event,
         stages,
+        series,
         ..
     } = d;
     let m = match_view.expect("found implies match_view");
@@ -1206,6 +1208,10 @@ fn detail_view(d: MatchDetail) -> impl IntoView {
                 }}
             </div>
             <StreamsList streams=streams />
+            // MLB series between the two teams. Its scores + record share this
+            // match's reveal gate, so nothing leaks past the spoiler toggle.
+            {(!series.games.is_empty())
+                .then(|| view! { <SeriesSection series=series reveal=reveal /> })}
             // The event's stage combo (Swiss grid/list + playoff bracket), same as
             // the event page; each section self-gates its own reveal (shared,
             // persisted). Empty sections render nothing.
@@ -1319,6 +1325,93 @@ fn StreamsList(streams: Vec<StreamView>) -> impl IntoView {
         </section>
     }
     .into_any()
+}
+
+/// The MLB "Series" section: each game of the series between the two teams (date,
+/// matchup, score) and the overall series standing. Scores, the per-game winner
+/// emphasis, and the record line all share the page's `reveal` memo — when scores
+/// are hidden, the matchups show but nothing leaks who's leading.
+#[component]
+fn SeriesSection(series: Series, reveal: Memo<bool>) -> impl IntoView {
+    let Series { games, game_label, record_label } = series;
+    let rows = games
+        .into_iter()
+        .map(|g| {
+            let SeriesGame {
+                day_label,
+                team_a,
+                team_b,
+                score_a,
+                score_b,
+                winner,
+                status,
+                current,
+                match_id,
+            } = g;
+            // "Played" = under way or done (an upcoming game's score is absent).
+            let played = matches!(status, MatchStatus::Live | MatchStatus::Finished)
+                && score_a.is_some()
+                && score_b.is_some();
+            let (win_a, win_b) = (winner == "a", winner == "b");
+            // The score cell: the result once revealed and played, else a dash —
+            // mirroring the headline score's gate.
+            let score_cell = move || {
+                if reveal.get() && played {
+                    format!("{} \u{2013} {}", score_a.unwrap_or(0), score_b.unwrap_or(0))
+                } else {
+                    "at".to_string()
+                }
+            };
+            let mut cls = String::from("series-game");
+            if current {
+                cls.push_str(" series-current");
+            }
+            // Link a row to that game's own detail page (not the current one).
+            let day_cell = if match_id != 0 && !current {
+                view! { <A href=format!("/match/{match_id}")>{day_label}</A> }.into_any()
+            } else {
+                day_label.into_any()
+            };
+            view! {
+                <li class=cls>
+                    <span class="series-day">{day_cell}</span>
+                    <span
+                        class="series-team series-team-a"
+                        class:winner=move || reveal.get() && win_a
+                        class:loser=move || reveal.get() && win_b
+                    >
+                        {team_a}
+                    </span>
+                    <span class="series-score">{score_cell}</span>
+                    <span
+                        class="series-team series-team-b"
+                        class:winner=move || reveal.get() && win_b
+                        class:loser=move || reveal.get() && win_a
+                    >
+                        {team_b}
+                    </span>
+                </li>
+            }
+        })
+        .collect_view();
+    // The record line is a spoiler (it names the leader); show it only when
+    // revealed and non-empty. The "Game N of M" label is always safe.
+    let record = (!record_label.is_empty()).then(|| {
+        view! {
+            <p class="series-record" class:series-hidden=move || !reveal.get()>
+                {move || if reveal.get() { record_label.clone() } else { String::new() }}
+            </p>
+        }
+    });
+    let game_label = (!game_label.is_empty())
+        .then(|| view! { <span class="series-meta">{game_label}</span> });
+    view! {
+        <section class="detail-section">
+            <h2 class="section-title">"Series" {game_label}</h2>
+            <ul class="series-games">{rows}</ul>
+            {record}
+        </section>
+    }
 }
 
 /// Reveal state for a persisted section key (standings / one bracket round),

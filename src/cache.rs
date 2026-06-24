@@ -89,6 +89,59 @@ pub fn mlb_team_divisions(team_a: &str, team_b: &str) -> Vec<EventInfo> {
         .collect()
 }
 
+/// Per-game MLB series, fetched on demand (detail page) and cached with a short
+/// TTL keyed by gamePk, so repeated page views don't re-hit the MLB API.
+static MLB_SERIES: Lazy<RwLock<HashMap<i64, CachedSeries>>> =
+    Lazy::new(|| RwLock::new(HashMap::new()));
+
+struct CachedSeries {
+    series: crate::types::Series,
+    fetched_at: DateTime<Utc>,
+}
+
+/// Re-fetch a game's series at most this often. Short enough that a live series'
+/// scores stay fresh, long enough that a burst of views is one fetch.
+const SERIES_TTL_MIN: i64 = 2;
+
+/// The MLB series between the two teams of `match_id`, fetched on demand and
+/// cached with a short TTL. `None` for esports, an unknown match, an MLB match
+/// with no series ref, or when the fetch fails (the detail page then omits the
+/// section). The snapshot read (for the ref + labels) is released before the
+/// await so the future stays `Send`.
+pub async fn mlb_series(match_id: i64) -> Option<crate::types::Series> {
+    // Serve a fresh cached series without touching the network.
+    {
+        let cache = MLB_SERIES.read().unwrap_or_else(PoisonError::into_inner);
+        if let Some(c) = cache.get(&match_id) {
+            if Utc::now() - c.fetched_at < Duration::minutes(SERIES_TTL_MIN) {
+                return Some(c.series.clone());
+            }
+        }
+    }
+    // Pull the series ref + headline orientation from the snapshot, then drop the
+    // lock before any await.
+    let (sref, team_a, team_b, begin_at) = {
+        let snap = SNAPSHOT.read().unwrap_or_else(PoisonError::into_inner);
+        let m = snap.matches.iter().find(|m| m.id == match_id)?;
+        let sref = m.mlb_series?;
+        (sref, m.team_a.label.clone(), m.team_b.label.clone(), m.begin_at)
+    };
+    match crate::mlb::fetch_series(&HTTP, match_id, begin_at, &team_a, &team_b, sref).await {
+        Ok(series) if !series.games.is_empty() => {
+            MLB_SERIES.write().unwrap_or_else(PoisonError::into_inner).insert(
+                match_id,
+                CachedSeries { series: series.clone(), fetched_at: Utc::now() },
+            );
+            Some(series)
+        }
+        Ok(_) => None,
+        Err(e) => {
+            leptos::logging::log!("MLB series fetch failed ({match_id}): {e}");
+            None
+        }
+    }
+}
+
 struct CachedEvent {
     info: EventInfo,
     fetched_at: DateTime<Utc>,
@@ -435,17 +488,22 @@ fn apply_poll(
         match crate::store::load_all(conn) {
             Ok(mut all) => {
                 all.sort_by_key(|m| m.begin_at);
-                // Streams/broadcasts aren't persisted to the DB, so the reload
-                // drops them; re-attach them from this poll's fresh fetch (keyed
-                // by match id) so the detail page still has them.
-                let mut live: HashMap<i64, Vec<StreamView>> = fresh
-                    .into_iter()
-                    .filter(|m| !m.streams.is_empty())
-                    .map(|m| (m.id, m.streams))
-                    .collect();
+                // Streams/broadcasts and the MLB series ref aren't persisted to
+                // the DB, so the reload drops them; re-attach them from this
+                // poll's fresh fetch (keyed by match id) so the detail page still
+                // has them.
+                let mut live: HashMap<i64, (Vec<StreamView>, Option<crate::types::MlbSeriesRef>)> =
+                    fresh
+                        .into_iter()
+                        .filter(|m| !m.streams.is_empty() || m.mlb_series.is_some())
+                        .map(|m| (m.id, (m.streams, m.mlb_series)))
+                        .collect();
                 for m in &mut all {
-                    if let Some(s) = live.remove(&m.id) {
-                        m.streams = s;
+                    if let Some((s, series)) = live.remove(&m.id) {
+                        if !s.is_empty() {
+                            m.streams = s;
+                        }
+                        m.mlb_series = series;
                     }
                 }
                 let mut snap = SNAPSHOT.write().unwrap_or_else(PoisonError::into_inner);
@@ -1892,6 +1950,7 @@ fn demo_match(
         tournament_id: Some(demo_tournament_id(league)),
         venue_tz: None,
         streams: demo_streams(),
+        mlb_series: None,
     }
 }
 
@@ -2049,6 +2108,7 @@ mod tests {
             tournament_id: None,
             venue_tz: None,
             streams: Vec::new(),
+            mlb_series: None,
         }
     }
 
