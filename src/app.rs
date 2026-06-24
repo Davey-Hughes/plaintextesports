@@ -1,7 +1,7 @@
 use crate::bracket;
 use crate::server::{
     get_day, get_event_schedule, get_event_stages, get_event_stages_by_league, get_match_detail,
-    get_range, get_schedule, get_site, get_team_schedule,
+    get_notifications, get_range, get_schedule, get_site, get_team_schedule,
 };
 use crate::types::{
     full_event_name, BracketMatch, BracketRound, DayGroup, EventInfo, Game, MatchDetail,
@@ -200,6 +200,7 @@ pub fn App() -> impl IntoView {
                         <Route path=(StaticSegment("match"), ParamSegment("id")) view=MatchDetailPage />
                         <Route path=(StaticSegment("event"), ParamSegment("league")) view=EventPage />
                         <Route path=(StaticSegment("team"), ParamSegment("name")) view=TeamPage />
+                        <Route path=StaticSegment("notifications") view=NotificationsPage />
                         <Route path=StaticSegment("about") view=AboutPage />
                     </Routes>
                 </main>
@@ -478,9 +479,22 @@ fn ScrollTopButton() -> impl IntoView {
 fn SiteFooter() -> impl IntoView {
     let site = Resource::new(|| (), |()| async { get_site().await });
     let traditional = use_context::<SportMode>().expect("sport mode context").0;
+    // The notifications page is only useful once push is available (you have
+    // something to manage), so the link follows the same gate as the ★s.
+    let vapid = use_context::<RwSignal<Option<String>>>().expect("vapid context");
     view! {
         <footer class="footer" id="site-footer">
             <A href="/about">"about"</A>
+            {move || {
+                vapid
+                    .with(|v| v.is_some())
+                    .then(|| {
+                        view! {
+                            <span class="sep">" · "</span>
+                            <A href="/notifications">"notifications"</A>
+                        }
+                    })
+            }}
             <span class="sep">" · "</span>
             <span>
                 {move || {
@@ -2703,6 +2717,184 @@ fn SubscribeStar(kind: &'static str, value: String) -> impl IntoView {
         >
             {move || if is_on.get() { "★" } else { "☆" }}
         </button>
+    }
+}
+
+/// Manage what you're notified about: your game/event/team subscriptions, plus
+/// individually-starred upcoming matches. Matches that have already started or
+/// finished are left out (their reminders can no longer fire).
+#[component]
+fn NotificationsPage() -> impl IntoView {
+    let subscribed = use_context::<Subscribed>().expect("subscribed context").0;
+    let starred = use_context::<RwSignal<HashSet<i64>>>().expect("starred context");
+    let hour24 = use_context::<RwSignal<bool>>().expect("hour24 context");
+    let tz = use_context::<RwSignal<String>>().expect("tz context");
+
+    // Resolve the starred ids to upcoming match views (re-fetches as you star or
+    // remove); started/finished ids are dropped server-side.
+    let starred_matches = Resource::new(
+        move || {
+            let mut ids: Vec<i64> = starred.get().into_iter().collect();
+            ids.sort_unstable();
+            (ids, tz.get(), hour24.get())
+        },
+        |(ids, z, h)| async move {
+            if ids.is_empty() {
+                Ok(Vec::new())
+            } else {
+                get_notifications(ids, z, h).await
+            }
+        },
+    );
+
+    view! {
+        <article class="detail">
+            <A href="/">"← schedule"</A>
+            <h1 class="detail-title">"Notifications"</h1>
+            <p class="notif-intro">
+                "Everything you'll be reminded about. Subscriptions cover every "
+                "upcoming match for a game, event, or team."
+            </p>
+            {move || {
+                let mut keys: Vec<String> = subscribed.get().into_iter().collect();
+                keys.sort();
+                (!keys.is_empty())
+                    .then(|| {
+                        view! {
+                            <section class="notif-section">
+                                <h2 class="notif-head">"Subscriptions"</h2>
+                                <ul class="notif-list">
+                                    {keys
+                                        .into_iter()
+                                        .map(|k| view! { <SubRow key=k /> })
+                                        .collect_view()}
+                                </ul>
+                            </section>
+                        }
+                    })
+            }}
+            <Suspense>
+                {move || {
+                    starred_matches
+                        .get()
+                        .map(|res| {
+                            let ms = res.unwrap_or_default();
+                            (!ms.is_empty())
+                                .then(|| {
+                                    view! {
+                                        <section class="notif-section">
+                                            <h2 class="notif-head">"Starred matches"</h2>
+                                            <ul class="notif-list">
+                                                {ms
+                                                    .into_iter()
+                                                    .map(|m| view! { <StarredRow m=m /> })
+                                                    .collect_view()}
+                                            </ul>
+                                        </section>
+                                    }
+                                })
+                        })
+                }}
+            </Suspense>
+            {move || {
+                let none = subscribed.with(HashSet::is_empty) && starred.with(HashSet::is_empty);
+                none.then(|| {
+                    view! {
+                        <p class="empty">
+                            "Nothing yet. Subscribe to a game, event, or team from its page "
+                            "(the ★), or star an upcoming match to be reminded."
+                        </p>
+                    }
+                })
+            }}
+        </article>
+    }
+}
+
+/// One subscription row on the notifications page — its label (linking to the
+/// team/event page where there is one) and a remove button.
+#[component]
+fn SubRow(key: String) -> impl IntoView {
+    let subscribed = use_context::<Subscribed>().expect("subscribed context").0;
+    let vapid = use_context::<RwSignal<Option<String>>>().expect("vapid context");
+    let (kind, value) = key
+        .split_once('|')
+        .map_or_else(|| (String::new(), key.clone()), |(k, v)| (k.to_string(), v.to_string()));
+    // Label + optional link to the subscribed thing's own page.
+    let (tag, label, link): (&str, String, Option<String>) = match kind.as_str() {
+        "game" => (
+            "game",
+            Game::from_filter(&value).map_or_else(|| value.clone(), |g| g.label().to_string()),
+            None,
+        ),
+        "team" => ("team", value.clone(), Some(format!("/team/{}", enc_segment(&value)))),
+        _ => ("event", value.clone(), Some(format!("/event/{}", enc_segment(&value)))),
+    };
+
+    let key_for_click = key.clone();
+    let remove = move |_| {
+        subscribed.update(|s| {
+            s.remove(&key_for_click);
+        });
+        #[cfg(feature = "hydrate")]
+        {
+            let keys: Vec<String> = subscribed.with_untracked(|s| s.iter().cloned().collect());
+            subscribe_scope(kind.clone(), value.clone(), false, keys, vapid.get_untracked());
+        }
+        #[cfg(not(feature = "hydrate"))]
+        {
+            let _ = (&kind, &value, vapid);
+        }
+    };
+
+    let label_view = match link {
+        Some(href) => view! { <A href=href>{label}</A> }.into_any(),
+        None => label.into_any(),
+    };
+
+    view! {
+        <li class="notif-item">
+            <span class="notif-kind">{tag}</span>
+            <span class="notif-label">{label_view}</span>
+            <button class="notif-remove" on:click=remove aria-label="Remove subscription">
+                "×"
+            </button>
+        </li>
+    }
+}
+
+/// One individually-starred upcoming match on the notifications page.
+#[component]
+fn StarredRow(m: MatchView) -> impl IntoView {
+    let starred = use_context::<RwSignal<HashSet<i64>>>().expect("starred context");
+    let vapid = use_context::<RwSignal<Option<String>>>().expect("vapid context");
+    let id = m.id;
+    let line = format!("{} {} {}", m.team_a.label, versus_sep(m.game), m.team_b.label);
+    let remove = move |_| {
+        starred.update(|s| {
+            s.remove(&id);
+        });
+        #[cfg(feature = "hydrate")]
+        {
+            let ids: Vec<i64> = starred.with_untracked(|s| s.iter().copied().collect());
+            persist_and_sync(id, false, ids, vapid.get_untracked());
+        }
+        #[cfg(not(feature = "hydrate"))]
+        {
+            let _ = vapid;
+        }
+    };
+
+    view! {
+        <li class="notif-item">
+            <A href=format!("/match/{id}")>
+                <span class="notif-time">{m.clock_label}</span>
+                <span class="notif-label">{line}</span>
+            </A>
+            <button class="notif-remove" on:click=remove aria-label="Remove reminder">
+                "×"
+            </button>
+        </li>
     }
 }
 
