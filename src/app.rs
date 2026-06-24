@@ -1169,6 +1169,33 @@ fn bk_teams_known(grid: &[Vec<BkCell>], eff: &[Vec<u8>], r: usize, i: usize) -> 
     c.feeders.is_empty() || auto_stage(eff, &c.feeders) == 1
 }
 
+/// Reveal a whole round to one uniform stage — the least-revealed decided match's
+/// stage plus one. Bringing every series to the same stage pulls any matches that
+/// were individually revealed earlier into the even progression, so the outer
+/// "round"/"Bracket" controls don't preserve those granular reveals out of order
+/// ("revealing is granular, hiding is bigger-picture").
+fn reveal_round_uniform(set: &mut HashSet<String>, grid: &[Vec<BkCell>], eff: &[Vec<u8>], r: usize) {
+    let min_stage = (0..grid[r].len())
+        .filter(|&i| grid[r][i].max > 0)
+        .map(|i| eff[r][i])
+        .min()
+        .unwrap_or(0);
+    let target = (min_stage + 1).min(2);
+    for i in 0..grid[r].len() {
+        let c = &grid[r][i];
+        if c.max == 0 {
+            continue;
+        }
+        // A score can't show before the lineup is known.
+        let cap = if bk_teams_known(grid, eff, r, i) { c.max } else { c.max.min(1) };
+        let t = target.min(cap);
+        // If the auto-revealed lineup already provides this stage, clear the manual
+        // entry and let auto provide it (and so hiding a feeder still cascades).
+        let auto = auto_stage(eff, &c.feeders);
+        apply_stage(set, &c.bn, &c.bs, if t <= auto { 0 } else { t });
+    }
+}
+
 /// Apply a bracket reveal action to the shared set, respecting feeder gating so a
 /// later round's lineup can't be revealed before its feeders' scores are shown.
 fn apply_bracket_op(set: &mut HashSet<String>, grid: &[Vec<BkCell>], op: BkOp) {
@@ -1211,11 +1238,7 @@ fn apply_bracket_op(set: &mut HashSet<String>, grid: &[Vec<BkCell>], op: BkOp) {
                     reveal_feeders(set, grid, r, i);
                 }
             } else if (0..n).any(|i| bk_advanceable(grid, &eff, r, i)) {
-                for i in 0..n {
-                    if bk_advanceable(grid, &eff, r, i) {
-                        advance(set, r, i);
-                    }
-                }
+                reveal_round_uniform(set, grid, &eff, r);
             } else {
                 // Fully revealed → hide the whole round.
                 for c in &grid[r] {
@@ -1228,9 +1251,14 @@ fn apply_bracket_op(set: &mut HashSet<String>, grid: &[Vec<BkCell>], op: BkOp) {
                 (0..grid.len()).find(|&r| (0..grid[r].len()).any(|i| bk_advanceable(grid, &eff, r, i)));
             match frontier {
                 Some(r) => {
-                    for i in 0..grid[r].len() {
-                        if bk_advanceable(grid, &eff, r, i) {
-                            advance(set, r, i);
+                    reveal_round_uniform(set, grid, &eff, r);
+                    // Forget any individually-revealed matches further along, so
+                    // the cascade reveals strictly front-to-back and doesn't keep
+                    // those granular reveals out of order ("hiding is bigger-picture").
+                    // Auto-revealed lineups aren't in the set, so they're unaffected.
+                    for later in &grid[r + 1..] {
+                        for c in later {
+                            apply_stage(set, &c.bn, &c.bs, 0);
                         }
                     }
                 }
@@ -3860,6 +3888,56 @@ mod tests {
             compute_effective(&grid, &set, false),
             vec![vec![0, 2, 2, 2], vec![1, 2], vec![1]]
         );
+    }
+
+    #[test]
+    fn cascade_normalizes_granular_reveals() {
+        // Individually reveal one quarterfinal's score (granular), then use the
+        // outer "Bracket" cascade: it pulls that match back into the even
+        // progression (the whole round at names) instead of leaving it ahead.
+        let grid = qf_sf_final_grid();
+        let mut set = HashSet::new();
+        apply_bracket_op(&mut set, &grid, BkOp::Series(0, 0)); // (0,0) → names
+        apply_bracket_op(&mut set, &grid, BkOp::Series(0, 0)); // (0,0) → score
+        assert_eq!(
+            compute_effective(&grid, &set, false),
+            vec![vec![2, 0, 0, 0], vec![0, 0], vec![0]]
+        );
+        // Cascade: the round becomes uniformly names — (0,0)'s score is dropped.
+        apply_bracket_op(&mut set, &grid, BkOp::Cascade);
+        assert_eq!(
+            compute_effective(&grid, &set, false),
+            vec![vec![1, 1, 1, 1], vec![0, 0], vec![0]]
+        );
+        assert!(!set.contains("bs:1:0:0"), "the granular score reveal is cleared");
+        // The next cascade reveals the whole round's scores together.
+        apply_bracket_op(&mut set, &grid, BkOp::Cascade);
+        assert_eq!(
+            compute_effective(&grid, &set, false),
+            vec![vec![2, 2, 2, 2], vec![1, 1], vec![0]]
+        );
+    }
+
+    #[test]
+    fn cascade_forgets_ahead_reveals() {
+        // A branch shown into the middle (a semifinal + its feeders) while the
+        // other quarterfinals stay hidden.
+        let grid = qf_sf_final_grid();
+        let mut set = HashSet::new();
+        apply_stage(&mut set, "bn:1:0:0", "bs:1:0:0", 2);
+        apply_stage(&mut set, "bn:1:0:1", "bs:1:0:1", 2);
+        apply_stage(&mut set, "bn:1:1:0", "bs:1:1:0", 2);
+        assert_eq!(
+            compute_effective(&grid, &set, false),
+            vec![vec![2, 2, 0, 0], vec![2, 0], vec![0]]
+        );
+        // The cascade evens the front round and drops the ahead semifinal.
+        apply_bracket_op(&mut set, &grid, BkOp::Cascade);
+        assert_eq!(
+            compute_effective(&grid, &set, false),
+            vec![vec![1, 1, 1, 1], vec![0, 0], vec![0]]
+        );
+        assert!(!set.contains("bs:1:1:0"), "the ahead semifinal reveal is forgotten");
     }
 
     #[test]
