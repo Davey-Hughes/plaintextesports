@@ -474,6 +474,26 @@ pub struct Series {
     pub record_label: String,
 }
 
+/// One finished F1 session's full classification, for the GP event page.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct F1Result {
+    /// The session this classifies: "Race", "Sprint", or "Qualifying".
+    pub session: String,
+    pub rows: Vec<F1ResultRow>,
+}
+
+/// One driver's line in an F1 session result.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct F1ResultRow {
+    /// Finishing/grid position, e.g. "1". May be non-numeric for the classified.
+    pub pos: String,
+    pub driver: String,
+    pub constructor: String,
+    /// Race/Sprint: finishing time or gap ("+2.974"), else the status ("+1 Lap",
+    /// "DNF"). Qualifying: the best lap time (pole time for P1). A spoiler.
+    pub detail: String,
+}
+
 /// Everything the per-match detail page shows.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MatchDetail {

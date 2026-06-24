@@ -104,6 +104,20 @@ struct CachedSeries {
 /// scores stay fresh, long enough that a burst of views is one fetch.
 const SERIES_TTL_MIN: i64 = 2;
 
+/// On-demand F1 results, keyed by (season, round). Fetched when a GP event page
+/// is viewed; once a session is final its result is stable, so a longer TTL is
+/// fine.
+static F1_RESULTS: Lazy<RwLock<HashMap<(i64, i64), CachedF1Results>>> =
+    Lazy::new(|| RwLock::new(HashMap::new()));
+
+struct CachedF1Results {
+    results: Vec<crate::types::F1Result>,
+    fetched_at: DateTime<Utc>,
+}
+
+/// Re-fetch a Grand Prix's results at most this often.
+const F1_RESULTS_TTL_MIN: i64 = 10;
+
 /// The MLB series between the two teams of `match_id`, fetched on demand and
 /// cached with a short TTL. Each game's time is formatted in the display tz
 /// (`tz_name`/`hour24`), so the cache key folds those in. `None` for esports, an
@@ -186,6 +200,26 @@ pub async fn mlb_series(match_id: i64, tz_name: &str, hour24: bool) -> Option<cr
             None
         }
     }
+}
+
+/// A Grand Prix's finished-session results, fetched on demand and TTL-cached.
+pub async fn f1_results(season: i64, round: i64) -> Vec<crate::types::F1Result> {
+    {
+        let cache = F1_RESULTS.read().unwrap_or_else(PoisonError::into_inner);
+        if let Some(c) = cache.get(&(season, round)) {
+            if Utc::now() - c.fetched_at < Duration::minutes(F1_RESULTS_TTL_MIN) {
+                return c.results.clone();
+            }
+        }
+    }
+    let results = crate::f1::fetch_results(&HTTP, season, round).await;
+    // Cache even an empty result (upcoming GP) so we don't refetch on every view,
+    // but with no entry-less leak — the TTL expires it.
+    F1_RESULTS.write().unwrap_or_else(PoisonError::into_inner).insert(
+        (season, round),
+        CachedF1Results { results: results.clone(), fetched_at: Utc::now() },
+    );
+    results
 }
 
 struct CachedEvent {
