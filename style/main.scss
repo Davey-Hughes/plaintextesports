@@ -801,9 +801,9 @@ a {
 }
 
 .row-time {
-  // A touch brighter than muted so the time reads clearly, while still sitting
-  // below the team names in emphasis (blend stays theme-aware).
-  color: color-mix(in srgb, var(--muted), var(--fg) 30%);
+  // Brighter than muted so the time reads clearly, while still a step below the
+  // team names in emphasis (blend stays theme-aware).
+  color: color-mix(in srgb, var(--muted), var(--fg) 55%);
   font-size: 13px;
   white-space: nowrap;
   // Track the ★/bar's left shift so the time stays tight against it (the time is
@@ -817,9 +817,11 @@ a {
 .row-time-tz {
   cursor: pointer;
 
+  // Hover/active jump to the max-contrast emphasis colour (white on dark, black
+  // on light) — brighter than the team names, so it clearly reads as active.
   &:hover,
   &.on {
-    color: var(--fg);
+    color: var(--win);
   }
 }
 
