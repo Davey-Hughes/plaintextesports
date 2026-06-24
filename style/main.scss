@@ -219,8 +219,8 @@ a {
   }
 }
 
-// "Back to top" arrow: pushed to the left of the toggle bar (the brand's spot),
-// hidden until the page is scrolled.
+// "Back to top" arrow: takes the brand's spot once it scrolls away. Pushed left
+// so the rest of the bar stays right-aligned; hidden until the page is scrolled.
 .scrolltop {
   margin-right: auto;
   font-weight: 700;
@@ -229,6 +229,33 @@ a {
 
 .scrolltop-off {
   display: none;
+}
+
+// "↻ <time>" — a subtle, unboxed control next to the calendar showing when the
+// server's data was last refreshed. A click refetches that data to the client;
+// it never forces the server to re-poll its own source.
+.refresh-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  background: none;
+  border: none;
+  padding: 0.15rem 0.2rem;
+  font: inherit;
+  font-size: 11px;
+  color: var(--muted);
+  cursor: pointer;
+  opacity: 0.7;
+
+  &:hover {
+    opacity: 1;
+    color: var(--fg);
+  }
+
+  .refresh-icon {
+    font-size: 12px;
+    line-height: 1;
+  }
 }
 
 .tabs {

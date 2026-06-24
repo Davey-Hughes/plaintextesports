@@ -92,6 +92,12 @@ struct EarlierDays(RwSignal<i64>);
 struct Games(RwSignal<HashSet<String>>);
 #[derive(Clone, Copy)]
 struct Leagues(RwSignal<HashSet<String>>);
+/// The server's data-freshness time, shown in the header (None until a schedule
+/// loads). A bump of `RefreshTrigger` makes the schedule refetch from the server.
+#[derive(Clone, Copy)]
+struct LastUpdated(RwSignal<Option<String>>);
+#[derive(Clone, Copy)]
+struct RefreshTrigger(RwSignal<u64>);
 
 #[component]
 #[must_use]
@@ -117,6 +123,9 @@ pub fn App() -> impl IntoView {
     // Schedule filters (shared + persisted across navigation).
     let games = RwSignal::new(HashSet::<String>::new());
     let leagues = RwSignal::new(HashSet::<String>::new());
+    // Header data-freshness label + a manual-refresh trigger.
+    let last_updated = RwSignal::new(None::<String>);
+    let refresh_trigger = RwSignal::new(0u64);
     provide_context(hour24);
     provide_context(tz);
     provide_context(starred);
@@ -129,6 +138,8 @@ pub fn App() -> impl IntoView {
     provide_context(EarlierDays(earlier));
     provide_context(Games(games));
     provide_context(Leagues(leagues));
+    provide_context(LastUpdated(last_updated));
+    provide_context(RefreshTrigger(refresh_trigger));
 
     // After hydration, pick up the browser's timezone + saved preferences and
     // the push key. (Client-side only; the initial render uses the defaults
@@ -359,12 +370,43 @@ fn SiteHeader() -> impl IntoView {
             </div>
         </header>
         <div class="toggles">
+            // Left: the back-to-top arrow takes the brand's spot once it scrolls
+            // away (hidden at the top). Everything else sits in the right cluster,
+            // clear of the brand.
             <ScrollTopButton />
+            <RefreshButton />
             <CalendarPicker />
             <ScoresToggle />
             <HourToggle />
             <ThemeToggle />
         </div>
+    }
+}
+
+/// Shows when the server's schedule data was last refreshed, and acts as a button
+/// to pull the latest from the server (a client refetch — it never forces the
+/// server to re-poll its own data source). Hidden until a schedule has loaded.
+#[component]
+fn RefreshButton() -> impl IntoView {
+    let last = use_context::<LastUpdated>().map(|l| l.0);
+    let trigger = use_context::<RefreshTrigger>().map(|t| t.0);
+    let bump = move |_| {
+        if let Some(t) = trigger {
+            t.update(|n| *n += 1);
+        }
+    };
+    move || {
+        last.and_then(|l| l.get()).map(|label| {
+            let title = format!(
+                "Server schedule data from {label} — click to pull the latest from the server"
+            );
+            view! {
+                <button class="refresh-btn" title=title on:click=bump>
+                    <span class="refresh-icon">"\u{21bb}"</span>
+                    {label}
+                </button>
+            }
+        })
     }
 }
 
@@ -2594,24 +2636,42 @@ fn setup_autorefresh(resource: Resource<Result<ScheduleView, ServerFnError>>) {
     // the browser's scroll anchor and can jump the page. Remember the scroll
     // position when the timer fires and restore it once the new schedule renders.
     let pending = StoredValue::new(None::<f64>);
+    // Save the scroll position, then refetch the schedule from the server (so the
+    // re-render doesn't jump the page). Shared by the 60s timer and the header's
+    // manual button — neither forces the *server* to re-poll its own source.
+    let refresh = move || {
+        #[cfg(feature = "hydrate")]
+        {
+            pending.set_value(web_sys::window().and_then(|w| w.scroll_y().ok()));
+            resource.refetch();
+        }
+        #[cfg(not(feature = "hydrate"))]
+        let _ = (pending, resource);
+    };
     Effect::new(move |_| {
         #[cfg(feature = "hydrate")]
         {
             use std::time::Duration;
             // Keep the handle so client-side route changes clear the timer instead
             // of leaking a new 60s refetch loop on every page mount.
-            if let Ok(handle) = set_interval_with_handle(
-                move || {
-                    pending.set_value(web_sys::window().and_then(|w| w.scroll_y().ok()));
-                    resource.refetch();
-                },
-                Duration::from_secs(60),
-            ) {
+            if let Ok(handle) =
+                set_interval_with_handle(move || refresh(), Duration::from_secs(60))
+            {
                 on_cleanup(move || handle.clear());
             }
         }
-        let _ = (resource, pending);
+        let _ = (resource, pending, refresh);
     });
+    // Manual refresh from the header button: a shared, incrementing trigger.
+    if let Some(RefreshTrigger(trigger)) = use_context::<RefreshTrigger>() {
+        Effect::new(move |prev: Option<u64>| {
+            let n = trigger.get();
+            if prev.is_some() {
+                refresh(); // skip the initial registration run
+            }
+            n
+        });
+    }
     // After the refreshed schedule renders, put the scroll back — only for the
     // silent auto-refresh; user-driven refetches leave `pending` unset.
     Effect::new(move |_| {
@@ -3436,22 +3496,25 @@ fn render_schedule(s: ScheduleView, show_nav: bool, push: bool, event_mode: bool
         })
         .collect_view();
 
-    let fixture_note = if demo_forced {
-        "demo mode (forced) · ".to_string()
+    // The header shows the server's data-freshness time; here we keep only the
+    // warning notices (demo / stale), when there are any.
+    if let Some(LastUpdated(lu)) = use_context::<LastUpdated>() {
+        lu.set(Some(fetched_label));
+    }
+    let mut notes: Vec<&str> = Vec::new();
+    if demo_forced {
+        notes.push("demo mode (forced)");
     } else if using_fixture {
-        "demo data — set PANDASCORE_TOKEN for live schedules · ".to_string()
-    } else {
-        String::new()
-    };
-    let stale_note = if stale {
-        "data may be stale · ".to_string()
-    } else {
-        String::new()
-    };
+        notes.push("demo data — set PANDASCORE_TOKEN for live schedules");
+    }
+    if stale {
+        notes.push("data may be stale");
+    }
+    let note = notes.join(" · ");
 
     view! {
         {nav}
-        <div class="status-line">{fixture_note}{stale_note} "schedule last updated " {fetched_label}</div>
+        {(!note.is_empty()).then(|| view! { <div class="status-line">{note}</div> })}
         // With no days to host it inline, the control stands alone above the notice.
         {(show_earlier && !has_days).then(|| view! { <EarlierControl /> })}
         {day_sections}
