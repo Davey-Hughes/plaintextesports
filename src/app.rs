@@ -78,6 +78,11 @@ struct RevealedSections(RwSignal<HashSet<String>>);
 #[derive(Clone, Copy)]
 struct Subscribed(RwSignal<HashSet<String>>);
 
+/// Match ids the user has opted out of even though a subscription covers them
+/// (a per-match "un-notify" that doesn't drop the whole subscription).
+#[derive(Clone, Copy)]
+struct Excluded(RwSignal<HashSet<i64>>);
+
 /// Calendar-selected date range (start, end ISO dates); `None` = default view.
 #[derive(Clone, Copy)]
 struct DateRange(RwSignal<Option<(String, String)>>);
@@ -121,6 +126,8 @@ pub fn App() -> impl IntoView {
     // Reminder state: starred match ids, and the VAPID public key (None until
     // fetched / if Web Push isn't configured).
     let starred = RwSignal::new(HashSet::<i64>::new());
+    // Matches opted out of a covering subscription (per-match un-notify).
+    let excluded = RwSignal::new(HashSet::<i64>::new());
     let vapid = RwSignal::new(None::<String>);
     // Spoiler control: a global reveal + a per-match reveal set.
     let show_scores = RwSignal::new(false);
@@ -142,6 +149,7 @@ pub fn App() -> impl IntoView {
     provide_context(hour24);
     provide_context(tz);
     provide_context(starred);
+    provide_context(Excluded(excluded));
     provide_context(vapid);
     provide_context(ShowScores(show_scores));
     provide_context(RevealedMatches(revealed));
@@ -171,6 +179,7 @@ pub fn App() -> impl IntoView {
             show_scores.set(load_scores_pref());
             traditional.set(load_sport_pref());
             starred.set(load_starred());
+            excluded.set(load_excluded());
             subscribed.set(load_subs());
             revealed.set(load_revealed());
             sections.set(load_sections());
@@ -835,7 +844,6 @@ fn EventPage() -> impl IntoView {
         }
     });
     setup_autorefresh(schedule);
-    let push = use_context::<RwSignal<Option<String>>>().is_some_and(|v| v.get().is_some());
 
     // Keep the global sport mode in sync with the event being viewed, so the
     // header toggle, footer, and the windowing controls agree with the data
@@ -934,6 +942,10 @@ fn EventPage() -> impl IntoView {
                                     && d.day_key.as_str() <= hi.as_str()
                             });
                         }
+                        // Read push here (not at the top) so the ★s appear once the
+                        // VAPID key resolves after hydration — this closure re-runs.
+                        let push = use_context::<RwSignal<Option<String>>>()
+                            .is_some_and(|v| v.get().is_some());
                         view! {
                             <article class="detail">
                                 <A href="/">"← schedule"</A>
@@ -987,7 +999,6 @@ fn TeamPage() -> impl IntoView {
         |(t, z, h)| async move { get_team_schedule(t, z, h).await },
     );
     setup_autorefresh(schedule);
-    let push = use_context::<RwSignal<Option<String>>>().is_some_and(|v| v.get().is_some());
 
     // Keep the global sport mode in sync with the team being viewed, so the
     // header toggle/footer/windowing agree (client-only; never persisted).
@@ -1021,6 +1032,10 @@ fn TeamPage() -> impl IntoView {
                                     && d.day_key.as_str() <= hi.as_str()
                             });
                         }
+                        // Read push here so the ★s appear once the VAPID key
+                        // resolves after hydration (this closure re-runs then).
+                        let push = use_context::<RwSignal<Option<String>>>()
+                            .is_some_and(|v| v.get().is_some());
                         view! {
                             <article class="detail">
                                 <A href="/">"← schedule"</A>
@@ -2739,6 +2754,8 @@ fn SubscribeStar(kind: &'static str, value: String) -> impl IntoView {
 fn NotificationsPage() -> impl IntoView {
     let subscribed = use_context::<Subscribed>().expect("subscribed context").0;
     let starred = use_context::<RwSignal<HashSet<i64>>>().expect("starred context");
+    let excluded = use_context::<Excluded>().expect("excluded context").0;
+    let vapid = use_context::<RwSignal<Option<String>>>().expect("vapid context");
     let hour24 = use_context::<RwSignal<bool>>().expect("hour24 context");
     let tz = use_context::<RwSignal<String>>().expect("tz context");
 
@@ -2759,10 +2776,44 @@ fn NotificationsPage() -> impl IntoView {
         },
     );
 
+    // Anything to clear? (subscriptions or stars; exclusions alone aren't shown).
+    let has_any =
+        move || !subscribed.with(HashSet::is_empty) || !starred.with(HashSet::is_empty);
+    let clear_all = move |_| {
+        subscribed.set(HashSet::new());
+        starred.set(HashSet::new());
+        excluded.set(HashSet::new());
+        #[cfg(feature = "hydrate")]
+        {
+            let empty: Vec<String> = Vec::new();
+            let no_ids: Vec<i64> = Vec::new();
+            save_subs(&empty);
+            save_starred(&no_ids);
+            save_excluded(&no_ids);
+            clear_all_notifications(vapid.get_untracked());
+        }
+        #[cfg(not(feature = "hydrate"))]
+        {
+            let _ = vapid;
+        }
+    };
+
     view! {
         <article class="detail">
             <A href="/">"← schedule"</A>
-            <h1 class="detail-title">"Notifications"</h1>
+            <div class="notif-title-row">
+                <h1 class="detail-title">"Notifications"</h1>
+                {move || {
+                    has_any()
+                        .then(|| {
+                            view! {
+                                <button class="linkish notif-clear" on:click=clear_all>
+                                    "clear all"
+                                </button>
+                            }
+                        })
+                }}
+            </div>
             <p class="notif-intro">
                 "Everything you'll be reminded about. Subscriptions cover every "
                 "upcoming match for a game, event, or team."
@@ -2879,21 +2930,38 @@ fn SubRow(key: String) -> impl IntoView {
 #[component]
 fn StarredRow(m: MatchView) -> impl IntoView {
     let starred = use_context::<RwSignal<HashSet<i64>>>().expect("starred context");
+    let excluded = use_context::<Excluded>().expect("excluded context").0;
+    let subscribed = use_context::<Subscribed>().expect("subscribed context").0;
     let vapid = use_context::<RwSignal<Option<String>>>().expect("vapid context");
     let id = m.id;
     let line = format!("{} {} {}", m.team_a.label, versus_sep(m.game), m.team_b.label);
+    // The scopes that also cover this match — so removing it actually stops the
+    // notification (opt out) rather than just dropping a redundant star.
+    let keys = [
+        format!("game|{}", m.game.slug()),
+        format!("league|{}", m.league),
+        format!("team|{}", m.team_a.name),
+        format!("team|{}", m.team_b.name),
+    ];
     let remove = move |_| {
+        let covered = subscribed.with_untracked(|s| keys.iter().any(|k| s.contains(k)));
         starred.update(|s| {
             s.remove(&id);
         });
+        if covered {
+            excluded.update(|e| {
+                e.insert(id);
+            });
+        }
         #[cfg(feature = "hydrate")]
         {
-            let ids: Vec<i64> = starred.with_untracked(|s| s.iter().copied().collect());
-            persist_and_sync(id, false, ids, vapid.get_untracked());
+            save_starred(&starred.get_untracked().iter().copied().collect::<Vec<_>>());
+            save_excluded(&excluded.get_untracked().iter().copied().collect::<Vec<_>>());
+            sync_match_reminder(id, false, covered, vapid.get_untracked());
         }
         #[cfg(not(feature = "hydrate"))]
         {
-            let _ = vapid;
+            let _ = (covered, vapid);
         }
     };
 
@@ -4272,38 +4340,60 @@ fn MatchRow(m: MatchView, show_bo: bool, push: bool) -> impl IntoView {
 fn StarButton(id: i64, game: Game, league: String, team_a: String, team_b: String) -> impl IntoView {
     let starred = use_context::<RwSignal<HashSet<i64>>>().expect("starred context");
     let subscribed = use_context::<Subscribed>().expect("subscribed context").0;
+    let excluded = use_context::<Excluded>().expect("excluded context").0;
     let vapid = use_context::<RwSignal<Option<String>>>().expect("vapid context");
-    // The ★ lights up if this match is starred individually *or* a higher-level
-    // subscription (the whole game, this event, or either team) already covers
-    // it — so the star reflects everything you'll be notified about.
+    // The scopes that auto-cover this match (its game, this event, or either team).
     let keys = [
         format!("game|{}", game.slug()),
         format!("league|{league}"),
         format!("team|{team_a}"),
         format!("team|{team_b}"),
     ];
+    let keys_click = keys.clone();
+    // The ★ lights up if this match is starred individually *or* a subscription
+    // covers it — unless it's been individually opted out (excluded) of that
+    // coverage. So the star always reflects what you'll actually be notified of.
     let is_on = Memo::new(move |_| {
-        starred.with(|s| s.contains(&id))
-            || subscribed.with(|s| keys.iter().any(|k| s.contains(k)))
+        !excluded.with(|e| e.contains(&id))
+            && (starred.with(|s| s.contains(&id))
+                || subscribed.with(|s| keys.iter().any(|k| s.contains(k))))
     });
 
     let on_click = move |_| {
-        let now_on = starred.get_untracked().contains(&id);
-        starred.update(|s| {
-            if now_on {
-                s.remove(&id);
-            } else {
-                s.insert(id);
+        let covered = subscribed.with_untracked(|s| keys_click.iter().any(|k| s.contains(k)));
+        let want_on = !is_on.get_untracked();
+        if want_on {
+            // Turn it back on: clear any opt-out, and star it unless a scope
+            // already covers it.
+            excluded.update(|e| {
+                e.remove(&id);
+            });
+            if !covered {
+                starred.update(|s| {
+                    s.insert(id);
+                });
             }
-        });
+        } else {
+            // Turn it off: drop an individual star, and — if a subscription still
+            // covers it — opt this one match out without dropping the scope.
+            starred.update(|s| {
+                s.remove(&id);
+            });
+            if covered {
+                excluded.update(|e| {
+                    e.insert(id);
+                });
+            }
+        }
         #[cfg(feature = "hydrate")]
         {
-            let ids: Vec<i64> = starred.get_untracked().iter().copied().collect();
-            persist_and_sync(id, !now_on, ids, vapid.get_untracked());
+            save_starred(&starred.get_untracked().iter().copied().collect::<Vec<_>>());
+            save_excluded(&excluded.get_untracked().iter().copied().collect::<Vec<_>>());
+            sync_match_reminder(id, want_on, covered, vapid.get_untracked());
         }
         #[cfg(not(feature = "hydrate"))]
         {
-            let _ = (now_on, vapid);
+            let _ = (covered, want_on, vapid);
         }
     };
 
@@ -4348,6 +4438,21 @@ fn save_starred(ids: &[i64]) {
 #[cfg(feature = "hydrate")]
 fn load_starred() -> HashSet<i64> {
     load_id_set("starred")
+}
+
+#[cfg(feature = "hydrate")]
+fn save_excluded(ids: &[i64]) {
+    if let Some(win) = web_sys::window() {
+        if let Ok(Some(storage)) = win.local_storage() {
+            let csv = ids.iter().map(i64::to_string).collect::<Vec<_>>().join(",");
+            let _ = storage.set_item("excluded", &csv);
+        }
+    }
+}
+
+#[cfg(feature = "hydrate")]
+fn load_excluded() -> HashSet<i64> {
+    load_id_set("excluded")
 }
 
 /// Persist the set of individually-revealed match ids, so a match the user has
@@ -4440,8 +4545,7 @@ fn load_id_set(key: &str) -> HashSet<i64> {
 /// Persist the starred set and (un)register the reminder on the server. The
 /// server derives the notification details from `match_id`, so we send just that.
 #[cfg(feature = "hydrate")]
-fn persist_and_sync(match_id: i64, starring: bool, ids: Vec<i64>, vapid: Option<String>) {
-    save_starred(&ids);
+fn sync_match_reminder(match_id: i64, want_on: bool, covered: bool, vapid: Option<String>) {
     let Some(vapid) = vapid else { return };
     leptos::task::spawn_local(async move {
         let sub = match pte_subscribe(&vapid).await {
@@ -4455,18 +4559,43 @@ fn persist_and_sync(match_id: i64, starring: bool, ids: Vec<i64>, vapid: Option<
         ) else {
             return;
         };
-        if starring {
-            let req = crate::types::ReminderReq {
-                sub: crate::types::PushSub {
-                    endpoint,
-                    p256dh,
-                    auth,
-                },
+        let push = crate::types::PushSub {
+            endpoint: endpoint.clone(),
+            p256dh,
+            auth,
+        };
+        if want_on {
+            // Arm it (and clear any exclusion tombstone server-side).
+            let _ = crate::server::add_reminder(crate::types::ReminderReq {
+                sub: push,
                 match_id,
-            };
-            let _ = crate::server::add_reminder(req).await;
+            })
+            .await;
+        } else if covered {
+            // Opt this match out of its covering subscription, keeping the scope.
+            let _ = crate::server::exclude_reminder(crate::types::ReminderReq {
+                sub: push,
+                match_id,
+            })
+            .await;
         } else {
+            // Plain un-star: drop the reminder row entirely.
             let _ = crate::server::remove_reminder(endpoint, match_id).await;
+        }
+    });
+}
+
+/// Clear every subscription + pending reminder for this browser's push endpoint.
+#[cfg(feature = "hydrate")]
+fn clear_all_notifications(vapid: Option<String>) {
+    let Some(vapid) = vapid else { return };
+    leptos::task::spawn_local(async move {
+        let sub = match pte_subscribe(&vapid).await {
+            Ok(s) => s,
+            Err(_) => return,
+        };
+        if let Some(endpoint) = reflect_str(&sub, "endpoint") {
+            let _ = crate::server::clear_notifications(endpoint).await;
         }
     });
 }

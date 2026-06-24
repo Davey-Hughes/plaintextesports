@@ -1061,6 +1061,18 @@ a {
 }
 
 // ----- Notifications management page ----------------------------------------
+// Title on the left, "clear all" right-aligned opposite it.
+.notif-title-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.notif-clear {
+  font-size: 12px;
+}
+
 .notif-intro {
   color: var(--muted);
   font-size: 13px;

@@ -354,3 +354,65 @@ pub async fn remove_reminder(endpoint: String, match_id: i64) -> Result<(), Serv
         Ok(())
     }
 }
+
+/// Opt a single match out of a covering game/event/team subscription (a
+/// no-notify tombstone) without unsubscribing from the whole scope.
+#[server(ExcludeReminder, "/api")]
+pub async fn exclude_reminder(req: ReminderReq) -> Result<(), ServerFnError> {
+    #[cfg(feature = "ssr")]
+    {
+        let cfg = crate::config::Config::from_env();
+        if !cfg.push_enabled() || cfg.db_path.is_empty() {
+            return Err(ServerFnError::new("reminders are not available"));
+        }
+        let seed = crate::cache::reminder_seed_for_match(req.match_id, cfg.reminder_lead_ms)
+            .ok_or_else(|| ServerFnError::new("match not found or already started"))?;
+        let conn = crate::store::shared(&cfg.db_path)
+            .map_err(|e| ServerFnError::new(format!("db: {e}")))?;
+        let r = crate::store::Reminder {
+            endpoint: req.sub.endpoint,
+            p256dh: req.sub.p256dh,
+            auth: req.sub.auth,
+            match_id: seed.match_id,
+            notify_at_ms: seed.notify_at_ms,
+            title: seed.title,
+            body: seed.body,
+            url: seed.url,
+            game: seed.game,
+            league: seed.league,
+            team_a: seed.team_a,
+            team_b: seed.team_b,
+        };
+        crate::store::exclude_reminder(&conn, &r)
+            .map_err(|e| ServerFnError::new(format!("db: {e}")))?;
+        Ok(())
+    }
+    #[cfg(not(feature = "ssr"))]
+    {
+        let _ = req;
+        Ok(())
+    }
+}
+
+/// Clear everything this endpoint is signed up for — all subscriptions and
+/// pending reminders. Backs the notifications page's "clear all".
+#[server(ClearNotifications, "/api")]
+pub async fn clear_notifications(endpoint: String) -> Result<(), ServerFnError> {
+    #[cfg(feature = "ssr")]
+    {
+        let cfg = crate::config::Config::from_env();
+        if cfg.db_path.is_empty() {
+            return Ok(());
+        }
+        let conn = crate::store::shared(&cfg.db_path)
+            .map_err(|e| ServerFnError::new(format!("db: {e}")))?;
+        crate::store::clear_endpoint(&conn, &endpoint)
+            .map_err(|e| ServerFnError::new(format!("db: {e}")))?;
+        Ok(())
+    }
+    #[cfg(not(feature = "ssr"))]
+    {
+        let _ = endpoint;
+        Ok(())
+    }
+}

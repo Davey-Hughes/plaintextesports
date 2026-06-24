@@ -86,6 +86,10 @@ pub fn open(path: &str) -> rusqlite::Result<Connection> {
             team_a       TEXT    NOT NULL DEFAULT '',
             team_b       TEXT    NOT NULL DEFAULT '',
             sent         INTEGER NOT NULL DEFAULT 0,
+            -- A tombstone row (excluded=1) opts this match out of a covering
+            -- subscription: expansion's insert-if-absent leaves it, and the
+            -- sender skips it, so the reminder never fires.
+            excluded     INTEGER NOT NULL DEFAULT 0,
             PRIMARY KEY (endpoint, match_id)
         );
         CREATE TABLE IF NOT EXISTS subscriptions (
@@ -108,6 +112,7 @@ pub fn open(path: &str) -> rusqlite::Result<Connection> {
     let _ = conn.execute("ALTER TABLE reminders ADD COLUMN league TEXT NOT NULL DEFAULT ''", []);
     let _ = conn.execute("ALTER TABLE reminders ADD COLUMN team_a TEXT NOT NULL DEFAULT ''", []);
     let _ = conn.execute("ALTER TABLE reminders ADD COLUMN team_b TEXT NOT NULL DEFAULT ''", []);
+    let _ = conn.execute("ALTER TABLE reminders ADD COLUMN excluded INTEGER NOT NULL DEFAULT 0", []);
     Ok(conn)
 }
 
@@ -307,18 +312,34 @@ fn reminder_params(r: &Reminder) -> [&dyn rusqlite::ToSql; 12] {
     ]
 }
 
-/// Add or update a reminder (re-arms `sent`). Used for an explicit star.
+/// Add or update a reminder (re-arms `sent`, and clears any exclusion tombstone).
+/// Used for an explicit star, or to re-include a match opted out of a scope.
 pub fn add_reminder(conn: &Connection, r: &Reminder) -> rusqlite::Result<()> {
     conn.execute(
         &format!(
-            "INSERT INTO reminders ({REMINDER_COLS}, sent)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, 0)
+            "INSERT INTO reminders ({REMINDER_COLS}, sent, excluded)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, 0, 0)
              ON CONFLICT(endpoint, match_id) DO UPDATE SET
                 p256dh=excluded.p256dh, auth=excluded.auth,
                 notify_at_ms=excluded.notify_at_ms, title=excluded.title,
                 body=excluded.body, url=excluded.url, game=excluded.game,
                 league=excluded.league, team_a=excluded.team_a,
-                team_b=excluded.team_b, sent=0"
+                team_b=excluded.team_b, sent=0, excluded=0"
+        ),
+        &reminder_params(r)[..],
+    )?;
+    Ok(())
+}
+
+/// Tombstone a match so a covering subscription won't notify about it: an
+/// `excluded=1` row that expansion's insert-if-absent leaves untouched and the
+/// sender skips. Re-include it by [`add_reminder`] (which clears the flag).
+pub fn exclude_reminder(conn: &Connection, r: &Reminder) -> rusqlite::Result<()> {
+    conn.execute(
+        &format!(
+            "INSERT INTO reminders ({REMINDER_COLS}, sent, excluded)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, 0, 1)
+             ON CONFLICT(endpoint, match_id) DO UPDATE SET excluded=1, sent=0"
         ),
         &reminder_params(r)[..],
     )?;
@@ -351,7 +372,8 @@ pub fn remove_reminder(conn: &Connection, endpoint: &str, match_id: i64) -> rusq
 pub fn due_reminders(conn: &Connection, now_ms: i64) -> rusqlite::Result<Vec<Reminder>> {
     let mut stmt = conn.prepare(
         "SELECT endpoint, p256dh, auth, match_id, notify_at_ms, title, body, url
-         FROM reminders WHERE sent = 0 AND notify_at_ms <= ?1 ORDER BY notify_at_ms",
+         FROM reminders
+         WHERE sent = 0 AND excluded = 0 AND notify_at_ms <= ?1 ORDER BY notify_at_ms",
     )?;
     let rows = stmt.query_map([now_ms], |r| {
         Ok(Reminder {
@@ -473,6 +495,17 @@ pub fn delete_unsent_reminders_by_scope(
     Ok(())
 }
 
+/// Remove everything an endpoint is signed up for — all subscriptions and all
+/// (unsent) reminders, including exclusion tombstones. Backs "clear all".
+pub fn clear_endpoint(conn: &Connection, endpoint: &str) -> rusqlite::Result<()> {
+    conn.execute("DELETE FROM subscriptions WHERE endpoint = ?1", params![endpoint])?;
+    conn.execute(
+        "DELETE FROM reminders WHERE endpoint = ?1 AND sent = 0",
+        params![endpoint],
+    )?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -534,6 +567,64 @@ mod tests {
         assert_eq!(all.len(), 1);
         assert_eq!(all[0].status, MatchStatus::Finished);
         assert_eq!(all[0].team_a.score, Some(2));
+    }
+
+    fn reminder(match_id: i64) -> Reminder {
+        Reminder {
+            endpoint: "https://push.example/x".into(),
+            p256dh: "p".into(),
+            auth: "a".into(),
+            match_id,
+            notify_at_ms: 100,
+            title: "T1 vs GEN".into(),
+            body: "LCK".into(),
+            url: "u".into(),
+            game: "lol".into(),
+            league: "LCK".into(),
+            team_a: "T1".into(),
+            team_b: "Gen.G".into(),
+        }
+    }
+
+    #[test]
+    fn exclusion_tombstone_blocks_a_covered_match() {
+        let conn = open(":memory:").unwrap();
+        let r = reminder(1);
+        // A subscription expansion arms it → it's due.
+        add_reminder_if_absent(&conn, &r).unwrap();
+        assert_eq!(due_reminders(&conn, 1000).unwrap().len(), 1);
+
+        // Opt this one match out → not due, and re-expansion can't re-arm it
+        // (insert-if-absent leaves the tombstone).
+        exclude_reminder(&conn, &r).unwrap();
+        assert_eq!(due_reminders(&conn, 1000).unwrap().len(), 0);
+        add_reminder_if_absent(&conn, &r).unwrap();
+        assert_eq!(due_reminders(&conn, 1000).unwrap().len(), 0);
+
+        // Re-include it (explicit arm) → due again.
+        add_reminder(&conn, &r).unwrap();
+        assert_eq!(due_reminders(&conn, 1000).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn clear_endpoint_removes_subs_and_reminders() {
+        let conn = open(":memory:").unwrap();
+        add_reminder(&conn, &reminder(1)).unwrap();
+        add_subscription(
+            &conn,
+            &Subscription {
+                endpoint: "https://push.example/x".into(),
+                p256dh: "p".into(),
+                auth: "a".into(),
+                scope_kind: "team".into(),
+                scope_value: "T1".into(),
+                lead_ms: 0,
+            },
+        )
+        .unwrap();
+        clear_endpoint(&conn, "https://push.example/x").unwrap();
+        assert_eq!(due_reminders(&conn, 1000).unwrap().len(), 0);
+        assert_eq!(list_subscriptions(&conn).unwrap().len(), 0);
     }
 
     #[test]
