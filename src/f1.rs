@@ -6,7 +6,7 @@
 //! one label is the session name (e.g. "Race"); results live on the event page.
 
 use crate::pandascore::{NormTeam, NormalizedMatch};
-use crate::types::{F1Result, F1ResultRow, Game, MatchStatus};
+use crate::types::{F1Result, F1ResultRow, F1StandingRow, F1Standings, Game, MatchStatus};
 use chrono::{DateTime, Duration, Utc};
 use serde::Deserialize;
 
@@ -368,6 +368,125 @@ pub async fn fetch_results(client: &reqwest::Client, season: i64, round: i64) ->
     out
 }
 
+// ----- Championship standings (for the GP event page) ------------------------
+
+#[derive(Deserialize)]
+struct StandingsResp {
+    #[serde(rename = "MRData")]
+    data: StandingsMr,
+}
+#[derive(Deserialize)]
+struct StandingsMr {
+    #[serde(rename = "StandingsTable")]
+    table: StandingsTable,
+}
+#[derive(Deserialize)]
+struct StandingsTable {
+    #[serde(rename = "StandingsLists", default)]
+    lists: Vec<StandingsList>,
+}
+#[derive(Deserialize, Default)]
+struct StandingsList {
+    #[serde(default)]
+    round: String,
+    #[serde(rename = "DriverStandings", default)]
+    drivers: Vec<RawDriverStanding>,
+    #[serde(rename = "ConstructorStandings", default)]
+    constructors: Vec<RawConstructorStanding>,
+}
+#[derive(Deserialize)]
+struct RawDriverStanding {
+    #[serde(default)]
+    position: String,
+    #[serde(default)]
+    points: String,
+    #[serde(default)]
+    wins: String,
+    #[serde(rename = "Driver")]
+    driver: RawDriver,
+    #[serde(rename = "Constructors", default)]
+    constructors: Vec<RawConstructor>,
+}
+#[derive(Deserialize)]
+struct RawConstructorStanding {
+    #[serde(default)]
+    position: String,
+    #[serde(default)]
+    points: String,
+    #[serde(default)]
+    wins: String,
+    #[serde(rename = "Constructor")]
+    constructor: RawConstructor,
+}
+
+fn driver_standing_rows(rs: &[RawDriverStanding]) -> Vec<F1StandingRow> {
+    rs.iter()
+        .map(|r| F1StandingRow {
+            pos: r.position.clone(),
+            name: driver_name(&r.driver),
+            detail: r.constructors.first().map(|c| c.name.clone()).unwrap_or_default(),
+            points: r.points.clone(),
+            wins: r.wins.clone(),
+        })
+        .collect()
+}
+
+fn constructor_standing_rows(rs: &[RawConstructorStanding]) -> Vec<F1StandingRow> {
+    rs.iter()
+        .map(|r| F1StandingRow {
+            pos: r.position.clone(),
+            name: r.constructor.name.clone(),
+            detail: String::new(),
+            points: r.points.clone(),
+            wins: r.wins.clone(),
+        })
+        .collect()
+}
+
+async fn get_standings_list(client: &reqwest::Client, url: &str) -> Option<StandingsList> {
+    let resp: StandingsResp = client
+        .get(url)
+        .header(reqwest::header::USER_AGENT, USER_AGENT)
+        .send()
+        .await
+        .ok()?
+        .error_for_status()
+        .ok()?
+        .json()
+        .await
+        .ok()?;
+    resp.data.table.lists.into_iter().next()
+}
+
+/// The drivers' and constructors' championship standings as of a Grand Prix's
+/// round. For a finished GP these reflect the round; for an upcoming one (the
+/// round isn't raced yet, so Jolpica returns nothing) they fall back to the
+/// latest completed round — the "going into the weekend" picture. Empty on a
+/// fetch error.
+pub async fn fetch_standings(client: &reqwest::Client, season: i64, round: i64) -> F1Standings {
+    let drv = format!("{BASE}/{season}/{round}/driverStandings.json?limit=40");
+    let con = format!("{BASE}/{season}/{round}/constructorStandings.json?limit=40");
+    let (mut drivers, mut constructors) =
+        tokio::join!(get_standings_list(client, &drv), get_standings_list(client, &con));
+    // An unraced round has no standings yet — use the latest completed instead.
+    if drivers.as_ref().map_or(true, |l| l.drivers.is_empty()) {
+        let drv2 = format!("{BASE}/{season}/driverStandings.json?limit=40");
+        let con2 = format!("{BASE}/{season}/constructorStandings.json?limit=40");
+        let (d2, c2) =
+            tokio::join!(get_standings_list(client, &drv2), get_standings_list(client, &con2));
+        drivers = d2;
+        constructors = c2;
+    }
+    let asof = drivers.as_ref().and_then(|l| l.round.parse().ok()).unwrap_or(round);
+    F1Standings {
+        round: asof,
+        drivers: drivers.map(|l| driver_standing_rows(&l.drivers)).unwrap_or_default(),
+        constructors: constructors
+            .map(|l| constructor_standing_rows(&l.constructors))
+            .unwrap_or_default(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -420,5 +539,34 @@ mod tests {
             resp.data.race_table.races.iter().flat_map(|r| to_matches(r, now)).collect();
         let labels: Vec<&str> = ms.iter().map(|m| m.team_a.label.as_str()).collect();
         assert_eq!(labels, ["Practice 1", "Sprint Qualifying", "Sprint", "Qualifying", "Race"]);
+    }
+
+    #[test]
+    fn parses_driver_and_constructor_standings() {
+        let drv = r#"{"MRData":{"StandingsTable":{"StandingsLists":[{"round":"7",
+          "DriverStandings":[
+            {"position":"1","points":"156","wins":"5","Driver":{"givenName":"Kimi","familyName":"Antonelli"},"Constructors":[{"name":"Mercedes"}]},
+            {"position":"2","points":"115","wins":"1","Driver":{"givenName":"Lewis","familyName":"Hamilton"},"Constructors":[{"name":"Ferrari"}]}
+          ]}]}}}"#;
+        let resp: StandingsResp = serde_json::from_str(drv).unwrap();
+        let list = resp.data.table.lists.into_iter().next().unwrap();
+        assert_eq!(list.round, "7");
+        let rows = driver_standing_rows(&list.drivers);
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].name, "Kimi Antonelli");
+        assert_eq!(rows[0].detail, "Mercedes");
+        assert_eq!(rows[0].points, "156");
+
+        let con = r#"{"MRData":{"StandingsTable":{"StandingsLists":[{"round":"7",
+          "ConstructorStandings":[
+            {"position":"1","points":"245","wins":"4","Constructor":{"name":"Mercedes"}}
+          ]}]}}}"#;
+        let resp: StandingsResp = serde_json::from_str(con).unwrap();
+        let list = resp.data.table.lists.into_iter().next().unwrap();
+        let rows = constructor_standing_rows(&list.constructors);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].name, "Mercedes");
+        assert_eq!(rows[0].detail, "");
+        assert_eq!(rows[0].points, "245");
     }
 }

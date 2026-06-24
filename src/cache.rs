@@ -118,6 +118,19 @@ struct CachedF1Results {
 /// Re-fetch a Grand Prix's results at most this often.
 const F1_RESULTS_TTL_MIN: i64 = 10;
 
+/// On-demand F1 championship standings, keyed by the (season, round) of the GP
+/// whose page asked for them.
+static F1_STANDINGS: Lazy<RwLock<HashMap<(i64, i64), CachedF1Standings>>> =
+    Lazy::new(|| RwLock::new(HashMap::new()));
+
+struct CachedF1Standings {
+    standings: crate::types::F1Standings,
+    fetched_at: DateTime<Utc>,
+}
+
+/// Re-fetch standings at most this often.
+const F1_STANDINGS_TTL_MIN: i64 = 10;
+
 /// The MLB series between the two teams of `match_id`, fetched on demand and
 /// cached with a short TTL. Each game's time is formatted in the display tz
 /// (`tz_name`/`hour24`), so the cache key folds those in. `None` for esports, an
@@ -220,6 +233,25 @@ pub async fn f1_results(season: i64, round: i64) -> Vec<crate::types::F1Result> 
         CachedF1Results { results: results.clone(), fetched_at: Utc::now() },
     );
     results
+}
+
+/// The F1 championship standings as of a Grand Prix's round, fetched on demand
+/// and TTL-cached (keyed by the GP's round so each page caches its own).
+pub async fn f1_standings(season: i64, round: i64) -> crate::types::F1Standings {
+    {
+        let cache = F1_STANDINGS.read().unwrap_or_else(PoisonError::into_inner);
+        if let Some(c) = cache.get(&(season, round)) {
+            if Utc::now() - c.fetched_at < Duration::minutes(F1_STANDINGS_TTL_MIN) {
+                return c.standings.clone();
+            }
+        }
+    }
+    let standings = crate::f1::fetch_standings(&HTTP, season, round).await;
+    F1_STANDINGS.write().unwrap_or_else(PoisonError::into_inner).insert(
+        (season, round),
+        CachedF1Standings { standings: standings.clone(), fetched_at: Utc::now() },
+    );
+    standings
 }
 
 struct CachedEvent {

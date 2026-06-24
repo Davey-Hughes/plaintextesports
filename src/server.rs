@@ -2,7 +2,8 @@
 //! on the client the `#[server]` macro replaces them with a network call.
 
 use crate::types::{
-    EventInfo, F1Result, MatchDetail, MatchView, ReminderReq, ScheduleView, SiteInfo, SubscribeReq,
+    EventInfo, F1Result, F1Standings, MatchDetail, MatchView, ReminderReq, ScheduleView, SiteInfo,
+    SubscribeReq,
 };
 #[cfg(feature = "ssr")]
 use crate::types::Game;
@@ -222,6 +223,21 @@ pub async fn get_f1_results(season: i64, round: i64) -> Result<Vec<F1Result>, Se
     {
         let _ = (season, round);
         Ok(Vec::new())
+    }
+}
+
+/// The F1 drivers'/constructors' championship standings as of a GP's round, for
+/// the F1 event page. Fetched on demand from Jolpica and TTL-cached.
+#[server(GetF1Standings, "/api")]
+pub async fn get_f1_standings(season: i64, round: i64) -> Result<F1Standings, ServerFnError> {
+    #[cfg(feature = "ssr")]
+    {
+        Ok(crate::cache::f1_standings(season, round).await)
+    }
+    #[cfg(not(feature = "ssr"))]
+    {
+        let _ = (season, round);
+        Ok(F1Standings::default())
     }
 }
 

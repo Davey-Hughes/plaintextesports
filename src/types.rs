@@ -499,6 +499,27 @@ pub struct F1ResultRow {
     pub detail: String,
 }
 
+/// The F1 championship standings as of a round, for the GP event page. Both
+/// tables are spoilers — they encode every prior result.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct F1Standings {
+    /// The round these standings are current as of (e.g. 7).
+    pub round: i64,
+    pub drivers: Vec<F1StandingRow>,
+    pub constructors: Vec<F1StandingRow>,
+}
+
+/// One line in an F1 championship table. `detail` carries the driver's
+/// constructor in the drivers' table; it's empty in the constructors' table.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct F1StandingRow {
+    pub pos: String,
+    pub name: String,
+    pub detail: String,
+    pub points: String,
+    pub wins: String,
+}
+
 /// Everything the per-match detail page shows.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MatchDetail {

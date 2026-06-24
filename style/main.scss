@@ -1851,6 +1851,84 @@ a.sw-link {
   white-space: nowrap;
 }
 
+// The "· after Round N" qualifier on the Standings heading — a quiet annotation,
+// not part of the uppercase title.
+.f1-standings-asof {
+  color: var(--muted);
+  font-weight: 400;
+  text-transform: none;
+  letter-spacing: 0;
+  font-size: 12px;
+}
+
+// Drivers + Constructors tables side by side, stacking on narrow screens.
+.f1-standings-tables {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1.4rem 2.5rem;
+  margin-top: 0.7rem;
+}
+
+.f1-standings-table {
+  flex: 1 1 16rem;
+  min-width: 0;
+
+  // The drivers table carries an extra (constructor) column, so let it take more
+  // of the row than the constructors table — keeps the team names from clipping.
+  &:first-child {
+    flex-grow: 1.6;
+  }
+}
+
+.f1-standings-sub {
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+  margin: 0 0 0.4rem;
+}
+
+// Same shared-grid trick as .f1-order: rows are display:contents so the columns
+// line up. Drivers: pos, driver, constructor (flexes), points (right). The
+// constructors table drops the constructor column.
+.f1-standings {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: 1.8em minmax(0, auto) minmax(0, 1fr) max-content;
+  align-items: baseline;
+  gap: 0.25rem 0.6rem;
+  font-size: 13px;
+}
+
+.f1-standings-con {
+  grid-template-columns: 1.8em minmax(0, 1fr) max-content;
+}
+
+.f1-standing-row {
+  display: contents;
+}
+
+.f1-standing-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.f1-standing-con {
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.f1-standing-pts {
+  text-align: right;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
 .standings {
   border-collapse: collapse;
   font-size: 13px;
