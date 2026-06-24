@@ -775,6 +775,12 @@ fn EventPage() -> impl IntoView {
     };
     let hour24 = use_context::<RwSignal<bool>>().expect("hour24 context");
     let tz = use_context::<RwSignal<String>>().expect("tz context");
+    // The earlier/later expanders + sport mode drive the windowed view of a
+    // traditional-sport event (e.g. MLB), which caps its forward horizon the way
+    // the homepage does instead of dumping the whole season.
+    let earlier = use_context::<EarlierDays>().expect("earlier context").0;
+    let later = use_context::<LaterDays>().expect("later context").0;
+    let sport_mode = use_context::<SportMode>().expect("sport mode context").0;
     let schedule = Resource::new(
         move || (league(), tz.get(), hour24.get()),
         |(lg, z, h)| async move { get_event_schedule(lg, z, h).await },
@@ -788,6 +794,16 @@ fn EventPage() -> impl IntoView {
     });
     setup_autorefresh(schedule);
     let push = use_context::<RwSignal<Option<String>>>().is_some_and(|v| v.get().is_some());
+
+    // Keep the global sport mode in sync with the event being viewed, so the
+    // header toggle, footer, and the windowing controls agree with the data
+    // (you reach an MLB event from MLB mode, but a direct link should match too).
+    // Client-only (Effects don't run on SSR), and it never persists the choice.
+    Effect::new(move |_| {
+        if let Some(Ok(s)) = schedule.get() {
+            sport_mode.set(schedule_is_traditional(&s));
+        }
+    });
 
     // Render the whole page from inside one Suspense (awaiting both resources),
     // mirroring the match-detail page — so nothing reactive sits at the
@@ -806,7 +822,7 @@ fn EventPage() -> impl IntoView {
                 let stage_list = stages.get().and_then(Result::ok).unwrap_or_default();
                 let lg_name = league();
                 match sched {
-                    Some(Ok(s)) => {
+                    Some(Ok(mut s)) => {
                         // The route segment is already the full edition name.
                         let title = lg_name.clone();
                         // The event's external (Liquipedia/official) link, pulled
@@ -862,13 +878,29 @@ fn EventPage() -> impl IntoView {
                         // A dotted rule between the schedule and the brackets below.
                         let sep = (!stage_list.is_empty())
                             .then(|| view! { <hr class="section-sep" /> });
+                        // Traditional sports (MLB) cap their forward horizon like
+                        // the homepage: window the days to [today - earlier,
+                        // today + later-extended] and show the earlier/later
+                        // expanders. Reading earlier/later here re-windows when
+                        // they change. Esports events show their full history.
+                        let windowed = schedule_is_traditional(&s);
+                        if windowed {
+                            let (lo, hi) =
+                                trad_day_bounds(&s.today_key, earlier.get(), later.get());
+                            s.days.retain(|d| {
+                                d.day_key.as_str() >= lo.as_str()
+                                    && d.day_key.as_str() <= hi.as_str()
+                            });
+                        }
                         view! {
                             <article class="detail">
                                 <A href="/">"← schedule"</A>
                                 <h1 class="detail-title">{title}</h1>
                                 {link}
                                 {nav}
-                                <div id="sched" class="spy">{render_schedule(s, false, push, true)}</div>
+                                <div id="sched" class="spy">
+                                    {render_schedule(s, false, push, true, windowed)}
+                                </div>
                                 {sep}
                                 <EventStages stages=stage_list times=times />
                             </article>
@@ -2669,6 +2701,42 @@ fn iso_from_today(offset_days: i64) -> String {
     )
 }
 
+/// Add `delta` days to an ISO `YYYY-MM-DD` date, returning ISO. Pure (no JS) so
+/// it's deterministic on both SSR and hydrate — used to window an event's days
+/// relative to the server-provided `today_key`, which needs no browser clock.
+fn iso_add_days(iso: &str, delta: i64) -> String {
+    let mut it = iso.split('-');
+    let y: i64 = it.next().and_then(|s| s.parse().ok()).unwrap_or(1970);
+    let m: i64 = it.next().and_then(|s| s.parse().ok()).unwrap_or(1);
+    let d: i64 = it.next().and_then(|s| s.parse().ok()).unwrap_or(1);
+    let (ny, nm, nd) = civil_from_days(days_from_civil(y, m, d) + delta);
+    format!("{ny:04}-{nm:02}-{nd:02}")
+}
+
+/// Days since 1970-01-01 for a proleptic-Gregorian date (Howard Hinnant's algo).
+fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
+    let y = if m <= 2 { y - 1 } else { y };
+    let era = if y >= 0 { y } else { y - 399 } / 400;
+    let yoe = y - era * 400; // [0, 399]
+    let doy = (153 * (if m > 2 { m - 3 } else { m + 9 }) + 2) / 5 + d - 1; // [0, 365]
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy; // [0, 146096]
+    era * 146097 + doe - 719468
+}
+
+/// Inverse of [`days_from_civil`]: `(year, month, day)` for a days-since-epoch.
+fn civil_from_days(z: i64) -> (i64, i64, i64) {
+    let z = z + 719468;
+    let era = if z >= 0 { z } else { z - 146096 } / 146097;
+    let doe = z - era * 146097; // [0, 146096]
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365; // [0, 399]
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100); // [0, 365]
+    let mp = (5 * doy + 2) / 153; // [0, 11]
+    let d = doy - (153 * mp + 2) / 5 + 1; // [1, 31]
+    let m = if mp < 10 { mp + 3 } else { mp - 9 }; // [1, 12]
+    (if m <= 2 { y + 1 } else { y }, m, d)
+}
+
 #[cfg(feature = "hydrate")]
 fn save_range(range: Option<(String, String)>) {
     if let Some(win) = web_sys::window() {
@@ -2861,6 +2929,31 @@ fn trad_window(earlier: i64, later: i64) -> (String, String) {
     }
 }
 
+/// Forward horizon (in days) of the traditional-sports window for a given
+/// "later" expansion: `TRAD_FORWARD_DAYS` by default, growing to `TRAD_FORWARD_MAX`.
+fn trad_forward(later: i64) -> i64 {
+    (crate::types::TRAD_FORWARD_DAYS + later).min(crate::types::TRAD_FORWARD_MAX)
+}
+
+/// Inclusive `[start, end]` ISO day-keys of the traditional window relative to
+/// `today` (an ISO day-key): `earlier` days back through `trad_forward(later)`
+/// days forward. Pure (built on [`iso_add_days`]) so it's identical on SSR and
+/// hydrate — the event page filters its days by this without a browser clock.
+fn trad_day_bounds(today: &str, earlier: i64, later: i64) -> (String, String) {
+    (iso_add_days(today, -earlier), iso_add_days(today, trad_forward(later)))
+}
+
+/// Whether a loaded schedule is a traditional sport (any match is, e.g. MLB) —
+/// data-driven so it's the same on SSR and hydrate (unlike the `SportMode`
+/// toggle, which only settles after hydration).
+fn schedule_is_traditional(s: &ScheduleView) -> bool {
+    s.days
+        .iter()
+        .flat_map(|d| &d.leagues)
+        .flat_map(|lg| &lg.matches)
+        .any(|m| m.game.traditional())
+}
+
 /// Bottom-of-schedule control for traditional sports: a "show later days ›"
 /// expander that reveals more future days, hidden once the forward window hits
 /// `TRAD_FORWARD_MAX`. Renders nothing in esports mode.
@@ -2982,6 +3075,10 @@ fn today_ymd() -> (i32, u32, u32) {
 fn CalendarPicker() -> impl IntoView {
     let range = use_context::<DateRange>().expect("range context").0;
     let earlier = use_context::<EarlierDays>().expect("earlier context").0;
+    // The forward expansion + sport mode let the calendar mirror the traditional
+    // window: "show later days" visibly extends the highlighted span forward.
+    let later = use_context::<LaterDays>().expect("later context").0;
+    let sport_mode = use_context::<SportMode>().expect("sport mode context").0;
     let open = RwSignal::new(false);
     let ym = RwSignal::new((2026i32, 6u32)); // (year, month 1-12); set to today on mount
     let sel_start = RwSignal::new(None::<String>);
@@ -3057,19 +3154,26 @@ fn CalendarPicker() -> impl IntoView {
         let (y, m) = ym.get();
         let start = sel_start.get();
         let end = sel_end.get();
-        // With no explicit selection, mirror the "‹ show earlier days" expansion:
-        // highlight the revealed lookback span [today - earlier, today].
-        let earlier_span: Option<(String, String)> = {
+        // With no explicit selection, mirror the active schedule window: the
+        // "‹ show earlier days" lookback, plus (for traditional sports) the
+        // capped forward span that "show later days ›" extends — so the calendar
+        // tracks what the schedule is showing.
+        let window_span: Option<(String, String)> = {
             #[cfg(feature = "hydrate")]
             {
-                match (start.is_none() && end.is_none()).then(|| earlier.get()) {
-                    Some(n) if n > 0 => Some((iso_from_today(-n), iso_from_today(0))),
-                    _ => None,
+                if start.is_some() || end.is_some() {
+                    None
+                } else if sport_mode.get() {
+                    Some((iso_from_today(-earlier.get()), iso_from_today(trad_forward(later.get()))))
+                } else if earlier.get() > 0 {
+                    Some((iso_from_today(-earlier.get()), iso_from_today(0)))
+                } else {
+                    None
                 }
             }
             #[cfg(not(feature = "hydrate"))]
             {
-                let _ = earlier;
+                let _ = (earlier, later, sport_mode);
                 None
             }
         };
@@ -3082,7 +3186,7 @@ fn CalendarPicker() -> impl IntoView {
             let in_range = match (&start, &end) {
                 (Some(s), Some(e)) => iso.as_str() >= s.as_str() && iso.as_str() <= e.as_str(),
                 (Some(s), None) => iso.as_str() == s.as_str(),
-                _ => earlier_span
+                _ => window_span
                     .as_ref()
                     .is_some_and(|(s, e)| iso.as_str() >= s.as_str() && iso.as_str() <= e.as_str()),
             };
@@ -3312,7 +3416,7 @@ fn ScheduleSection(
                             view! {
                                 {(!trad)
                                     .then(|| view! { <LeagueChips leagues=available selected=leagues /> })}
-                                {render_schedule(filtered, show_nav, push, false)}
+                                {render_schedule(filtered, show_nav, push, false, false)}
                             }
                                 .into_any()
                         }
@@ -3497,7 +3601,13 @@ fn UpNextBar(day: DayGroup) -> impl IntoView {
     }
 }
 
-fn render_schedule(s: ScheduleView, show_nav: bool, push: bool, event_mode: bool) -> impl IntoView {
+fn render_schedule(
+    s: ScheduleView,
+    show_nav: bool,
+    push: bool,
+    event_mode: bool,
+    windowed: bool,
+) -> impl IntoView {
     let ScheduleView {
         days,
         today_key,
@@ -3513,9 +3623,11 @@ fn render_schedule(s: ScheduleView, show_nav: bool, push: bool, event_mode: bool
     let today_key = StoredValue::new(today_key);
 
     let empty = days.iter().all(|d| d.leagues.is_empty());
-    // The "‹ show earlier days" control rides the first day's title line (homepage
-    // only; the single-day view has prev/next nav, the event page its own list).
-    let show_earlier = !show_nav && !event_mode;
+    // The "‹ show earlier days" / "show later days ›" controls ride the schedule
+    // on the homepage (no nav, not an event) and on a windowed event page (a
+    // traditional sport, which caps its forward horizon like the homepage). The
+    // single-day view has prev/next nav instead.
+    let show_earlier = (!show_nav && !event_mode) || windowed;
     let has_days = !days.is_empty();
 
     let nav = show_nav.then(|| {
@@ -4098,6 +4210,34 @@ mod tests {
         assert_eq!(days_in_month(2026, 2), 28);
         assert_eq!(days_in_month(2024, 2), 29);
         assert_eq!(month_name(6), "June");
+    }
+
+    #[test]
+    fn iso_add_days_handles_boundaries() {
+        assert_eq!(iso_add_days("2026-06-24", 2), "2026-06-26");
+        assert_eq!(iso_add_days("2026-06-24", 0), "2026-06-24");
+        // Month and year rollovers, forward and back.
+        assert_eq!(iso_add_days("2026-06-30", 2), "2026-07-02");
+        assert_eq!(iso_add_days("2026-06-01", -1), "2026-05-31");
+        assert_eq!(iso_add_days("2026-12-31", 1), "2027-01-01");
+        assert_eq!(iso_add_days("2027-01-01", -1), "2026-12-31");
+        // Leap day.
+        assert_eq!(iso_add_days("2024-02-28", 1), "2024-02-29");
+        assert_eq!(iso_add_days("2024-03-01", -1), "2024-02-29");
+    }
+
+    #[test]
+    fn trad_bounds_default_and_expanded() {
+        // Default (earlier=0, later=0): today through today + TRAD_FORWARD_DAYS.
+        assert_eq!(
+            trad_day_bounds("2026-06-24", 0, 0),
+            ("2026-06-24".into(), "2026-06-26".into())
+        );
+        // "show later days" extends the forward end, capped at TRAD_FORWARD_MAX.
+        assert_eq!(trad_day_bounds("2026-06-24", 0, 4).1, "2026-06-30"); // +6
+        assert_eq!(trad_day_bounds("2026-06-24", 0, 100).1, "2026-07-01"); // capped +7
+        // "show earlier days" pushes the start back.
+        assert_eq!(trad_day_bounds("2026-06-24", 3, 0).0, "2026-06-21");
     }
 
     #[test]
