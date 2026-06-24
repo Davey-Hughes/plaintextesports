@@ -1906,6 +1906,8 @@ fn StandingsTable(rows: Vec<StandingRow>, tournament_id: i64, game: Game) -> imp
         Game::Lol => "Games",
         Game::Cs2 => "Maps",
         Game::Mlb => "GB",
+        // F1 has no standings table (it uses a results rendering instead).
+        Game::F1 => "",
     };
     let mlb = matches!(game, Game::Mlb);
     // Click the "Standings" title to reveal/hide the table.

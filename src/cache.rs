@@ -325,15 +325,24 @@ pub fn spawn_poller() {
             // Keep about a week of past MLB days so "show earlier days" has
             // something to reveal; the display still defaults to today onward.
             let mlb_window = ((now - Duration::days(8)).date_naive(), window_end.date_naive());
-            let (cs_res, lol_res, mlb_raw, mlb_standings_raw) = tokio::join!(
+            // F1 comes from its own keyless API (Jolpica); the whole season's
+            // sessions are fetched and the snapshot windowing decides what shows.
+            let (cs_res, lol_res, mlb_raw, mlb_standings_raw, f1_raw) = tokio::join!(
                 fetch_game(&client, &token, Game::Cs2, window_end, deep),
                 fetch_game(&client, &token, Game::Lol, window_end, deep),
                 crate::mlb::fetch_schedule(&client, mlb_window.0, mlb_window.1),
                 crate::mlb::fetch_standings(&client, now.year()),
+                crate::f1::fetch_schedule(&client, now.year()),
             );
             let mlb_res: FetchResult = mlb_raw.map_err(Into::into);
+            let f1_res: FetchResult = f1_raw.map_err(Into::into);
             apply_poll(
-                vec![(Game::Cs2, cs_res), (Game::Lol, lol_res), (Game::Mlb, mlb_res)],
+                vec![
+                    (Game::Cs2, cs_res),
+                    (Game::Lol, lol_res),
+                    (Game::Mlb, mlb_res),
+                    (Game::F1, f1_res),
+                ],
                 store.as_mut(),
                 cfg.archive_cutoff(now).timestamp_millis(),
             );
@@ -920,7 +929,8 @@ fn event_link(game: Game, league: &str, official: Option<&str>) -> String {
     let wiki = match game {
         Game::Cs2 => "counterstrike",
         Game::Lol => "leagueoflegends",
-        Game::Mlb => "counterstrike", // MLB has no Liquipedia link; unused
+        // Traditional sports have no Liquipedia link; unused.
+        Game::Mlb | Game::F1 => "counterstrike",
     };
     format!(
         "https://liquipedia.net/{wiki}/index.php?search={}",
@@ -995,7 +1005,8 @@ fn group_days(views: Vec<MatchView>, tz: &Tz) -> Vec<DayGroup> {
             Some(Game::Cs2) => 0u8,
             Some(Game::Lol) => 1,
             Some(Game::Mlb) => 2,
-            None => 3,
+            Some(Game::F1) => 3,
+            None => 4,
         });
     }
     days
