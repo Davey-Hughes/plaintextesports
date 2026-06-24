@@ -590,8 +590,14 @@ fn EventStageCombo(
     };
     view! {
         <div class="event-extra" id=format!("stage-{tournament_id}")>
-            <div class="stage-bar">{label} {tabs}</div>
-            <div class="swiss-views">{grid_view} {list_view}</div>
+            <div class="stage-bar">{label}</div>
+            // The grid/list toggle sits at the top-right of the views, on the
+            // "Bracket"/"Standings" title row (just above its underline).
+            <div class="swiss-views">
+                {tabs}
+                {grid_view}
+                {list_view}
+            </div>
             <Bracket rounds=rounds tournament_id bracket_only times=times.get_value() />
         </div>
     }
@@ -1749,13 +1755,24 @@ fn Bracket(
 
     // Position every match from the feeder graph; the render places boxes
     // absolutely at these slots and draws an SVG connector per edge. Slot units →
-    // em: `HEAD_EM` reserves top room for the section label + round title.
+    // em: a round title (name over date) sits above each section's first box,
+    // with a section banner above that for double-elim. `head_em` is the box
+    // centre offset that reserves room for all of it above slot 0.
     let layout = bracket::layout(&rounds);
-    const HEAD_EM: f64 = 6.0;
-    const TITLE_EM: f64 = 2.6;
-    const LABEL_EM: f64 = 1.6;
+    const TITLE_EM: f64 = 2.8; // round name + date (two lines)
+    const TITLE_GAP: f64 = 0.5; // below the date, above the box
+    const LABEL_EM: f64 = 1.5; // section banner
+    const LABEL_GAP: f64 = 0.5; // below the banner, above the title
+    const TOP_PAD: f64 = 0.3; // above the topmost banner/title
     let half_h = bracket::BOX_H_EM / 2.0;
-    let center_em = move |y: f64| y * bracket::ROW_EM + HEAD_EM;
+    let multi =
+        layout.group_rows.len() > 1 || layout.group_rows.first().is_some_and(|(s, _, _)| !s.is_empty());
+    let head_em = TOP_PAD
+        + half_h
+        + TITLE_GAP
+        + TITLE_EM
+        + if multi { LABEL_GAP + LABEL_EM } else { 0.0 };
+    let center_em = move |y: f64| y * bracket::ROW_EM + head_em;
 
     // Build the reveal grid (keys/max/feeders, for stage computation + clicks)
     // and the parallel render data, once. `winners` holds each match's advancing
@@ -1832,7 +1849,7 @@ fn Bracket(
                 .iter()
                 .find(|(s, _, _)| s == &section)
                 .map_or(0.0, |(_, lo, _)| *lo);
-            let title_top = center_em(sec_ymin) - half_h - TITLE_EM;
+            let title_top = center_em(sec_ymin) - half_h - TITLE_GAP - TITLE_EM;
             let round_on = move || eff.with(|e| e.get(r).is_some_and(|row| row.iter().any(|&s| s >= 1)));
             // The round's date span, from its matches' schedule days.
             let round_date = {
@@ -2108,10 +2125,9 @@ fn Bracket(
         })
         .collect_view();
 
-    // Section labels for double-elim (Winner's / Loser's / Grand Final).
-    let multi = group_rows.len() > 1 || group_rows.first().is_some_and(|(s, _, _)| !s.is_empty());
-    // Stop the banner at the winner's/loser's-bracket edge so its underline never
-    // reaches the grand-final rail to its right.
+    // Section banners for double-elim (Winner's / Loser's Bracket); stop each at
+    // the winner's/loser's-bracket edge so its underline never reaches the
+    // grand-final rail to its right.
     let banner_w = bracket::banner_width_em(layout.bracket_cols);
     let labels = multi.then(|| {
         group_rows
@@ -2124,7 +2140,7 @@ fn Bracket(
                     "lower" => "Loser's Bracket",
                     _ => return None,
                 };
-                let top = center_em(*lo) - half_h - TITLE_EM - LABEL_EM;
+                let top = center_em(*lo) - half_h - TITLE_GAP - TITLE_EM - LABEL_GAP - LABEL_EM;
                 Some(view! {
                     <div class="bk-group-label" style=format!("top:{top}em;width:{banner_w:.2}em")>
                         {label}

@@ -1104,7 +1104,17 @@ a {
 // The bracket and the list are stacked in one grid cell so the taller of the
 // two fixes the height — toggling between them never changes the page height.
 .swiss-views {
+  position: relative;
   display: grid;
+}
+
+// The grid/list toggle overlays the top-right of the views, aligned with the
+// section title's row so it sits just above that row's underline.
+.swiss-views > .swiss-tabs {
+  position: absolute;
+  top: 0;
+  right: 0;
+  z-index: 1;
 }
 
 .swiss-view {
@@ -1462,7 +1472,7 @@ a.sw-link {
   position: relative;
   font-size: 12px;
   --bk-box-w: 7.6em;
-  --bk-box-h: 3.3em;
+  --bk-box-h: 3.8em;
 }
 
 // The connector overlay sits behind the boxes and never intercepts clicks; the

@@ -19,12 +19,13 @@ use std::collections::HashSet;
 
 /// Column-to-column distance, in `em` of the bracket's font.
 pub const COL_EM: f64 = 9.5;
-/// Slot-to-slot (box pitch) distance, in `em`.
-pub const ROW_EM: f64 = 4.6;
+/// Slot-to-slot (box pitch) distance, in `em` (box height + a connector gutter).
+pub const ROW_EM: f64 = 5.0;
 /// Box width, in `em` (leaves a gutter to the next column for the connector).
 pub const BOX_W_EM: f64 = 7.6;
-/// Box height, in `em` (two rows; fixed so a slot maps to a known centre).
-pub const BOX_H_EM: f64 = 3.3;
+/// Box height, in `em` (two rows; fixed so a slot maps to a known centre). Sized
+/// to match the Swiss-stage boxes (`.sw-match`).
+pub const BOX_H_EM: f64 = 3.8;
 
 /// Blank slots inserted between the stacked sections of a double-elim bracket —
 /// room for the lower bracket's banner + the grand final, which sits in the gap.
