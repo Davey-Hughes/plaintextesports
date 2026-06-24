@@ -266,6 +266,11 @@ a {
   margin: 0.8rem 0 0.4rem;
 }
 
+// In traditional-sports (MLB) mode the CS2/LoL game tabs don't apply.
+.tabs.tabs-off {
+  display: none;
+}
+
 // The game tabs sit on the left; the "clear" sits right-aligned opposite them.
 .tabs-list {
   display: flex;

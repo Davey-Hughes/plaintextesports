@@ -14,6 +14,8 @@ pub mod config;
 #[cfg(feature = "ssr")]
 pub mod liquipedia;
 #[cfg(feature = "ssr")]
+pub mod mlb;
+#[cfg(feature = "ssr")]
 pub mod pandascore;
 #[cfg(feature = "ssr")]
 pub mod push;
