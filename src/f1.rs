@@ -380,6 +380,27 @@ fn constructor_logo(constructor_id: &str) -> String {
         "https://media.formula1.com/image/upload/c_lfill,w_64/q_auto/common/f1/2026/{slug}/2026{slug}logowhite.webp"
     )
 }
+
+/// A constructor's short code by Ergast `constructorId` (e.g. "FER"), shown in the
+/// tables where the full name won't fit. Empty when unmapped.
+fn constructor_abbrev(constructor_id: &str) -> String {
+    match constructor_id {
+        "red_bull" => "RBR",
+        "rb" | "racing_bulls" => "RB",
+        "sauber" | "audi" => "AUD",
+        "cadillac" => "CAD",
+        "aston_martin" => "AMR",
+        "mercedes" => "MER",
+        "ferrari" => "FER",
+        "mclaren" => "MCL",
+        "alpine" => "ALP",
+        "williams" => "WIL",
+        "haas" => "HAA",
+        _ => "",
+    }
+    .to_string()
+}
+
 #[derive(Deserialize, Default)]
 struct RawTime {
     #[serde(default)]
@@ -434,6 +455,7 @@ fn race_rows(rs: &[RawResult]) -> Vec<F1ResultRow> {
                 .unwrap_or_else(|| r.status.clone()),
             flag: nationality_flag(&r.driver.nationality),
             constructor_logo: constructor_logo(&r.constructor.constructor_id),
+            constructor_abbrev: constructor_abbrev(&r.constructor.constructor_id),
         })
         .collect()
 }
@@ -453,6 +475,7 @@ fn quali_rows(rs: &[RawQuali]) -> Vec<F1ResultRow> {
                 .unwrap_or_default(),
             flag: nationality_flag(&q.driver.nationality),
             constructor_logo: constructor_logo(&q.constructor.constructor_id),
+            constructor_abbrev: constructor_abbrev(&q.constructor.constructor_id),
         })
         .collect()
 }
@@ -587,6 +610,7 @@ fn driver_standing_rows(rs: &[RawDriverStanding]) -> Vec<F1StandingRow> {
                 wins: r.wins.clone(),
                 flag: nationality_flag(&r.driver.nationality),
                 constructor_logo: team.map(|c| constructor_logo(&c.constructor_id)).unwrap_or_default(),
+                constructor_abbrev: team.map(|c| constructor_abbrev(&c.constructor_id)).unwrap_or_default(),
             }
         })
         .collect()
@@ -602,6 +626,7 @@ fn constructor_standing_rows(rs: &[RawConstructorStanding]) -> Vec<F1StandingRow
             wins: r.wins.clone(),
             flag: String::new(),
             constructor_logo: constructor_logo(&r.constructor.constructor_id),
+            constructor_abbrev: constructor_abbrev(&r.constructor.constructor_id),
         })
         .collect()
 }
