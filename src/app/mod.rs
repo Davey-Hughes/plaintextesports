@@ -3478,11 +3478,10 @@ fn ScheduleSection(
     show_nav: bool,
 ) -> impl IntoView {
     let traditional = use_context::<SportMode>().expect("sport mode context").0;
-    // In traditional mode, the league whose standings to show beneath the schedule
-    // — but only when the current filters narrow the view to exactly one league
-    // (its tab, or a single soccer chip), mirroring the esports single-event
-    // bracket. Empty when ambiguous (several leagues) or in esports mode.
-    let trad_standings_league = Memo::new(move |_| {
+    // In traditional mode, the single league the filters narrow the view to (its
+    // tab, or a single soccer chip), mirroring the esports single-event bracket.
+    // Empty when ambiguous (several leagues) or in esports mode.
+    let single_league = Memo::new(move |_| {
         if !traditional.get() {
             return String::new();
         }
@@ -3501,6 +3500,36 @@ fn ScheduleSection(
             _ => String::new(),
         }
     });
+    // The team sports show their division/group tables; F1 has no such tables —
+    // it gets the championship standings instead (handled below), so it's excluded
+    // here.
+    let trad_standings_league = Memo::new(move |_| {
+        let l = single_league.get();
+        if l == "F1" {
+            String::new()
+        } else {
+            l
+        }
+    });
+    // When narrowed to F1, the season (from any F1 session id) for its current
+    // championship standings; `None` otherwise.
+    let f1_home_season = Memo::new(move |_| {
+        if single_league.get() != "F1" {
+            return None;
+        }
+        resource.get().and_then(Result::ok).and_then(|s| f1_season_round(&s)).map(|(season, _)| season)
+    });
+    // Round 0 has no standings, so `fetch_standings` falls back to the latest
+    // completed round — i.e. the current championship picture.
+    let f1_home_standings = Resource::new(
+        move || f1_home_season.get(),
+        |season| async move {
+            match season {
+                Some(season) => get_f1_standings(season, 0).await.unwrap_or_default(),
+                None => F1Standings::default(),
+            }
+        },
+    );
     view! {
         // Transition (not Suspense) so re-keying the resource — e.g. "show
         // earlier days" extends the range — keeps the current schedule on screen
@@ -3562,6 +3591,18 @@ fn ScheduleSection(
         {move || (!traditional.get()).then(|| view! { <EventSection leagues=leagues /> })}
         // Likewise, a single traditional league shows its division/group tables.
         <TraditionalStandings league=trad_standings_league />
+        // F1 has no league table — when narrowed to it, show the current
+        // drivers' + constructors' championship standings instead.
+        <Suspense>
+            {move || {
+                let season = f1_home_season.get()?;
+                let s = f1_home_standings.get()?;
+                (!s.drivers.is_empty() || !s.constructors.is_empty()).then(|| {
+                    let round = s.round;
+                    view! { <F1StandingsView standings=s season=season round=round /> }
+                })
+            }}
+        </Suspense>
     }
 }
 
