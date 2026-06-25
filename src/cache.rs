@@ -1371,6 +1371,9 @@ pub struct ReminderSeed {
     /// up by team on unsubscribe (mirrors the game/league cleanup columns).
     pub team_a: String,
     pub team_b: String,
+    /// Full event name (league + edition), so an event subscription's reminders
+    /// can be cleaned up by event on unsubscribe.
+    pub event: String,
     pub notify_at_ms: i64,
     pub title: String,
     pub body: String,
@@ -1388,6 +1391,7 @@ fn reminder_seed(m: &NormalizedMatch, lead_ms: i64, tz: &Tz) -> ReminderSeed {
         league: m.league.clone(),
         team_a: m.team_a.name.clone(),
         team_b: m.team_b.name.clone(),
+        event: full_event_name(&m.league, &m.serie_name),
         notify_at_ms: m.begin_at.timestamp_millis() - lead_ms,
         // Traditional sports read "away at home"; esports "vs".
         title: format!(
@@ -1402,8 +1406,9 @@ fn reminder_seed(m: &NormalizedMatch, lead_ms: i64, tz: &Tz) -> ReminderSeed {
 }
 
 /// Upcoming matches matching a subscription scope, as reminder seeds. `kind` is
-/// "game" (value = "cs2"/"lol"), "league" (value = league name), or "team"
-/// (value = full team name, matched against either side).
+/// "game" (value = "cs2"/"lol"), "league" (value = league name), "team" (value =
+/// full team name, matched against either side), or "event" (value = the full
+/// event name, e.g. an F1 Grand Prix).
 #[must_use]
 pub fn scope_reminder_seeds(kind: &str, value: &str, lead_ms: i64) -> Vec<ReminderSeed> {
     let cfg = config();
@@ -1416,6 +1421,7 @@ pub fn scope_reminder_seeds(kind: &str, value: &str, lead_ms: i64) -> Vec<Remind
             "game" => m.game.slug() == value,
             "league" => m.league == value,
             "team" => m.team_a.name == value || m.team_b.name == value,
+            "event" => event_name_eq(&m.league, &m.serie_name, value),
             _ => false,
         })
         .map(|m| reminder_seed(m, lead_ms, &cfg.tz))

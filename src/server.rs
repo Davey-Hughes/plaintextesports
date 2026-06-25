@@ -304,6 +304,7 @@ pub async fn add_reminder(req: ReminderReq) -> Result<(), ServerFnError> {
             league: seed.league,
             team_a: seed.team_a,
             team_b: seed.team_b,
+            event: seed.event,
         };
         crate::store::add_reminder(&conn, &r).map_err(|e| ServerFnError::new(format!("db: {e}")))?;
         Ok(())
@@ -422,6 +423,7 @@ pub async fn exclude_reminder(req: ReminderReq) -> Result<(), ServerFnError> {
             league: seed.league,
             team_a: seed.team_a,
             team_b: seed.team_b,
+            event: seed.event,
         };
         crate::store::exclude_reminder(&conn, &r)
             .map_err(|e| ServerFnError::new(format!("db: {e}")))?;

@@ -1110,10 +1110,24 @@ fn EventPage() -> impl IntoView {
                             .is_some_and(|v| v.get().is_some());
                         // (season, round) for an F1 GP — keys its results' reveal.
                         let f1_sr = f1_season_round(&s);
+                        // An F1 Grand Prix gets a ★ to subscribe to the whole
+                        // event (all its sessions). Other event pages keep the
+                        // bare title — their schedule already carries league ★s.
+                        let title_head = if f1_sr.is_some() {
+                            view! {
+                                <div class="event-title-head">
+                                    <SubscribeStar kind="event" value=title.clone() />
+                                    <h1 class="detail-title">{title.clone()}</h1>
+                                </div>
+                            }
+                            .into_any()
+                        } else {
+                            view! { <h1 class="detail-title">{title.clone()}</h1> }.into_any()
+                        };
                         view! {
                             <article class="detail">
                                 <A href="/">"← schedule"</A>
-                                <h1 class="detail-title">{title}</h1>
+                                {title_head}
                                 {link}
                                 {nav}
                                 <div id="sched" class="spy">
@@ -3477,6 +3491,7 @@ fn StarredRow(m: MatchView) -> impl IntoView {
         format!("league|{}", m.league),
         format!("team|{}", m.team_a.name),
         format!("team|{}", m.team_b.name),
+        format!("event|{}", full_event_name(&m.league, &m.serie_name)),
     ];
     let remove = move |_| {
         let covered = subscribed.with_untracked(|s| keys.iter().any(|k| s.contains(k)));
