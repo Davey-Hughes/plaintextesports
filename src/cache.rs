@@ -474,7 +474,7 @@ pub fn spawn_poller() {
             let espn_window = mlb_window;
             // F1 comes from its own keyless API (Jolpica); the whole season's
             // sessions are fetched and the snapshot windowing decides what shows.
-            use crate::espn::{EPL, NBA, NFL, WORLD_CUP};
+            use crate::espn::{european_season, season_year, EPL, NBA, NFL, WORLD_CUP};
             let (
                 cs_res,
                 lol_res,
@@ -499,19 +499,15 @@ pub fn spawn_poller() {
                 crate::nhl::fetch_schedule(&client, nhl_window.0, nhl_window.1),
                 crate::nhl::fetch_standings(&client),
                 crate::espn::fetch_schedule(&client, &NBA, espn_window.0, espn_window.1),
-                crate::espn::fetch_standings(&client, &NBA, Some(crate::espn::season_year(Game::Nba, now))),
+                crate::espn::fetch_standings(&client, &NBA, Some(season_year(Game::Nba, now))),
                 crate::espn::fetch_schedule(&client, &NFL, espn_window.0, espn_window.1),
-                crate::espn::fetch_standings(&client, &NFL, Some(crate::espn::season_year(Game::Nfl, now))),
+                crate::espn::fetch_standings(&client, &NFL, Some(season_year(Game::Nfl, now))),
                 crate::espn::fetch_schedule(&client, &EPL, espn_window.0, espn_window.1),
-                crate::espn::fetch_standings(&client, &EPL, Some(crate::espn::european_season(now))),
+                crate::espn::fetch_standings(&client, &EPL, Some(european_season(now))),
                 crate::espn::fetch_schedule(&client, &WORLD_CUP, espn_window.0, espn_window.1),
                 crate::espn::fetch_standings(&client, &WORLD_CUP, None),
                 crate::f1::fetch_schedule(&client, now.year()),
             );
-            let mlb_res: FetchResult = mlb_raw.map_err(Into::into);
-            let nhl_res: FetchResult = nhl_raw.map_err(Into::into);
-            let nba_res: FetchResult = nba_raw.map_err(Into::into);
-            let nfl_res: FetchResult = nfl_raw.map_err(Into::into);
             // Both soccer competitions are one Game, so their schedules merge into
             // a single Soccer feed (best effort if only one side fetched).
             let soccer_res: FetchResult = match (epl_raw, wc_raw) {
@@ -522,17 +518,18 @@ pub fn spawn_poller() {
                 (Ok(a), Err(_)) | (Err(_), Ok(a)) => Ok(a),
                 (Err(e), Err(_)) => Err(e.into()),
             };
-            let f1_res: FetchResult = f1_raw.map_err(Into::into);
+            // The keyless feeds return a reqwest error; lift each to the shared
+            // FetchResult (the first tuple pins the type, so `into` is inferred).
             apply_poll(
                 vec![
                     (Game::Cs2, cs_res),
                     (Game::Lol, lol_res),
-                    (Game::Mlb, mlb_res),
-                    (Game::Nhl, nhl_res),
-                    (Game::Nba, nba_res),
-                    (Game::Nfl, nfl_res),
+                    (Game::Mlb, mlb_raw.map_err(Into::into)),
+                    (Game::Nhl, nhl_raw.map_err(Into::into)),
+                    (Game::Nba, nba_raw.map_err(Into::into)),
+                    (Game::Nfl, nfl_raw.map_err(Into::into)),
                     (Game::Soccer, soccer_res),
-                    (Game::F1, f1_res),
+                    (Game::F1, f1_raw.map_err(Into::into)),
                 ],
                 store.as_mut(),
                 cfg.archive_cutoff(now).timestamp_millis(),

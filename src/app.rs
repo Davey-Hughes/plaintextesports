@@ -3892,8 +3892,8 @@ fn HomePage() -> impl IntoView {
     setup_autorefresh(schedule);
 
     view! {
-        <GameTabs games leagues />
-        <SportTabs games leagues />
+        <FilterTabs games leagues traditional_row=false />
+        <FilterTabs games leagues traditional_row=true />
         <ScheduleSection resource=schedule games leagues show_nav=false />
     }
 }
@@ -4328,18 +4328,23 @@ fn DayPage() -> impl IntoView {
     setup_autorefresh(schedule);
 
     view! {
-        <GameTabs games leagues />
-        <SportTabs games leagues />
+        <FilterTabs games leagues traditional_row=false />
+        <FilterTabs games leagues traditional_row=true />
         <ScheduleSection resource=schedule games leagues show_nav=true />
     }
 }
 
+/// A row of filter tabs: the esports games (CS2/LoL) when `traditional_row` is
+/// false, or the traditional sports (MLB/NHL/.../F1) when true. Each tab carries
+/// a subscribe ★ for the whole game and clicks to (de)select it; the row hides
+/// itself in the other top-level mode. The `games`/`leagues` filter sets are
+/// shared across both rows, so a selection narrows the schedule.
 #[component]
-fn GameTabs(
+fn FilterTabs(
     games: RwSignal<HashSet<String>>,
     leagues: RwSignal<HashSet<String>>,
+    traditional_row: bool,
 ) -> impl IntoView {
-    // The CS2/LoL tabs are esports-only — hidden in MLB mode.
     let traditional = use_context::<SportMode>().expect("sport mode context").0;
     // Filters are multi-select and additive: no selection means "all". Click a
     // game to include it; click again to drop it.
@@ -4364,7 +4369,6 @@ fn GameTabs(
             </span>
         }
     };
-
     // A "clear" appears once any game/event filter is active and resets them all.
     let any_active = move || games.with(|g| !g.is_empty()) || leagues.with(|l| !l.is_empty());
     let clear = move |_| {
@@ -4376,70 +4380,17 @@ fn GameTabs(
             save_str_set(keys::LEAGUES, &leagues.get_untracked());
         }
     };
+    // This row's games, in canonical order; the row hides when the active mode
+    // isn't this row's (the two rows are exact inverses).
+    let tabs = Game::ALL
+        .iter()
+        .filter(|g| g.traditional() == traditional_row)
+        .map(|g| with_star(g.label(), g.slug()))
+        .collect_view();
+    let hidden = move || traditional.get() != traditional_row;
     view! {
-        <div class="tabs" class:tabs-off=move || traditional.get()>
-            <div class="tabs-list">
-                {with_star("CS2", "cs2")}
-                {with_star("LoL", "lol")}
-            </div>
-            {move || {
-                any_active()
-                    .then(|| view! { <button class="filter-clear" on:click=clear>"clear"</button> })
-            }}
-        </div>
-    }
-}
-
-/// The traditional-sports analogue of [`GameTabs`]: MLB / F1 filter tabs (each
-/// with a subscribe ★ for the whole sport), shown only in traditional mode.
-/// Shares the `games` set, so a selection narrows the combined traditional
-/// schedule to those sports.
-#[component]
-fn SportTabs(
-    games: RwSignal<HashSet<String>>,
-    leagues: RwSignal<HashSet<String>>,
-) -> impl IntoView {
-    let traditional = use_context::<SportMode>().expect("sport mode context").0;
-    let toggle = move |value: &'static str| {
-        games.update(|g| {
-            if !g.remove(value) {
-                g.insert(value.to_string());
-            }
-        });
-        #[cfg(feature = "hydrate")]
-        save_str_set(keys::GAMES, &games.get_untracked());
-    };
-    let with_star = move |label: &'static str, value: &'static str| {
-        view! {
-            <span class="tab tab-with-star" class:active=move || games.with(|g| g.contains(value))>
-                <button class="tab-label" on:click=move |_| toggle(value)>
-                    {label}
-                </button>
-                <SubscribeStar kind="game" value=value.to_string() />
-            </span>
-        }
-    };
-    let any_active = move || games.with(|g| !g.is_empty());
-    let clear = move |_| {
-        games.update(HashSet::clear);
-        leagues.update(HashSet::clear);
-        #[cfg(feature = "hydrate")]
-        {
-            save_str_set(keys::GAMES, &games.get_untracked());
-            save_str_set(keys::LEAGUES, &leagues.get_untracked());
-        }
-    };
-    view! {
-        // Hidden in esports mode (the inverse of GameTabs).
-        <div class="tabs" class:tabs-off=move || !traditional.get()>
-            <div class="tabs-list">
-                {with_star("MLB", "mlb")}
-                {with_star("NHL", "nhl")}
-                {with_star("NBA", "nba")}
-                {with_star("NFL", "nfl")}
-                {with_star("Football", "football")}
-                {with_star("F1", "f1")}
-            </div>
+        <div class="tabs" class:tabs-off=hidden>
+            <div class="tabs-list">{tabs}</div>
             {move || {
                 any_active()
                     .then(|| view! { <button class="filter-clear" on:click=clear>"clear"</button> })
