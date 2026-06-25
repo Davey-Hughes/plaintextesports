@@ -111,7 +111,10 @@ pub fn standings_for_event_name(name: &str) -> Option<Vec<EventInfo>> {
         "NHL" => read_tables(&NHL_STANDINGS),
         "NBA" => read_tables(&NBA_STANDINGS),
         "NFL" => read_tables(&NFL_STANDINGS),
-        "Premier League" | "World Cup" => soccer_tables(name),
+        "Premier League" => soccer_tables("Premier League"),
+        // The World Cup event name carries its year ("World Cup 2026"); its
+        // standings are keyed on the bare league name.
+        n if n.starts_with("World Cup") => soccer_tables("World Cup"),
         _ => return None,
     })
 }
