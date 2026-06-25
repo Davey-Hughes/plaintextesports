@@ -498,7 +498,11 @@ type SwOutcome = (String, bool, Vec<(usize, usize)>);
 /// played match shows a dot (there's a result to reveal); an unplayed one a
 /// dash. Clicking a name scrolls to that match's row in the schedule.
 #[component]
-pub(crate) fn SwissBracket(rounds: Vec<SwissRound>, tournament_id: i64) -> impl IntoView {
+pub(crate) fn SwissBracket(
+    rounds: Vec<SwissRound>,
+    tournament_id: i64,
+    game: Game,
+) -> impl IntoView {
     if rounds.is_empty() {
         return ().into_any();
     }
@@ -605,17 +609,20 @@ pub(crate) fn SwissBracket(rounds: Vec<SwissRound>, tournament_id: i64) -> impl 
             if mid <= 0 {
                 return view! { <span class="sw-team">{name}</span> }.into_any();
             }
+            let muid = crate::types::match_uid(game, mid);
             view! {
                 <a
                     class="sw-team sw-link"
-                    href=format!("/match/{mid}")
+                    href=format!("/match/{muid}")
                     title="Find this match in the schedule"
                     on:click=move |e: leptos::ev::MouseEvent| {
                         e.stop_propagation();
                         #[cfg(feature = "hydrate")]
-                        if flash_match_row(mid) {
+                        if flash_match_row(&muid) {
                             e.prevent_default();
                         }
+                        #[cfg(not(feature = "hydrate"))]
+                        let _ = &muid;
                     }
                 >
                     {name}
@@ -835,6 +842,8 @@ pub(crate) fn SwissBracket(rounds: Vec<SwissRound>, tournament_id: i64) -> impl 
 pub(crate) fn Bracket(
     rounds: Vec<BracketRound>,
     tournament_id: i64,
+    /// The event's game, so a match link can build the right `/match/{uid}`.
+    game: Game,
     bracket_only: bool,
     /// `match_id -> (day_key, clock_label)` for the event's matches, so the
     /// bracket can date each round and show a per-match time on hover. Empty
@@ -999,19 +1008,23 @@ pub(crate) fn Bracket(
                     // (so you see it in context, then open it from there); where
                     // that row isn't on the page, the href opens the match page.
                     let link_title = format!("Find {ta} vs {tb} in the schedule");
+                    let muid = crate::types::match_uid(game, mid);
                     let team_cell = move |name: String| {
                         if mid > 0 {
+                            let muid = muid.clone();
                             view! {
                                 <a
                                     class="bk-team bk-team-link"
-                                    href=format!("/match/{mid}")
+                                    href=format!("/match/{muid}")
                                     title=link_title.clone()
                                     on:click=move |e: leptos::ev::MouseEvent| {
                                         e.stop_propagation();
                                         #[cfg(feature = "hydrate")]
-                                        if flash_match_row(mid) {
+                                        if flash_match_row(&muid) {
                                             e.prevent_default();
                                         }
+                                        #[cfg(not(feature = "hydrate"))]
+                                        let _ = &muid;
                                     }
                                 >
                                     {name}

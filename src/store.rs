@@ -41,6 +41,16 @@ pub fn open(path: &str) -> rusqlite::Result<Connection> {
     // The poller, push sender, and request handlers (see `shared`) each hold
     // their own connection; WAL + this busy timeout lets the writers coexist.
     conn.pragma_update(None, "busy_timeout", 5000)?;
+    // `meta` first, so the migration flag below is readable.
+    conn.execute("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)", [])?;
+    // One-time: the reminders primary key gained `game` (a match id isn't unique
+    // across games/sources). Drop the old single-id-keyed table once so the
+    // CREATE below rebuilds it with the (endpoint, match_id, game) key. Reminders
+    // are transient (re-armed when starred), so dropping them is safe.
+    if get_meta(&conn, "reminders_pk_v2").is_none() {
+        conn.execute("DROP TABLE IF EXISTS reminders", [])?;
+        set_meta(&conn, "reminders_pk_v2", "1")?;
+    }
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS matches (
             id           INTEGER NOT NULL,
@@ -94,7 +104,8 @@ pub fn open(path: &str) -> rusqlite::Result<Connection> {
             -- subscription: expansion's insert-if-absent leaves it, and the
             -- sender skips it, so the reminder never fires.
             excluded     INTEGER NOT NULL DEFAULT 0,
-            PRIMARY KEY (endpoint, match_id)
+            -- Keyed by (match_id, game): a match id isn't unique across games.
+            PRIMARY KEY (endpoint, match_id, game)
         );
         CREATE TABLE IF NOT EXISTS subscriptions (
             endpoint    TEXT    NOT NULL,
@@ -354,7 +365,7 @@ pub fn add_reminder(conn: &Connection, r: &Reminder) -> rusqlite::Result<()> {
         &format!(
             "INSERT INTO reminders ({REMINDER_COLS}, sent, excluded)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, 0, 0)
-             ON CONFLICT(endpoint, match_id) DO UPDATE SET
+             ON CONFLICT(endpoint, match_id, game) DO UPDATE SET
                 p256dh=excluded.p256dh, auth=excluded.auth,
                 notify_at_ms=excluded.notify_at_ms, title=excluded.title,
                 body=excluded.body, url=excluded.url, game=excluded.game,
@@ -374,7 +385,7 @@ pub fn exclude_reminder(conn: &Connection, r: &Reminder) -> rusqlite::Result<()>
         &format!(
             "INSERT INTO reminders ({REMINDER_COLS}, sent, excluded)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, 0, 1)
-             ON CONFLICT(endpoint, match_id) DO UPDATE SET excluded=1, sent=0"
+             ON CONFLICT(endpoint, match_id, game) DO UPDATE SET excluded=1, sent=0"
         ),
         &reminder_params(r)[..],
     )?;
@@ -388,17 +399,22 @@ pub fn add_reminder_if_absent(conn: &Connection, r: &Reminder) -> rusqlite::Resu
         &format!(
             "INSERT INTO reminders ({REMINDER_COLS}, sent)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, 0)
-             ON CONFLICT(endpoint, match_id) DO NOTHING"
+             ON CONFLICT(endpoint, match_id, game) DO NOTHING"
         ),
         &reminder_params(r)[..],
     )?;
     Ok(())
 }
 
-pub fn remove_reminder(conn: &Connection, endpoint: &str, match_id: i64) -> rusqlite::Result<()> {
+pub fn remove_reminder(
+    conn: &Connection,
+    endpoint: &str,
+    match_id: i64,
+    game: &str,
+) -> rusqlite::Result<()> {
     conn.execute(
-        "DELETE FROM reminders WHERE endpoint = ?1 AND match_id = ?2",
-        params![endpoint, match_id],
+        "DELETE FROM reminders WHERE endpoint = ?1 AND match_id = ?2 AND game = ?3",
+        params![endpoint, match_id, game],
     )?;
     Ok(())
 }
@@ -655,6 +671,25 @@ mod tests {
             team_b: "Gen.G".into(),
             event: "LCK Spring".into(),
         }
+    }
+
+    #[test]
+    fn reminders_with_the_same_id_across_games_coexist() {
+        let conn = open(":memory:").unwrap();
+        // Two different matches that happen to share a numeric id, one per game.
+        let mut a = reminder(42);
+        a.game = "cs2".into();
+        let mut b = reminder(42);
+        b.game = "mlb".into();
+        add_reminder(&conn, &a).unwrap();
+        add_reminder(&conn, &b).unwrap();
+        // Both survive — the PK is (endpoint, match_id, game), not (endpoint, id).
+        assert_eq!(due_reminders(&conn, 1000).unwrap().len(), 2);
+        // Removing one game leaves the other.
+        remove_reminder(&conn, &a.endpoint, 42, "cs2").unwrap();
+        let due = due_reminders(&conn, 1000).unwrap();
+        assert_eq!(due.len(), 1);
+        assert_eq!(due[0].match_id, 42);
     }
 
     #[test]

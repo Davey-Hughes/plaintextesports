@@ -98,10 +98,11 @@ struct ShowScores(RwSignal<bool>);
 #[derive(Clone, Copy)]
 struct ShowVenue(RwSignal<bool>);
 
-/// Set of match ids whose scores are individually revealed (by clicking the
-/// match's "Final" badge).
+/// Set of match uids whose scores are individually revealed (by clicking the
+/// match's "Final" badge). Keyed by uid (`"{game}-{id}"`) since a match id isn't
+/// unique across games.
 #[derive(Clone, Copy)]
-struct RevealedMatches(RwSignal<HashSet<i64>>);
+struct RevealedMatches(RwSignal<HashSet<String>>);
 
 /// Revealed standings/bracket-round sections, keyed by `"st:<tid>"` /
 /// `"bk:<tid>:<round>"` so reveal state is per-round and shared by every page
@@ -113,10 +114,10 @@ struct RevealedSections(RwSignal<HashSet<String>>);
 #[derive(Clone, Copy)]
 struct Subscribed(RwSignal<HashSet<String>>);
 
-/// Match ids the user has opted out of even though a subscription covers them
+/// Match uids the user has opted out of even though a subscription covers them
 /// (a per-match "un-notify" that doesn't drop the whole subscription).
 #[derive(Clone, Copy)]
-struct Excluded(RwSignal<HashSet<i64>>);
+struct Excluded(RwSignal<HashSet<String>>);
 
 /// Calendar-selected date range (start, end ISO dates); `None` = default view.
 #[derive(Clone, Copy)]
@@ -160,15 +161,15 @@ pub fn App() -> impl IntoView {
     let tz = RwSignal::new(String::new());
     // Reminder state: starred match ids, and the VAPID public key (None until
     // fetched / if Web Push isn't configured).
-    let starred = RwSignal::new(HashSet::<i64>::new());
+    let starred = RwSignal::new(HashSet::<String>::new());
     // Matches opted out of a covering subscription (per-match un-notify).
-    let excluded = RwSignal::new(HashSet::<i64>::new());
+    let excluded = RwSignal::new(HashSet::<String>::new());
     let vapid = RwSignal::new(None::<String>);
     // Spoiler control: a global reveal + a per-match reveal set.
     let show_scores = RwSignal::new(false);
     // Shared so clicking any one game's time reveals every venue time at once.
     let show_venue = RwSignal::new(false);
-    let revealed = RwSignal::new(HashSet::<i64>::new());
+    let revealed = RwSignal::new(HashSet::<String>::new());
     let sections = RwSignal::new(HashSet::<String>::new());
     let subscribed = RwSignal::new(HashSet::<String>::new());
     // History views: a calendar-selected range, and the "earlier days" expansion.
@@ -245,7 +246,7 @@ pub fn App() -> impl IntoView {
                     <Routes fallback=|| view! { <p class="empty">"Page not found."</p> }>
                         <Route path=StaticSegment("") view=HomePage />
                         <Route path=(StaticSegment("day"), ParamSegment("date")) view=DayPage />
-                        <Route path=(StaticSegment("match"), ParamSegment("id")) view=MatchDetailPage />
+                        <Route path=(StaticSegment("match"), ParamSegment("uid")) view=MatchDetailPage />
                         <Route path=(StaticSegment("event"), ParamSegment("league")) view=EventPage />
                         <Route path=(StaticSegment("team"), ParamSegment("name")) view=TeamPage />
                         <Route path=StaticSegment("notifications") view=NotificationsPage />
@@ -338,10 +339,10 @@ fn setup_scrollspy() {
 /// whether it was found (so a link can suppress its own navigation). Shared by the
 /// bracket team links and the "up next" bar.
 #[cfg(feature = "hydrate")]
-fn flash_match_row(mid: i64) -> bool {
+fn flash_match_row(uid: &str) -> bool {
     let Some(row) = web_sys::window()
         .and_then(|w| w.document())
-        .and_then(|d| d.get_element_by_id(&format!("m-{mid}")))
+        .and_then(|d| d.get_element_by_id(&format!("m-{uid}")))
     else {
         return false;
     };
@@ -700,7 +701,8 @@ fn AboutPage() -> impl IntoView {
 
 #[derive(Params, PartialEq, Clone)]
 struct DetailParams {
-    id: String,
+    /// The match uid, `"{game}-{id}"` (see [`crate::types::match_uid`]).
+    uid: String,
 }
 
 #[derive(Params, PartialEq, Clone)]
@@ -833,7 +835,7 @@ fn EventStageCombo(
     let grid_view = has_swiss.then(|| {
         view! {
             <div class="swiss-view" class:swiss-view-off=move || !swiss_grid.get()>
-                <SwissBracket rounds=swiss tournament_id />
+                <SwissBracket rounds=swiss tournament_id game />
             </div>
         }
     });
@@ -852,7 +854,7 @@ fn EventStageCombo(
                 {grid_view}
                 {list_view}
             </div>
-            <Bracket rounds=rounds tournament_id bracket_only times=times.get_value() />
+            <Bracket rounds=rounds tournament_id game bracket_only times=times.get_value() />
         </div>
     }
 }
@@ -1385,18 +1387,12 @@ fn TeamPage() -> impl IntoView {
 #[component]
 fn MatchDetailPage() -> impl IntoView {
     let params = use_params::<DetailParams>();
-    let id = move || {
-        params
-            .get()
-            .ok()
-            .and_then(|p| p.id.parse::<i64>().ok())
-            .unwrap_or(0)
-    };
+    let uid = move || params.get().ok().map(|p| p.uid).unwrap_or_default();
     let hour24 = use_context::<RwSignal<bool>>().expect("hour24 context");
     let tz = use_context::<RwSignal<String>>().expect("tz context");
     let detail = Resource::new(
-        move || (id(), tz.get(), hour24.get()),
-        |(id, tz, h)| async move { get_match_detail(id, tz, h).await },
+        move || (uid(), tz.get(), hour24.get()),
+        |(uid, tz, h)| async move { get_match_detail(uid, tz, h).await },
     );
     view! {
         <Suspense fallback=|| view! { <p class="loading">"loading…"</p> }>
@@ -1464,7 +1460,7 @@ fn detail_view(d: MatchDetail) -> impl IntoView {
         }
     };
 
-    let mid = m.id;
+    let muid = m.uid();
     let (sa, sb) = (m.team_a.score, m.team_b.score);
     let has_score = sa.is_some() && sb.is_some();
     // "Played" = under way or done (an upcoming match can still carry a 0-0
@@ -1482,12 +1478,15 @@ fn detail_view(d: MatchDetail) -> impl IntoView {
     // or this match was individually revealed (persisted, shared with the list).
     let global = use_context::<ShowScores>().map(|s| s.0);
     let revealed = use_context::<RevealedMatches>().map(|r| r.0);
-    let reveal = Memo::new(move |_| {
-        global.is_some_and(|g| g.get())
-            || revealed.is_some_and(|r| r.with(|set| set.contains(&mid)))
-    });
+    let reveal = {
+        let muid = muid.clone();
+        Memo::new(move |_| {
+            global.is_some_and(|g| g.get())
+                || revealed.is_some_and(|r| r.with(|set| set.contains(&muid)))
+        })
+    };
     // Per-match reveal button (hidden when the global toggle already shows all).
-    let toggle = reveal_toggler(revealed, mid);
+    let toggle = reveal_toggler(revealed, muid);
     // Hide the reveal toggle when the global toggle already shows all, or when
     // the match hasn't been played yet (nothing to reveal).
     let toggle_hidden = move || global.is_some_and(|g| g.get()) || !played;
@@ -1550,8 +1549,9 @@ fn detail_view(d: MatchDetail) -> impl IntoView {
                     {(!trail.is_empty()).then(|| format!(" · {trail}"))}
                 </span>
                 {move || {
+                    let toggle = toggle.clone();
                     (!toggle_hidden())
-                        .then(|| {
+                        .then(move || {
                             view! {
                                 <button class="toggle" on:click=toggle>
                                     {move || if reveal.get() { "hide scores" } else { "show scores" }}
@@ -1566,7 +1566,8 @@ fn detail_view(d: MatchDetail) -> impl IntoView {
             // game is revealed, so it never leaks the leader ahead of the scores.
             {(!series.games.is_empty())
                 .then(|| {
-                    let played_ids: Vec<i64> = series
+                    // Series games are MLB; key by uid like the per-match set.
+                    let played_ids: Vec<String> = series
                         .games
                         .iter()
                         .filter(|g| {
@@ -1574,7 +1575,7 @@ fn detail_view(d: MatchDetail) -> impl IntoView {
                                 && g.score_a.is_some()
                                 && g.score_b.is_some()
                         })
-                        .map(|g| g.match_id)
+                        .map(|g| crate::types::match_uid(Game::Mlb, g.match_id))
                         .collect();
                     let global = use_context::<ShowScores>().map(|s| s.0);
                     let revealed = use_context::<RevealedMatches>().map(|r| r.0);
@@ -1778,14 +1779,19 @@ fn SeriesRow(game: SeriesGame) -> impl IntoView {
     let (win_a, win_b) = (winner == "a", winner == "b");
 
     // This game's own reveal (global toggle OR this game individually revealed),
-    // shared with the schedule via the per-match set keyed on its gamePk.
+    // shared with the schedule via the per-match set keyed on its uid. Series
+    // games are always MLB.
+    let muid = crate::types::match_uid(Game::Mlb, match_id);
     let global = use_context::<ShowScores>().map(|s| s.0);
     let revealed = use_context::<RevealedMatches>().map(|r| r.0);
-    let reveal = Memo::new(move |_| {
-        global.is_some_and(|g| g.get())
-            || revealed.is_some_and(|r| r.with(|set| set.contains(&match_id)))
-    });
-    let toggle_reveal = reveal_toggler(revealed, match_id);
+    let reveal = {
+        let muid = muid.clone();
+        Memo::new(move |_| {
+            global.is_some_and(|g| g.get())
+                || revealed.is_some_and(|r| r.with(|set| set.contains(&muid)))
+        })
+    };
+    let toggle_reveal = reveal_toggler(revealed, muid.clone());
     let score_noun = if matches!(status, MatchStatus::Live) { "live score" } else { "final score" };
     let show_title = format!("Show the {score_noun}");
     let hide_title = format!("Hide the {score_noun}");
@@ -1860,7 +1866,7 @@ fn SeriesRow(game: SeriesGame) -> impl IntoView {
     let body = if current {
         view! { <span class="row-body">{inner}</span> }.into_any()
     } else {
-        view! { <a class="row-body" href=format!("/match/{match_id}")>{inner}</a> }.into_any()
+        view! { <a class="row-body" href=format!("/match/{muid}")>{inner}</a> }.into_any()
     };
     let mut row_cls = format!("row {status_class}");
     if current {
@@ -2105,7 +2111,7 @@ fn SubscribeStar(kind: &'static str, value: String) -> impl IntoView {
 #[component]
 fn NotificationsPage() -> impl IntoView {
     let subscribed = use_context::<Subscribed>().expect("subscribed context").0;
-    let starred = use_context::<RwSignal<HashSet<i64>>>().expect("starred context");
+    let starred = use_context::<RwSignal<HashSet<String>>>().expect("starred context");
     let excluded = use_context::<Excluded>().expect("excluded context").0;
     let vapid = use_context::<RwSignal<Option<String>>>().expect("vapid context");
     let hour24 = use_context::<RwSignal<bool>>().expect("hour24 context");
@@ -2115,15 +2121,15 @@ fn NotificationsPage() -> impl IntoView {
     // remove); started/finished ids are dropped server-side.
     let starred_matches = Resource::new(
         move || {
-            let mut ids: Vec<i64> = starred.get().into_iter().collect();
-            ids.sort_unstable();
-            (ids, tz.get(), hour24.get())
+            let mut uids: Vec<String> = starred.get().into_iter().collect();
+            uids.sort_unstable();
+            (uids, tz.get(), hour24.get())
         },
-        |(ids, z, h)| async move {
-            if ids.is_empty() {
+        |(uids, z, h)| async move {
+            if uids.is_empty() {
                 Ok(Vec::new())
             } else {
-                get_notifications(ids, z, h).await
+                get_notifications(uids, z, h).await
             }
         },
     );
@@ -2138,10 +2144,9 @@ fn NotificationsPage() -> impl IntoView {
         #[cfg(feature = "hydrate")]
         {
             let empty: Vec<String> = Vec::new();
-            let no_ids: Vec<i64> = Vec::new();
             save_subs(&empty);
-            save_starred(&no_ids);
-            save_excluded(&no_ids);
+            save_starred(&HashSet::new());
+            save_excluded(&HashSet::new());
             clear_all_notifications(vapid.get_untracked());
         }
         #[cfg(not(feature = "hydrate"))]
@@ -2281,11 +2286,13 @@ fn SubRow(key: String) -> impl IntoView {
 /// One individually-starred upcoming match on the notifications page.
 #[component]
 fn StarredRow(m: MatchView) -> impl IntoView {
-    let starred = use_context::<RwSignal<HashSet<i64>>>().expect("starred context");
+    let starred = use_context::<RwSignal<HashSet<String>>>().expect("starred context");
     let excluded = use_context::<Excluded>().expect("excluded context").0;
     let subscribed = use_context::<Subscribed>().expect("subscribed context").0;
     let vapid = use_context::<RwSignal<Option<String>>>().expect("vapid context");
     let id = m.id;
+    let game = m.game;
+    let uid = m.uid();
     // F1 (single-entity) has no opponent: show the GP and session (e.g.
     // "Austrian Grand Prix · Race") instead of a "Race at " matchup.
     let line = if m.game.single_entity() {
@@ -2306,31 +2313,34 @@ fn StarredRow(m: MatchView) -> impl IntoView {
         format!("team|{}", m.team_b.name),
         format!("event|{}", full_event_name(&m.league, &m.serie_name)),
     ];
-    let remove = move |_| {
-        let covered = subscribed.with_untracked(|s| keys.iter().any(|k| s.contains(k)));
-        starred.update(|s| {
-            s.remove(&id);
-        });
-        if covered {
-            excluded.update(|e| {
-                e.insert(id);
+    let remove = {
+        let uid = uid.clone();
+        move |_| {
+            let covered = subscribed.with_untracked(|s| keys.iter().any(|k| s.contains(k)));
+            starred.update(|s| {
+                s.remove(&uid);
             });
-        }
-        #[cfg(feature = "hydrate")]
-        {
-            save_starred(&starred.get_untracked().iter().copied().collect::<Vec<_>>());
-            save_excluded(&excluded.get_untracked().iter().copied().collect::<Vec<_>>());
-            sync_match_reminder(id, false, covered, vapid.get_untracked());
-        }
-        #[cfg(not(feature = "hydrate"))]
-        {
-            let _ = (covered, vapid);
+            if covered {
+                excluded.update(|e| {
+                    e.insert(uid.clone());
+                });
+            }
+            #[cfg(feature = "hydrate")]
+            {
+                save_starred(&starred.get_untracked());
+                save_excluded(&excluded.get_untracked());
+                sync_match_reminder(id, game, false, covered, vapid.get_untracked());
+            }
+            #[cfg(not(feature = "hydrate"))]
+            {
+                let _ = (covered, vapid, game, id);
+            }
         }
     };
 
     view! {
         <li class="notif-item">
-            <A href=format!("/match/{id}")>
+            <A href=format!("/match/{uid}")>
                 <span class="notif-time">{m.clock_label}</span>
                 <span class="notif-label">{line}</span>
             </A>
@@ -3400,7 +3410,7 @@ fn UpNextBar(day: DayGroup) -> impl IntoView {
         .into_iter()
         .take(CAP)
         .map(|m| {
-            let mid = m.id;
+            let muid = crate::types::match_uid(m.game, m.id);
             let sep = versus_sep(m.game);
             // F1 (single-entity) has no opponent: show just the session label, with
             // no "at"/"vs" separator and no empty second team.
@@ -3423,12 +3433,17 @@ fn UpNextBar(day: DayGroup) -> impl IntoView {
             view! {
                 <a
                     class="upnext-match"
-                    href=format!("/match/{mid}")
-                    on:click=move |e: leptos::ev::MouseEvent| {
-                        e.stop_propagation();
-                        #[cfg(feature = "hydrate")]
-                        if flash_match_row(mid) {
-                            e.prevent_default();
+                    href=format!("/match/{muid}")
+                    on:click={
+                        let muid = muid.clone();
+                        move |e: leptos::ev::MouseEvent| {
+                            e.stop_propagation();
+                            #[cfg(feature = "hydrate")]
+                            if flash_match_row(&muid) {
+                                e.prevent_default();
+                            }
+                            #[cfg(not(feature = "hydrate"))]
+                            let _ = &muid;
                         }
                     }
                 >
@@ -3722,23 +3737,21 @@ fn render_schedule(
     }
 }
 
-/// A click handler that toggles whether match `id`'s score is revealed in the
+/// A click handler that toggles whether match `uid`'s score is revealed in the
 /// shared [`RevealedMatches`] set (and persists the set). Stops propagation +
 /// prevents the default so the click doesn't fall through to an enclosing row
 /// link (a no-op on a standalone reveal button). `None` `revealed` ⇒ inert.
 fn reveal_toggler(
-    revealed: Option<RwSignal<HashSet<i64>>>,
-    id: i64,
-    // `Copy` (it captures only an `RwSignal` + an `i64`, both `Copy`) so it can be
-    // moved into a reactive view more than once, as the detail page does.
-) -> impl Fn(leptos::ev::MouseEvent) + Copy {
+    revealed: Option<RwSignal<HashSet<String>>>,
+    uid: String,
+) -> impl Fn(leptos::ev::MouseEvent) + Clone {
     move |ev: leptos::ev::MouseEvent| {
         ev.prevent_default();
         ev.stop_propagation();
         if let Some(r) = revealed {
             r.update(|s| {
-                if !s.insert(id) {
-                    s.remove(&id);
+                if !s.remove(&uid) {
+                    s.insert(uid.clone());
                 }
             });
             #[cfg(feature = "hydrate")]
@@ -3802,18 +3815,21 @@ fn MatchRow(m: MatchView, show_bo: bool, push: bool) -> impl IntoView {
 
     // Scores are spoilers: reveal only when the global toggle is on or this
     // match was individually revealed (by clicking its "Final" badge).
-    let mid = m.id;
+    let muid = crate::types::match_uid(m.game, m.id);
     let global = use_context::<ShowScores>().map(|s| s.0);
     let revealed = use_context::<RevealedMatches>().map(|r| r.0);
-    let reveal = Memo::new(move |_| {
-        global.is_some_and(|g| g.get())
-            || revealed.is_some_and(|r| r.with(|set| set.contains(&mid)))
-    });
+    let reveal = {
+        let muid = muid.clone();
+        Memo::new(move |_| {
+            global.is_some_and(|g| g.get())
+                || revealed.is_some_and(|r| r.with(|set| set.contains(&muid)))
+        })
+    };
 
     // A match's score lives behind its status meta: click the whole "Final · Bo3"
     // (or "LIVE") cluster to toggle just this row's score. (Plain meta for
     // score-less rows, e.g. upcoming or a live match still at the 0-0 placeholder.)
-    let toggle_reveal = reveal_toggler(revealed, mid);
+    let toggle_reveal = reveal_toggler(revealed, muid.clone());
     let score_noun = if matches!(m.status, MatchStatus::Live) {
         "live score"
     } else {
@@ -3906,7 +3922,7 @@ fn MatchRow(m: MatchView, show_bo: bool, push: bool) -> impl IntoView {
     // children participate in the row grid alongside the ★ button. The score
     // reveal inside (`reveal-meta`) prevents this navigation when clicked.
     let body = view! {
-        <a class="row-body" href=format!("/match/{}", m.id)>
+        <a class="row-body" href=format!("/match/{muid}")>
             {inner}
         </a>
     };
@@ -3933,7 +3949,7 @@ fn MatchRow(m: MatchView, show_bo: bool, push: bool) -> impl IntoView {
         _ => view! { <span class="row-lead-empty"></span> }.into_any(),
     };
     view! {
-        <div class=format!("row has-star {status_class}") id=format!("m-{}", m.id)>
+        <div class=format!("row has-star {status_class}") id=format!("m-{muid}")>
             {lead}
             {body}
         </div>
@@ -3943,10 +3959,12 @@ fn MatchRow(m: MatchView, show_bo: bool, push: bool) -> impl IntoView {
 
 #[component]
 fn StarButton(id: i64, game: Game, league: String, team_a: String, team_b: String) -> impl IntoView {
-    let starred = use_context::<RwSignal<HashSet<i64>>>().expect("starred context");
+    let starred = use_context::<RwSignal<HashSet<String>>>().expect("starred context");
     let subscribed = use_context::<Subscribed>().expect("subscribed context").0;
     let excluded = use_context::<Excluded>().expect("excluded context").0;
     let vapid = use_context::<RwSignal<Option<String>>>().expect("vapid context");
+    // The match's uid keys the star/exclude sets (ids aren't unique across games).
+    let uid = crate::types::match_uid(game, id);
     // The scopes that auto-cover this match (its game, this event, or either team).
     let keys = [
         format!("game|{}", game.slug()),
@@ -3958,11 +3976,14 @@ fn StarButton(id: i64, game: Game, league: String, team_a: String, team_b: Strin
     // The ★ lights up if this match is starred individually *or* a subscription
     // covers it — unless it's been individually opted out (excluded) of that
     // coverage. So the star always reflects what you'll actually be notified of.
-    let is_on = Memo::new(move |_| {
-        !excluded.with(|e| e.contains(&id))
-            && (starred.with(|s| s.contains(&id))
-                || subscribed.with(|s| keys.iter().any(|k| s.contains(k))))
-    });
+    let is_on = {
+        let uid = uid.clone();
+        Memo::new(move |_| {
+            !excluded.with(|e| e.contains(&uid))
+                && (starred.with(|s| s.contains(&uid))
+                    || subscribed.with(|s| keys.iter().any(|k| s.contains(k))))
+        })
+    };
 
     let on_click = move |_| {
         let covered = subscribed.with_untracked(|s| keys_click.iter().any(|k| s.contains(k)));
@@ -3971,34 +3992,34 @@ fn StarButton(id: i64, game: Game, league: String, team_a: String, team_b: Strin
             // Turn it back on: clear any opt-out, and star it unless a scope
             // already covers it.
             excluded.update(|e| {
-                e.remove(&id);
+                e.remove(&uid);
             });
             if !covered {
                 starred.update(|s| {
-                    s.insert(id);
+                    s.insert(uid.clone());
                 });
             }
         } else {
             // Turn it off: drop an individual star, and — if a subscription still
             // covers it — opt this one match out without dropping the scope.
             starred.update(|s| {
-                s.remove(&id);
+                s.remove(&uid);
             });
             if covered {
                 excluded.update(|e| {
-                    e.insert(id);
+                    e.insert(uid.clone());
                 });
             }
         }
         #[cfg(feature = "hydrate")]
         {
-            save_starred(&starred.get_untracked().iter().copied().collect::<Vec<_>>());
-            save_excluded(&excluded.get_untracked().iter().copied().collect::<Vec<_>>());
-            sync_match_reminder(id, want_on, covered, vapid.get_untracked());
+            save_starred(&starred.get_untracked());
+            save_excluded(&excluded.get_untracked());
+            sync_match_reminder(id, game, want_on, covered, vapid.get_untracked());
         }
         #[cfg(not(feature = "hydrate"))]
         {
-            let _ = (covered, want_on, vapid);
+            let _ = (covered, want_on, vapid, game);
         }
     };
 
@@ -4030,51 +4051,38 @@ fn reflect_str(obj: &wasm_bindgen::JsValue, key: &str) -> Option<String> {
         .as_string()
 }
 
+// Starred / excluded / revealed are sets of match uids ("{game}-{id}"), persisted
+// as comma-separated strings via the shared string-set helpers below.
 #[cfg(feature = "hydrate")]
-fn save_starred(ids: &[i64]) {
-    if let Some(win) = web_sys::window() {
-        if let Ok(Some(storage)) = win.local_storage() {
-            let csv = ids.iter().map(i64::to_string).collect::<Vec<_>>().join(",");
-            let _ = storage.set_item(keys::STARRED, &csv);
-        }
-    }
+fn save_starred(uids: &HashSet<String>) {
+    save_str_set(keys::STARRED, uids);
 }
 
 #[cfg(feature = "hydrate")]
-fn load_starred() -> HashSet<i64> {
-    load_id_set(keys::STARRED)
+fn load_starred() -> HashSet<String> {
+    load_str_set(keys::STARRED)
 }
 
 #[cfg(feature = "hydrate")]
-fn save_excluded(ids: &[i64]) {
-    if let Some(win) = web_sys::window() {
-        if let Ok(Some(storage)) = win.local_storage() {
-            let csv = ids.iter().map(i64::to_string).collect::<Vec<_>>().join(",");
-            let _ = storage.set_item(keys::EXCLUDED, &csv);
-        }
-    }
+fn save_excluded(uids: &HashSet<String>) {
+    save_str_set(keys::EXCLUDED, uids);
 }
 
 #[cfg(feature = "hydrate")]
-fn load_excluded() -> HashSet<i64> {
-    load_id_set(keys::EXCLUDED)
+fn load_excluded() -> HashSet<String> {
+    load_str_set(keys::EXCLUDED)
 }
 
-/// Persist the set of individually-revealed match ids, so a match the user has
+/// Persist the set of individually-revealed match uids, so a match the user has
 /// already peeked at stays revealed across reloads.
 #[cfg(feature = "hydrate")]
-fn save_revealed(ids: &HashSet<i64>) {
-    if let Some(win) = web_sys::window() {
-        if let Ok(Some(storage)) = win.local_storage() {
-            let csv = ids.iter().map(i64::to_string).collect::<Vec<_>>().join(",");
-            let _ = storage.set_item(keys::REVEALED, &csv);
-        }
-    }
+fn save_revealed(uids: &HashSet<String>) {
+    save_str_set(keys::REVEALED, uids);
 }
 
 #[cfg(feature = "hydrate")]
-fn load_revealed() -> HashSet<i64> {
-    load_id_set(keys::REVEALED)
+fn load_revealed() -> HashSet<String> {
+    load_str_set(keys::REVEALED)
 }
 
 /// Persist a set of strings under `key` (newline-separated).
@@ -4129,29 +4137,18 @@ fn load_sections() -> HashSet<String> {
     out
 }
 
-/// Load a comma-separated set of match ids from local storage.
-#[cfg(feature = "hydrate")]
-fn load_id_set(key: &str) -> HashSet<i64> {
-    let mut out = HashSet::new();
-    if let Some(win) = web_sys::window() {
-        if let Ok(Some(storage)) = win.local_storage() {
-            if let Ok(Some(csv)) = storage.get_item(key) {
-                for part in csv.split(',') {
-                    if let Ok(id) = part.trim().parse::<i64>() {
-                        out.insert(id);
-                    }
-                }
-            }
-        }
-    }
-    out
-}
-
 /// Persist the starred set and (un)register the reminder on the server. The
 /// server derives the notification details from `match_id`, so we send just that.
 #[cfg(feature = "hydrate")]
-fn sync_match_reminder(match_id: i64, want_on: bool, covered: bool, vapid: Option<String>) {
+fn sync_match_reminder(
+    match_id: i64,
+    game: Game,
+    want_on: bool,
+    covered: bool,
+    vapid: Option<String>,
+) {
     let Some(vapid) = vapid else { return };
+    let game = game.slug().to_string();
     leptos::task::spawn_local(async move {
         let sub = match pte_subscribe(&vapid).await {
             Ok(s) => s,
@@ -4174,6 +4171,7 @@ fn sync_match_reminder(match_id: i64, want_on: bool, covered: bool, vapid: Optio
             let _ = crate::server::add_reminder(crate::types::ReminderReq {
                 sub: push,
                 match_id,
+                game,
             })
             .await;
         } else if covered {
@@ -4181,11 +4179,12 @@ fn sync_match_reminder(match_id: i64, want_on: bool, covered: bool, vapid: Optio
             let _ = crate::server::exclude_reminder(crate::types::ReminderReq {
                 sub: push,
                 match_id,
+                game,
             })
             .await;
         } else {
             // Plain un-star: drop the reminder row entirely.
-            let _ = crate::server::remove_reminder(endpoint, match_id).await;
+            let _ = crate::server::remove_reminder(endpoint, match_id, game).await;
         }
     });
 }

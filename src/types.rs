@@ -259,6 +259,33 @@ pub struct MatchView {
     pub begin_at_ms: i64,
 }
 
+impl MatchView {
+    /// This match's globally-unique id (see [`match_uid`]).
+    #[must_use]
+    pub fn uid(&self) -> String {
+        match_uid(self.game, self.id)
+    }
+}
+
+/// A globally-unique match identifier, `"{slug}-{id}"` (e.g. `"cs2-1494586"`,
+/// `"mlb-822869"`). Source match ids aren't unique across games/sources (an ESPN
+/// event id can equal an MLB gamePk), so identity is keyed by `(game, id)`. Game
+/// slugs contain no `-` and ids are numeric, so the uid splits cleanly. Used in
+/// the `/match/{uid}` route, the client reveal/star sets + DOM ids, the
+/// notifications round-trip, and reminder keys.
+#[must_use]
+pub fn match_uid(game: Game, id: i64) -> String {
+    format!("{}-{}", game.slug(), id)
+}
+
+/// Parse a [`match_uid`] back into its game + source id; `None` if malformed or
+/// the slug is unknown.
+#[must_use]
+pub fn parse_match_uid(uid: &str) -> Option<(Game, i64)> {
+    let (slug, id) = uid.split_once('-')?;
+    Some((Game::from_filter(slug)?, id.parse().ok()?))
+}
+
 /// The display name for an event: the league plus its serie/edition, e.g.
 /// ("IEM", "Cologne Major") -> "IEM Cologne Major". An empty serie returns the
 /// league alone (league seasons already name themselves). Also the key for the
@@ -344,6 +371,10 @@ pub struct PushSub {
 pub struct ReminderReq {
     pub sub: PushSub,
     pub match_id: i64,
+    /// The match's game slug, so the server resolves the right match (ids aren't
+    /// unique across games) and keys the reminder by `(match_id, game)`.
+    #[serde(default)]
+    pub game: String,
 }
 
 /// Subscribe/unsubscribe to a whole game or event.
@@ -743,6 +774,22 @@ mod tests {
         // F1 has no standings table.
         assert_eq!(Game::F1.standings_last_label(), "");
         assert!(!Game::F1.standings_single_value());
+    }
+
+    #[test]
+    fn match_uid_round_trips_for_every_game() {
+        for &g in Game::ALL {
+            let uid = match_uid(g, 1494586);
+            assert_eq!(parse_match_uid(&uid), Some((g, 1494586)), "uid {uid}");
+            // The slug has no '-', so the split is unambiguous.
+            assert_eq!(uid, format!("{}-1494586", g.slug()));
+        }
+        assert_eq!(parse_match_uid("cs2-1494586"), Some((Game::Cs2, 1494586)));
+        assert_eq!(parse_match_uid("mlb-822869"), Some((Game::Mlb, 822869)));
+        // Malformed / unknown slug → None.
+        assert_eq!(parse_match_uid("1494586"), None); // no separator
+        assert_eq!(parse_match_uid("bogus-1"), None); // unknown game
+        assert_eq!(parse_match_uid("cs2-abc"), None); // non-numeric id
     }
 
     #[test]
