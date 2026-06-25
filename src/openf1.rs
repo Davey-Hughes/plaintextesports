@@ -196,6 +196,7 @@ fn session_rows(
                 // constructor logos are only wired for the race/quali results.
                 flag: String::new(),
                 constructor_logo: String::new(),
+                constructor_abbrev: String::new(),
             }
         })
         .collect()

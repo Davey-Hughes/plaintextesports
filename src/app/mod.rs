@@ -976,10 +976,10 @@ fn F1Results(results: Vec<F1Result>, season: i64, round: i64) -> impl IntoView {
                     .map(|row| {
                         // Flags/logos are gated with the names — showing a flag while
                         // the driver is blank would leak who finished where.
-                        let (driver, con, detail, flag, clogo) = if show {
-                            (row.driver, row.constructor, row.detail, row.flag, row.constructor_logo)
+                        let (driver, con, cabbr, detail, flag, clogo) = if show {
+                            (row.driver, row.constructor, row.constructor_abbrev, row.detail, row.flag, row.constructor_logo)
                         } else {
-                            (String::new(), String::new(), String::new(), String::new(), String::new())
+                            (String::new(), String::new(), String::new(), String::new(), String::new(), String::new())
                         };
                         view! {
                             <li class="f1-row">
@@ -988,7 +988,7 @@ fn F1Results(results: Vec<F1Result>, season: i64, round: i64) -> impl IntoView {
                                     {team_logo(&flag, "f1-flag")}{driver}
                                 </span>
                                 <span class="f1-con">
-                                    {clogo_icon(&clogo)}{con}
+                                    {clogo_icon(&clogo)}{team_cell(con, cabbr)}
                                 </span>
                                 <span class="f1-detail">{detail}</span>
                             </li>
@@ -1039,16 +1039,16 @@ fn F1StandingsView(standings: F1Standings, season: i64, round: i64) -> impl Into
             .get_value()
             .into_iter()
             .map(|r| {
-                let (name, con, pts, flag, clogo) = if show {
-                    (r.name, r.detail, r.points, r.flag, r.constructor_logo)
+                let (name, con, cabbr, pts, flag, clogo) = if show {
+                    (r.name, r.detail, r.constructor_abbrev, r.points, r.flag, r.constructor_logo)
                 } else {
-                    (String::new(), String::new(), String::new(), String::new(), String::new())
+                    (String::new(), String::new(), String::new(), String::new(), String::new(), String::new())
                 };
                 view! {
                     <li class="f1-standing-row">
                         <span class="f1-pos">{r.pos}</span>
                         <span class="f1-standing-name">{team_logo(&flag, "f1-flag")}{name}</span>
-                        <span class="f1-standing-con">{clogo_icon(&clogo)}{con}</span>
+                        <span class="f1-standing-con">{clogo_icon(&clogo)}{team_cell(con, cabbr)}</span>
                         <span class="f1-standing-pts">{pts}</span>
                     </li>
                 }
@@ -1058,15 +1058,15 @@ fn F1StandingsView(standings: F1Standings, season: i64, round: i64) -> impl Into
             .get_value()
             .into_iter()
             .map(|r| {
-                let (name, pts, clogo) = if show {
-                    (r.name, r.points, r.constructor_logo)
+                let (name, cabbr, pts, clogo) = if show {
+                    (r.name, r.constructor_abbrev, r.points, r.constructor_logo)
                 } else {
-                    (String::new(), String::new(), String::new())
+                    (String::new(), String::new(), String::new(), String::new())
                 };
                 view! {
                     <li class="f1-standing-row f1-standing-row-con">
                         <span class="f1-pos">{r.pos}</span>
-                        <span class="f1-standing-name">{clogo_icon(&clogo)}{name}</span>
+                        <span class="f1-standing-name">{clogo_icon(&clogo)}{team_cell(name, cabbr)}</span>
                         <span class="f1-standing-pts">{pts}</span>
                     </li>
                 }

@@ -655,6 +655,10 @@ pub struct F1ResultRow {
     pub flag: String,
     #[serde(default)]
     pub constructor_logo: String,
+    /// The constructor's 2-3 letter abbreviation (e.g. "FER"), shown in place of
+    /// the full name where the column is too narrow. Empty when unmapped.
+    #[serde(default)]
+    pub constructor_abbrev: String,
 }
 
 /// The F1 championship standings as of a round, for the GP event page. Both
@@ -682,6 +686,9 @@ pub struct F1StandingRow {
     pub flag: String,
     #[serde(default)]
     pub constructor_logo: String,
+    /// The constructor's 2-3 letter abbreviation, shown where the name won't fit.
+    #[serde(default)]
+    pub constructor_abbrev: String,
 }
 
 /// Everything the per-match detail page shows.

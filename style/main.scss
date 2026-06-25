@@ -2356,13 +2356,14 @@ a.bk-team-link {
     margin-right: 0;
   }
 
-  // Compact rows are too narrow for full team names, so show the official
-  // abbreviation in their place (teams that have one — esports keep their label).
-  .row-team .tname {
+  // Compact rows/columns are too narrow for full team + constructor names, so
+  // show the official abbreviation in their place (where one exists — esports and
+  // unmapped names keep their label).
+  .tname {
     display: none;
   }
 
-  .row-team .tabbr {
+  .tabbr {
     display: inline;
   }
 }
