@@ -7,7 +7,7 @@
 
 use crate::pandascore::{NormTeam, NormalizedMatch};
 use crate::types::{F1Result, F1ResultRow, F1StandingRow, F1Standings, Game, MatchStatus};
-use chrono::{DateTime, Duration, Utc};
+use chrono::{DateTime, Duration, NaiveDate, Utc};
 use serde::Deserialize;
 
 const BASE: &str = "https://api.jolpi.ca/ergast/f1";
@@ -326,6 +326,25 @@ fn quali_rows(rs: &[RawQuali]) -> Vec<F1ResultRow> {
         .collect()
 }
 
+/// The Grand Prix's race date, used to match the OpenF1 weekend that carries the
+/// practice timing (OpenF1 has no round number and a different meeting order).
+async fn round_date(client: &reqwest::Client, season: i64, round: i64) -> Option<NaiveDate> {
+    let url = format!("{BASE}/{season}/{round}.json");
+    let resp: Resp = client
+        .get(&url)
+        .header(reqwest::header::USER_AGENT, USER_AGENT)
+        .send()
+        .await
+        .ok()?
+        .error_for_status()
+        .ok()?
+        .json()
+        .await
+        .ok()?;
+    let race = resp.data.race_table.races.into_iter().next()?;
+    NaiveDate::parse_from_str(race.date.get(..10)?, "%Y-%m-%d").ok()
+}
+
 async fn get_results(client: &reqwest::Client, url: &str) -> Option<ResultsRace> {
     let resp: ResultsResp = client
         .get(url)
@@ -351,10 +370,11 @@ pub async fn fetch_results(client: &reqwest::Client, season: i64, round: i64) ->
         format!("{base}/sprint.json?limit=40"),
         format!("{base}/qualifying.json?limit=40"),
     );
-    let (race, sprint, quali) = tokio::join!(
+    let (race, sprint, quali, date) = tokio::join!(
         get_results(client, &race_url),
         get_results(client, &sprint_url),
         get_results(client, &quali_url),
+        round_date(client, season, round),
     );
     let mut out = Vec::new();
     let mut push = |session: &str, rows: Vec<F1ResultRow>| {
@@ -365,6 +385,11 @@ pub async fn fetch_results(client: &reqwest::Client, season: i64, round: i64) ->
     push("Race", race.map(|r| race_rows(&r.results)).unwrap_or_default());
     push("Sprint", sprint.map(|s| race_rows(&s.sprint)).unwrap_or_default());
     push("Qualifying", quali.map(|q| quali_rows(&q.qualifying)).unwrap_or_default());
+    // Practice timing (FP1/FP2/FP3) isn't in Jolpica — pull it from OpenF1 and
+    // append it under qualifying. Matched to the OpenF1 weekend by the race date.
+    if let Some(date) = date {
+        out.extend(crate::openf1::fetch_practice(client, season, date).await);
+    }
     out
 }
 
