@@ -215,6 +215,22 @@ a {
   border-bottom: 1px dashed var(--border);
 }
 
+// The display-preference toggles (icons / 24h / theme), grouped. On desktop the
+// group is ordered to the right end of the bar (after the schedule controls); on
+// mobile it keeps its leading DOM position so it lands on the first row beside the
+// brand (see the responsive block at the end of the file).
+.toggle-prefs {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  order: 1;
+}
+
+// A flex line-break that splits the toggle bar into two rows — only on mobile.
+.toggles-break {
+  display: none;
+}
+
 .toggle {
   background: none;
   border: 1px solid var(--border);
@@ -224,9 +240,14 @@ a {
   padding: 0.15rem 0.5rem;
   cursor: pointer;
 
-  &:hover {
-    color: var(--fg);
-    border-color: var(--fg);
+  // Only on real pointers — otherwise a tap on a touchscreen leaves the hover
+  // highlight stuck on (looking like an "on" state) until you tap elsewhere. The
+  // genuine on-state (scores / icons) is the separate `.state-toggle.on` rule.
+  @media (hover: hover) {
+    &:hover {
+      color: var(--fg);
+      border-color: var(--fg);
+    }
   }
 }
 
@@ -2284,23 +2305,48 @@ a.bk-team-link {
 }
 
 // ===== Responsive: narrow / mobile viewports ================================
-// On wide screens the brand is absolutely positioned over the sticky toggle row
-// (so it scrolls away while the buttons stay pinned). Once the viewport is narrow
-// enough that the toggles wrap onto extra lines, that overlay collides with them.
-// Below this width, drop the brand into normal flow on its own line above the
-// toggles, reclaim a little horizontal padding, and let the bar pack from the
-// left — so the controls breathe and nothing overlaps.
+// The toggle bar becomes two rows: the brand (still the absolute overlay) and the
+// display prefs (icons / 24h / theme) on top, then the schedule controls below.
+// The brand sits on the left of row one and the prefs on the right, so they share
+// the line without overlapping; the `.toggles-break` forces everything after the
+// prefs onto the second row.
 @media (max-width: 600px) {
   .page {
     padding: 0.75rem 0.75rem 2.5rem;
   }
 
+  // Nudge the brand down so it lines up with the first toggle row.
   .header {
-    position: static;
-    padding: 0 0 0.3rem;
+    top: 0.9rem;
   }
 
+  // Tighten the space between the two rows (the break adds a row-gap on each side
+  // of its zero-height line, so the effective gap is twice this) to roughly match
+  // the gap from the bottom row down to the dashed divider.
   .toggles {
-    justify-content: flex-start;
+    row-gap: 0.25rem;
+  }
+
+  .toggles-break {
+    display: block;
+    flex-basis: 100%;
+    height: 0;
+  }
+
+  // Keep the prefs in their leading DOM position (row one); the rest follow the
+  // break onto row two.
+  .toggle-prefs {
+    order: 0;
+  }
+
+  // Left-align the refresh/"updated" label on the second row; the schedule
+  // controls after it stay to the right. (Drop the back-to-top arrow's own
+  // right-auto so the two don't fight when it appears on scroll.)
+  .refresh-btn {
+    margin-right: auto;
+  }
+
+  .scrolltop {
+    margin-right: 0;
   }
 }
