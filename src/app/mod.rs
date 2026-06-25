@@ -57,6 +57,9 @@ pub fn shell(options: LeptosOptions) -> impl IntoView {
                 <meta charset="utf-8" />
                 <meta name="viewport" content="width=device-width, initial-scale=1" />
                 <link rel="icon" href="data:," />
+                // The VAPID public key (when Web Push is configured) so the client
+                // can render the subscribe ★s on the first paint without a fetch.
+                {initial_vapid().map(|k| view! { <meta name="pte-vapid" content=k /> })}
                 // Emits <link rel="stylesheet"> with the content-hashed CSS name
                 // (reads hash.txt via LeptosOptions). Must live here in the server
                 // shell since LeptosOptions isn't available in the App body.
@@ -64,10 +67,12 @@ pub fn shell(options: LeptosOptions) -> impl IntoView {
                 <AutoReload options=options.clone() />
                 <HydrationScripts options />
                 <MetaTags />
-                // Apply the saved theme + icon preference before paint to avoid a
-                // flash (icons default on; CSS hides logos when data-icons="0").
+                // Apply the saved theme + icon + scores preferences before paint to
+                // avoid a flash: CSS hides logos when data-icons="0", and the icons/
+                // scores toggles show their on-state from data-icons/data-scores
+                // (icons default on, scores default off).
                 <script>
-                    r#"(function(){try{var t=localStorage.getItem('theme')||'dark';document.documentElement.setAttribute('data-theme',t);document.documentElement.setAttribute('data-icons',localStorage.getItem('icons')==='0'?'0':'1');}catch(e){document.documentElement.setAttribute('data-theme','dark');}})();"#
+                    r#"(function(){try{var d=document.documentElement;var t=localStorage.getItem('theme')||'dark';d.setAttribute('data-theme',t);d.setAttribute('data-icons',localStorage.getItem('icons')==='0'?'0':'1');d.setAttribute('data-scores',localStorage.getItem('scores')==='1'?'1':'0');}catch(e){document.documentElement.setAttribute('data-theme','dark');}})();"#
                 </script>
                 // Web Push helper used by the reminder ★ buttons.
                 <script>
@@ -169,7 +174,10 @@ pub fn App() -> impl IntoView {
     let starred = RwSignal::new(HashSet::<String>::new());
     // Matches opted out of a covering subscription (per-match un-notify).
     let excluded = RwSignal::new(HashSet::<String>::new());
-    let vapid = RwSignal::new(None::<String>);
+    // The VAPID public key, resolved for this render (env on the server, the
+    // shell's <meta> on hydrate) so the subscribe ★s are present at first paint
+    // instead of popping in after a round-trip. `None` => Web Push off, ★s hidden.
+    let vapid = RwSignal::new(initial_vapid());
     // Spoiler control: a global reveal + a per-match reveal set.
     let show_scores = RwSignal::new(false);
     // Shared so clicking any one game's time reveals every venue time at once.
@@ -232,11 +240,6 @@ pub fn App() -> impl IntoView {
             // `games`/`leagues` are initialised by `FilterUrlSync` (URL query, else
             // localStorage) since it needs the router context.
             setup_scrollspy();
-            leptos::task::spawn_local(async move {
-                if let Ok(k) = crate::server::get_vapid_key().await {
-                    vapid.set(k);
-                }
-            });
         }
     });
 
@@ -2008,34 +2011,30 @@ fn EventSection(leagues: RwSignal<HashSet<String>>) -> impl IntoView {
 
 #[component]
 fn ThemeToggle() -> impl IntoView {
-    // Cycle dark → oled (pure black) → light. Default to dark; sync to the saved
-    // value after mount (client only) — matches the pre-paint shell script.
-    let theme = RwSignal::new("dark".to_string());
-
-    Effect::new(move |_| {
+    // Cycle dark → oled (pure black) → light. The visible label is the current
+    // theme name, rendered from `data-theme` on <html> via CSS (see `.theme-toggle`,
+    // set pre-paint in the shell) — so it shows the saved theme at first paint with
+    // no flash and no hydration mismatch (this button carries no reactive text). The
+    // click reads the live attribute to pick the next theme.
+    let cycle = move |_| {
         #[cfg(feature = "hydrate")]
         {
-            if let Some(t) = saved_theme() {
-                theme.set(t);
-            }
+            let current = web_sys::window()
+                .and_then(|w| w.document())
+                .and_then(|d| d.document_element())
+                .and_then(|el| el.get_attribute("data-theme"))
+                .unwrap_or_else(|| "dark".to_string());
+            let next = match current.as_str() {
+                "dark" => "oled",
+                "oled" => "light",
+                _ => "dark",
+            };
+            apply_theme(next);
         }
-    });
-
-    let cycle = move |_| {
-        let next = match theme.get_untracked().as_str() {
-            "dark" => "oled",
-            "oled" => "light",
-            _ => "dark",
-        };
-        theme.set(next.to_string());
-        #[cfg(feature = "hydrate")]
-        apply_theme(next);
     };
 
     view! {
-        <button class="toggle" on:click=cycle>
-            {move || theme.get()}
-        </button>
+        <button class="toggle theme-toggle" title="Switch color theme" on:click=cycle></button>
     }
 }
 
@@ -2060,9 +2059,11 @@ fn IconsToggle() -> impl IntoView {
     };
 
     view! {
+        // The on-state highlight comes from `data-icons` on <html> (set pre-paint),
+        // not a reactive class — so it's correct at first paint with no flash. The
+        // `show` signal only feeds the hover tooltip here.
         <button
-            class="toggle state-toggle"
-            class:on=move || show.get()
+            class="toggle state-toggle icons-toggle"
             title=move || if show.get() { "Hide team icons" } else { "Show team icons" }
             on:click=toggle
         >
@@ -2092,19 +2093,6 @@ fn apply_icons(on: bool) {
             let _ = storage.set_item(keys::ICONS, val);
         }
     }
-}
-
-/// The saved theme ("dark"/"light"/"oled"), if a valid one is stored.
-#[cfg(feature = "hydrate")]
-fn saved_theme() -> Option<String> {
-    web_sys::window()?
-        .local_storage()
-        .ok()
-        .flatten()?
-        .get_item(keys::THEME)
-        .ok()
-        .flatten()
-        .filter(|t| matches!(t.as_str(), "dark" | "light" | "oled"))
 }
 
 /// Apply a theme: set `data-theme` on <html> and persist it.
@@ -2143,15 +2131,14 @@ fn ScoresToggle() -> impl IntoView {
         let next = !show.get_untracked();
         show.set(next);
         #[cfg(feature = "hydrate")]
-        save_scores_pref(next);
+        apply_scores(next);
     };
     view! {
-        // Fixed "scores" label; it brightens (the `on` class) once scores are
-        // revealed, which is more compact than a "show"/"hide" prefix. The action
-        // it'll perform is spelled out in the hover tooltip.
+        // Fixed "scores" label; the filled on-state (a more compact signal than a
+        // "show"/"hide" prefix) is driven by `data-scores` on <html>, set pre-paint
+        // so it doesn't flash on load. The action is spelled out in the tooltip.
         <button
-            class="toggle state-toggle"
-            class:on=move || show.get()
+            class="toggle state-toggle scores-toggle"
             title=move || if show.get() { "Hide scores" } else { "Show scores" }
             on:click=toggle
         >
@@ -2630,16 +2617,49 @@ fn initial_sport_mode() -> bool {
     false
 }
 
+/// The VAPID public key for this render, if Web Push is configured. Read from the
+/// server env during SSR (and to embed in the shell `<meta>`), and from that same
+/// `<meta name="pte-vapid">` during hydrate — so both renders agree and the
+/// subscribe ★s are present on the first paint instead of popping in after a
+/// `get_vapid_key` round-trip. `None` keeps them hidden.
+#[cfg(feature = "ssr")]
+fn initial_vapid() -> Option<String> {
+    let cfg = crate::config::Config::from_env();
+    cfg.push_enabled().then_some(cfg.vapid_public)
+}
+
+#[cfg(feature = "hydrate")]
+fn initial_vapid() -> Option<String> {
+    web_sys::window()?
+        .document()?
+        .query_selector("meta[name=\"pte-vapid\"]")
+        .ok()
+        .flatten()
+        .and_then(|el| el.get_attribute("content"))
+        .filter(|s| !s.is_empty())
+}
+
+#[cfg(not(any(feature = "ssr", feature = "hydrate")))]
+fn initial_vapid() -> Option<String> {
+    None
+}
+
 #[cfg(feature = "hydrate")]
 fn save_sport_pref(traditional: bool) {
     write_cookie(SPORT_MODE_KEY, if traditional { "sports" } else { "esports" });
 }
 
+/// Apply the scores preference: set `data-scores` on <html> (drives the scores
+/// toggle's on-state, set pre-paint to avoid a flash) and persist it.
 #[cfg(feature = "hydrate")]
-fn save_scores_pref(show: bool) {
+fn apply_scores(show: bool) {
+    let val = if show { "1" } else { "0" };
     if let Some(win) = web_sys::window() {
+        if let Some(root) = win.document().and_then(|d| d.document_element()) {
+            let _ = root.set_attribute("data-scores", val);
+        }
         if let Ok(Some(storage)) = win.local_storage() {
-            let _ = storage.set_item(keys::SCORES, if show { "1" } else { "0" });
+            let _ = storage.set_item(keys::SCORES, val);
         }
     }
 }
