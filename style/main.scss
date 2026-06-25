@@ -2304,6 +2304,12 @@ a.bk-team-link {
   color: var(--border);
 }
 
+// A team row carries both its full label and its official abbreviation; only the
+// label shows until a narrow viewport swaps to the abbreviation (below).
+.tabbr {
+  display: none;
+}
+
 // ===== Responsive: narrow / mobile viewports ================================
 // The toggle bar becomes two rows: the brand (still the absolute overlay) and the
 // display prefs (icons / 24h / theme) on top, then the schedule controls below.
@@ -2348,5 +2354,15 @@ a.bk-team-link {
 
   .scrolltop {
     margin-right: 0;
+  }
+
+  // Compact rows are too narrow for full team names, so show the official
+  // abbreviation in their place (teams that have one — esports keep their label).
+  .row-team .tname {
+    display: none;
+  }
+
+  .row-team .tabbr {
+    display: inline;
   }
 }

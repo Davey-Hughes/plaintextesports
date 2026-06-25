@@ -813,6 +813,22 @@ fn clogo_icon(logo: &str) -> AnyView {
     .into_any()
 }
 
+/// A team's name for a compact row: its label, with the official abbreviation as a
+/// second copy that CSS swaps in where the row is too narrow for the full label
+/// (see `.tname`/`.tabbr`). When the source has no abbreviation (esports, whose
+/// label is already an acronym) it's just the label.
+fn team_cell(label: String, abbrev: String) -> AnyView {
+    if abbrev.is_empty() {
+        view! { {label} }.into_any()
+    } else {
+        view! {
+            <span class="tname">{label}</span>
+            <span class="tabbr">{abbrev}</span>
+        }
+        .into_any()
+    }
+}
+
 /// An event's stages rendered as labelled sections — each a Swiss/group stage
 /// (with a bracket/list toggle) and/or a playoff bracket. One toggle drives
 /// every Swiss stage. Shared by the event page and the front-page single-event
@@ -4081,7 +4097,7 @@ fn MatchRow(m: MatchView, show_bo: bool, push: bool) -> impl IntoView {
     let inner = if m.game.single_entity() {
         view! {
             {time_view}
-            <span class="row-team row-solo">{m.team_a.label}</span>
+            <span class="row-team row-solo">{team_cell(m.team_a.label, m.team_a.abbrev)}</span>
             {meta_view}
         }
         .into_any()
@@ -4093,7 +4109,7 @@ fn MatchRow(m: MatchView, show_bo: bool, push: bool) -> impl IntoView {
                 class:winner=move || reveal.get() && win_a
                 class:loser=move || reveal.get() && win_b
             >
-                {m.team_a.label}
+                {team_cell(m.team_a.label, m.team_a.abbrev)}
             </span>
             <span class="row-mid" class:scored=move || reveal.get() && has>
                 {move || {
@@ -4109,7 +4125,7 @@ fn MatchRow(m: MatchView, show_bo: bool, push: bool) -> impl IntoView {
                 class:winner=move || reveal.get() && win_b
                 class:loser=move || reveal.get() && win_a
             >
-                {m.team_b.label}
+                {team_cell(m.team_b.label, m.team_b.abbrev)}
             </span>
             {meta_view}
         }
@@ -4427,14 +4443,16 @@ mod tests {
                 score: None,
                 winner: false,
                 logo: String::new(),
-            },
+                            abbrev: String::new(),
+},
             team_b: TeamView {
                 label: "B".into(),
                 name: "B".into(),
                 score: None,
                 winner: false,
                 logo: String::new(),
-            },
+                            abbrev: String::new(),
+},
             stream_url: None,
             event_url: String::new(),
             begin_at_ms: 0,

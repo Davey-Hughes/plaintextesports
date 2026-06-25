@@ -1049,6 +1049,7 @@ fn to_view(m: &NormalizedMatch, tz: &Tz, now: DateTime<Utc>, hour24: bool) -> Ma
         score: trust_scores.then_some(m.team_a.score).flatten(),
         winner: false,
         logo: m.team_a_logo.clone(),
+        abbrev: m.team_a.abbrev.clone(),
     };
     let mut team_b = TeamView {
         label: m.team_b.label.clone(),
@@ -1056,6 +1057,7 @@ fn to_view(m: &NormalizedMatch, tz: &Tz, now: DateTime<Utc>, hour24: bool) -> Ma
         score: trust_scores.then_some(m.team_b.score).flatten(),
         winner: false,
         logo: m.team_b_logo.clone(),
+        abbrev: m.team_b.abbrev.clone(),
     };
     // Only a finished match has a winner; a leader mid-match isn't one yet.
     if status == MatchStatus::Finished {
@@ -2291,6 +2293,7 @@ fn demo_team(label: &str, score: Option<i64>) -> NormTeam {
     NormTeam {
         label: label.to_string(),
         name: label.to_string(),
+        abbrev: String::new(),
         score,
     }
 }
@@ -2477,12 +2480,14 @@ mod tests {
                 label: "A".into(),
                 name: "A".into(),
                 score: None,
-            },
+                            abbrev: String::new(),
+},
             team_b: NormTeam {
                 label: "B".into(),
                 name: "B".into(),
                 score: None,
-            },
+                            abbrev: String::new(),
+},
             stream_url: None,
             tournament_id: None,
             venue_tz: None,
@@ -2616,14 +2621,16 @@ mod tests {
                 score: None,
                 winner: false,
                 logo: String::new(),
-            },
+                            abbrev: String::new(),
+},
             team_b: TeamView {
                 label: "B".into(),
                 name: "B".into(),
                 score: None,
                 winner: false,
                 logo: String::new(),
-            },
+                            abbrev: String::new(),
+},
             stream_url: None,
             event_url: String::new(),
             begin_at_ms: at_ms,
@@ -2672,14 +2679,16 @@ mod tests {
                 score: None,
                 winner: false,
                 logo: String::new(),
-            },
+                            abbrev: String::new(),
+},
             team_b: TeamView {
                 label: "B".into(),
                 name: "B".into(),
                 score: None,
                 winner: false,
                 logo: String::new(),
-            },
+                            abbrev: String::new(),
+},
             stream_url: None,
             event_url: String::new(),
             begin_at_ms: at_ms,
@@ -2718,8 +2727,8 @@ mod tests {
             venue_name: String::new(),
             venue_location: String::new(),
             best_of: "Bo3".into(),
-            team_a: TeamView { label: "A".into(), name: "A".into(), score: None, winner: false, logo: String::new() },
-            team_b: TeamView { label: "B".into(), name: "B".into(), score: None, winner: false, logo: String::new() },
+            team_a: TeamView { label: "A".into(), name: "A".into(), score: None, winner: false, logo: String::new(), abbrev: String::new() },
+            team_b: TeamView { label: "B".into(), name: "B".into(), score: None, winner: false, logo: String::new(), abbrev: String::new() },
             stream_url: None,
             event_url: String::new(),
             begin_at_ms: at_ms,

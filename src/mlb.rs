@@ -316,11 +316,13 @@ fn to_match(g: RawGame) -> Option<NormalizedMatch> {
         NormTeam {
             label: g.teams.away.team.label(),
             name: g.teams.away.team.full_name(),
+            abbrev: g.teams.away.team.abbreviation.clone(),
             score: g.teams.away.score,
         },
         NormTeam {
             label: g.teams.home.team.label(),
             name: g.teams.home.team.full_name(),
+            abbrev: g.teams.home.team.abbreviation.clone(),
             score: g.teams.home.score,
         },
     );

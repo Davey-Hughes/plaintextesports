@@ -229,11 +229,13 @@ fn to_matches(r: &RawRace, now: DateTime<Utc>) -> Vec<NormalizedMatch> {
                 NormTeam {
                     label: s.label.to_string(),
                     name: String::new(),
+                    abbrev: String::new(),
                     score: None,
                 },
                 NormTeam {
                     label: String::new(),
                     name: String::new(),
+                    abbrev: String::new(),
                     score: None,
                 },
             );
