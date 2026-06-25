@@ -335,6 +335,8 @@ const fn game_path(game: Game) -> &'static str {
         // Traditional sports aren't PandaScore games; never fetched here.
         Game::Mlb => "mlb",
         Game::Nhl => "nhl",
+        Game::Nba => "nba",
+        Game::Nfl => "nfl",
         Game::F1 => "f1",
     }
 }

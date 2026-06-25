@@ -520,7 +520,7 @@ fn SiteFooter() -> impl IntoView {
                 <span>
                     {move || {
                         if traditional.get() {
-                            "MLB + NHL + F1 schedules"
+                            "MLB + NHL + NBA + NFL + F1 schedules"
                         } else {
                             "tier-1 cs2 + lol schedules"
                         }
@@ -530,7 +530,7 @@ fn SiteFooter() -> impl IntoView {
                 <span>
                     {move || {
                         if traditional.get() {
-                            "data via MLB Stats API, NHL & Jolpica"
+                            "data via MLB Stats API, NHL, ESPN & Jolpica"
                         } else {
                             "data via PandaScore"
                         }
@@ -2159,14 +2159,15 @@ fn StandingsTable(rows: Vec<StandingRow>, tournament_id: i64, game: Game) -> imp
     let record_label = match game {
         Game::Lol => "Games",
         Game::Cs2 => "Maps",
-        Game::Mlb => "GB",
+        Game::Mlb | Game::Nba => "GB",
         Game::Nhl => "PTS",
+        Game::Nfl => "PCT",
         // F1 has no standings table (it uses a results rendering instead).
         Game::F1 => "",
     };
-    // MLB and NHL put a single value in the last column (games-back / points)
-    // rather than a map/game record.
-    let show_last = matches!(game, Game::Mlb | Game::Nhl);
+    // The traditional team sports put a single value in the last column
+    // (games-back / points / win%) rather than a map/game record.
+    let show_last = matches!(game, Game::Mlb | Game::Nhl | Game::Nba | Game::Nfl);
     // Click the "Standings" title to reveal/hide the table.
     let (revealed, toggle) = section_reveal(format!("st:{tournament_id}"));
     // Always render every row so the table reserves its height — when hidden, the
@@ -3889,9 +3890,9 @@ fn schedule_needs_window(s: &ScheduleView) -> bool {
         .iter()
         .flat_map(|d| &d.leagues)
         .flat_map(|lg| &lg.matches)
-        // MLB and NHL play daily, so an event schedule of them caps its horizon
-        // like the homepage; F1 (single-entity) shows its whole GP instead.
-        .any(|m| matches!(m.game, Game::Mlb | Game::Nhl))
+        // The team sports play often, so an event schedule of them caps its
+        // horizon like the homepage; F1 (single-entity) shows its whole GP.
+        .any(|m| matches!(m.game, Game::Mlb | Game::Nhl | Game::Nba | Game::Nfl))
 }
 
 /// `(season, round)` for an F1 event's schedule, recovered from a session id
@@ -4366,6 +4367,8 @@ fn SportTabs(
             <div class="tabs-list">
                 {with_star("MLB", "mlb")}
                 {with_star("NHL", "nhl")}
+                {with_star("NBA", "nba")}
+                {with_star("NFL", "nfl")}
                 {with_star("F1", "f1")}
             </div>
             {move || {

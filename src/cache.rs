@@ -110,6 +110,45 @@ pub fn nhl_team_divisions(team_a: &str, team_b: &str) -> Vec<EventInfo> {
         .collect()
 }
 
+/// Current NBA and NFL conference standings, refreshed by the poller from the
+/// keyless ESPN API. Empty until the first successful fetch.
+static NBA_STANDINGS: Lazy<RwLock<Vec<EventInfo>>> = Lazy::new(|| RwLock::new(Vec::new()));
+static NFL_STANDINGS: Lazy<RwLock<Vec<EventInfo>>> = Lazy::new(|| RwLock::new(Vec::new()));
+
+fn espn_standings(store: &RwLock<Vec<EventInfo>>) -> Vec<EventInfo> {
+    store.read().unwrap_or_else(PoisonError::into_inner).clone()
+}
+
+fn espn_team_groups(store: &RwLock<Vec<EventInfo>>, team_a: &str, team_b: &str) -> Vec<EventInfo> {
+    store
+        .read()
+        .unwrap_or_else(PoisonError::into_inner)
+        .iter()
+        .filter(|g| g.standings.iter().any(|r| r.team == team_a || r.team == team_b))
+        .cloned()
+        .collect()
+}
+
+/// The NBA conference standings (both tables), for the `/event/NBA` page.
+pub fn nba_standings() -> Vec<EventInfo> {
+    espn_standings(&NBA_STANDINGS)
+}
+
+/// The NFL conference standings (both tables), for the `/event/NFL` page.
+pub fn nfl_standings() -> Vec<EventInfo> {
+    espn_standings(&NFL_STANDINGS)
+}
+
+/// The conference table(s) containing `team_a`/`team_b`, for an NBA match page.
+pub fn nba_team_groups(team_a: &str, team_b: &str) -> Vec<EventInfo> {
+    espn_team_groups(&NBA_STANDINGS, team_a, team_b)
+}
+
+/// The conference table(s) containing `team_a`/`team_b`, for an NFL match page.
+pub fn nfl_team_groups(team_a: &str, team_b: &str) -> Vec<EventInfo> {
+    espn_team_groups(&NFL_STANDINGS, team_a, team_b)
+}
+
 /// Per-game MLB series, fetched on demand (detail page) and cached with a short
 /// TTL keyed by "gamePk|tz|hour24" (the tz/12h-24h pref affects the game times),
 /// so repeated page views don't re-hit the MLB API.
@@ -412,21 +451,40 @@ pub fn spawn_poller() {
             // Keep about a week of past MLB days so "show earlier days" has
             // something to reveal; the display still defaults to today onward.
             let mlb_window = ((now - Duration::days(8)).date_naive(), window_end.date_naive());
-            // NHL shares MLB's window; both are keyless team-sport feeds.
+            // NHL, NBA and NFL share MLB's window; all keyless team-sport feeds.
             let nhl_window = mlb_window;
+            let espn_window = mlb_window;
             // F1 comes from its own keyless API (Jolpica); the whole season's
             // sessions are fetched and the snapshot windowing decides what shows.
-            let (cs_res, lol_res, mlb_raw, mlb_standings_raw, nhl_raw, nhl_standings_raw, f1_raw) = tokio::join!(
+            let (
+                cs_res,
+                lol_res,
+                mlb_raw,
+                mlb_standings_raw,
+                nhl_raw,
+                nhl_standings_raw,
+                nba_raw,
+                nba_standings_raw,
+                nfl_raw,
+                nfl_standings_raw,
+                f1_raw,
+            ) = tokio::join!(
                 fetch_game(&client, &token, Game::Cs2, window_end, deep),
                 fetch_game(&client, &token, Game::Lol, window_end, deep),
                 crate::mlb::fetch_schedule(&client, mlb_window.0, mlb_window.1),
                 crate::mlb::fetch_standings(&client, now.year()),
                 crate::nhl::fetch_schedule(&client, nhl_window.0, nhl_window.1),
                 crate::nhl::fetch_standings(&client),
+                crate::espn::fetch_schedule(&client, &crate::espn::NBA, espn_window.0, espn_window.1),
+                crate::espn::fetch_standings(&client, &crate::espn::NBA, crate::espn::season_year(Game::Nba, now)),
+                crate::espn::fetch_schedule(&client, &crate::espn::NFL, espn_window.0, espn_window.1),
+                crate::espn::fetch_standings(&client, &crate::espn::NFL, crate::espn::season_year(Game::Nfl, now)),
                 crate::f1::fetch_schedule(&client, now.year()),
             );
             let mlb_res: FetchResult = mlb_raw.map_err(Into::into);
             let nhl_res: FetchResult = nhl_raw.map_err(Into::into);
+            let nba_res: FetchResult = nba_raw.map_err(Into::into);
+            let nfl_res: FetchResult = nfl_raw.map_err(Into::into);
             let f1_res: FetchResult = f1_raw.map_err(Into::into);
             apply_poll(
                 vec![
@@ -434,6 +492,8 @@ pub fn spawn_poller() {
                     (Game::Lol, lol_res),
                     (Game::Mlb, mlb_res),
                     (Game::Nhl, nhl_res),
+                    (Game::Nba, nba_res),
+                    (Game::Nfl, nfl_res),
                     (Game::F1, f1_res),
                 ],
                 store.as_mut(),
@@ -447,6 +507,21 @@ pub fn spawn_poller() {
                 }
                 Ok(_) => {}
                 Err(e) => leptos::logging::log!("NHL standings fetch failed: {e}"),
+            }
+            // Refresh the NBA + NFL standings caches (same keep-on-error policy).
+            match nba_standings_raw {
+                Ok(confs) if !confs.is_empty() => {
+                    *NBA_STANDINGS.write().unwrap_or_else(PoisonError::into_inner) = confs;
+                }
+                Ok(_) => {}
+                Err(e) => leptos::logging::log!("NBA standings fetch failed: {e}"),
+            }
+            match nfl_standings_raw {
+                Ok(confs) if !confs.is_empty() => {
+                    *NFL_STANDINGS.write().unwrap_or_else(PoisonError::into_inner) = confs;
+                }
+                Ok(_) => {}
+                Err(e) => leptos::logging::log!("NFL standings fetch failed: {e}"),
             }
             // Refresh the MLB standings cache (keep the old tables on error or an
             // empty off-season response, rather than blanking the page).
@@ -1040,7 +1115,7 @@ fn event_link(game: Game, league: &str, official: Option<&str>) -> String {
         Game::Cs2 => "counterstrike",
         Game::Lol => "leagueoflegends",
         // Traditional sports have no Liquipedia link; unused.
-        Game::Mlb | Game::Nhl | Game::F1 => "counterstrike",
+        Game::Mlb | Game::Nhl | Game::Nba | Game::Nfl | Game::F1 => "counterstrike",
     };
     format!(
         "https://liquipedia.net/{wiki}/index.php?search={}",
@@ -1116,8 +1191,10 @@ fn group_days(views: Vec<MatchView>, tz: &Tz) -> Vec<DayGroup> {
             Some(Game::Lol) => 1,
             Some(Game::Mlb) => 2,
             Some(Game::Nhl) => 3,
-            Some(Game::F1) => 4,
-            None => 5,
+            Some(Game::Nba) => 4,
+            Some(Game::Nfl) => 5,
+            Some(Game::F1) => 6,
+            None => 7,
         });
     }
     days
