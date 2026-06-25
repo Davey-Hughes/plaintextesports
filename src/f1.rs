@@ -352,20 +352,29 @@ fn nationality_flag(nationality: &str) -> String {
 /// CDN slug + year aren't a clean 1:1 with the id, so they're mapped here; teams
 /// new in 2026 (Audi, Cadillac) have no CDN logo yet, so they get none.
 fn constructor_logo(constructor_id: &str) -> String {
+    // Maps the Ergast/Jolpica constructorId to F1's own 2026 logo slug. We use the
+    // transparent "white" silhouette (the alternative is colour, but several 2026
+    // logos — Audi, Cadillac, Mercedes — are near-black and vanish on the dark
+    // theme); it's rendered as a `currentColor` CSS mask so it adapts to the theme
+    // and is always visible. Covers the full 2026 grid, including the new teams.
     let slug = match constructor_id {
-        "red_bull" => "red-bull-racing",
-        "rb" => "racing-bulls",
-        "sauber" => "kick-sauber",
-        "aston_martin" => "aston-martin",
+        "red_bull" => "redbullracing",
+        "rb" | "racing_bulls" => "racingbulls",
+        // The Sauber entry becomes Audi for 2026; accept either id.
+        "sauber" | "audi" => "audi",
+        "cadillac" => "cadillac",
+        "aston_martin" => "astonmartin",
         "mercedes" => "mercedes",
         "ferrari" => "ferrari",
         "mclaren" => "mclaren",
         "alpine" => "alpine",
         "williams" => "williams",
-        "haas" => "haas",
+        "haas" => "haasf1team",
         _ => return String::new(),
     };
-    format!("https://media.formula1.com/content/dam/fom-website/teams/2025/{slug}-logo.png")
+    format!(
+        "https://media.formula1.com/image/upload/c_lfill,w_64/q_auto/common/f1/2026/{slug}/2026{slug}logowhite.webp"
+    )
 }
 #[derive(Deserialize, Default)]
 struct RawTime {

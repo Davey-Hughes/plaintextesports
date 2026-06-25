@@ -1199,10 +1199,17 @@ a {
   border-radius: 2px;
 }
 
+// The constructor logo is F1's official 2026 white silhouette, painted in the
+// current text colour through a CSS mask (`--clogo` carries the image URL) so it
+// adapts to the theme and stays visible everywhere — the colour artwork is
+// near-black for some 2026 teams and would disappear on the dark theme.
 .team-logo.f1-clogo {
   width: 1.1em;
   height: 1.1em;
   margin-right: 0.3em;
+  background-color: currentColor;
+  -webkit-mask: var(--clogo) center / contain no-repeat;
+  mask: var(--clogo) center / contain no-repeat;
 }
 
 // ----- Notifications management page ----------------------------------------
