@@ -792,6 +792,21 @@ fn team_logo(logo: &str, extra: &str) -> AnyView {
     .into_any()
 }
 
+/// An F1 constructor's logo rendered as a `currentColor` CSS mask of F1's official
+/// 2026 white silhouette, so it tracks the theme's foreground and stays visible on
+/// every theme (the colour artwork is near-black for some teams). Nothing when the
+/// constructor has no mapped logo. Keeps the `team-logo` class so the global icons
+/// toggle hides it alongside the raster logos.
+fn clogo_icon(logo: &str) -> AnyView {
+    if logo.is_empty() {
+        return ().into_any();
+    }
+    view! {
+        <span class="team-logo f1-clogo" style=format!("--clogo:url('{logo}')")></span>
+    }
+    .into_any()
+}
+
 /// An event's stages rendered as labelled sections — each a Swiss/group stage
 /// (with a bracket/list toggle) and/or a playoff bracket. One toggle drives
 /// every Swiss stage. Shared by the event page and the front-page single-event
@@ -951,7 +966,7 @@ fn F1Results(results: Vec<F1Result>, season: i64, round: i64) -> impl IntoView {
                                     {team_logo(&flag, "f1-flag")}{driver}
                                 </span>
                                 <span class="f1-con">
-                                    {team_logo(&clogo, "f1-clogo")}{con}
+                                    {clogo_icon(&clogo)}{con}
                                 </span>
                                 <span class="f1-detail">{detail}</span>
                             </li>
@@ -1011,7 +1026,7 @@ fn F1StandingsView(standings: F1Standings, season: i64, round: i64) -> impl Into
                     <li class="f1-standing-row">
                         <span class="f1-pos">{r.pos}</span>
                         <span class="f1-standing-name">{team_logo(&flag, "f1-flag")}{name}</span>
-                        <span class="f1-standing-con">{team_logo(&clogo, "f1-clogo")}{con}</span>
+                        <span class="f1-standing-con">{clogo_icon(&clogo)}{con}</span>
                         <span class="f1-standing-pts">{pts}</span>
                     </li>
                 }
@@ -1029,7 +1044,7 @@ fn F1StandingsView(standings: F1Standings, season: i64, round: i64) -> impl Into
                 view! {
                     <li class="f1-standing-row f1-standing-row-con">
                         <span class="f1-pos">{r.pos}</span>
-                        <span class="f1-standing-name">{team_logo(&clogo, "f1-clogo")}{name}</span>
+                        <span class="f1-standing-name">{clogo_icon(&clogo)}{name}</span>
                         <span class="f1-standing-pts">{pts}</span>
                     </li>
                 }
