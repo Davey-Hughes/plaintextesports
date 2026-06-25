@@ -3477,9 +3477,30 @@ fn ScheduleSection(
     leagues: RwSignal<HashSet<String>>,
     show_nav: bool,
 ) -> impl IntoView {
-    // The game/event filters and per-event standings are esports-only; MLB mode
-    // shows the whole MLB schedule unfiltered.
     let traditional = use_context::<SportMode>().expect("sport mode context").0;
+    // In traditional mode, the league whose standings to show beneath the schedule
+    // — but only when the current filters narrow the view to exactly one league
+    // (its tab, or a single soccer chip), mirroring the esports single-event
+    // bracket. Empty when ambiguous (several leagues) or in esports mode.
+    let trad_standings_league = Memo::new(move |_| {
+        if !traditional.get() {
+            return String::new();
+        }
+        let Some(Ok(s)) = resource.get() else {
+            return String::new();
+        };
+        let available = leagues_for_games(&s, &games.get());
+        let selected = leagues.get();
+        let effective: Vec<String> = if selected.is_empty() {
+            available
+        } else {
+            available.into_iter().filter(|l| selected.contains(l)).collect()
+        };
+        match effective.as_slice() {
+            [only] => only.clone(),
+            _ => String::new(),
+        }
+    });
     view! {
         // Transition (not Suspense) so re-keying the resource — e.g. "show
         // earlier days" extends the range — keeps the current schedule on screen
@@ -3539,6 +3560,37 @@ fn ScheduleSection(
         </Transition>
         // When exactly one esports event is selected, show its standings/bracket.
         {move || (!traditional.get()).then(|| view! { <EventSection leagues=leagues /> })}
+        // Likewise, a single traditional league shows its division/group tables.
+        <TraditionalStandings league=trad_standings_league />
+    }
+}
+
+/// The division/conference/group standings for a single traditional league,
+/// shown beneath the home-page schedule once the filters narrow to one league
+/// (the team-sport analogue of the esports single-event bracket). Empty league =
+/// nothing rendered.
+#[component]
+fn TraditionalStandings(league: Memo<String>) -> impl IntoView {
+    let stages = Resource::new(
+        move || league.get(),
+        |lg| async move {
+            if lg.is_empty() {
+                Ok(Vec::new())
+            } else {
+                get_event_stages(lg).await
+            }
+        },
+    );
+    view! {
+        <Suspense>
+            {move || {
+                stages
+                    .get()
+                    .and_then(Result::ok)
+                    .filter(|v| !v.is_empty())
+                    .map(|v| view! { <EventStages stages=v /> })
+            }}
+        </Suspense>
     }
 }
 
