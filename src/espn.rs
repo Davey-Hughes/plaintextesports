@@ -29,6 +29,10 @@ pub struct EspnLeague {
     rank_stat: &'static str,
     /// Base id for the conference standings tables (id = base + conference index).
     standings_base: i64,
+    /// Whether this competition recurs as dated editions rather than one ongoing
+    /// season — the World Cup, whose serie carries the year so 2026 and 2030 are
+    /// distinct events. The seasonal leagues (NFL/NBA/PL) leave their serie empty.
+    dated_event: bool,
 }
 
 pub const NFL: EspnLeague = EspnLeague {
@@ -39,6 +43,7 @@ pub const NFL: EspnLeague = EspnLeague {
     last_stat: "winPercent",
     rank_stat: "wins",
     standings_base: 500,
+    dated_event: false,
 };
 
 pub const NBA: EspnLeague = EspnLeague {
@@ -49,6 +54,7 @@ pub const NBA: EspnLeague = EspnLeague {
     last_stat: "gamesBehind",
     rank_stat: "wins",
     standings_base: 400,
+    dated_event: false,
 };
 
 pub const EPL: EspnLeague = EspnLeague {
@@ -60,6 +66,7 @@ pub const EPL: EspnLeague = EspnLeague {
     last_stat: "points",
     rank_stat: "points",
     standings_base: 700,
+    dated_event: false,
 };
 
 pub const WORLD_CUP: EspnLeague = EspnLeague {
@@ -70,6 +77,7 @@ pub const WORLD_CUP: EspnLeague = EspnLeague {
     last_stat: "points",
     rank_stat: "points",
     standings_base: 600,
+    dated_event: true,
 };
 
 /// ESPN's season year for a European league (Aug–May; labelled by start year).
@@ -318,6 +326,11 @@ fn to_match(e: Event, lg: &EspnLeague) -> Option<NormalizedMatch> {
     // venue-time toggle works — notably for the World Cup's US/Canada/Mexico hosts.
     m.venue_tz = venue_tz(&comp.venue.address.city, &comp.venue.address.country)
         .map(str::to_string);
+    // A dated tournament (the World Cup) carries its year as the serie, so each
+    // edition is a distinct event; the seasonal leagues keep an empty serie.
+    if lg.dated_event {
+        m.serie_name = begin_at.year().to_string();
+    }
     Some(m)
 }
 

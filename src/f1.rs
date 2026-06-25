@@ -237,8 +237,10 @@ fn to_matches(r: &RawRace, now: DateTime<Utc>) -> Vec<NormalizedMatch> {
                     score: None,
                 },
             );
-            // The Grand Prix is the event (e.g. "Austrian Grand Prix").
-            m.serie_name = r.race_name.clone();
+            // The Grand Prix is the event, qualified by season so each year's
+            // edition is distinct (e.g. "Austrian Grand Prix 2026") — the same GP
+            // recurs annually and must not collide across seasons.
+            m.serie_name = format!("{} {season}", r.race_name);
             m.venue_tz = venue_tz.clone();
             m.venue_name = r.circuit.circuit_name.clone();
             m.venue_location = r.circuit.location.label();
@@ -669,7 +671,8 @@ mod tests {
         // FP1, FP2, FP3, Qualifying, Race — no sprint sessions this weekend.
         assert_eq!(ms.len(), 5);
         assert!(ms.iter().all(|m| m.game == Game::F1 && m.league == "F1"));
-        assert!(ms.iter().all(|m| m.serie_name == "Austrian Grand Prix"));
+        // The serie is the GP qualified by season, so editions don't collide.
+        assert!(ms.iter().all(|m| m.serie_name == "Austrian Grand Prix 2026"));
         let labels: Vec<&str> = ms.iter().map(|m| m.team_a.label.as_str()).collect();
         assert_eq!(labels, ["Practice 1", "Practice 2", "Practice 3", "Qualifying", "Race"]);
         // Every session is in the future relative to `now`, so all upcoming.
