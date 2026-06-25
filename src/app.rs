@@ -333,7 +333,8 @@ fn flash_match_row(mid: i64) -> bool {
 fn FilterUrlSync() -> impl IntoView {
     let games = use_context::<Games>().expect("games context").0;
     let leagues = use_context::<Leagues>().expect("leagues context").0;
-    let _ = (games, leagues);
+    let traditional = use_context::<SportMode>().expect("sport mode context").0;
+    let _ = (games, leagues, traditional);
     #[cfg(feature = "hydrate")]
     {
         use leptos_router::hooks::{use_location, use_navigate, use_query_map};
@@ -351,13 +352,26 @@ fn FilterUrlSync() -> impl IntoView {
         // preference. (`get_untracked` ⇒ this effect runs a single time.)
         Effect::new(move |_| {
             let q = query.get_untracked();
-            match q.get("g").filter(|v| !v.is_empty()) {
-                Some(v) => games.set(parse_set(&v)),
+            let g_param = q.get("g").filter(|v| !v.is_empty());
+            match &g_param {
+                Some(v) => games.set(parse_set(v)),
                 None => games.set(load_str_set("games")),
             }
             match q.get("e").filter(|v| !v.is_empty()) {
                 Some(v) => leagues.set(parse_set(&v)),
                 None => leagues.set(load_str_set("leagues")),
+            }
+            // Sport mode: an explicit ?mode wins (a shared link); else infer it
+            // from a known game slug in ?g, so e.g. ?g=nhl lands in sports mode.
+            // Otherwise the cookie/default the App effect already set stands.
+            if let Some(m) = q.get("mode").filter(|v| !v.is_empty()) {
+                traditional.set(m == "sports");
+            } else if let Some(v) = &g_param {
+                let slugs = parse_set(v);
+                if slugs.iter().any(|s| Game::from_filter(s).is_some()) {
+                    traditional
+                        .set(slugs.iter().any(|s| Game::from_filter(s).is_some_and(Game::traditional)));
+                }
             }
         });
 
@@ -367,6 +381,7 @@ fn FilterUrlSync() -> impl IntoView {
             let path = location.pathname.get();
             let g = games.get();
             let l = leagues.get();
+            let trad = traditional.get();
             if !(path == "/" || path.is_empty() || path.starts_with("/day")) {
                 return;
             }
@@ -379,6 +394,10 @@ fn FilterUrlSync() -> impl IntoView {
                     .join(",")
             };
             let mut parts = Vec::new();
+            // esports is the default, so only the sports mode is spelled out.
+            if trad {
+                parts.push("mode=sports".to_string());
+            }
             if !g.is_empty() {
                 parts.push(format!("g={}", enc(&g)));
             }
@@ -3635,22 +3654,39 @@ fn load_scores_pref() -> bool {
         .is_some_and(|v| v == "1")
 }
 
+/// Read a cookie value by name (client-side).
+#[cfg(feature = "hydrate")]
+fn read_cookie(name: &str) -> Option<String> {
+    use wasm_bindgen::JsValue;
+    let doc = web_sys::window()?.document()?;
+    let cookies = js_sys::Reflect::get(&doc, &JsValue::from_str("cookie")).ok()?.as_string()?;
+    cookies.split(';').find_map(|kv| {
+        let (k, v) = kv.trim().split_once('=')?;
+        (k == name).then(|| v.to_string())
+    })
+}
+
+/// Write a long-lived, root-scoped cookie (client-side).
+#[cfg(feature = "hydrate")]
+fn write_cookie(name: &str, value: &str) {
+    use wasm_bindgen::JsValue;
+    if let Some(doc) = web_sys::window().and_then(|w| w.document()) {
+        // ~1 year; lax so it rides top-level navigations (shared links).
+        let v = format!("{name}={value}; path=/; max-age=31536000; samesite=lax");
+        let _ = js_sys::Reflect::set(&doc, &JsValue::from_str("cookie"), &JsValue::from_str(&v));
+    }
+}
+
+/// The remembered sport mode — `true` = traditional sports, `false` = esports
+/// (the default). Persisted in a cookie so it survives reloads.
 #[cfg(feature = "hydrate")]
 fn load_sport_pref() -> bool {
-    web_sys::window()
-        .and_then(|w| w.local_storage().ok().flatten())
-        .and_then(|s| s.get_item("sport").ok().flatten())
-        .as_deref()
-        == Some("mlb")
+    read_cookie("mode").as_deref() == Some("sports")
 }
 
 #[cfg(feature = "hydrate")]
 fn save_sport_pref(traditional: bool) {
-    if let Some(win) = web_sys::window() {
-        if let Ok(Some(storage)) = win.local_storage() {
-            let _ = storage.set_item("sport", if traditional { "mlb" } else { "esports" });
-        }
-    }
+    write_cookie("mode", if traditional { "sports" } else { "esports" });
 }
 
 #[cfg(feature = "hydrate")]
