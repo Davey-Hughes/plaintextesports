@@ -3436,25 +3436,42 @@ fn ScheduleSection(
 ) -> impl IntoView {
     let traditional = use_context::<SportMode>().expect("sport mode context").0;
     // In traditional mode, the single league the filters narrow the view to (its
-    // tab, or a single soccer chip), mirroring the esports single-event bracket.
-    // Empty when ambiguous (several leagues) or in esports mode.
-    let single_league = Memo::new(move |_| {
-        if !traditional.get() {
-            return String::new();
-        }
-        let Some(Ok(s)) = resource.get() else {
-            return String::new();
-        };
-        let available = leagues_for_games(&s, &games.get());
-        let selected = leagues.get();
-        let effective: Vec<String> = if selected.is_empty() {
-            available
+    // tab, or a single soccer chip), mirroring the esports single-event bracket,
+    // plus the F1 season when narrowed to F1. Empty/None when ambiguous (several
+    // leagues) or in esports mode.
+    //
+    // Deriving these reads the schedule resource, which must happen inside an
+    // effect — a bare memo reading a resource warns in hydrate about reading
+    // outside <Suspense>. The effect writes plain signals the standings below key
+    // off, and only on change so a background schedule refresh doesn't churn them.
+    let single_league = RwSignal::new(String::new());
+    let f1_home_season = RwSignal::new(None::<i64>);
+    Effect::new(move |_| {
+        let (league, season) = if !traditional.get() {
+            (String::new(), None)
+        } else if let Some(Ok(s)) = resource.get() {
+            let available = leagues_for_games(&s, &games.get());
+            let selected = leagues.get();
+            let effective: Vec<String> = if selected.is_empty() {
+                available
+            } else {
+                available.into_iter().filter(|l| selected.contains(l)).collect()
+            };
+            match effective.as_slice() {
+                [only] if only == "F1" => {
+                    ("F1".to_string(), f1_season_round(&s).map(|(season, _)| season))
+                }
+                [only] => (only.clone(), None),
+                _ => (String::new(), None),
+            }
         } else {
-            available.into_iter().filter(|l| selected.contains(l)).collect()
+            (String::new(), None)
         };
-        match effective.as_slice() {
-            [only] => only.clone(),
-            _ => String::new(),
+        if single_league.get_untracked() != league {
+            single_league.set(league);
+        }
+        if f1_home_season.get_untracked() != season {
+            f1_home_season.set(season);
         }
     });
     // The team sports show their division/group tables; F1 has no such tables —
@@ -3468,16 +3485,9 @@ fn ScheduleSection(
             l
         }
     });
-    // When narrowed to F1, the season (from any F1 session id) for its current
-    // championship standings; `None` otherwise.
-    let f1_home_season = Memo::new(move |_| {
-        if single_league.get() != "F1" {
-            return None;
-        }
-        resource.get().and_then(Result::ok).and_then(|s| f1_season_round(&s)).map(|(season, _)| season)
-    });
     // Round 0 has no standings, so `fetch_standings` falls back to the latest
-    // completed round — i.e. the current championship picture.
+    // completed round — i.e. the current championship picture. `f1_home_season`
+    // is set by the effect above.
     let f1_home_standings = Resource::new(
         move || f1_home_season.get(),
         |season| async move {
