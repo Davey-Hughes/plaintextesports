@@ -645,6 +645,12 @@ pub struct F1ResultRow {
     /// Race/Sprint: finishing time or gap ("+2.974"), else the status ("+1 Lap",
     /// "DNF"). Qualifying: the best lap time (pole time for P1). A spoiler.
     pub detail: String,
+    /// The driver's nationality flag (SVG) + their constructor's logo URLs; empty
+    /// when unmapped. `#[serde(default)]` for older cached payloads.
+    #[serde(default)]
+    pub flag: String,
+    #[serde(default)]
+    pub constructor_logo: String,
 }
 
 /// The F1 championship standings as of a round, for the GP event page. Both
@@ -666,6 +672,12 @@ pub struct F1StandingRow {
     pub detail: String,
     pub points: String,
     pub wins: String,
+    /// The driver's nationality flag (drivers' table only) + the constructor's
+    /// logo (the driver's team, or the constructor itself). Empty when unmapped.
+    #[serde(default)]
+    pub flag: String,
+    #[serde(default)]
+    pub constructor_logo: String,
 }
 
 /// Everything the per-match detail page shows.

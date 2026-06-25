@@ -306,11 +306,66 @@ struct RawDriver {
     given: String,
     #[serde(rename = "familyName", default)]
     family: String,
+    #[serde(default)]
+    nationality: String,
 }
 #[derive(Deserialize)]
 struct RawConstructor {
+    #[serde(rename = "constructorId", default)]
+    constructor_id: String,
     #[serde(default)]
     name: String,
+}
+
+/// A driver's nationality flag (flagcdn SVG) by Ergast demonym; empty if unmapped.
+fn nationality_flag(nationality: &str) -> String {
+    let code = match nationality {
+        "British" => "gb",
+        "Dutch" => "nl",
+        "Spanish" => "es",
+        "Monegasque" => "mc",
+        "Mexican" => "mx",
+        "Australian" => "au",
+        "Canadian" => "ca",
+        "French" => "fr",
+        "German" => "de",
+        "Finnish" => "fi",
+        "Danish" => "dk",
+        "Japanese" => "jp",
+        "Thai" => "th",
+        "Chinese" => "cn",
+        "American" => "us",
+        "Italian" => "it",
+        "Argentine" | "Argentinian" => "ar",
+        "Brazilian" => "br",
+        "Austrian" => "at",
+        "Belgian" => "be",
+        "Swiss" => "ch",
+        "New Zealander" => "nz",
+        "Russian" => "ru",
+        _ => return String::new(),
+    };
+    format!("https://flagcdn.com/{code}.svg")
+}
+
+/// A constructor's logo (F1's media CDN, ~1KB PNG) by Ergast `constructorId`. The
+/// CDN slug + year aren't a clean 1:1 with the id, so they're mapped here; teams
+/// new in 2026 (Audi, Cadillac) have no CDN logo yet, so they get none.
+fn constructor_logo(constructor_id: &str) -> String {
+    let slug = match constructor_id {
+        "red_bull" => "red-bull-racing",
+        "rb" => "racing-bulls",
+        "sauber" => "kick-sauber",
+        "aston_martin" => "aston-martin",
+        "mercedes" => "mercedes",
+        "ferrari" => "ferrari",
+        "mclaren" => "mclaren",
+        "alpine" => "alpine",
+        "williams" => "williams",
+        "haas" => "haas",
+        _ => return String::new(),
+    };
+    format!("https://media.formula1.com/content/dam/fom-website/teams/2025/{slug}-logo.png")
 }
 #[derive(Deserialize, Default)]
 struct RawTime {
@@ -364,6 +419,8 @@ fn race_rows(rs: &[RawResult]) -> Vec<F1ResultRow> {
                 .map(|t| t.time.clone())
                 .filter(|s| !s.is_empty())
                 .unwrap_or_else(|| r.status.clone()),
+            flag: nationality_flag(&r.driver.nationality),
+            constructor_logo: constructor_logo(&r.constructor.constructor_id),
         })
         .collect()
 }
@@ -381,6 +438,8 @@ fn quali_rows(rs: &[RawQuali]) -> Vec<F1ResultRow> {
                 .or_else(|| q.q2.clone())
                 .or_else(|| q.q1.clone())
                 .unwrap_or_default(),
+            flag: nationality_flag(&q.driver.nationality),
+            constructor_logo: constructor_logo(&q.constructor.constructor_id),
         })
         .collect()
 }
@@ -505,12 +564,17 @@ struct RawConstructorStanding {
 
 fn driver_standing_rows(rs: &[RawDriverStanding]) -> Vec<F1StandingRow> {
     rs.iter()
-        .map(|r| F1StandingRow {
-            pos: r.position.clone(),
-            name: driver_name(&r.driver),
-            detail: r.constructors.first().map(|c| c.name.clone()).unwrap_or_default(),
-            points: r.points.clone(),
-            wins: r.wins.clone(),
+        .map(|r| {
+            let team = r.constructors.first();
+            F1StandingRow {
+                pos: r.position.clone(),
+                name: driver_name(&r.driver),
+                detail: team.map(|c| c.name.clone()).unwrap_or_default(),
+                points: r.points.clone(),
+                wins: r.wins.clone(),
+                flag: nationality_flag(&r.driver.nationality),
+                constructor_logo: team.map(|c| constructor_logo(&c.constructor_id)).unwrap_or_default(),
+            }
         })
         .collect()
 }
@@ -523,6 +587,8 @@ fn constructor_standing_rows(rs: &[RawConstructorStanding]) -> Vec<F1StandingRow
             detail: String::new(),
             points: r.points.clone(),
             wins: r.wins.clone(),
+            flag: String::new(),
+            constructor_logo: constructor_logo(&r.constructor.constructor_id),
         })
         .collect()
 }

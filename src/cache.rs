@@ -1121,22 +1121,42 @@ fn resolved_event_url(
     event_link(game, league, official)
 }
 
-/// Generic fallback link: the official site when the API provides one, else a
-/// game-specific Liquipedia search built from the event name.
+/// Generic fallback link: the official site when the API provides one, else —
+/// for esports — a game-specific Liquipedia search, or for a traditional sport
+/// its league's official site ([`traditional_event_url`]). Empty if none fits.
 fn event_link(game: Game, league: &str, official: Option<&str>) -> String {
     if let Some(url) = official.filter(|u| !u.trim().is_empty()) {
         return url.to_string();
     }
-    let wiki = match game {
-        Game::Cs2 => "counterstrike",
-        Game::Lol => "leagueoflegends",
-        // Traditional sports have no Liquipedia link; unused.
-        Game::Mlb | Game::Nhl | Game::Nba | Game::Nfl | Game::Soccer | Game::F1 => "counterstrike",
-    };
-    format!(
-        "https://liquipedia.net/{wiki}/index.php?search={}",
-        pct_encode(league)
-    )
+    match game {
+        // Esports: a Liquipedia search for the event.
+        Game::Cs2 | Game::Lol => {
+            let wiki = if game == Game::Lol { "leagueoflegends" } else { "counterstrike" };
+            format!("https://liquipedia.net/{wiki}/index.php?search={}", pct_encode(league))
+        }
+        // Traditional sports: the official league site — Liquipedia is esports-only.
+        _ => traditional_event_url(game, league),
+    }
+}
+
+/// The official site for a traditional sport's competition (empty if we have no
+/// good page for it). Shown as the event page's external link instead of a
+/// Liquipedia search.
+fn traditional_event_url(game: Game, league: &str) -> String {
+    match game {
+        Game::Mlb => "https://www.mlb.com/scores",
+        Game::Nhl => "https://www.nhl.com/scores",
+        Game::Nba => "https://www.nba.com/games",
+        Game::Nfl => "https://www.nfl.com/scores",
+        Game::F1 => "https://www.formula1.com/en/racing.html",
+        Game::Soccer => match league {
+            "Premier League" => "https://www.premierleague.com/fixtures",
+            "World Cup" => "https://www.fifa.com/en/tournaments/mens/worldcup/canadamexicousa2026",
+            _ => "",
+        },
+        Game::Cs2 | Game::Lol => "",
+    }
+    .to_string()
 }
 
 /// Minimal percent-encoding for a URL query value.
