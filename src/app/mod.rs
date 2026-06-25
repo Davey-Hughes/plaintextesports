@@ -1537,7 +1537,13 @@ fn detail_view(d: MatchDetail) -> impl IntoView {
             <A href="/">"← schedule"</A>
             <h1 class="detail-title" class:detail-title-solo=is_solo>
                 {if is_solo {
-                    view! { <span class="detail-team detail-solo">{team_a}</span> }.into_any()
+                    view! {
+                        <span class="detail-team detail-solo">
+                            {team_logo(&logo_a, "team-logo-lg")}
+                            {team_a}
+                        </span>
+                    }
+                    .into_any()
                 } else {
                     view! {
                         <span
@@ -1562,8 +1568,8 @@ fn detail_view(d: MatchDetail) -> impl IntoView {
                             class:winner=move || reveal.get() && win_b
                             class:loser=move || reveal.get() && win_a
                         >
-                            {team_logo(&logo_b, "team-logo-lg")}
                             {team_link(team_b, name_b)}
+                            {team_logo(&logo_b, "team-logo-lg")}
                         </span>
                     }
                     .into_any()

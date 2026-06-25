@@ -197,6 +197,10 @@ struct TeamRef {
     display_name: String,
     #[serde(default)]
     abbreviation: String,
+    /// Full-size (500px) raster logo URL, e.g.
+    /// "https://a.espncdn.com/i/teamlogos/nba/500/orl.png".
+    #[serde(default)]
+    logo: String,
 }
 
 impl TeamRef {
@@ -213,6 +217,51 @@ impl TeamRef {
         } else {
             self.display_name.clone()
         }
+    }
+}
+
+/// ESPN's logos default to 500px; request a small (80px, crisp at 2× DPI) copy
+/// through its image combiner so we ship ~5KB, not ~70KB. Empty if not an ESPN
+/// team-logo URL.
+fn espn_logo(url: &str) -> String {
+    match url.find("/i/teamlogos/") {
+        Some(i) => format!("https://a.espncdn.com/combiner/i?img={}&h=80&w=80", &url[i..]),
+        None => String::new(),
+    }
+}
+
+/// A best-effort IANA timezone for a US/Canada/Mexico venue, from its address —
+/// ESPN exposes no tz, so the schedule's venue-time toggle needs this. Covers the
+/// host states/cities of the leagues we show (World Cup, NBA, NFL); `None` (no
+/// toggle) for anywhere not mapped.
+fn venue_tz(city: &str, country: &str) -> Option<&'static str> {
+    match country {
+        // US venues read "City, State"; the state fixes the zone.
+        "USA" => {
+            let state = city.rsplit(',').next().map(str::trim).unwrap_or_default();
+            Some(match state {
+                "California" | "Washington" | "Oregon" | "Nevada" => "America/Los_Angeles",
+                "Arizona" => "America/Phoenix", // no DST
+                "Colorado" | "Utah" => "America/Denver",
+                "Texas" | "Missouri" | "Illinois" | "Minnesota" | "Wisconsin" | "Louisiana"
+                | "Oklahoma" | "Tennessee" | "Kansas" | "Nebraska" => "America/Chicago",
+                "Pennsylvania" | "Florida" | "New Jersey" | "New York" | "Georgia"
+                | "Massachusetts" | "Michigan" | "Ohio" | "North Carolina" | "Indiana"
+                | "District of Columbia" | "Virginia" | "South Carolina" | "Maryland" => {
+                    "America/New_York"
+                }
+                _ => return None,
+            })
+        }
+        "Canada" => Some(match city {
+            "Toronto" | "Montreal" | "Ottawa" => "America/Toronto",
+            "Vancouver" => "America/Vancouver",
+            "Calgary" | "Edmonton" => "America/Edmonton",
+            "Winnipeg" => "America/Winnipeg",
+            _ => return None,
+        }),
+        "Mexico" => Some("America/Mexico_City"),
+        _ => None,
     }
 }
 
@@ -263,6 +312,12 @@ fn to_match(e: Event, lg: &EspnLeague) -> Option<NormalizedMatch> {
     );
     m.venue_name = comp.venue.full_name.clone();
     m.venue_location = comp.venue.location();
+    m.team_a_logo = espn_logo(&away.team.logo);
+    m.team_b_logo = espn_logo(&home.team.logo);
+    // ESPN gives no venue tz; derive one (where known) so the schedule's
+    // venue-time toggle works — notably for the World Cup's US/Canada/Mexico hosts.
+    m.venue_tz = venue_tz(&comp.venue.address.city, &comp.venue.address.country)
+        .map(str::to_string);
     Some(m)
 }
 
