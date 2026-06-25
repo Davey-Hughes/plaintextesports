@@ -1120,12 +1120,19 @@ a {
   margin: 0.8rem 0 0.2rem;
 }
 
+// The match title sits in a row with its "remind me" ★.
+.detail-title-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
 // Reserve the matchup line's height for the team logo (`team-logo-lg`, 1.6em) so
 // toggling icons off — which drops the logos from flow — doesn't shrink the row
-// and shift everything below it. Scoped to the match title (a direct child of
-// `.detail`) so the team-page heading, where `.detail-title` nests inside
-// `.team-head`, keeps its own height.
-.detail > .detail-title {
+// and shift everything below it. Scoped to the match title (`.match-title`) so the
+// team-page heading, a bare `.detail-title`, keeps its own height.
+.detail-title.match-title {
   min-height: 1.6em;
 }
 
