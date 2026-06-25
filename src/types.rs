@@ -25,6 +25,12 @@ pub enum Game {
     /// National Hockey League — a traditional sport, fetched from the keyless
     /// NHL Web API (`api-web.nhle.com`). Like MLB: two teams per game.
     Nhl,
+    /// National Basketball Association — a traditional sport, fetched from the
+    /// keyless ESPN API. Two teams per game.
+    Nba,
+    /// National Football League — a traditional sport, fetched from the keyless
+    /// ESPN API. Two teams per game.
+    Nfl,
     /// Formula 1 — a traditional sport, fetched from the Jolpica (Ergast) API.
     /// A "match" is a single session of a Grand Prix weekend (practice/quali/
     /// sprint/race); the Grand Prix is the event. Single-entity (no opponent).
@@ -39,6 +45,8 @@ impl Game {
             Self::Lol => "LoL",
             Self::Mlb => "MLB",
             Self::Nhl => "NHL",
+            Self::Nba => "NBA",
+            Self::Nfl => "NFL",
             Self::F1 => "F1",
         }
     }
@@ -50,6 +58,8 @@ impl Game {
             Self::Lol => "lol",
             Self::Mlb => "mlb",
             Self::Nhl => "nhl",
+            Self::Nba => "nba",
+            Self::Nfl => "nfl",
             Self::F1 => "f1",
         }
     }
@@ -57,7 +67,7 @@ impl Game {
     /// A traditional sport (vs an esports title) — drives the top-bar mode toggle.
     #[must_use]
     pub const fn traditional(self) -> bool {
-        matches!(self, Self::Mlb | Self::Nhl | Self::F1)
+        matches!(self, Self::Mlb | Self::Nhl | Self::Nba | Self::Nfl | Self::F1)
     }
 
     /// A single-entity sport (a race/session, not two opposing teams) — the row
@@ -70,7 +80,7 @@ impl Game {
     /// The traditional sports, in display order — drives the in-mode sport tabs.
     #[must_use]
     pub fn traditional_sports() -> &'static [Game] {
-        &[Self::Mlb, Self::Nhl, Self::F1]
+        &[Self::Mlb, Self::Nhl, Self::Nba, Self::Nfl, Self::F1]
     }
 
     /// Parse a UI filter slug. Unknown values (incl. "all") map to `None`.
@@ -81,6 +91,8 @@ impl Game {
             "lol" => Some(Self::Lol),
             "mlb" => Some(Self::Mlb),
             "nhl" => Some(Self::Nhl),
+            "nba" => Some(Self::Nba),
+            "nfl" => Some(Self::Nfl),
             "f1" => Some(Self::F1),
             _ => None,
         }

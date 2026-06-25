@@ -108,6 +108,16 @@ pub async fn get_match_detail(
                 ),
                 crate::types::Series::default(),
             )
+        } else if match_view.game == Game::Nba {
+            (
+                crate::cache::nba_team_groups(&match_view.team_a.name, &match_view.team_b.name),
+                crate::types::Series::default(),
+            )
+        } else if match_view.game == Game::Nfl {
+            (
+                crate::cache::nfl_team_groups(&match_view.team_a.name, &match_view.team_b.name),
+                crate::types::Series::default(),
+            )
         } else {
             (Vec::new(), crate::types::Series::default())
         };
@@ -196,6 +206,12 @@ pub async fn get_event_stages(league: String) -> Result<Vec<EventInfo>, ServerFn
         }
         if league == "NHL" {
             return Ok(crate::cache::nhl_standings());
+        }
+        if league == "NBA" {
+            return Ok(crate::cache::nba_standings());
+        }
+        if league == "NFL" {
+            return Ok(crate::cache::nfl_standings());
         }
         let tids = crate::cache::event_stages(&league);
         Ok(crate::cache::stages_info(tids, &league).await)
