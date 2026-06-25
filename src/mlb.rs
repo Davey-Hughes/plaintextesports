@@ -161,6 +161,16 @@ impl RawTeamRef {
     }
 }
 
+/// The MLB team's SVG logo URL (mlbstatic serves one per team id), or empty
+/// when the id is unknown.
+fn team_logo(team_id: i64) -> String {
+    if team_id > 0 {
+        format!("https://www.mlbstatic.com/team-logos/{team_id}.svg")
+    } else {
+        String::new()
+    }
+}
+
 fn status_of(s: &RawStatus) -> MatchStatus {
     let d = s.detailed_state.to_lowercase();
     if d.contains("postpone") || d.contains("cancel") || d.contains("suspend") || d.contains("forfeit") {
@@ -327,6 +337,9 @@ fn to_match(g: RawGame) -> Option<NormalizedMatch> {
     m.venue_tz = Some(g.venue.time_zone.id).filter(|s| !s.is_empty());
     m.venue_name = g.venue.name;
     m.venue_location = g.venue.location.label();
+    // MLB serves an SVG logo per team id at this stable path.
+    m.team_a_logo = team_logo(g.teams.away.team.id);
+    m.team_b_logo = team_logo(g.teams.home.team.id);
     m.streams = broadcasts(&g.broadcasts);
     // Carry the two teams' ids + this game's series position so the detail page
     // can fetch the whole series between them. Only when both ids and a sane

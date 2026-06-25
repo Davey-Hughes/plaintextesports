@@ -71,6 +71,8 @@ pub fn open(path: &str) -> rusqlite::Result<Connection> {
             venue_tz     TEXT,
             venue_name   TEXT,
             venue_location TEXT,
+            team_a_logo  TEXT,
+            team_b_logo  TEXT,
             stream_url   TEXT,
             tournament_id INTEGER,
             PRIMARY KEY (id, game)
@@ -128,6 +130,8 @@ pub fn open(path: &str) -> rusqlite::Result<Connection> {
     let _ = conn.execute("ALTER TABLE matches ADD COLUMN venue_tz TEXT", []);
     let _ = conn.execute("ALTER TABLE matches ADD COLUMN venue_name TEXT", []);
     let _ = conn.execute("ALTER TABLE matches ADD COLUMN venue_location TEXT", []);
+    let _ = conn.execute("ALTER TABLE matches ADD COLUMN team_a_logo TEXT", []);
+    let _ = conn.execute("ALTER TABLE matches ADD COLUMN team_b_logo TEXT", []);
     let _ = conn.execute("ALTER TABLE reminders ADD COLUMN game TEXT NOT NULL DEFAULT ''", []);
     let _ = conn.execute("ALTER TABLE reminders ADD COLUMN league TEXT NOT NULL DEFAULT ''", []);
     let _ = conn.execute("ALTER TABLE reminders ADD COLUMN team_a TEXT NOT NULL DEFAULT ''", []);
@@ -196,6 +200,8 @@ fn row_to_match(row: &rusqlite::Row) -> rusqlite::Result<Option<NormalizedMatch>
         venue_tz: row.get("venue_tz")?,
         venue_name: row.get::<_, Option<String>>("venue_name")?.unwrap_or_default(),
         venue_location: row.get::<_, Option<String>>("venue_location")?.unwrap_or_default(),
+        team_a_logo: row.get::<_, Option<String>>("team_a_logo")?.unwrap_or_default(),
+        team_b_logo: row.get::<_, Option<String>>("team_b_logo")?.unwrap_or_default(),
         // Streams aren't persisted (in-memory only); repopulated on next poll.
         streams: Vec::new(),
         // Series refs aren't persisted (MLB, in-memory); repopulated on next poll.
@@ -253,8 +259,8 @@ pub fn upsert_and_prune(
                 (id, game, league, tier, begin_at_ms, status, best_of,
                  team_a_label, team_a_score, team_b_label, team_b_score, stream_url,
                  league_url, tournament_id, serie_name, team_a_name, team_b_name, venue_tz,
-                 venue_name, venue_location)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20)
+                 venue_name, venue_location, team_a_logo, team_b_logo)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22)
              ON CONFLICT(id, game) DO UPDATE SET
                 league=excluded.league, tier=excluded.tier,
                 begin_at_ms=excluded.begin_at_ms, status=excluded.status,
@@ -265,7 +271,8 @@ pub fn upsert_and_prune(
                 tournament_id=excluded.tournament_id, serie_name=excluded.serie_name,
                 team_a_name=excluded.team_a_name, team_b_name=excluded.team_b_name,
                 venue_tz=excluded.venue_tz, venue_name=excluded.venue_name,
-                venue_location=excluded.venue_location",
+                venue_location=excluded.venue_location,
+                team_a_logo=excluded.team_a_logo, team_b_logo=excluded.team_b_logo",
         )?;
         for m in matches {
             up.execute(params![
@@ -289,6 +296,8 @@ pub fn upsert_and_prune(
                 m.venue_tz,
                 m.venue_name,
                 m.venue_location,
+                m.team_a_logo,
+                m.team_b_logo,
             ])?;
         }
         tx.execute(
@@ -599,6 +608,8 @@ mod tests {
             venue_tz: Some("America/New_York".into()),
             venue_name: String::new(),
             venue_location: String::new(),
+            team_a_logo: String::new(),
+            team_b_logo: String::new(),
             streams: Vec::new(),
             mlb_series: None,
         }

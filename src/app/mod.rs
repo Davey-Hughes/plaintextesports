@@ -758,6 +758,37 @@ fn team_link(label: String, name: String) -> AnyView {
     }
 }
 
+/// The vector logo for `name` found among a schedule's matches (it appears as
+/// either side), or empty when none of its matches carry one.
+fn team_logo_in_schedule(s: &ScheduleView, name: &str) -> String {
+    for d in &s.days {
+        for lg in &d.leagues {
+            for m in &lg.matches {
+                if m.team_a.name == name && !m.team_a.logo.is_empty() {
+                    return m.team_a.logo.clone();
+                }
+                if m.team_b.name == name && !m.team_b.logo.is_empty() {
+                    return m.team_b.logo.clone();
+                }
+            }
+        }
+    }
+    String::new()
+}
+
+/// A team's vector (SVG) logo as a small `<img>`, or nothing when there's no
+/// vector source for it (most leagues — only NHL/MLB expose one). `extra` is an
+/// extra class for sizing per context.
+fn team_logo(logo: &str, extra: &str) -> AnyView {
+    if logo.is_empty() {
+        return ().into_any();
+    }
+    view! {
+        <img class=format!("team-logo {extra}") src=logo.to_string() alt="" loading="lazy" />
+    }
+    .into_any()
+}
+
 /// An event's stages rendered as labelled sections — each a Swiss/group stage
 /// (with a bracket/list toggle) and/or a playoff bracket. One toggle drives
 /// every Swiss stage. Shared by the event page and the front-page single-event
@@ -1340,6 +1371,8 @@ fn TeamPage() -> impl IntoView {
                 let name = team();
                 match schedule.get() {
                     Some(Ok(mut s)) => {
+                        // The team's vector logo (NHL/MLB), from any of its matches.
+                        let logo = team_logo_in_schedule(&s, &name);
                         // Traditional-sport teams cap their forward horizon and show
                         // the earlier/later expanders, like the event page.
                         let windowed = schedule_needs_window(&s);
@@ -1359,6 +1392,7 @@ fn TeamPage() -> impl IntoView {
                             <article class="detail">
                                 <A href="/">"← schedule"</A>
                                 <div class="team-head">
+                                    {team_logo(&logo, "team-logo-lg")}
                                     <h1 class="detail-title">{name.clone()}</h1>
                                     <SubscribeStar kind="team" value=name.clone() />
                                 </div>
@@ -1479,6 +1513,7 @@ fn detail_view(d: MatchDetail) -> impl IntoView {
     let is_solo = m.game.single_entity();
     let (team_a, team_b) = (m.team_a.label, m.team_b.label);
     let (name_a, name_b) = (m.team_a.name, m.team_b.name);
+    let (logo_a, logo_b) = (m.team_a.logo, m.team_b.logo);
 
     // Scores/standings/bracket are spoilers: reveal when the global toggle is on
     // or this match was individually revealed (persisted, shared with the list).
@@ -1510,6 +1545,7 @@ fn detail_view(d: MatchDetail) -> impl IntoView {
                             class:winner=move || reveal.get() && win_a
                             class:loser=move || reveal.get() && win_b
                         >
+                            {team_logo(&logo_a, "team-logo-lg")}
                             {team_link(team_a, name_a)}
                         </span>
                         <span class="detail-score">
@@ -1526,6 +1562,7 @@ fn detail_view(d: MatchDetail) -> impl IntoView {
                             class:winner=move || reveal.get() && win_b
                             class:loser=move || reveal.get() && win_a
                         >
+                            {team_logo(&logo_b, "team-logo-lg")}
                             {team_link(team_b, name_b)}
                         </span>
                     }
@@ -4236,12 +4273,14 @@ mod tests {
                 name: "A".into(),
                 score: None,
                 winner: false,
+                logo: String::new(),
             },
             team_b: TeamView {
                 label: "B".into(),
                 name: "B".into(),
                 score: None,
                 winner: false,
+                logo: String::new(),
             },
             stream_url: None,
             event_url: String::new(),

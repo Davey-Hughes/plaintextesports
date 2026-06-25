@@ -1115,6 +1115,10 @@ a {
 
 .detail-team {
   font-weight: 700;
+  // Logo + name sit together on each side of the matchup.
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
 
   &.winner {
     color: var(--win);
@@ -1141,8 +1145,22 @@ a {
 // Team page heading: the team name with its subscribe ★ alongside.
 .team-head {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   gap: 0.5rem;
+}
+
+// Team vector logos (NHL/MLB) beside the team names on the match + team pages.
+// SVG, so they scale crisply; sized in `em` to track the heading.
+.team-logo {
+  flex: none;
+  object-fit: contain;
+  width: 1.4em;
+  height: 1.4em;
+}
+
+.team-logo-lg {
+  width: 1.6em;
+  height: 1.6em;
 }
 
 // ----- Notifications management page ----------------------------------------
