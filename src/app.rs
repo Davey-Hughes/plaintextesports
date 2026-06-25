@@ -19,6 +19,26 @@ use leptos_router::{
     ParamSegment, StaticSegment,
 };
 
+/// localStorage / cookie keys, centralized so a preference's read and write can't
+/// silently drift onto different keys (and so the storage schema is greppable in
+/// one place). The `mode` key is also the URL query param the sport toggle uses.
+/// Browser storage is client-only, so these are referenced only under `hydrate`.
+#[cfg(feature = "hydrate")]
+mod keys {
+    pub const THEME: &str = "theme";
+    pub const HOUR24: &str = "hour24";
+    pub const SCORES: &str = "scores";
+    pub const MODE: &str = "mode";
+    pub const SUBS: &str = "subs";
+    pub const STARRED: &str = "starred";
+    pub const EXCLUDED: &str = "excluded";
+    pub const REVEALED: &str = "revealed";
+    pub const SECTIONS: &str = "sections";
+    pub const RANGE: &str = "range";
+    pub const GAMES: &str = "games";
+    pub const LEAGUES: &str = "leagues";
+}
+
 #[must_use]
 pub fn shell(options: LeptosOptions) -> impl IntoView {
     view! {
@@ -355,11 +375,11 @@ fn FilterUrlSync() -> impl IntoView {
             let g_param = q.get("g").filter(|v| !v.is_empty());
             match &g_param {
                 Some(v) => games.set(parse_set(v)),
-                None => games.set(load_str_set("games")),
+                None => games.set(load_str_set(keys::GAMES)),
             }
             match q.get("e").filter(|v| !v.is_empty()) {
                 Some(v) => leagues.set(parse_set(&v)),
-                None => leagues.set(load_str_set("leagues")),
+                None => leagues.set(load_str_set(keys::LEAGUES)),
             }
             // Sport mode: an explicit ?mode wins (a shared link); else infer it
             // from a known game slug in ?g, so e.g. ?g=nhl lands in sports mode.
@@ -2313,6 +2333,15 @@ struct SwRender {
     max: u8,
 }
 
+/// One Swiss record bucket for render: its entering record label and the matches
+/// in it. A round is a `Vec` of these; the whole grid a `Vec` of rounds.
+type SwBucketRender = (String, Vec<SwRender>);
+/// One Swiss round for render: its heading and its record buckets.
+type SwRoundRender = (String, Vec<SwBucketRender>);
+/// A reachable outcome from a bucket: its record, whether it advances, and the
+/// `(round, match)` positions that produce it (for spoiler-gating).
+type SwOutcome = (String, bool, Vec<(usize, usize)>);
+
 /// A Swiss / "first to N" stage drawn as a buchholz grid: a column per round,
 /// each round's matches grouped into record buckets (2-0, 1-1, 0-2, …). Styled
 /// and revealed exactly like the playoff bracket — winner bold, loser muted,
@@ -2350,7 +2379,7 @@ fn SwissBracket(rounds: Vec<SwissRound>, tournament_id: i64) -> impl IntoView {
     // Build the reveal grid (one row per round, matches in column order) and the
     // parallel render tree (kept grouped into record buckets for display).
     let mut grid: Vec<Vec<BkCell>> = Vec::with_capacity(rounds.len());
-    let mut render: Vec<(String, Vec<(String, Vec<SwRender>)>)> = Vec::with_capacity(rounds.len());
+    let mut render: Vec<SwRoundRender> = Vec::with_capacity(rounds.len());
     for (r, round) in rounds.into_iter().enumerate() {
         let head = format!("Round {}", round.number);
         let mut cells: Vec<BkCell> = Vec::new();
@@ -2567,7 +2596,7 @@ fn SwissBracket(rounds: Vec<SwissRound>, tournament_id: i64) -> impl IntoView {
                     // out, …), deduped, each with the match positions that produce
                     // it — shown above the group, gated on those matches being
                     // revealed so it isn't a spoiler.
-                    let mut outcomes: Vec<(String, bool, Vec<(usize, usize)>)> = Vec::new();
+                    let mut outcomes: Vec<SwOutcome> = Vec::new();
                     for m in &ms {
                         for rec in [&m.a_record, &m.b_record] {
                             if rec.is_empty() {
@@ -2581,27 +2610,23 @@ fn SwissBracket(rounds: Vec<SwissRound>, tournament_id: i64) -> impl IntoView {
                             }
                         }
                     }
-                    let outcome_view = (!outcomes.is_empty()).then(move || {
-                        move || {
-                            outcomes
-                                .iter()
-                                .filter(|(_, _, pos)| {
-                                    pos.iter().any(|&(rr, ii)| {
-                                        eff.with(|e| {
-                                            e.get(rr).and_then(|row| row.get(ii)).copied().unwrap_or(0)
-                                                >= 2
-                                        })
+                    let outcome_view = (!outcomes.is_empty()).then_some(move || {
+                        outcomes
+                            .iter()
+                            .filter(|(_, _, pos)| {
+                                pos.iter().any(|&(rr, ii)| {
+                                    eff.with(|e| {
+                                        e.get(rr).and_then(|row| row.get(ii)).copied().unwrap_or(0) >= 2
                                     })
                                 })
-                                .map(|(rec, pass, _)| {
-                                    let cls =
-                                        if *pass { "sw-out sw-pass" } else { "sw-out sw-exit" };
-                                    view! { <span class=cls>{rec.clone()}</span> }
-                                })
-                                .collect_view()
-                        }
+                            })
+                            .map(|(rec, pass, _)| {
+                                let cls = if *pass { "sw-out sw-pass" } else { "sw-out sw-exit" };
+                                view! { <span class=cls>{rec.clone()}</span> }
+                            })
+                            .collect_view()
                     });
-                    let matches = ms.into_iter().map(move |m| mk_match(m)).collect_view();
+                    let matches = ms.into_iter().map(mk_match).collect_view();
                     view! {
                         <div class="sw-bucket">
                             <div class="sw-record">
@@ -3175,7 +3200,7 @@ fn saved_theme() -> Option<String> {
         .local_storage()
         .ok()
         .flatten()?
-        .get_item("theme")
+        .get_item(keys::THEME)
         .ok()
         .flatten()
         .filter(|t| matches!(t.as_str(), "dark" | "light" | "oled"))
@@ -3189,7 +3214,7 @@ fn apply_theme(theme: &str) {
             let _ = root.set_attribute("data-theme", theme);
         }
         if let Ok(Some(storage)) = win.local_storage() {
-            let _ = storage.set_item("theme", theme);
+            let _ = storage.set_item(keys::THEME, theme);
         }
     }
 }
@@ -3248,8 +3273,8 @@ fn SportToggle() -> impl IntoView {
         #[cfg(feature = "hydrate")]
         {
             save_sport_pref(next);
-            save_str_set("games", &games.get_untracked());
-            save_str_set("leagues", &leagues.get_untracked());
+            save_str_set(keys::GAMES, &games.get_untracked());
+            save_str_set(keys::LEAGUES, &leagues.get_untracked());
         }
     };
     view! {
@@ -3573,7 +3598,7 @@ fn detect_tz() -> Option<String> {
 #[cfg(feature = "hydrate")]
 fn load_hour24_pref() -> Option<bool> {
     let storage = web_sys::window()?.local_storage().ok().flatten()?;
-    let v = storage.get_item("hour24").ok().flatten()?;
+    let v = storage.get_item(keys::HOUR24).ok().flatten()?;
     Some(v != "0")
 }
 
@@ -3581,7 +3606,7 @@ fn load_hour24_pref() -> Option<bool> {
 fn save_hour24_pref(hour24: bool) {
     if let Some(win) = web_sys::window() {
         if let Ok(Some(storage)) = win.local_storage() {
-            let _ = storage.set_item("hour24", if hour24 { "1" } else { "0" });
+            let _ = storage.set_item(keys::HOUR24, if hour24 { "1" } else { "0" });
         }
     }
 }
@@ -3590,7 +3615,7 @@ fn save_hour24_pref(hour24: bool) {
 fn load_scores_pref() -> bool {
     web_sys::window()
         .and_then(|w| w.local_storage().ok().flatten())
-        .and_then(|s| s.get_item("scores").ok().flatten())
+        .and_then(|s| s.get_item(keys::SCORES).ok().flatten())
         .is_some_and(|v| v == "1")
 }
 
@@ -3621,19 +3646,19 @@ fn write_cookie(name: &str, value: &str) {
 /// (the default). Persisted in a cookie so it survives reloads.
 #[cfg(feature = "hydrate")]
 fn load_sport_pref() -> bool {
-    read_cookie("mode").as_deref() == Some("sports")
+    read_cookie(keys::MODE).as_deref() == Some("sports")
 }
 
 #[cfg(feature = "hydrate")]
 fn save_sport_pref(traditional: bool) {
-    write_cookie("mode", if traditional { "sports" } else { "esports" });
+    write_cookie(keys::MODE, if traditional { "sports" } else { "esports" });
 }
 
 #[cfg(feature = "hydrate")]
 fn save_scores_pref(show: bool) {
     if let Some(win) = web_sys::window() {
         if let Ok(Some(storage)) = win.local_storage() {
-            let _ = storage.set_item("scores", if show { "1" } else { "0" });
+            let _ = storage.set_item(keys::SCORES, if show { "1" } else { "0" });
         }
     }
 }
@@ -3642,7 +3667,7 @@ fn save_scores_pref(show: bool) {
 fn save_subs(keys: &[String]) {
     if let Some(win) = web_sys::window() {
         if let Ok(Some(storage)) = win.local_storage() {
-            let _ = storage.set_item("subs", &keys.join("\n"));
+            let _ = storage.set_item(keys::SUBS, &keys.join("\n"));
         }
     }
 }
@@ -3652,7 +3677,7 @@ fn load_subs() -> HashSet<String> {
     let mut out = HashSet::new();
     if let Some(win) = web_sys::window() {
         if let Ok(Some(storage)) = win.local_storage() {
-            if let Ok(Some(v)) = storage.get_item("subs") {
+            if let Ok(Some(v)) = storage.get_item(keys::SUBS) {
                 for part in v.split('\n').filter(|p| !p.is_empty()) {
                     out.insert(part.to_string());
                 }
@@ -3717,10 +3742,10 @@ fn save_range(range: Option<(String, String)>) {
         if let Ok(Some(storage)) = win.local_storage() {
             match range {
                 Some((s, e)) => {
-                    let _ = storage.set_item("range", &format!("{s}|{e}"));
+                    let _ = storage.set_item(keys::RANGE, &format!("{s}|{e}"));
                 }
                 None => {
-                    let _ = storage.remove_item("range");
+                    let _ = storage.remove_item(keys::RANGE);
                 }
             }
         }
@@ -3730,7 +3755,7 @@ fn save_range(range: Option<(String, String)>) {
 #[cfg(feature = "hydrate")]
 fn load_range() -> Option<(String, String)> {
     let storage = web_sys::window()?.local_storage().ok().flatten()?;
-    let v = storage.get_item("range").ok().flatten()?;
+    let v = storage.get_item(keys::RANGE).ok().flatten()?;
     let (s, e) = v.split_once('|')?;
     (!s.is_empty() && !e.is_empty()).then(|| (s.to_string(), e.to_string()))
 }
@@ -3794,7 +3819,7 @@ fn setup_autorefresh(resource: Resource<Result<ScheduleView, ServerFnError>>) {
             // Keep the handle so client-side route changes clear the timer instead
             // of leaking a new 60s refetch loop on every page mount.
             if let Ok(handle) =
-                set_interval_with_handle(move || refresh(), Duration::from_secs(60))
+                set_interval_with_handle(refresh, Duration::from_secs(60))
             {
                 on_cleanup(move || handle.clear());
             }
@@ -4325,7 +4350,7 @@ fn GameTabs(
             }
         });
         #[cfg(feature = "hydrate")]
-        save_str_set("games", &games.get_untracked());
+        save_str_set(keys::GAMES, &games.get_untracked());
     };
     // A game filter tab with an embedded ★ that subscribes to the whole game.
     // The label clicks to filter; the ★ clicks to (un)subscribe.
@@ -4347,8 +4372,8 @@ fn GameTabs(
         leagues.update(HashSet::clear);
         #[cfg(feature = "hydrate")]
         {
-            save_str_set("games", &games.get_untracked());
-            save_str_set("leagues", &leagues.get_untracked());
+            save_str_set(keys::GAMES, &games.get_untracked());
+            save_str_set(keys::LEAGUES, &leagues.get_untracked());
         }
     };
     view! {
@@ -4382,7 +4407,7 @@ fn SportTabs(
             }
         });
         #[cfg(feature = "hydrate")]
-        save_str_set("games", &games.get_untracked());
+        save_str_set(keys::GAMES, &games.get_untracked());
     };
     let with_star = move |label: &'static str, value: &'static str| {
         view! {
@@ -4400,8 +4425,8 @@ fn SportTabs(
         leagues.update(HashSet::clear);
         #[cfg(feature = "hydrate")]
         {
-            save_str_set("games", &games.get_untracked());
-            save_str_set("leagues", &leagues.get_untracked());
+            save_str_set(keys::GAMES, &games.get_untracked());
+            save_str_set(keys::LEAGUES, &leagues.get_untracked());
         }
     };
     view! {
@@ -4446,7 +4471,7 @@ fn LeagueChips(leagues: Vec<String>, selected: RwSignal<HashSet<String>>) -> imp
                                 }
                             });
                         #[cfg(feature = "hydrate")]
-                        save_str_set("leagues", &selected.get_untracked());
+                        save_str_set(keys::LEAGUES, &selected.get_untracked());
                     }
                 >
                     {name}
@@ -5234,14 +5259,14 @@ fn save_starred(ids: &[i64]) {
     if let Some(win) = web_sys::window() {
         if let Ok(Some(storage)) = win.local_storage() {
             let csv = ids.iter().map(i64::to_string).collect::<Vec<_>>().join(",");
-            let _ = storage.set_item("starred", &csv);
+            let _ = storage.set_item(keys::STARRED, &csv);
         }
     }
 }
 
 #[cfg(feature = "hydrate")]
 fn load_starred() -> HashSet<i64> {
-    load_id_set("starred")
+    load_id_set(keys::STARRED)
 }
 
 #[cfg(feature = "hydrate")]
@@ -5249,14 +5274,14 @@ fn save_excluded(ids: &[i64]) {
     if let Some(win) = web_sys::window() {
         if let Ok(Some(storage)) = win.local_storage() {
             let csv = ids.iter().map(i64::to_string).collect::<Vec<_>>().join(",");
-            let _ = storage.set_item("excluded", &csv);
+            let _ = storage.set_item(keys::EXCLUDED, &csv);
         }
     }
 }
 
 #[cfg(feature = "hydrate")]
 fn load_excluded() -> HashSet<i64> {
-    load_id_set("excluded")
+    load_id_set(keys::EXCLUDED)
 }
 
 /// Persist the set of individually-revealed match ids, so a match the user has
@@ -5266,14 +5291,14 @@ fn save_revealed(ids: &HashSet<i64>) {
     if let Some(win) = web_sys::window() {
         if let Ok(Some(storage)) = win.local_storage() {
             let csv = ids.iter().map(i64::to_string).collect::<Vec<_>>().join(",");
-            let _ = storage.set_item("revealed", &csv);
+            let _ = storage.set_item(keys::REVEALED, &csv);
         }
     }
 }
 
 #[cfg(feature = "hydrate")]
 fn load_revealed() -> HashSet<i64> {
-    load_id_set("revealed")
+    load_id_set(keys::REVEALED)
 }
 
 /// Persist a set of strings under `key` (newline-separated).
@@ -5308,7 +5333,7 @@ fn save_sections(keys: &HashSet<String>) {
     if let Some(win) = web_sys::window() {
         if let Ok(Some(storage)) = win.local_storage() {
             let joined = keys.iter().cloned().collect::<Vec<_>>().join("\n");
-            let _ = storage.set_item("sections", &joined);
+            let _ = storage.set_item(keys::SECTIONS, &joined);
         }
     }
 }
@@ -5318,7 +5343,7 @@ fn load_sections() -> HashSet<String> {
     let mut out = HashSet::new();
     if let Some(win) = web_sys::window() {
         if let Ok(Some(storage)) = win.local_storage() {
-            if let Ok(Some(v)) = storage.get_item("sections") {
+            if let Ok(Some(v)) = storage.get_item(keys::SECTIONS) {
                 for part in v.split('\n').filter(|p| !p.is_empty()) {
                     out.insert(part.to_string());
                 }

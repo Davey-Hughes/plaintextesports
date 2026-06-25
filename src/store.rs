@@ -141,9 +141,8 @@ fn purge_unknown_games(conn: &Connection) -> rusqlite::Result<()> {
 /// written before the name columns existed (or any left NULL).
 fn team_name(row: &rusqlite::Row, name_col: &str, label_col: &str) -> rusqlite::Result<String> {
     let name: Option<String> = row.get(name_col)?;
-    Ok(name
-        .filter(|s| !s.is_empty())
-        .map_or_else(|| row.get::<_, String>(label_col), Ok)?)
+    name.filter(|s| !s.is_empty())
+        .map_or_else(|| row.get::<_, String>(label_col), Ok)
 }
 
 fn row_to_match(row: &rusqlite::Row) -> rusqlite::Result<Option<NormalizedMatch>> {

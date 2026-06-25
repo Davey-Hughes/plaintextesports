@@ -487,7 +487,7 @@ pub async fn fetch_standings(client: &reqwest::Client, season: i64, round: i64) 
     let (mut drivers, mut constructors) =
         tokio::join!(get_standings_list(client, &drv), get_standings_list(client, &con));
     // An unraced round has no standings yet — use the latest completed instead.
-    if drivers.as_ref().map_or(true, |l| l.drivers.is_empty()) {
+    if drivers.as_ref().is_none_or(|l| l.drivers.is_empty()) {
         let drv2 = format!("{BASE}/{season}/driverStandings.json?limit=40");
         let con2 = format!("{BASE}/{season}/constructorStandings.json?limit=40");
         let (d2, c2) =
