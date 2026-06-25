@@ -230,6 +230,14 @@ a {
   }
 }
 
+// The esports/sports toggle holds a fixed width (sized to the wider "esports")
+// with the label right-aligned, so flipping it doesn't shift the "↻ updated"
+// control to its left — the slack falls as blank space on the button's left.
+.sport-toggle {
+  min-width: calc(7ch + 1.2rem);
+  text-align: right;
+}
+
 // "Back to top" arrow: takes the brand's spot once it scrolls away. Pushed left
 // so the rest of the bar stays right-aligned; hidden until the page is scrolled.
 .scrolltop {

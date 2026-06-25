@@ -51,7 +51,8 @@ impl Game {
             Self::Nhl => "NHL",
             Self::Nba => "NBA",
             Self::Nfl => "NFL",
-            Self::Soccer => "Soccer",
+            // International football — named to disambiguate from the NFL.
+            Self::Soccer => "Football",
             Self::F1 => "F1",
         }
     }
@@ -65,7 +66,7 @@ impl Game {
             Self::Nhl => "nhl",
             Self::Nba => "nba",
             Self::Nfl => "nfl",
-            Self::Soccer => "soccer",
+            Self::Soccer => "football",
             Self::F1 => "f1",
         }
     }
@@ -102,7 +103,7 @@ impl Game {
             "nhl" => Some(Self::Nhl),
             "nba" => Some(Self::Nba),
             "nfl" => Some(Self::Nfl),
-            "soccer" => Some(Self::Soccer),
+            "football" => Some(Self::Soccer),
             "f1" => Some(Self::F1),
             _ => None,
         }

@@ -520,7 +520,7 @@ fn SiteFooter() -> impl IntoView {
                 <span>
                     {move || {
                         if traditional.get() {
-                            "MLB + NHL + NBA + NFL + soccer + F1 schedules"
+                            "MLB + NHL + NBA + NFL + football + F1 schedules"
                         } else {
                             "tier-1 cs2 + lol schedules"
                         }
@@ -3302,7 +3302,7 @@ fn SportToggle() -> impl IntoView {
     };
     view! {
         <button
-            class="toggle"
+            class="toggle sport-toggle"
             class:on=move || traditional.get()
             title="Switch between esports and traditional sports"
             on:click=toggle
@@ -4436,7 +4436,7 @@ fn SportTabs(
                 {with_star("NHL", "nhl")}
                 {with_star("NBA", "nba")}
                 {with_star("NFL", "nfl")}
-                {with_star("Soccer", "soccer")}
+                {with_star("Football", "football")}
                 {with_star("F1", "f1")}
             </div>
             {move || {
@@ -4504,18 +4504,27 @@ fn ScheduleSection(
                     .get()
                     .map(|res| match res {
                         Ok(s) => {
-                            // Event chips reflect the selected games (esports only).
-                            // The schedule is narrowed by the selected games — for
-                            // esports the CS2/LoL tabs + event chips, for traditional
-                            // the MLB/F1 sport tabs (both live in the `games` set).
-                            let available = if trad { Vec::new() } else { leagues_for_games(&s, &games.get()) };
-                            let leagues_filter = if trad { HashSet::new() } else { leagues.get() };
-                            let filtered = filter_schedule(s, &games.get(), &leagues_filter);
+                            let games_set = games.get();
+                            // Competition chips within the current view. In esports
+                            // these are the CS2/LoL events; in sports mode they're
+                            // shown only when the view spans more than one league —
+                            // e.g. soccer's Premier League + World Cup — so a single-
+                            // league sport doesn't get a chip that just repeats its
+                            // tab.
+                            let available = leagues_for_games(&s, &games_set);
+                            let show_chips =
+                                if trad { available.len() > 1 } else { !available.is_empty() };
+                            // Only apply the chip filter when chips are on screen, so
+                            // a remembered selection can't silently empty a single-
+                            // competition sport when you switch to its tab.
+                            let leagues_filter =
+                                if show_chips || !trad { leagues.get() } else { HashSet::new() };
+                            let filtered = filter_schedule(s, &games_set, &leagues_filter);
                             // Show ★ reminder buttons only when Web Push is configured.
                             let push = use_context::<RwSignal<Option<String>>>()
                                 .is_some_and(|v| v.get().is_some());
                             view! {
-                                {(!trad)
+                                {show_chips
                                     .then(|| view! { <LeagueChips leagues=available selected=leagues /> })}
                                 {render_schedule(filtered, show_nav, push, false, false)}
                             }
