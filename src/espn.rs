@@ -210,32 +210,24 @@ fn to_match(e: Event, lg: &EspnLeague) -> Option<NormalizedMatch> {
     let away = comp.competitors.iter().find(|c| c.home_away == "away")?;
     let home = comp.competitors.iter().find(|c| c.home_away == "home")?;
     let score = |c: &Competitor| c.score.parse::<i64>().ok();
-    Some(NormalizedMatch {
+    // ESPN exposes no venue IANA tz, so these carry no venue-time toggle.
+    Some(NormalizedMatch::team_sport(
         id,
-        game: lg.game,
-        league: lg.name.to_string(),
-        league_url: None,
-        serie_name: String::new(),
-        tier: "S".to_string(),
+        lg.game,
+        lg.name,
         begin_at,
-        status: status_of(&e.status.r#type.state, &e.status.r#type.name),
-        best_of: None,
-        team_a: NormTeam {
+        status_of(&e.status.r#type.state, &e.status.r#type.name),
+        NormTeam {
             label: away.team.label(),
             name: away.team.full_name(),
             score: score(away),
         },
-        team_b: NormTeam {
+        NormTeam {
             label: home.team.label(),
             name: home.team.full_name(),
             score: score(home),
         },
-        stream_url: None,
-        tournament_id: None,
-        venue_tz: None,
-        streams: Vec::new(),
-        mlb_series: None,
-    })
+    ))
 }
 
 /// Fetch every game of `lg` in the inclusive UTC-day range, normalized. ESPN's

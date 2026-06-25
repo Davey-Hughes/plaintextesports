@@ -1458,17 +1458,7 @@ fn detail_view(d: MatchDetail) -> impl IntoView {
             || revealed.is_some_and(|r| r.with(|set| set.contains(&mid)))
     });
     // Per-match reveal button (hidden when the global toggle already shows all).
-    let toggle = move |_| {
-        if let Some(r) = revealed {
-            r.update(|s| {
-                if !s.insert(mid) {
-                    s.remove(&mid);
-                }
-            });
-            #[cfg(feature = "hydrate")]
-            save_revealed(&r.get_untracked());
-        }
-    };
+    let toggle = reveal_toggler(revealed, mid);
     // Hide the reveal toggle when the global toggle already shows all, or when
     // the match hasn't been played yet (nothing to reveal).
     let toggle_hidden = move || global.is_some_and(|g| g.get()) || !played;
@@ -1752,18 +1742,8 @@ fn SeriesRow(game: SeriesGame) -> impl IntoView {
         current,
         match_id,
     } = game;
-    let status_class = match status {
-        MatchStatus::Live => "live",
-        MatchStatus::Finished => "final",
-        MatchStatus::Canceled => "canceled",
-        MatchStatus::Upcoming => "upcoming",
-    };
-    let badge = match status {
-        MatchStatus::Live => "LIVE",
-        MatchStatus::Finished => "Final",
-        MatchStatus::Canceled => "Canc.",
-        MatchStatus::Upcoming => "",
-    };
+    let status_class = status.row_class();
+    let badge = status.badge();
     let has = score_a.is_some() && score_b.is_some();
     let played = matches!(status, MatchStatus::Live | MatchStatus::Finished) && has;
     let (win_a, win_b) = (winner == "a", winner == "b");
@@ -1776,20 +1756,7 @@ fn SeriesRow(game: SeriesGame) -> impl IntoView {
         global.is_some_and(|g| g.get())
             || revealed.is_some_and(|r| r.with(|set| set.contains(&match_id)))
     });
-    let toggle_reveal = move |ev: leptos::ev::MouseEvent| {
-        // Don't let the click fall through to the row's match link.
-        ev.prevent_default();
-        ev.stop_propagation();
-        if let Some(r) = revealed {
-            r.update(|s| {
-                if !s.insert(match_id) {
-                    s.remove(&match_id);
-                }
-            });
-            #[cfg(feature = "hydrate")]
-            save_revealed(&r.get_untracked());
-        }
-    };
+    let toggle_reveal = reveal_toggler(revealed, match_id);
     let score_noun = if matches!(status, MatchStatus::Live) { "live score" } else { "final score" };
     let show_title = format!("Show the {score_noun}");
     let hide_title = format!("Hide the {score_noun}");
@@ -1823,37 +1790,13 @@ fn SeriesRow(game: SeriesGame) -> impl IntoView {
     } else {
         format!("{day_label} · {clock_label}")
     };
-    let when_view = if venue_label.is_empty() {
-        view! { <span class="row-time series-when">{when_text}</span> }.into_any()
-    } else {
-        let show_venue = use_context::<ShowVenue>().map(|s| s.0);
-        let toggle_venue = move |ev: leptos::ev::MouseEvent| {
-            ev.prevent_default();
-            ev.stop_propagation();
-            if let Some(sv) = show_venue {
-                sv.update(|v| *v = !*v);
-            }
-        };
-        let shown = move || show_venue.is_some_and(|sv| sv.get());
-        let title = move || {
-            if shown() {
-                "Showing the time at the ballpark — click for your local time"
-            } else {
-                "Click to show the local time at the ballpark"
-            }
-        };
-        view! {
-            <span
-                class="row-time series-when row-time-tz"
-                class:on=shown
-                title=title
-                on:click=toggle_venue
-            >
-                {move || if shown() { venue_label.clone() } else { when_text.clone() }}
-            </span>
-        }
-        .into_any()
-    };
+    let when_view = venue_time_cell(
+        "row-time series-when",
+        when_text,
+        venue_label,
+        "Click to show the local time at the ballpark",
+        "Showing the time at the ballpark — click for your local time",
+    );
     let inner = view! {
         {when_view}
         <span
@@ -2235,20 +2178,10 @@ fn StandingsTable(rows: Vec<StandingRow>, tournament_id: i64, game: Game) -> imp
     if rows.is_empty() {
         return ().into_any();
     }
-    // The fourth column: CS2 counts maps, LoL counts games, MLB shows games-back.
-    let record_label = match game {
-        Game::Lol => "Games",
-        Game::Cs2 => "Maps",
-        Game::Mlb | Game::Nba => "GB",
-        Game::Nhl | Game::Soccer => "PTS",
-        Game::Nfl => "PCT",
-        // F1 has no standings table (it uses a results rendering instead).
-        Game::F1 => "",
-    };
-    // The traditional team sports put a single value in the last column
-    // (games-back / points / win%) rather than a map/game record.
-    let show_last =
-        matches!(game, Game::Mlb | Game::Nhl | Game::Nba | Game::Nfl | Game::Soccer);
+    // The last column: CS2 counts maps, LoL games, the team sports a single
+    // ranking value (games-back / points / win%).
+    let record_label = game.standings_last_label();
+    let show_last = game.standings_single_value();
     // Click the "Standings" title to reveal/hide the table.
     let (revealed, toggle) = section_reveal(format!("st:{tournament_id}"));
     // Always render every row so the table reserves its height — when hidden, the
@@ -3320,14 +3253,21 @@ fn SportToggle() -> impl IntoView {
         }
     };
     view! {
-        <button
-            class="toggle sport-toggle"
-            class:on=move || traditional.get()
-            title="Switch between esports and traditional sports"
-            on:click=toggle
-        >
-            {move || if traditional.get() { "sports" } else { "esports" }}
-        </button>
+        // The slot is fixed to the wider label ("esports") by an invisible sizer,
+        // so the refresh label to its left never shifts when the word changes
+        // width. The visible button hugs its own text and sits at the right of the
+        // slot (any slack falls on the left).
+        <div class="sport-slot">
+            <span class="toggle sport-sizer" aria-hidden="true">"esports"</span>
+            <button
+                class="toggle sport-toggle"
+                class:on=move || traditional.get()
+                title="Switch between esports and traditional sports"
+                on:click=toggle
+            >
+                {move || if traditional.get() { "sports" } else { "esports" }}
+            </button>
+        </div>
     }
 }
 
@@ -4981,20 +4921,75 @@ fn render_schedule(
     }
 }
 
+/// A click handler that toggles whether match `id`'s score is revealed in the
+/// shared [`RevealedMatches`] set (and persists the set). Stops propagation +
+/// prevents the default so the click doesn't fall through to an enclosing row
+/// link (a no-op on a standalone reveal button). `None` `revealed` ⇒ inert.
+fn reveal_toggler(
+    revealed: Option<RwSignal<HashSet<i64>>>,
+    id: i64,
+    // `Copy` (it captures only an `RwSignal` + an `i64`, both `Copy`) so it can be
+    // moved into a reactive view more than once, as the detail page does.
+) -> impl Fn(leptos::ev::MouseEvent) + Copy {
+    move |ev: leptos::ev::MouseEvent| {
+        ev.prevent_default();
+        ev.stop_propagation();
+        if let Some(r) = revealed {
+            r.update(|s| {
+                if !s.insert(id) {
+                    s.remove(&id);
+                }
+            });
+            #[cfg(feature = "hydrate")]
+            save_revealed(&r.get_untracked());
+        }
+    }
+}
+
+/// A schedule/series row's time cell. `primary` is the viewer-tz label shown by
+/// default; when `venue_label` is non-empty the cell becomes clickable to *swap*
+/// the whole label to the venue-local time (the shared [`ShowVenue`] toggle, so
+/// clicking any one reveals them all), rather than appending it — the row width
+/// stays put. `base_class` is the cell class without the toggle modifier;
+/// `show_title`/`hide_title` are the hover hints for the two states.
+fn venue_time_cell(
+    base_class: &'static str,
+    primary: String,
+    venue_label: String,
+    show_title: &'static str,
+    hide_title: &'static str,
+) -> AnyView {
+    if venue_label.is_empty() {
+        return view! { <span class=base_class>{primary}</span> }.into_any();
+    }
+    let show_venue = use_context::<ShowVenue>().map(|s| s.0);
+    let toggle_venue = move |ev: leptos::ev::MouseEvent| {
+        // Don't let the click fall through to the row's match link.
+        ev.prevent_default();
+        ev.stop_propagation();
+        if let Some(sv) = show_venue {
+            sv.update(|v| *v = !*v);
+        }
+    };
+    let shown = move || show_venue.is_some_and(|sv| sv.get());
+    let title = move || if shown() { hide_title } else { show_title };
+    view! {
+        <span
+            class=format!("{base_class} row-time-tz")
+            class:on=shown
+            title=title
+            on:click=toggle_venue
+        >
+            {move || if shown() { venue_label.clone() } else { primary.clone() }}
+        </span>
+    }
+    .into_any()
+}
+
 #[component]
 fn MatchRow(m: MatchView, show_bo: bool, push: bool) -> impl IntoView {
-    let status_class = match m.status {
-        MatchStatus::Live => "live",
-        MatchStatus::Finished => "final",
-        MatchStatus::Canceled => "canceled",
-        MatchStatus::Upcoming => "upcoming",
-    };
-    let badge = match m.status {
-        MatchStatus::Live => "LIVE",
-        MatchStatus::Finished => "Final",
-        MatchStatus::Canceled => "Canc.",
-        MatchStatus::Upcoming => "",
-    };
+    let status_class = m.status.row_class();
+    let badge = m.status.badge();
 
     let sa = m.team_a.score;
     let sb = m.team_b.score;
@@ -5017,20 +5012,7 @@ fn MatchRow(m: MatchView, show_bo: bool, push: bool) -> impl IntoView {
     // A match's score lives behind its status meta: click the whole "Final · Bo3"
     // (or "LIVE") cluster to toggle just this row's score. (Plain meta for
     // score-less rows, e.g. upcoming or a live match still at the 0-0 placeholder.)
-    let toggle_reveal = move |ev: leptos::ev::MouseEvent| {
-        // Don't let the click fall through to the row's stream link.
-        ev.prevent_default();
-        ev.stop_propagation();
-        if let Some(r) = revealed {
-            r.update(|s| {
-                if !s.insert(mid) {
-                    s.remove(&mid);
-                }
-            });
-            #[cfg(feature = "hydrate")]
-            save_revealed(&r.get_untracked());
-        }
-    };
+    let toggle_reveal = reveal_toggler(revealed, mid);
     let score_noun = if matches!(m.status, MatchStatus::Live) {
         "live score"
     } else {
@@ -5071,39 +5053,13 @@ fn MatchRow(m: MatchView, show_bo: bool, push: bool) -> impl IntoView {
     // carry a timezone; esports don't, so there it stays a plain label). The
     // toggle is shared, so clicking any one time reveals every venue time at
     // once. Clicking stops the row's navigation, like the score reveal.
-    let clock = m.clock_label;
-    let venue_label = m.venue_label;
-    let time_view = if venue_label.is_empty() {
-        view! { <span class="row-time">{clock}</span> }.into_any()
-    } else {
-        let show_venue = use_context::<ShowVenue>().map(|s| s.0);
-        let toggle_venue = move |ev: leptos::ev::MouseEvent| {
-            ev.prevent_default();
-            ev.stop_propagation();
-            if let Some(sv) = show_venue {
-                sv.update(|v| *v = !*v);
-            }
-        };
-        let shown = move || show_venue.is_some_and(|sv| sv.get());
-        let title = move || {
-            if shown() {
-                "Click to hide the local time at each venue"
-            } else {
-                "Click to show the local time at each venue"
-            }
-        };
-        view! {
-            <span
-                class="row-time row-time-tz"
-                class:on=shown
-                title=title
-                on:click=toggle_venue
-            >
-                {move || if shown() { venue_label.clone() } else { clock.clone() }}
-            </span>
-        }
-        .into_any()
-    };
+    let time_view = venue_time_cell(
+        "row-time",
+        m.clock_label,
+        m.venue_label,
+        "Click to show the local time at each venue",
+        "Click to hide the local time at each venue",
+    );
 
     // F1 (and any single-entity sport) has no opponent: the one label is the
     // session (e.g. "Race"), spanning the team columns with no "vs"/score middle.

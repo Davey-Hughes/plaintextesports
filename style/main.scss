@@ -230,10 +230,25 @@ a {
   }
 }
 
-// The esports/sports toggle's box hugs its label, with a touch more room on the
-// left than the right so the text sits slightly off the leading edge.
-.sport-toggle {
-  padding-left: 0.95rem;
+// The esports/sports toggle. Its outline hugs the current word, but the whole
+// control occupies a fixed-width slot (set by an invisible "esports" sizer
+// stacked under the button) so neighbours — chiefly the "updated" label to its
+// left — don't shift when the label swaps between the wider and narrower word.
+.sport-slot {
+  display: inline-grid;
+  // Stack the sizer and the button in one cell; the cell takes the wider of the
+  // two, and the button is placed at its content size against the right edge.
+  justify-items: end;
+
+  > * {
+    grid-area: 1 / 1;
+  }
+}
+
+// Reserves the widest label's width but draws nothing.
+.sport-sizer {
+  visibility: hidden;
+  pointer-events: none;
 }
 
 // "Back to top" arrow: takes the brand's spot once it scrolls away. Pushed left

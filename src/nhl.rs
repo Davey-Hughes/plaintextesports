@@ -109,33 +109,28 @@ fn series_name(game_type: i64) -> String {
 
 fn to_match(g: RawGame) -> Option<NormalizedMatch> {
     let begin_at = DateTime::parse_from_rfc3339(&g.start_time_utc).ok()?.with_timezone(&Utc);
-    Some(NormalizedMatch {
-        id: g.id,
-        game: Game::Nhl,
-        league: "NHL".to_string(),
-        league_url: None,
-        serie_name: series_name(g.game_type),
-        tier: "S".to_string(),
+    let mut m = NormalizedMatch::team_sport(
+        g.id,
+        Game::Nhl,
+        "NHL",
         begin_at,
-        status: status_of(&g.game_state, &g.schedule_state),
-        best_of: None,
-        team_a: NormTeam {
+        status_of(&g.game_state, &g.schedule_state),
+        NormTeam {
             label: g.away_team.label(),
             name: g.away_team.full_name(),
             score: g.away_team.score,
         },
-        team_b: NormTeam {
+        NormTeam {
             label: g.home_team.label(),
             name: g.home_team.full_name(),
             score: g.home_team.score,
         },
-        stream_url: None,
-        tournament_id: None,
-        // The arena's IANA timezone, for the local-time-at-the-venue toggle.
-        venue_tz: Some(g.venue_timezone).filter(|s| !s.is_empty()),
-        streams: Vec::new(),
-        mlb_series: None,
-    })
+    );
+    // The non-regular-season round (e.g. "Playoffs"), and the arena's IANA tz for
+    // the local-time-at-the-venue toggle.
+    m.serie_name = series_name(g.game_type);
+    m.venue_tz = Some(g.venue_timezone).filter(|s| !s.is_empty());
+    Some(m)
 }
 
 /// Fetch every NHL game in the inclusive UTC-day range, normalized. The schedule
