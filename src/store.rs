@@ -68,6 +68,8 @@ pub fn open(path: &str) -> rusqlite::Result<Connection> {
             team_b_score INTEGER,
             team_a_name  TEXT,
             team_b_name  TEXT,
+            team_a_abbrev TEXT,
+            team_b_abbrev TEXT,
             venue_tz     TEXT,
             venue_name   TEXT,
             venue_location TEXT,
@@ -127,6 +129,8 @@ pub fn open(path: &str) -> rusqlite::Result<Connection> {
     let _ = conn.execute("ALTER TABLE matches ADD COLUMN serie_name TEXT", []);
     let _ = conn.execute("ALTER TABLE matches ADD COLUMN team_a_name TEXT", []);
     let _ = conn.execute("ALTER TABLE matches ADD COLUMN team_b_name TEXT", []);
+    let _ = conn.execute("ALTER TABLE matches ADD COLUMN team_a_abbrev TEXT", []);
+    let _ = conn.execute("ALTER TABLE matches ADD COLUMN team_b_abbrev TEXT", []);
     let _ = conn.execute("ALTER TABLE matches ADD COLUMN venue_tz TEXT", []);
     let _ = conn.execute("ALTER TABLE matches ADD COLUMN venue_name TEXT", []);
     let _ = conn.execute("ALTER TABLE matches ADD COLUMN venue_location TEXT", []);
@@ -188,11 +192,13 @@ fn row_to_match(row: &rusqlite::Row) -> rusqlite::Result<Option<NormalizedMatch>
             label: row.get("team_a_label")?,
             // Older rows predate team_a_name; fall back to the label.
             name: team_name(row, "team_a_name", "team_a_label")?,
+            abbrev: row.get::<_, Option<String>>("team_a_abbrev")?.unwrap_or_default(),
             score: row.get("team_a_score")?,
         },
         team_b: NormTeam {
             label: row.get("team_b_label")?,
             name: team_name(row, "team_b_name", "team_b_label")?,
+            abbrev: row.get::<_, Option<String>>("team_b_abbrev")?.unwrap_or_default(),
             score: row.get("team_b_score")?,
         },
         stream_url: row.get("stream_url")?,
@@ -259,8 +265,9 @@ pub fn upsert_and_prune(
                 (id, game, league, tier, begin_at_ms, status, best_of,
                  team_a_label, team_a_score, team_b_label, team_b_score, stream_url,
                  league_url, tournament_id, serie_name, team_a_name, team_b_name, venue_tz,
-                 venue_name, venue_location, team_a_logo, team_b_logo)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22)
+                 venue_name, venue_location, team_a_logo, team_b_logo,
+                 team_a_abbrev, team_b_abbrev)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24)
              ON CONFLICT(id, game) DO UPDATE SET
                 league=excluded.league, tier=excluded.tier,
                 begin_at_ms=excluded.begin_at_ms, status=excluded.status,
@@ -272,7 +279,8 @@ pub fn upsert_and_prune(
                 team_a_name=excluded.team_a_name, team_b_name=excluded.team_b_name,
                 venue_tz=excluded.venue_tz, venue_name=excluded.venue_name,
                 venue_location=excluded.venue_location,
-                team_a_logo=excluded.team_a_logo, team_b_logo=excluded.team_b_logo",
+                team_a_logo=excluded.team_a_logo, team_b_logo=excluded.team_b_logo,
+                team_a_abbrev=excluded.team_a_abbrev, team_b_abbrev=excluded.team_b_abbrev",
         )?;
         for m in matches {
             up.execute(params![
@@ -298,6 +306,8 @@ pub fn upsert_and_prune(
                 m.venue_location,
                 m.team_a_logo,
                 m.team_b_logo,
+                m.team_a.abbrev,
+                m.team_b.abbrev,
             ])?;
         }
         tx.execute(
@@ -597,12 +607,14 @@ mod tests {
                 label: "T1".into(),
                 name: "T1".into(),
                 score: None,
-            },
+                            abbrev: String::new(),
+},
             team_b: NormTeam {
                 label: "GEN".into(),
                 name: "Gen.G".into(),
                 score: Some(1),
-            },
+                            abbrev: String::new(),
+},
             stream_url: Some("https://twitch.tv/lck".into()),
             tournament_id: Some(42),
             venue_tz: Some("America/New_York".into()),

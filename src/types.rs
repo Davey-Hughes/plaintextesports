@@ -239,6 +239,10 @@ pub struct TeamView {
     /// cached payloads.
     #[serde(default)]
     pub logo: String,
+    /// Official 2-3 letter abbreviation, shown in place of the label in compact
+    /// contexts (narrow schedule rows). Empty when the source has none.
+    #[serde(default)]
+    pub abbrev: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

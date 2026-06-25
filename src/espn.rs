@@ -310,11 +310,13 @@ fn to_match(e: Event, lg: &EspnLeague) -> Option<NormalizedMatch> {
         NormTeam {
             label: away.team.label(),
             name: away.team.full_name(),
+            abbrev: away.team.abbreviation.clone(),
             score: score(away),
         },
         NormTeam {
             label: home.team.label(),
             name: home.team.full_name(),
+            abbrev: home.team.abbreviation.clone(),
             score: score(home),
         },
     );

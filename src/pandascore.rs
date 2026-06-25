@@ -73,6 +73,10 @@ pub struct NormTeam {
     /// the team page. Falls back to the label when the source has no distinct
     /// full name; "TBD" when the opponent isn't decided yet.
     pub name: String,
+    /// Official 2-3 letter abbreviation (e.g. "LAD", "MTL") shown where the full
+    /// name won't fit. Empty when the source has none — esports labels are already
+    /// acronyms, so they leave this empty and keep showing the label.
+    pub abbrev: String,
     pub score: Option<i64>,
 }
 
@@ -351,11 +355,14 @@ fn normalize(game: Game, raw: &RawMatch) -> Option<NormalizedMatch> {
         team_a: NormTeam {
             label: label_a,
             name: name_a,
+            // Esports labels are already acronyms, so no separate abbreviation.
+            abbrev: String::new(),
             score: score_for(&raw.results, id_a),
         },
         team_b: NormTeam {
             label: label_b,
             name: name_b,
+            abbrev: String::new(),
             score: score_for(&raw.results, id_b),
         },
         stream_url,
@@ -1222,7 +1229,8 @@ mod tests {
             label: label.into(),
             name: label.into(),
             score: Some(3),
-        };
+                    abbrev: String::new(),
+};
         let when = "2026-06-24T18:00:00Z".parse::<DateTime<Utc>>().unwrap();
         let m = NormalizedMatch::team_sport(
             7,
