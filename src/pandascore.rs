@@ -50,6 +50,11 @@ pub struct NormalizedMatch {
     /// the match page. Empty for esports (no physical venue). Persisted.
     pub venue_name: String,
     pub venue_location: String,
+    /// Each team's vector (SVG) logo URL, when a vector source exists — NHL (the
+    /// schedule's `team.logo`) and MLB (mlbstatic, by team id). Empty otherwise
+    /// (ESPN/PandaScore expose only raster). Persisted.
+    pub team_a_logo: String,
+    pub team_b_logo: String,
     /// All broadcasts for the match (from `streams_list`). In-memory only —
     /// repopulated each poll, not persisted, and only used on the detail page.
     pub streams: Vec<StreamView>,
@@ -104,6 +109,8 @@ impl NormalizedMatch {
             venue_tz: None,
             venue_name: String::new(),
             venue_location: String::new(),
+            team_a_logo: String::new(),
+            team_b_logo: String::new(),
             streams: Vec::new(),
             mlb_series: None,
         }
@@ -347,6 +354,8 @@ fn normalize(game: Game, raw: &RawMatch) -> Option<NormalizedMatch> {
         venue_tz: None,
         venue_name: String::new(),
         venue_location: String::new(),
+            team_a_logo: String::new(),
+            team_b_logo: String::new(),
         streams: streams(&raw.streams_list),
         // Series are an MLB concept; esports matches have none.
         mlb_series: None,

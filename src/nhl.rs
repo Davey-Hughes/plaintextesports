@@ -58,6 +58,9 @@ struct RawTeam {
     abbrev: String,
     #[serde(default)]
     score: Option<i64>,
+    /// SVG logo URL, e.g. "https://assets.nhle.com/logos/nhl/svg/TOR_light.svg".
+    #[serde(default)]
+    logo: String,
 }
 
 #[derive(Deserialize, Default)]
@@ -135,6 +138,9 @@ fn to_match(g: RawGame) -> Option<NormalizedMatch> {
     // The arena name; the city is the home team's place (e.g. "Toronto").
     m.venue_name = g.venue.default;
     m.venue_location = g.home_team.place_name.default.trim().to_string();
+    // The NHL schedule carries each team's SVG logo URL directly.
+    m.team_a_logo = g.away_team.logo;
+    m.team_b_logo = g.home_team.logo;
     Some(m)
 }
 

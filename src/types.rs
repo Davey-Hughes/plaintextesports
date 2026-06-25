@@ -224,6 +224,11 @@ pub struct TeamView {
     pub score: Option<i64>,
     /// True when this team won a finished match (for emphasis).
     pub winner: bool,
+    /// Vector (SVG) logo URL, when a vector source exists (NHL/MLB); empty
+    /// otherwise. Shown on the match/team pages. `#[serde(default)]` for older
+    /// cached payloads.
+    #[serde(default)]
+    pub logo: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
