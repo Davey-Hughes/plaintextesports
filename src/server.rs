@@ -118,6 +118,16 @@ pub async fn get_match_detail(
                 crate::cache::nfl_team_groups(&match_view.team_a.name, &match_view.team_b.name),
                 crate::types::Series::default(),
             )
+        } else if match_view.game == Game::Soccer {
+            // The World Cup group (or PL table) the two clubs are in.
+            (
+                crate::cache::soccer_team_groups(
+                    &match_view.league,
+                    &match_view.team_a.name,
+                    &match_view.team_b.name,
+                ),
+                crate::types::Series::default(),
+            )
         } else {
             (Vec::new(), crate::types::Series::default())
         };
@@ -212,6 +222,9 @@ pub async fn get_event_stages(league: String) -> Result<Vec<EventInfo>, ServerFn
         }
         if league == "NFL" {
             return Ok(crate::cache::nfl_standings());
+        }
+        if league == "Premier League" || league == "World Cup" {
+            return Ok(crate::cache::soccer_standings(&league));
         }
         let tids = crate::cache::event_stages(&league);
         Ok(crate::cache::stages_info(tids, &league).await)

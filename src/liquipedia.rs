@@ -25,7 +25,7 @@ const fn wiki(game: Game) -> &'static str {
         Game::Cs2 => "counterstrike",
         Game::Lol => "leagueoflegends",
         // Traditional sports aren't resolved against Liquipedia.
-        Game::Mlb | Game::Nhl | Game::Nba | Game::Nfl | Game::F1 => "",
+        Game::Mlb | Game::Nhl | Game::Nba | Game::Nfl | Game::Soccer | Game::F1 => "",
     }
 }
 

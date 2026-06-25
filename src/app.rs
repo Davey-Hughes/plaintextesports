@@ -520,7 +520,7 @@ fn SiteFooter() -> impl IntoView {
                 <span>
                     {move || {
                         if traditional.get() {
-                            "MLB + NHL + NBA + NFL + F1 schedules"
+                            "MLB + NHL + NBA + NFL + soccer + F1 schedules"
                         } else {
                             "tier-1 cs2 + lol schedules"
                         }
@@ -2221,14 +2221,15 @@ fn StandingsTable(rows: Vec<StandingRow>, tournament_id: i64, game: Game) -> imp
         Game::Lol => "Games",
         Game::Cs2 => "Maps",
         Game::Mlb | Game::Nba => "GB",
-        Game::Nhl => "PTS",
+        Game::Nhl | Game::Soccer => "PTS",
         Game::Nfl => "PCT",
         // F1 has no standings table (it uses a results rendering instead).
         Game::F1 => "",
     };
     // The traditional team sports put a single value in the last column
     // (games-back / points / win%) rather than a map/game record.
-    let show_last = matches!(game, Game::Mlb | Game::Nhl | Game::Nba | Game::Nfl);
+    let show_last =
+        matches!(game, Game::Mlb | Game::Nhl | Game::Nba | Game::Nfl | Game::Soccer);
     // Click the "Standings" title to reveal/hide the table.
     let (revealed, toggle) = section_reveal(format!("st:{tournament_id}"));
     // Always render every row so the table reserves its height — when hidden, the
@@ -3953,7 +3954,12 @@ fn schedule_needs_window(s: &ScheduleView) -> bool {
         .flat_map(|lg| &lg.matches)
         // The team sports play often, so an event schedule of them caps its
         // horizon like the homepage; F1 (single-entity) shows its whole GP.
-        .any(|m| matches!(m.game, Game::Mlb | Game::Nhl | Game::Nba | Game::Nfl))
+        .any(|m| {
+            matches!(
+                m.game,
+                Game::Mlb | Game::Nhl | Game::Nba | Game::Nfl | Game::Soccer
+            )
+        })
 }
 
 /// `(season, round)` for an F1 event's schedule, recovered from a session id
@@ -4430,6 +4436,7 @@ fn SportTabs(
                 {with_star("NHL", "nhl")}
                 {with_star("NBA", "nba")}
                 {with_star("NFL", "nfl")}
+                {with_star("Soccer", "soccer")}
                 {with_star("F1", "f1")}
             </div>
             {move || {

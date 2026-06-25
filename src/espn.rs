@@ -24,6 +24,9 @@ pub struct EspnLeague {
     league: &'static str,
     /// The standings stat shown in the last table column (its `displayValue`).
     last_stat: &'static str,
+    /// The numeric stat the table is ordered by, descending (wins for the North
+    /// American leagues, points for soccer).
+    rank_stat: &'static str,
     /// Base id for the conference standings tables (id = base + conference index).
     standings_base: i64,
 }
@@ -34,6 +37,7 @@ pub const NFL: EspnLeague = EspnLeague {
     sport: "football",
     league: "nfl",
     last_stat: "winPercent",
+    rank_stat: "wins",
     standings_base: 500,
 };
 
@@ -43,8 +47,40 @@ pub const NBA: EspnLeague = EspnLeague {
     sport: "basketball",
     league: "nba",
     last_stat: "gamesBehind",
+    rank_stat: "wins",
     standings_base: 400,
 };
+
+pub const EPL: EspnLeague = EspnLeague {
+    game: Game::Soccer,
+    name: "Premier League",
+    sport: "soccer",
+    league: "eng.1",
+    // Soccer ranks by points; the table shows W-D-L (draws ride the ties slot).
+    last_stat: "points",
+    rank_stat: "points",
+    standings_base: 700,
+};
+
+pub const WORLD_CUP: EspnLeague = EspnLeague {
+    game: Game::Soccer,
+    name: "World Cup",
+    sport: "soccer",
+    league: "fifa.world",
+    last_stat: "points",
+    rank_stat: "points",
+    standings_base: 600,
+};
+
+/// ESPN's season year for a European league (Aug–May; labelled by start year).
+#[must_use]
+pub fn european_season(now: DateTime<Utc>) -> i32 {
+    if now.month() >= 7 {
+        now.year()
+    } else {
+        now.year() - 1
+    }
+}
 
 /// ESPN's season year for a league at `now`. NFL labels a season by its start
 /// year (Sept–Feb); NBA by its end year (Oct–June).
@@ -298,13 +334,14 @@ fn conferences_from(resp: StandingsResp, lg: &EspnLeague) -> Vec<EventInfo> {
         .into_iter()
         .enumerate()
         .map(|(i, conf)| {
-            let mut rows: Vec<StandingRow> = conf
+            // (sort_key, row) — sort by the league's ranking stat (wins / points).
+            let mut rows: Vec<(i32, StandingRow)> = conf
                 .standings
                 .entries
                 .into_iter()
                 .map(|e| {
                     let last = e.stat_str(lg.last_stat);
-                    StandingRow {
+                    let row = StandingRow {
                         rank: 0,
                         team: e.team.full_name(),
                         wins: e.stat_i32("wins"),
@@ -314,15 +351,21 @@ fn conferences_from(resp: StandingsResp, lg: &EspnLeague) -> Vec<EventInfo> {
                         game_losses: 0,
                         // Games-back "-" reads better as an em dash.
                         gb: if last == "-" { "—".to_string() } else { last },
-                    }
+                    };
+                    (e.stat_i32(lg.rank_stat), row)
                 })
                 .collect();
             // ESPN normally returns these in standing order, but be defensive:
-            // order by record (more wins, then fewer losses) and number from there.
-            rows.sort_by(|a, b| b.wins.cmp(&a.wins).then(a.losses.cmp(&b.losses)));
-            for (idx, r) in rows.iter_mut().enumerate() {
-                r.rank = idx as i32 + 1;
-            }
+            // order by the ranking stat (then fewer losses) and number from there.
+            rows.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.losses.cmp(&b.1.losses)));
+            let rows: Vec<StandingRow> = rows
+                .into_iter()
+                .enumerate()
+                .map(|(idx, (_, mut r))| {
+                    r.rank = idx as i32 + 1;
+                    r
+                })
+                .collect();
             EventInfo {
                 event: lg.name.to_string(),
                 tournament_id: lg.standings_base + i as i64,
@@ -337,14 +380,18 @@ fn conferences_from(resp: StandingsResp, lg: &EspnLeague) -> Vec<EventInfo> {
         .collect()
 }
 
-/// Fetch `lg`'s standings, one table per conference. `season` is ESPN's season
-/// year (see [`season_year`]).
+/// Fetch `lg`'s standings, one table per group/conference. `season` is ESPN's
+/// season year (see [`season_year`] / [`european_season`]); `None` lets ESPN pick
+/// the current one (used for the World Cup, which isn't a yearly season).
 pub async fn fetch_standings(
     client: &reqwest::Client,
     lg: &EspnLeague,
-    season: i32,
+    season: Option<i32>,
 ) -> Result<Vec<EventInfo>, reqwest::Error> {
-    let url = format!("{CORE}/{}/{}/standings?season={season}", lg.sport, lg.league);
+    let url = match season {
+        Some(s) => format!("{CORE}/{}/{}/standings?season={s}", lg.sport, lg.league),
+        None => format!("{CORE}/{}/{}/standings", lg.sport, lg.league),
+    };
     let resp: StandingsResp = client.get(&url).send().await?.error_for_status()?.json().await?;
     Ok(conferences_from(resp, lg))
 }
