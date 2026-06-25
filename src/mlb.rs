@@ -28,10 +28,6 @@ struct RawGame {
     game_pk: i64,
     #[serde(rename = "gameDate", default)]
     game_date: String,
-    /// Calendar date of the game in the venue's local sense (e.g. "2026-06-23"),
-    /// stable across timezones — used to label and order the series games.
-    #[serde(rename = "officialDate", default)]
-    official_date: String,
     #[serde(default)]
     status: RawStatus,
     #[serde(default)]
@@ -832,7 +828,6 @@ mod tests {
         games.push(RawGame {
             game_pk: 999999,
             game_date: "2026-06-25T20:07:00Z".into(),
-            official_date: "2026-06-25".into(),
             status: RawStatus { abstract_state: "Final".into(), detailed_state: "Final".into() },
             teams: RawTeams {
                 away: RawSide { score: Some(1), team: RawTeamRef { id: 117, team_name: "Astros".into(), ..Default::default() } },

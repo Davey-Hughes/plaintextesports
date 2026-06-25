@@ -2863,4 +2863,43 @@ mod tests {
         assert_eq!(r.team_a, "Boston Bruins");
         assert_eq!(r.event, "NHL");
     }
+
+    #[test]
+    fn mode_filter_splits_esports_and_traditional() {
+        // "trad" = every traditional sport, no specific game (the homepage's
+        // sports mode; the client narrows it with the sport tabs).
+        assert_eq!(mode_filter("trad"), (true, None));
+        // A specific traditional sport.
+        assert_eq!(mode_filter("mlb"), (true, Some(Game::Mlb)));
+        assert_eq!(mode_filter("football"), (true, Some(Game::Soccer)));
+        // A specific esports title.
+        assert_eq!(mode_filter("cs2"), (false, Some(Game::Cs2)));
+        // "all"/unknown = all esports (the homepage's default mode).
+        assert_eq!(mode_filter("all"), (false, None));
+        assert_eq!(mode_filter(""), (false, None));
+        // Regression: the legacy "soccer" slug no longer resolves, so it's treated
+        // as unknown (all esports) rather than slipping in as a traditional sport.
+        assert_eq!(mode_filter("soccer"), (false, None));
+    }
+
+    #[test]
+    fn to_view_formats_venue_label_with_date_and_tz() {
+        let la = "America/Los_Angeles".parse::<Tz>().unwrap();
+        let when = "2026-06-24T23:10:00Z".parse::<DateTime<Utc>>().unwrap();
+
+        // A venue tz (MLB/NHL/F1) yields the same instant at the venue, with its
+        // date + tz abbreviation, while the row clock stays in the viewer's tz.
+        let mut m = at(when, MatchStatus::Upcoming);
+        m.game = Game::Mlb;
+        m.venue_tz = Some("America/New_York".into());
+        let view = to_view(&m, &la, when, false);
+        assert_eq!(view.clock_label, "4:10 PM"); // viewer tz (PDT)
+        assert!(view.venue_label.ends_with("7:10 PM EDT"), "{}", view.venue_label);
+        assert!(view.venue_label.contains("Jun 24"), "{}", view.venue_label);
+
+        // No venue tz (esports) → no venue label, nothing to swap to.
+        let mut e = at(when, MatchStatus::Upcoming);
+        e.venue_tz = None;
+        assert!(to_view(&e, &la, when, false).venue_label.is_empty());
+    }
 }
