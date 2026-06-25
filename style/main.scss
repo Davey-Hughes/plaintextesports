@@ -1206,11 +1206,18 @@ a {
   }
 }
 
-// Team page heading: the team name with its subscribe ★ alongside.
+// Team page heading: the team name with its subscribe ★ + logo alongside.
 .team-head {
   display: flex;
   align-items: center;
   gap: 0.5rem;
+  // Carry the heading's outer spacing on the row so its own (asymmetric) margin
+  // doesn't push the name below the centred ★ and logo.
+  margin: 0.8rem 0 0.2rem;
+
+  .detail-title {
+    margin: 0;
+  }
 }
 
 // Team logos beside the team names on the match + team pages. Sized in `em` to
