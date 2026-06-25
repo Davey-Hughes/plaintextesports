@@ -1120,6 +1120,15 @@ a {
   margin: 0.8rem 0 0.2rem;
 }
 
+// Reserve the matchup line's height for the team logo (`team-logo-lg`, 1.6em) so
+// toggling icons off — which drops the logos from flow — doesn't shrink the row
+// and shift everything below it. Scoped to the match title (a direct child of
+// `.detail`) so the team-page heading, where `.detail-title` nests inside
+// `.team-head`, keeps its own height.
+.detail > .detail-title {
+  min-height: 1.6em;
+}
+
 .detail-team {
   font-weight: 700;
   // Logo + name sit together on each side of the matchup.
@@ -1180,10 +1189,13 @@ a {
 }
 
 // F1 results/standings: a small inline nationality flag + constructor logo.
+// The flag gets a FIXED width (not auto) so flags of differing aspect ratios all
+// occupy the same box and the driver names line up in a column; object-fit keeps
+// each flag undistorted within it.
 .team-logo.f1-flag {
-  width: auto;
+  width: 1.2em;
   height: 0.8em;
-  margin-right: 0.35em;
+  margin-right: 0.4em;
   border-radius: 2px;
 }
 
