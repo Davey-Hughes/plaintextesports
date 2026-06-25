@@ -19,16 +19,21 @@ use leptos_router::{
     ParamSegment, StaticSegment,
 };
 
+/// The sport-mode cookie key (and `?mode` query param). Unlike the other storage
+/// keys it's read on the server too (to render the right mode on the first paint),
+/// so it lives outside the hydrate-only `keys` module.
+#[cfg(any(feature = "ssr", feature = "hydrate"))]
+const SPORT_MODE_KEY: &str = "mode";
+
 /// localStorage / cookie keys, centralized so a preference's read and write can't
 /// silently drift onto different keys (and so the storage schema is greppable in
-/// one place). The `mode` key is also the URL query param the sport toggle uses.
-/// Browser storage is client-only, so these are referenced only under `hydrate`.
+/// one place). Browser storage is client-only, so these are referenced only under
+/// `hydrate`. The sport-mode key lives in [`SPORT_MODE_KEY`] (read on both sides).
 #[cfg(feature = "hydrate")]
 mod keys {
     pub const THEME: &str = "theme";
     pub const HOUR24: &str = "hour24";
     pub const SCORES: &str = "scores";
-    pub const MODE: &str = "mode";
     pub const SUBS: &str = "subs";
     pub const STARRED: &str = "starred";
     pub const EXCLUDED: &str = "excluded";
@@ -173,8 +178,10 @@ pub fn App() -> impl IntoView {
     // Header data-freshness label + a manual-refresh trigger.
     let last_updated = RwSignal::new(None::<String>);
     let refresh_trigger = RwSignal::new(0u64);
-    // Top-level sport mode (esports vs traditional/MLB).
-    let traditional = RwSignal::new(false);
+    // Top-level sport mode (esports vs traditional). Resolved from the request
+    // (URL + cookie) on the server so the first paint already shows the right mode
+    // — the same value the client computes on hydrate, so no flash, no mismatch.
+    let traditional = RwSignal::new(initial_sport_mode());
     provide_context(hour24);
     provide_context(tz);
     provide_context(starred);
@@ -195,8 +202,8 @@ pub fn App() -> impl IntoView {
     provide_context(SportMode(traditional));
 
     // After hydration, pick up the browser's timezone + saved preferences and
-    // the push key. (Client-side only; the initial render uses the defaults
-    // above, so there's no hydration mismatch.)
+    // the push key. (Client-side only; the initial render uses the defaults above
+    // — sport mode excepted, resolved at render — so there's no hydration mismatch.)
     Effect::new(move |_| {
         #[cfg(feature = "hydrate")]
         {
@@ -207,7 +214,6 @@ pub fn App() -> impl IntoView {
                 hour24.set(h);
             }
             show_scores.set(load_scores_pref());
-            traditional.set(load_sport_pref());
             starred.set(load_starred());
             excluded.set(load_excluded());
             subscribed.set(load_subs());
@@ -381,9 +387,9 @@ fn FilterUrlSync() -> impl IntoView {
                 Some(v) => leagues.set(parse_set(&v)),
                 None => leagues.set(load_str_set(keys::LEAGUES)),
             }
-            // Sport mode: an explicit ?mode wins (a shared link); else infer it
-            // from a known game slug in ?g, so e.g. ?g=nhl lands in sports mode.
-            // Otherwise the cookie/default the App effect already set stands.
+            // Sport mode is already resolved at render (`initial_sport_mode`); re-
+            // apply the URL's view here so an in-app navigation to a ?mode/?g link
+            // still lands in the right mode. Same precedence, same value on load.
             if let Some(m) = q.get("mode").filter(|v| !v.is_empty()) {
                 traditional.set(m == "sports");
             } else if let Some(v) = &g_param {
@@ -3642,16 +3648,84 @@ fn write_cookie(name: &str, value: &str) {
     }
 }
 
-/// The remembered sport mode — `true` = traditional sports, `false` = esports
-/// (the default). Persisted in a cookie so it survives reloads.
+/// Resolve the initial sport mode (`true` = traditional sports) from the page's
+/// inputs. Shared by SSR (request URL + `Cookie` header) and hydrate (location +
+/// `document.cookie`) so both render the same mode — no first-paint flash and no
+/// hydration mismatch. Precedence: an explicit `?mode` wins (a shared link); else
+/// infer from a known game slug in `?g` (e.g. `?g=nhl` ⇒ sports); else the saved
+/// `mode` cookie ("sports"/"esports"), defaulting to esports.
+#[cfg(any(feature = "ssr", feature = "hydrate"))]
+fn resolve_sport_mode(
+    mode_param: Option<&str>,
+    g_param: Option<&str>,
+    cookie_mode: Option<&str>,
+) -> bool {
+    if let Some(m) = mode_param.filter(|v| !v.is_empty()) {
+        return m == "sports";
+    }
+    if let Some(v) = g_param.filter(|v| !v.is_empty()) {
+        let known: Vec<Game> = v.split(',').filter_map(Game::from_filter).collect();
+        if !known.is_empty() {
+            return known.iter().any(|g| g.traditional());
+        }
+    }
+    cookie_mode == Some("sports")
+}
+
+/// The first `key`'s value in an `&`-separated query string (values stay URL-
+/// encoded; the params we read — `mode`/`g` — are ASCII slugs).
+#[cfg(any(feature = "ssr", feature = "hydrate"))]
+fn query_param(query: &str, key: &str) -> Option<String> {
+    query.split('&').find_map(|kv| {
+        let (k, v) = kv.split_once('=')?;
+        (k == key).then(|| v.to_string())
+    })
+}
+
+/// The initial sport mode for this render, read server-side from the request so
+/// the first paint already matches the client (see [`resolve_sport_mode`]).
+#[cfg(feature = "ssr")]
+fn initial_sport_mode() -> bool {
+    let Some(parts) = use_context::<http::request::Parts>() else {
+        return false;
+    };
+    let query = parts.uri.query().unwrap_or_default();
+    let cookie_mode = parts
+        .headers
+        .get(http::header::COOKIE)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|cookies| {
+            cookies.split(';').find_map(|kv| {
+                let (k, v) = kv.trim().split_once('=')?;
+                (k == SPORT_MODE_KEY).then(|| v.to_string())
+            })
+        });
+    resolve_sport_mode(
+        query_param(query, SPORT_MODE_KEY).as_deref(),
+        query_param(query, "g").as_deref(),
+        cookie_mode.as_deref(),
+    )
+}
+
 #[cfg(feature = "hydrate")]
-fn load_sport_pref() -> bool {
-    read_cookie(keys::MODE).as_deref() == Some("sports")
+fn initial_sport_mode() -> bool {
+    let search = web_sys::window().and_then(|w| w.location().search().ok()).unwrap_or_default();
+    let query = search.trim_start_matches('?');
+    resolve_sport_mode(
+        query_param(query, SPORT_MODE_KEY).as_deref(),
+        query_param(query, "g").as_deref(),
+        read_cookie(SPORT_MODE_KEY).as_deref(),
+    )
+}
+
+#[cfg(not(any(feature = "ssr", feature = "hydrate")))]
+fn initial_sport_mode() -> bool {
+    false
 }
 
 #[cfg(feature = "hydrate")]
 fn save_sport_pref(traditional: bool) {
-    write_cookie(keys::MODE, if traditional { "sports" } else { "esports" });
+    write_cookie(SPORT_MODE_KEY, if traditional { "sports" } else { "esports" });
 }
 
 #[cfg(feature = "hydrate")]
@@ -5737,5 +5811,33 @@ mod tests {
         let f = filter_schedule(s, &names(&["lol"]), &names(&["LCK"]));
         assert_eq!(f.days[0].leagues.len(), 1);
         assert_eq!(f.days[0].leagues[0].league, "LCK");
+    }
+
+    #[cfg(any(feature = "ssr", feature = "hydrate"))]
+    #[test]
+    fn resolve_sport_mode_precedence() {
+        // An explicit ?mode wins outright.
+        assert!(resolve_sport_mode(Some("sports"), None, None));
+        assert!(!resolve_sport_mode(Some("esports"), None, Some("sports")));
+        // Else infer from a known game slug in ?g.
+        assert!(resolve_sport_mode(None, Some("nhl"), None)); // traditional
+        assert!(!resolve_sport_mode(None, Some("cs2"), Some("sports"))); // esports slug overrides cookie
+        assert!(resolve_sport_mode(None, Some("cs2,mlb"), None)); // any traditional ⇒ sports
+        // An unknown ?g (no known slug) falls through to the cookie.
+        assert!(resolve_sport_mode(None, Some("bogus"), Some("sports")));
+        // Else the cookie, defaulting to esports.
+        assert!(resolve_sport_mode(None, None, Some("sports")));
+        assert!(!resolve_sport_mode(None, None, Some("esports")));
+        assert!(!resolve_sport_mode(None, None, None));
+    }
+
+    #[cfg(any(feature = "ssr", feature = "hydrate"))]
+    #[test]
+    fn query_param_extracts_first_match() {
+        assert_eq!(query_param("mode=sports&g=nhl", "mode").as_deref(), Some("sports"));
+        assert_eq!(query_param("mode=sports&g=nhl", "g").as_deref(), Some("nhl"));
+        assert_eq!(query_param("g=cs2,lol", "g").as_deref(), Some("cs2,lol"));
+        assert_eq!(query_param("mode=sports", "g"), None);
+        assert_eq!(query_param("", "mode"), None);
     }
 }
