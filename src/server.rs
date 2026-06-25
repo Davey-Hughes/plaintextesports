@@ -98,6 +98,16 @@ pub async fn get_match_detail(
                 ),
                 crate::cache::mlb_series(id, &tz, hour24).await.unwrap_or_default(),
             )
+        } else if match_view.game == Game::Nhl {
+            // NHL: the two teams' division tables (no series concept). Standings
+            // key on the full team name, so look up by name rather than label.
+            (
+                crate::cache::nhl_team_divisions(
+                    &match_view.team_a.name,
+                    &match_view.team_b.name,
+                ),
+                crate::types::Series::default(),
+            )
         } else {
             (Vec::new(), crate::types::Series::default())
         };
@@ -179,10 +189,13 @@ pub async fn get_team_schedule(
 pub async fn get_event_stages(league: String) -> Result<Vec<EventInfo>, ServerFnError> {
     #[cfg(feature = "ssr")]
     {
-        // MLB has no per-tournament standings; its event page shows the league's
-        // six division tables instead.
+        // MLB/NHL have no per-tournament standings; their event page shows the
+        // league's division tables instead.
         if league == "MLB" {
             return Ok(crate::cache::mlb_standings());
+        }
+        if league == "NHL" {
+            return Ok(crate::cache::nhl_standings());
         }
         let tids = crate::cache::event_stages(&league);
         Ok(crate::cache::stages_info(tids, &league).await)

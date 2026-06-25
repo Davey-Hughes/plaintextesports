@@ -18,6 +18,8 @@ pub mod liquipedia;
 #[cfg(feature = "ssr")]
 pub mod mlb;
 #[cfg(feature = "ssr")]
+pub mod nhl;
+#[cfg(feature = "ssr")]
 pub mod openf1;
 #[cfg(feature = "ssr")]
 pub mod pandascore;

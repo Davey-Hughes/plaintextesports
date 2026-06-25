@@ -22,6 +22,9 @@ pub enum Game {
     /// Major League Baseball — a traditional sport, fetched from the MLB Stats
     /// API rather than PandaScore. Lives behind the esports/traditional toggle.
     Mlb,
+    /// National Hockey League — a traditional sport, fetched from the keyless
+    /// NHL Web API (`api-web.nhle.com`). Like MLB: two teams per game.
+    Nhl,
     /// Formula 1 — a traditional sport, fetched from the Jolpica (Ergast) API.
     /// A "match" is a single session of a Grand Prix weekend (practice/quali/
     /// sprint/race); the Grand Prix is the event. Single-entity (no opponent).
@@ -35,6 +38,7 @@ impl Game {
             Self::Cs2 => "CS2",
             Self::Lol => "LoL",
             Self::Mlb => "MLB",
+            Self::Nhl => "NHL",
             Self::F1 => "F1",
         }
     }
@@ -45,6 +49,7 @@ impl Game {
             Self::Cs2 => "cs2",
             Self::Lol => "lol",
             Self::Mlb => "mlb",
+            Self::Nhl => "nhl",
             Self::F1 => "f1",
         }
     }
@@ -52,7 +57,7 @@ impl Game {
     /// A traditional sport (vs an esports title) — drives the top-bar mode toggle.
     #[must_use]
     pub const fn traditional(self) -> bool {
-        matches!(self, Self::Mlb | Self::F1)
+        matches!(self, Self::Mlb | Self::Nhl | Self::F1)
     }
 
     /// A single-entity sport (a race/session, not two opposing teams) — the row
@@ -65,7 +70,7 @@ impl Game {
     /// The traditional sports, in display order — drives the in-mode sport tabs.
     #[must_use]
     pub fn traditional_sports() -> &'static [Game] {
-        &[Self::Mlb, Self::F1]
+        &[Self::Mlb, Self::Nhl, Self::F1]
     }
 
     /// Parse a UI filter slug. Unknown values (incl. "all") map to `None`.
@@ -75,6 +80,7 @@ impl Game {
             "cs2" => Some(Self::Cs2),
             "lol" => Some(Self::Lol),
             "mlb" => Some(Self::Mlb),
+            "nhl" => Some(Self::Nhl),
             "f1" => Some(Self::F1),
             _ => None,
         }
