@@ -42,6 +42,20 @@ pub enum Game {
 }
 
 impl Game {
+    /// Every game, in canonical (display) order. The single source of truth for
+    /// "which game slugs are valid" — drives the DB cleanup migration (purging
+    /// rows written under a since-renamed slug) and exhaustiveness tests.
+    pub const ALL: &'static [Game] = &[
+        Self::Cs2,
+        Self::Lol,
+        Self::Mlb,
+        Self::Nhl,
+        Self::Nba,
+        Self::Nfl,
+        Self::Soccer,
+        Self::F1,
+    ];
+
     #[must_use]
     pub const fn label(self) -> &'static str {
         match self {
@@ -93,6 +107,32 @@ impl Game {
         &[Self::Mlb, Self::Nhl, Self::Nba, Self::Nfl, Self::Soccer, Self::F1]
     }
 
+    /// The label for the standings table's last column: a map/game record for
+    /// esports, or the team sports' single ranking figure (games-back / points /
+    /// win%). Empty for F1 (it has no standings table).
+    #[must_use]
+    pub const fn standings_last_label(self) -> &'static str {
+        match self {
+            Self::Lol => "Games",
+            Self::Cs2 => "Maps",
+            Self::Mlb | Self::Nba => "GB",
+            Self::Nhl | Self::Soccer => "PTS",
+            Self::Nfl => "PCT",
+            Self::F1 => "",
+        }
+    }
+
+    /// Whether the standings' last column holds a single ranking value (games-back
+    /// / points / win%) rather than a map/game win-loss record. True for the team
+    /// sports, false for esports.
+    #[must_use]
+    pub const fn standings_single_value(self) -> bool {
+        matches!(
+            self,
+            Self::Mlb | Self::Nhl | Self::Nba | Self::Nfl | Self::Soccer
+        )
+    }
+
     /// Parse a UI filter slug. Unknown values (incl. "all") map to `None`.
     #[must_use]
     pub fn from_filter(s: &str) -> Option<Self> {
@@ -128,6 +168,30 @@ impl MatchStatus {
             Self::Live => "live",
             Self::Finished => "finished",
             Self::Canceled => "canceled",
+        }
+    }
+
+    /// Short status badge shown on a schedule/series row ("" while upcoming, so
+    /// no badge is drawn).
+    #[must_use]
+    pub const fn badge(self) -> &'static str {
+        match self {
+            Self::Live => "LIVE",
+            Self::Finished => "Final",
+            Self::Canceled => "Canc.",
+            Self::Upcoming => "",
+        }
+    }
+
+    /// CSS class for a schedule/series row in this status (styles the badge + row
+    /// emphasis). Matches the `MatchStatus` variants by intent.
+    #[must_use]
+    pub const fn row_class(self) -> &'static str {
+        match self {
+            Self::Live => "live",
+            Self::Finished => "final",
+            Self::Canceled => "canceled",
+            Self::Upcoming => "upcoming",
         }
     }
 
@@ -634,5 +698,63 @@ mod tests {
             assert_eq!(MatchStatus::from_db(s.as_str()), s);
         }
         assert_eq!(MatchStatus::from_db("nonsense"), MatchStatus::Upcoming);
+    }
+
+    #[test]
+    fn every_game_slug_round_trips_through_from_filter() {
+        // `slug` and `from_filter` must be inverse over every game — store.rs
+        // persists `slug()` and reads it back with `from_filter`, so a mismatch
+        // would make a row load as a different (default) game. Also asserts `ALL`
+        // is exhaustive (a new variant trips the count).
+        assert_eq!(Game::ALL.len(), 8);
+        for &g in Game::ALL {
+            assert_eq!(Game::from_filter(g.slug()), Some(g), "slug {:?}", g.slug());
+        }
+    }
+
+    #[test]
+    fn soccer_slug_is_football_not_legacy_soccer() {
+        // Regression: soccer's slug was renamed "soccer" → "football". The old
+        // slug must not parse, so legacy rows are dropped rather than loaded as
+        // the default game (which surfaced the World Cup on the esports page).
+        assert_eq!(Game::Soccer.slug(), "football");
+        assert_eq!(Game::from_filter("football"), Some(Game::Soccer));
+        assert_eq!(Game::from_filter("soccer"), None);
+    }
+
+    #[test]
+    fn standings_columns_match_the_sport() {
+        // Esports show a map/game record (not a single value); the team sports a
+        // single ranking figure with a sport-specific label.
+        assert_eq!(Game::Cs2.standings_last_label(), "Maps");
+        assert_eq!(Game::Lol.standings_last_label(), "Games");
+        assert!(!Game::Cs2.standings_single_value());
+        assert!(!Game::Lol.standings_single_value());
+        for (g, label) in [
+            (Game::Mlb, "GB"),
+            (Game::Nhl, "PTS"),
+            (Game::Nba, "GB"),
+            (Game::Nfl, "PCT"),
+            (Game::Soccer, "PTS"),
+        ] {
+            assert_eq!(g.standings_last_label(), label, "{g:?}");
+            assert!(g.standings_single_value(), "{g:?}");
+        }
+        // F1 has no standings table.
+        assert_eq!(Game::F1.standings_last_label(), "");
+        assert!(!Game::F1.standings_single_value());
+    }
+
+    #[test]
+    fn match_status_badge_and_row_class() {
+        assert_eq!(MatchStatus::Live.badge(), "LIVE");
+        assert_eq!(MatchStatus::Finished.badge(), "Final");
+        assert_eq!(MatchStatus::Canceled.badge(), "Canc.");
+        assert_eq!(MatchStatus::Upcoming.badge(), ""); // no badge while upcoming
+        // Row classes the SCSS keys off (note "final", not the wire "finished").
+        assert_eq!(MatchStatus::Live.row_class(), "live");
+        assert_eq!(MatchStatus::Finished.row_class(), "final");
+        assert_eq!(MatchStatus::Canceled.row_class(), "canceled");
+        assert_eq!(MatchStatus::Upcoming.row_class(), "upcoming");
     }
 }

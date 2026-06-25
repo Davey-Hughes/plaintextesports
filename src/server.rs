@@ -87,49 +87,22 @@ pub async fn get_match_detail(
             None => EventInfo::default(),
         };
         event.event = league;
-        // MLB matches have no per-tournament event; show the two teams' division
-        // standings instead, plus the series between them (fetched on demand,
-        // request-time, TTL-cached so it doesn't hammer the MLB API).
-        let (stages, series) = if match_view.game == Game::Mlb {
-            (
-                crate::cache::mlb_team_divisions(
-                    &match_view.team_a.label,
-                    &match_view.team_b.label,
-                ),
-                crate::cache::mlb_series(id, &tz, hour24).await.unwrap_or_default(),
-            )
-        } else if match_view.game == Game::Nhl {
-            // NHL: the two teams' division tables (no series concept). Standings
-            // key on the full team name, so look up by name rather than label.
-            (
-                crate::cache::nhl_team_divisions(
-                    &match_view.team_a.name,
-                    &match_view.team_b.name,
-                ),
-                crate::types::Series::default(),
-            )
-        } else if match_view.game == Game::Nba {
-            (
-                crate::cache::nba_team_groups(&match_view.team_a.name, &match_view.team_b.name),
-                crate::types::Series::default(),
-            )
-        } else if match_view.game == Game::Nfl {
-            (
-                crate::cache::nfl_team_groups(&match_view.team_a.name, &match_view.team_b.name),
-                crate::types::Series::default(),
-            )
-        } else if match_view.game == Game::Soccer {
-            // The World Cup group (or PL table) the two clubs are in.
-            (
-                crate::cache::soccer_team_groups(
-                    &match_view.league,
-                    &match_view.team_a.name,
-                    &match_view.team_b.name,
-                ),
-                crate::types::Series::default(),
-            )
+        // Traditional matches have no per-tournament event; show the table(s) the
+        // two teams sit in (division/conference/group) instead. MLB additionally
+        // shows the series between them (fetched on demand, request-time, TTL-
+        // cached so it doesn't hammer the MLB API).
+        let stages = crate::cache::team_standings_for_match(
+            match_view.game,
+            &match_view.league,
+            &match_view.team_a.label,
+            &match_view.team_a.name,
+            &match_view.team_b.label,
+            &match_view.team_b.name,
+        );
+        let series = if match_view.game == Game::Mlb {
+            crate::cache::mlb_series(id, &tz, hour24).await.unwrap_or_default()
         } else {
-            (Vec::new(), crate::types::Series::default())
+            crate::types::Series::default()
         };
         Ok(MatchDetail {
             found: true,
@@ -209,22 +182,10 @@ pub async fn get_team_schedule(
 pub async fn get_event_stages(league: String) -> Result<Vec<EventInfo>, ServerFnError> {
     #[cfg(feature = "ssr")]
     {
-        // MLB/NHL have no per-tournament standings; their event page shows the
-        // league's division tables instead.
-        if league == "MLB" {
-            return Ok(crate::cache::mlb_standings());
-        }
-        if league == "NHL" {
-            return Ok(crate::cache::nhl_standings());
-        }
-        if league == "NBA" {
-            return Ok(crate::cache::nba_standings());
-        }
-        if league == "NFL" {
-            return Ok(crate::cache::nfl_standings());
-        }
-        if league == "Premier League" || league == "World Cup" {
-            return Ok(crate::cache::soccer_standings(&league));
+        // Traditional sports have no per-tournament standings; their event page
+        // shows the league's division/conference/group tables instead.
+        if let Some(tables) = crate::cache::standings_for_event_name(&league) {
+            return Ok(tables);
         }
         let tids = crate::cache::event_stages(&league);
         Ok(crate::cache::stages_info(tids, &league).await)
@@ -333,21 +294,7 @@ pub async fn add_reminder(req: ReminderReq) -> Result<(), ServerFnError> {
             .ok_or_else(|| ServerFnError::new("match not found or already started"))?;
         let conn = crate::store::shared(&cfg.db_path)
             .map_err(|e| ServerFnError::new(format!("db: {e}")))?;
-        let r = crate::store::Reminder {
-            endpoint: req.sub.endpoint,
-            p256dh: req.sub.p256dh,
-            auth: req.sub.auth,
-            match_id: seed.match_id,
-            notify_at_ms: seed.notify_at_ms,
-            title: seed.title,
-            body: seed.body,
-            url: seed.url,
-            game: seed.game,
-            league: seed.league,
-            team_a: seed.team_a,
-            team_b: seed.team_b,
-            event: seed.event,
-        };
+        let r = seed.into_reminder(req.sub);
         crate::store::add_reminder(&conn, &r).map_err(|e| ServerFnError::new(format!("db: {e}")))?;
         Ok(())
     }
@@ -452,21 +399,7 @@ pub async fn exclude_reminder(req: ReminderReq) -> Result<(), ServerFnError> {
             .ok_or_else(|| ServerFnError::new("match not found or already started"))?;
         let conn = crate::store::shared(&cfg.db_path)
             .map_err(|e| ServerFnError::new(format!("db: {e}")))?;
-        let r = crate::store::Reminder {
-            endpoint: req.sub.endpoint,
-            p256dh: req.sub.p256dh,
-            auth: req.sub.auth,
-            match_id: seed.match_id,
-            notify_at_ms: seed.notify_at_ms,
-            title: seed.title,
-            body: seed.body,
-            url: seed.url,
-            game: seed.game,
-            league: seed.league,
-            team_a: seed.team_a,
-            team_b: seed.team_b,
-            event: seed.event,
-        };
+        let r = seed.into_reminder(req.sub);
         crate::store::exclude_reminder(&conn, &r)
             .map_err(|e| ServerFnError::new(format!("db: {e}")))?;
         Ok(())

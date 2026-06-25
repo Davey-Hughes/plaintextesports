@@ -156,36 +156,29 @@ fn to_matches(r: &RawRace, now: DateTime<Utc>) -> Vec<NormalizedMatch> {
             } else {
                 MatchStatus::Upcoming
             };
-            Some(NormalizedMatch {
+            let mut m = NormalizedMatch::team_sport(
                 // Stable, collision-free id from (season, round, session order).
-                id: season * 100_000 + round * 100 + s.ord,
-                game: Game::F1,
-                league: "F1".to_string(),
-                league_url: None,
-                // The Grand Prix is the event (e.g. "Austrian Grand Prix").
-                serie_name: r.race_name.clone(),
-                tier: "S".to_string(),
+                season * 100_000 + round * 100 + s.ord,
+                Game::F1,
+                "F1",
                 begin_at,
                 status,
-                best_of: None,
                 // Single-entity: the one label is the session; no opponent.
-                team_a: NormTeam {
+                NormTeam {
                     label: s.label.to_string(),
                     name: String::new(),
                     score: None,
                 },
-                team_b: NormTeam {
+                NormTeam {
                     label: String::new(),
                     name: String::new(),
                     score: None,
                 },
-                stream_url: None,
-                tournament_id: None,
-                venue_tz: venue_tz.clone(),
-                streams: Vec::new(),
-                // MLB-only (the series ref); F1 has no opposing-team series.
-                mlb_series: None,
-            })
+            );
+            // The Grand Prix is the event (e.g. "Austrian Grand Prix").
+            m.serie_name = r.race_name.clone();
+            m.venue_tz = venue_tz.clone();
+            Some(m)
         })
         .collect()
 }

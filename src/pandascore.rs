@@ -66,6 +66,43 @@ pub struct NormTeam {
     pub score: Option<i64>,
 }
 
+impl NormalizedMatch {
+    /// A traditional-sport match with the fields common to every keyless feed
+    /// defaulted (tier "S", no best-of/stream/tournament/series, no venue tz). The
+    /// feeds (MLB/NHL/NBA/NFL/soccer/F1) build on this and set only the sport-
+    /// specific extras they have (`serie_name`, `venue_tz`, `streams`,
+    /// `mlb_series`) afterward. Single-entity sports (F1) pass an empty `team_b`.
+    #[must_use]
+    pub fn team_sport(
+        id: i64,
+        game: Game,
+        league: impl Into<String>,
+        begin_at: DateTime<Utc>,
+        status: MatchStatus,
+        team_a: NormTeam,
+        team_b: NormTeam,
+    ) -> Self {
+        Self {
+            id,
+            game,
+            league: league.into(),
+            league_url: None,
+            serie_name: String::new(),
+            tier: "S".to_string(),
+            begin_at,
+            status,
+            best_of: None,
+            team_a,
+            team_b,
+            stream_url: None,
+            tournament_id: None,
+            venue_tz: None,
+            streams: Vec::new(),
+            mlb_series: None,
+        }
+    }
+}
+
 // ----- Raw PandaScore JSON -------------------------------------------------
 
 #[derive(Debug, Deserialize)]
@@ -1146,6 +1183,40 @@ mod tests {
         };
         assert_eq!(team_label(Some(&blank)).0, "TBD");
         assert_eq!(team_label(None).0, "TBD");
+    }
+
+    #[test]
+    fn team_sport_constructor_defaults_the_common_fields() {
+        let t = |label: &str| NormTeam {
+            label: label.into(),
+            name: label.into(),
+            score: Some(3),
+        };
+        let when = "2026-06-24T18:00:00Z".parse::<DateTime<Utc>>().unwrap();
+        let m = NormalizedMatch::team_sport(
+            7,
+            Game::Nhl,
+            "NHL",
+            when,
+            MatchStatus::Finished,
+            t("Bruins"),
+            t("Canadiens"),
+        );
+        assert_eq!(m.id, 7);
+        assert_eq!(m.game, Game::Nhl);
+        assert_eq!(m.league, "NHL");
+        assert_eq!(m.tier, "S");
+        assert_eq!(m.team_a.label, "Bruins");
+        assert_eq!(m.team_b.label, "Canadiens");
+        // Everything a keyless team feed doesn't supply is defaulted off.
+        assert!(m.league_url.is_none());
+        assert!(m.serie_name.is_empty());
+        assert!(m.best_of.is_none());
+        assert!(m.stream_url.is_none());
+        assert!(m.tournament_id.is_none());
+        assert!(m.venue_tz.is_none());
+        assert!(m.streams.is_empty());
+        assert!(m.mlb_series.is_none());
     }
 
     #[test]

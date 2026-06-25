@@ -271,56 +271,48 @@ fn broadcasts(raw: &[RawBroadcast]) -> Vec<StreamView> {
 
 fn to_match(g: RawGame) -> Option<NormalizedMatch> {
     let begin_at = DateTime::parse_from_rfc3339(&g.game_date).ok()?.with_timezone(&Utc);
-    Some(NormalizedMatch {
-        id: g.game_pk,
-        game: Game::Mlb,
-        league: "MLB".to_string(),
-        league_url: None,
-        // A regular-season game is just "MLB"; the postseason/all-star names its
-        // round. Strip a redundant leading "MLB " (the API's All-Star series is
-        // "MLB All-Star Game") so the league+serie heading doesn't read "MLB MLB …".
-        serie_name: if g.series.eq_ignore_ascii_case("Regular Season") {
-            String::new()
-        } else {
-            g.series
-                .strip_prefix("MLB ")
-                .unwrap_or(&g.series)
-                .to_string()
-        },
-        tier: "S".to_string(),
+    let mut m = NormalizedMatch::team_sport(
+        g.game_pk,
+        Game::Mlb,
+        "MLB",
         begin_at,
-        status: status_of(&g.status),
-        // No best-of label: each MLB game is a single game, not an esports series.
-        best_of: None,
-        team_a: NormTeam {
+        status_of(&g.status),
+        NormTeam {
             label: g.teams.away.team.label(),
             name: g.teams.away.team.full_name(),
             score: g.teams.away.score,
         },
-        team_b: NormTeam {
+        NormTeam {
             label: g.teams.home.team.label(),
             name: g.teams.home.team.full_name(),
             score: g.teams.home.score,
         },
-        stream_url: None,
-        tournament_id: None,
-        // The stadium's IANA timezone, so the UI can show the local time at the
-        // ballpark (handles cross-country and neutral-site games).
-        venue_tz: Some(g.venue.time_zone.id).filter(|s| !s.is_empty()),
-        streams: broadcasts(&g.broadcasts),
-        // Carry the two teams' ids + this game's series position so the detail
-        // page can fetch the whole series between them. Only when both ids and a
-        // sane series length are present.
-        mlb_series: (g.teams.away.team.id > 0
-            && g.teams.home.team.id > 0
-            && g.games_in_series > 0)
-            .then_some(crate::types::MlbSeriesRef {
-                team_id_a: g.teams.away.team.id,
-                team_id_b: g.teams.home.team.id,
-                game_number: g.series_game_number,
-                games_in_series: g.games_in_series,
-            }),
-    })
+    );
+    // A regular-season game is just "MLB"; the postseason/all-star names its
+    // round. Strip a redundant leading "MLB " (the API's All-Star series is
+    // "MLB All-Star Game") so the league+serie heading doesn't read "MLB MLB …".
+    m.serie_name = if g.series.eq_ignore_ascii_case("Regular Season") {
+        String::new()
+    } else {
+        g.series.strip_prefix("MLB ").unwrap_or(&g.series).to_string()
+    };
+    // The stadium's IANA timezone, so the UI can show the local time at the
+    // ballpark (handles cross-country and neutral-site games).
+    m.venue_tz = Some(g.venue.time_zone.id).filter(|s| !s.is_empty());
+    m.streams = broadcasts(&g.broadcasts);
+    // Carry the two teams' ids + this game's series position so the detail page
+    // can fetch the whole series between them. Only when both ids and a sane
+    // series length are present.
+    m.mlb_series = (g.teams.away.team.id > 0
+        && g.teams.home.team.id > 0
+        && g.games_in_series > 0)
+        .then_some(crate::types::MlbSeriesRef {
+            team_id_a: g.teams.away.team.id,
+            team_id_b: g.teams.home.team.id,
+            game_number: g.series_game_number,
+            games_in_series: g.games_in_series,
+        });
+    Some(m)
 }
 
 /// Fetch every MLB game in the inclusive date range (UTC days), normalized.

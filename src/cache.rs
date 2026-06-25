@@ -61,102 +61,28 @@ fn event_key(game: Game, league: &str, year: i32) -> String {
 static EVENTS: Lazy<RwLock<HashMap<i64, CachedEvent>>> =
     Lazy::new(|| RwLock::new(HashMap::new()));
 
-/// Current MLB division standings (six tables), refreshed by the poller from the
-/// keyless MLB Stats API. Empty until the first successful fetch.
+// ----- Traditional-sport standings caches ---------------------------------
+//
+// Each team sport keeps its current standings tables in a process-wide cache the
+// poller refreshes (empty until the first successful fetch). MLB/NHL are division
+// lists, NBA/NFL conference lists; soccer spans multiple competitions under one
+// `Game`, so its tables are keyed by competition name. They share the accessors
+// below: `standings_for_event_name` (the whole-league `/event` page) and
+// `team_standings_for_match` (the table[s] a match's two sides belong to).
 static MLB_STANDINGS: Lazy<RwLock<Vec<EventInfo>>> = Lazy::new(|| RwLock::new(Vec::new()));
-
-/// The MLB division standings (all six divisions), for the `/event/MLB` page.
-pub fn mlb_standings() -> Vec<EventInfo> {
-    MLB_STANDINGS
-        .read()
-        .unwrap_or_else(PoisonError::into_inner)
-        .clone()
-}
-
-/// The standings tables for the divisions of `team_a`/`team_b` (one or two
-/// tables), for an MLB match page. Order follows the league-wide ordering.
-pub fn mlb_team_divisions(team_a: &str, team_b: &str) -> Vec<EventInfo> {
-    MLB_STANDINGS
-        .read()
-        .unwrap_or_else(PoisonError::into_inner)
-        .iter()
-        .filter(|div| {
-            div.standings
-                .iter()
-                .any(|r| r.team == team_a || r.team == team_b)
-        })
-        .cloned()
-        .collect()
-}
-
-/// Current NHL division standings (four tables), refreshed by the poller from the
-/// keyless NHL Web API. Empty until the first successful fetch.
 static NHL_STANDINGS: Lazy<RwLock<Vec<EventInfo>>> = Lazy::new(|| RwLock::new(Vec::new()));
-
-/// The NHL division standings (all four divisions), for the `/event/NHL` page.
-pub fn nhl_standings() -> Vec<EventInfo> {
-    NHL_STANDINGS.read().unwrap_or_else(PoisonError::into_inner).clone()
-}
-
-/// The standings tables for the divisions of `team_a`/`team_b`, for an NHL match
-/// page (one or two tables; the two teams may share a division).
-pub fn nhl_team_divisions(team_a: &str, team_b: &str) -> Vec<EventInfo> {
-    NHL_STANDINGS
-        .read()
-        .unwrap_or_else(PoisonError::into_inner)
-        .iter()
-        .filter(|div| div.standings.iter().any(|r| r.team == team_a || r.team == team_b))
-        .cloned()
-        .collect()
-}
-
-/// Current NBA and NFL conference standings, refreshed by the poller from the
-/// keyless ESPN API. Empty until the first successful fetch.
 static NBA_STANDINGS: Lazy<RwLock<Vec<EventInfo>>> = Lazy::new(|| RwLock::new(Vec::new()));
 static NFL_STANDINGS: Lazy<RwLock<Vec<EventInfo>>> = Lazy::new(|| RwLock::new(Vec::new()));
-
-fn espn_standings(store: &RwLock<Vec<EventInfo>>) -> Vec<EventInfo> {
-    store.read().unwrap_or_else(PoisonError::into_inner).clone()
-}
-
-fn espn_team_groups(store: &RwLock<Vec<EventInfo>>, team_a: &str, team_b: &str) -> Vec<EventInfo> {
-    store
-        .read()
-        .unwrap_or_else(PoisonError::into_inner)
-        .iter()
-        .filter(|g| g.standings.iter().any(|r| r.team == team_a || r.team == team_b))
-        .cloned()
-        .collect()
-}
-
-/// The NBA conference standings (both tables), for the `/event/NBA` page.
-pub fn nba_standings() -> Vec<EventInfo> {
-    espn_standings(&NBA_STANDINGS)
-}
-
-/// The NFL conference standings (both tables), for the `/event/NFL` page.
-pub fn nfl_standings() -> Vec<EventInfo> {
-    espn_standings(&NFL_STANDINGS)
-}
-
-/// The conference table(s) containing `team_a`/`team_b`, for an NBA match page.
-pub fn nba_team_groups(team_a: &str, team_b: &str) -> Vec<EventInfo> {
-    espn_team_groups(&NBA_STANDINGS, team_a, team_b)
-}
-
-/// The conference table(s) containing `team_a`/`team_b`, for an NFL match page.
-pub fn nfl_team_groups(team_a: &str, team_b: &str) -> Vec<EventInfo> {
-    espn_team_groups(&NFL_STANDINGS, team_a, team_b)
-}
-
-/// Soccer covers more than one competition under one `Game`, so its standings
-/// are keyed by league name ("Premier League" / "World Cup").
 static SOCCER_STANDINGS: Lazy<RwLock<HashMap<String, Vec<EventInfo>>>> =
     Lazy::new(|| RwLock::new(HashMap::new()));
 
-/// The standings tables for a soccer league (the PL's single table, or the World
-/// Cup's group tables), for its `/event/<league>` page.
-pub fn soccer_standings(league: &str) -> Vec<EventInfo> {
+/// Snapshot a standings store.
+fn read_tables(store: &RwLock<Vec<EventInfo>>) -> Vec<EventInfo> {
+    store.read().unwrap_or_else(PoisonError::into_inner).clone()
+}
+
+/// The soccer tables for one competition (empty when none are cached yet).
+fn soccer_tables(league: &str) -> Vec<EventInfo> {
     SOCCER_STANDINGS
         .read()
         .unwrap_or_else(PoisonError::into_inner)
@@ -165,21 +91,80 @@ pub fn soccer_standings(league: &str) -> Vec<EventInfo> {
         .unwrap_or_default()
 }
 
-/// The table(s) of `league` containing `team_a`/`team_b`, for a soccer match page
-/// (the World Cup group the two are in; the PL's one table).
-pub fn soccer_team_groups(league: &str, team_a: &str, team_b: &str) -> Vec<EventInfo> {
-    SOCCER_STANDINGS
-        .read()
-        .unwrap_or_else(PoisonError::into_inner)
-        .get(league)
-        .map(|tables| {
-            tables
-                .iter()
-                .filter(|g| g.standings.iter().any(|r| r.team == team_a || r.team == team_b))
-                .cloned()
-                .collect()
-        })
-        .unwrap_or_default()
+/// The subset of `tables` that contain either team — the one or two
+/// divisions/conferences/groups the two sides of a match belong to. Order
+/// follows the league-wide ordering.
+fn tables_with_team(tables: &[EventInfo], team_a: &str, team_b: &str) -> Vec<EventInfo> {
+    tables
+        .iter()
+        .filter(|t| t.standings.iter().any(|r| r.team == team_a || r.team == team_b))
+        .cloned()
+        .collect()
+}
+
+/// League-wide standings for a traditional event page, by event name (e.g. the
+/// six MLB divisions for `/event/MLB`). `None` for an esports event, whose
+/// standings come from its tournament instead.
+pub fn standings_for_event_name(name: &str) -> Option<Vec<EventInfo>> {
+    Some(match name {
+        "MLB" => read_tables(&MLB_STANDINGS),
+        "NHL" => read_tables(&NHL_STANDINGS),
+        "NBA" => read_tables(&NBA_STANDINGS),
+        "NFL" => read_tables(&NFL_STANDINGS),
+        "Premier League" | "World Cup" => soccer_tables(name),
+        _ => return None,
+    })
+}
+
+/// The standings table(s) the two sides of a traditional match belong to (their
+/// divisions/conferences/groups), for the match detail page. Empty for esports
+/// and F1. MLB keys its standings by short label; the others by full team name.
+pub fn team_standings_for_match(
+    game: Game,
+    league: &str,
+    a_label: &str,
+    a_name: &str,
+    b_label: &str,
+    b_name: &str,
+) -> Vec<EventInfo> {
+    match game {
+        Game::Mlb => tables_with_team(&read_tables(&MLB_STANDINGS), a_label, b_label),
+        Game::Nhl => tables_with_team(&read_tables(&NHL_STANDINGS), a_name, b_name),
+        Game::Nba => tables_with_team(&read_tables(&NBA_STANDINGS), a_name, b_name),
+        Game::Nfl => tables_with_team(&read_tables(&NFL_STANDINGS), a_name, b_name),
+        Game::Soccer => tables_with_team(&soccer_tables(league), a_name, b_name),
+        Game::Cs2 | Game::Lol | Game::F1 => Vec::new(),
+    }
+}
+
+/// Replace a standings cache with a freshly fetched set, keeping the old tables
+/// on a fetch error or an empty (off-season) response so the page never blanks.
+fn update_standings<E: std::fmt::Display>(
+    store: &RwLock<Vec<EventInfo>>,
+    raw: Result<Vec<EventInfo>, E>,
+    name: &str,
+) {
+    match raw {
+        Ok(tables) if !tables.is_empty() => {
+            *store.write().unwrap_or_else(PoisonError::into_inner) = tables;
+        }
+        Ok(_) => {}
+        Err(e) => leptos::logging::log!("{name} standings fetch failed: {e}"),
+    }
+}
+
+/// As [`update_standings`], for the competition-keyed soccer cache.
+fn update_soccer_standings<E: std::fmt::Display>(league: &str, raw: Result<Vec<EventInfo>, E>) {
+    match raw {
+        Ok(tables) if !tables.is_empty() => {
+            SOCCER_STANDINGS
+                .write()
+                .unwrap_or_else(PoisonError::into_inner)
+                .insert(league.to_string(), tables);
+        }
+        Ok(_) => {}
+        Err(e) => leptos::logging::log!("{league} standings fetch failed: {e}"),
+    }
 }
 
 /// Per-game MLB series, fetched on demand (detail page) and cached with a short
@@ -552,56 +537,16 @@ pub fn spawn_poller() {
                 store.as_mut(),
                 cfg.archive_cutoff(now).timestamp_millis(),
             );
-            // Refresh the NHL standings cache (keep the old tables on error or an
-            // empty off-season response, like MLB).
-            match nhl_standings_raw {
-                Ok(divs) if !divs.is_empty() => {
-                    *NHL_STANDINGS.write().unwrap_or_else(PoisonError::into_inner) = divs;
-                }
-                Ok(_) => {}
-                Err(e) => leptos::logging::log!("NHL standings fetch failed: {e}"),
-            }
-            // Refresh the NBA + NFL standings caches (same keep-on-error policy).
-            match nba_standings_raw {
-                Ok(confs) if !confs.is_empty() => {
-                    *NBA_STANDINGS.write().unwrap_or_else(PoisonError::into_inner) = confs;
-                }
-                Ok(_) => {}
-                Err(e) => leptos::logging::log!("NBA standings fetch failed: {e}"),
-            }
-            match nfl_standings_raw {
-                Ok(confs) if !confs.is_empty() => {
-                    *NFL_STANDINGS.write().unwrap_or_else(PoisonError::into_inner) = confs;
-                }
-                Ok(_) => {}
-                Err(e) => leptos::logging::log!("NFL standings fetch failed: {e}"),
-            }
-            // Refresh the soccer standings (keyed by league), same keep-on-error
-            // policy. The PL's single table; the World Cup's group tables.
-            for (league, raw) in [
-                ("Premier League", epl_standings_raw),
-                ("World Cup", wc_standings_raw),
-            ] {
-                match raw {
-                    Ok(tables) if !tables.is_empty() => {
-                        SOCCER_STANDINGS
-                            .write()
-                            .unwrap_or_else(PoisonError::into_inner)
-                            .insert(league.to_string(), tables);
-                    }
-                    Ok(_) => {}
-                    Err(e) => leptos::logging::log!("{league} standings fetch failed: {e}"),
-                }
-            }
-            // Refresh the MLB standings cache (keep the old tables on error or an
-            // empty off-season response, rather than blanking the page).
-            match mlb_standings_raw {
-                Ok(divs) if !divs.is_empty() => {
-                    *MLB_STANDINGS.write().unwrap_or_else(PoisonError::into_inner) = divs;
-                }
-                Ok(_) => {}
-                Err(e) => leptos::logging::log!("MLB standings fetch failed: {e}"),
-            }
+            // Refresh each standings cache. Keep the old tables on a fetch error
+            // or an empty off-season response, rather than blanking the page.
+            update_standings(&MLB_STANDINGS, mlb_standings_raw, "MLB");
+            update_standings(&NHL_STANDINGS, nhl_standings_raw, "NHL");
+            update_standings(&NBA_STANDINGS, nba_standings_raw, "NBA");
+            update_standings(&NFL_STANDINGS, nfl_standings_raw, "NFL");
+            // Soccer is keyed by competition: the PL's single table, the World
+            // Cup's group tables.
+            update_soccer_standings("Premier League", epl_standings_raw);
+            update_soccer_standings("World Cup", wc_standings_raw);
 
             // Resolve exact Liquipedia links for any new events. The async
             // lookups hold no DB connection; persistence happens synchronously
@@ -1563,6 +1508,30 @@ pub struct ReminderSeed {
     pub title: String,
     pub body: String,
     pub url: String,
+}
+
+impl ReminderSeed {
+    /// Combine this server-derived seed with a client's push subscription into a
+    /// persistable reminder. The seed owns the trusted notification fields; the
+    /// subscription only supplies where to deliver it.
+    #[must_use]
+    pub fn into_reminder(self, sub: crate::types::PushSub) -> crate::store::Reminder {
+        crate::store::Reminder {
+            endpoint: sub.endpoint,
+            p256dh: sub.p256dh,
+            auth: sub.auth,
+            match_id: self.match_id,
+            notify_at_ms: self.notify_at_ms,
+            title: self.title,
+            body: self.body,
+            url: self.url,
+            game: self.game,
+            league: self.league,
+            team_a: self.team_a,
+            team_b: self.team_b,
+            event: self.event,
+        }
+    }
 }
 
 /// Build a reminder seed for one upcoming match. Centralizes the time/title/
@@ -2804,5 +2773,94 @@ mod tests {
         let cutoff = (now - Duration::days(7)).timestamp_millis();
         let merged = merge_matches(&prev, fresh, &[], cutoff);
         assert_eq!(merged.iter().map(|m| m.id).collect::<Vec<_>>(), vec![2]);
+    }
+
+    fn table(stage: &str, teams: &[&str]) -> EventInfo {
+        EventInfo {
+            event: "League".into(),
+            stage: stage.into(),
+            game: Game::Nhl,
+            standings: teams
+                .iter()
+                .map(|t| StandingRow {
+                    team: (*t).to_string(),
+                    ..Default::default()
+                })
+                .collect(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn tables_with_team_keeps_only_the_groups_holding_a_side() {
+        let tables = vec![
+            table("Atlantic", &["Bruins", "Maple Leafs"]),
+            table("Metropolitan", &["Rangers", "Devils"]),
+            table("Central", &["Avalanche", "Stars"]),
+        ];
+        // Two teams in different divisions → both their tables, in order.
+        let got = tables_with_team(&tables, "Bruins", "Rangers");
+        let stages: Vec<&str> = got.iter().map(|t| t.stage.as_str()).collect();
+        assert_eq!(stages, ["Atlantic", "Metropolitan"]);
+        // Both in the same division → that one table, once.
+        let same = tables_with_team(&tables, "Avalanche", "Stars");
+        assert_eq!(same.len(), 1);
+        assert_eq!(same[0].stage, "Central");
+        // Neither present → nothing.
+        assert!(tables_with_team(&tables, "Kraken", "Jets").is_empty());
+    }
+
+    #[test]
+    fn standings_for_event_name_recognizes_traditional_events_only() {
+        // Known traditional events resolve (the caches are empty in tests, so the
+        // tables are empty — but it's `Some`, i.e. "this is a traditional event").
+        for name in ["MLB", "NHL", "NBA", "NFL", "Premier League", "World Cup"] {
+            assert!(standings_for_event_name(name).is_some(), "{name}");
+        }
+        // An esports/unknown event falls through to its tournament standings.
+        assert!(standings_for_event_name("LCK").is_none());
+        assert!(standings_for_event_name("IEM Cologne").is_none());
+    }
+
+    #[test]
+    fn team_standings_for_match_is_empty_for_esports_and_f1() {
+        for g in [Game::Cs2, Game::Lol, Game::F1] {
+            assert!(
+                team_standings_for_match(g, "X", "a", "a", "b", "b").is_empty(),
+                "{g:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn reminder_seed_into_reminder_carries_the_trusted_fields() {
+        let seed = ReminderSeed {
+            match_id: 42,
+            game: "nhl".into(),
+            league: "NHL".into(),
+            team_a: "Boston Bruins".into(),
+            team_b: "Montreal Canadiens".into(),
+            event: "NHL".into(),
+            notify_at_ms: 1000,
+            title: "Bruins at Canadiens".into(),
+            body: "NHL · 7:00 PM".into(),
+            url: "https://x".into(),
+        };
+        let sub = crate::types::PushSub {
+            endpoint: "https://push/1".into(),
+            p256dh: "key".into(),
+            auth: "auth".into(),
+        };
+        let r = seed.into_reminder(sub);
+        // Delivery comes from the subscription...
+        assert_eq!(r.endpoint, "https://push/1");
+        assert_eq!(r.p256dh, "key");
+        // ...everything else from the server-derived seed.
+        assert_eq!(r.match_id, 42);
+        assert_eq!(r.notify_at_ms, 1000);
+        assert_eq!(r.title, "Bruins at Canadiens");
+        assert_eq!(r.game, "nhl");
+        assert_eq!(r.team_a, "Boston Bruins");
+        assert_eq!(r.event, "NHL");
     }
 }

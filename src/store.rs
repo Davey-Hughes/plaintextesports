@@ -119,7 +119,22 @@ pub fn open(path: &str) -> rusqlite::Result<Connection> {
     let _ = conn.execute("ALTER TABLE reminders ADD COLUMN team_b TEXT NOT NULL DEFAULT ''", []);
     let _ = conn.execute("ALTER TABLE reminders ADD COLUMN event TEXT NOT NULL DEFAULT ''", []);
     let _ = conn.execute("ALTER TABLE reminders ADD COLUMN excluded INTEGER NOT NULL DEFAULT 0", []);
+    purge_unknown_games(&conn)?;
     Ok(conn)
+}
+
+/// Delete match rows whose `game` slug isn't a current [`Game`] — orphans left
+/// behind when a game's slug is renamed (e.g. soccer's "soccer" → "football").
+/// Otherwise such rows load as the default game and surface on the wrong page.
+/// Cheap and idempotent, so it runs on every open.
+fn purge_unknown_games(conn: &Connection) -> rusqlite::Result<()> {
+    let slugs: Vec<&str> = Game::ALL.iter().map(|g| g.slug()).collect();
+    let placeholders = vec!["?"; slugs.len()].join(",");
+    conn.execute(
+        &format!("DELETE FROM matches WHERE game NOT IN ({placeholders})"),
+        rusqlite::params_from_iter(slugs),
+    )?;
+    Ok(())
 }
 
 /// The team's full name column, falling back to its short label for rows
@@ -131,13 +146,19 @@ fn team_name(row: &rusqlite::Row, name_col: &str, label_col: &str) -> rusqlite::
         .map_or_else(|| row.get::<_, String>(label_col), Ok)?)
 }
 
-fn row_to_match(row: &rusqlite::Row) -> rusqlite::Result<NormalizedMatch> {
+fn row_to_match(row: &rusqlite::Row) -> rusqlite::Result<Option<NormalizedMatch>> {
     let game: String = row.get("game")?;
+    // Drop rows whose game slug no longer maps to a `Game` (e.g. a row written
+    // under a since-renamed slug). Defaulting an unknown game to Cs2 would
+    // mislabel it and surface it on the wrong page, so skip it instead.
+    let Some(game) = Game::from_filter(&game) else {
+        return Ok(None);
+    };
     let begin_ms: i64 = row.get("begin_at_ms")?;
     let status: String = row.get("status")?;
-    Ok(NormalizedMatch {
+    Ok(Some(NormalizedMatch {
         id: row.get("id")?,
-        game: Game::from_filter(&game).unwrap_or(Game::Cs2),
+        game,
         league: row.get("league")?,
         league_url: row.get("league_url")?,
         serie_name: row.get::<_, Option<String>>("serie_name")?.unwrap_or_default(),
@@ -163,14 +184,15 @@ fn row_to_match(row: &rusqlite::Row) -> rusqlite::Result<NormalizedMatch> {
         streams: Vec::new(),
         // Series refs aren't persisted (MLB, in-memory); repopulated on next poll.
         mlb_series: None,
-    })
+    }))
 }
 
-/// Load all stored matches, ordered by start time.
+/// Load all stored matches, ordered by start time. Rows with an unrecognized
+/// game slug are skipped (see [`row_to_match`]).
 pub fn load_all(conn: &Connection) -> rusqlite::Result<Vec<NormalizedMatch>> {
     let mut stmt = conn.prepare("SELECT * FROM matches ORDER BY begin_at_ms ASC")?;
     let rows = stmt.query_map([], row_to_match)?;
-    rows.collect()
+    rows.filter_map(Result::transpose).collect()
 }
 
 /// Read the stored "last fetched" timestamp (unix ms), if any.
@@ -587,6 +609,35 @@ mod tests {
         assert_eq!(all.len(), 1);
         assert_eq!(all[0].status, MatchStatus::Finished);
         assert_eq!(all[0].team_a.score, Some(2));
+    }
+
+    #[test]
+    fn purges_rows_under_a_renamed_game_slug() {
+        let conn = open(":memory:").unwrap();
+        // Simulate a row left behind under a since-renamed slug ("soccer" was
+        // renamed to "football"), alongside a valid one. The legacy row would
+        // otherwise load as the default game and surface on the esports page.
+        conn.execute(
+            "INSERT INTO matches (id, game, league, tier, begin_at_ms, status,
+                team_a_label, team_b_label) VALUES
+                (1, 'soccer', 'World Cup', 'S', 100, 'upcoming', 'Brazil', 'France'),
+                (2, 'football', 'World Cup', 'S', 200, 'upcoming', 'Spain', 'Japan')",
+            [],
+        )
+        .unwrap();
+        // A direct load skips the unparseable row even before the migration runs.
+        assert_eq!(load_all(&conn).unwrap().len(), 1);
+
+        // Re-opening the same DB runs the purge, removing the orphan for good.
+        purge_unknown_games(&conn).unwrap();
+        let rows = load_all(&conn).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].game, Game::Soccer);
+        assert_eq!(rows[0].id, 2);
+        let remaining: i64 = conn
+            .query_row("SELECT COUNT(*) FROM matches", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(remaining, 1, "the legacy 'soccer' row is deleted");
     }
 
     fn reminder(match_id: i64) -> Reminder {
