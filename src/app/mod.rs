@@ -1242,9 +1242,11 @@ fn EventPage() -> impl IntoView {
                         // (season, round) for an F1 GP — keys its results' reveal.
                         let f1_sr = f1_season_round(&s);
                         // An F1 Grand Prix gets a ★ to subscribe to the whole
-                        // event (all its sessions). Other event pages keep the
-                        // bare title — their schedule already carries league ★s.
-                        let title_head = if f1_sr.is_some() {
+                        // event (all its sessions) — but only while a session is
+                        // still to come; a wholly-finished GP can't be notified
+                        // about, so it shows the bare title. Other event pages keep
+                        // the bare title too — their schedule carries league ★s.
+                        let title_head = if f1_sr.is_some() && event_has_upcoming(&s) {
                             view! {
                                 <div class="event-title-head">
                                     <SubscribeStar kind="event" value=title.clone() />
@@ -1539,6 +1541,30 @@ fn detail_view(d: MatchDetail) -> impl IntoView {
     let (name_a, name_b) = (m.team_a.name, m.team_b.name);
     let (logo_a, logo_b) = (m.team_a.logo, m.team_b.logo);
 
+    // Per-match "remind me" ★ beside the title — the same control the schedule
+    // rows carry, so a match can be subscribed to straight from its own page. Only
+    // for an upcoming match (a past/live/finished one can't be reminded about) and
+    // only once Web Push is available (read reactively, so it appears after the key
+    // resolves). Captured here before the title view consumes the names.
+    let star_upcoming = matches!(m.status, MatchStatus::Upcoming);
+    let (star_id, star_game, star_league) = (m.id, m.game, m.league.clone());
+    let (star_a, star_b) = (name_a.clone(), name_b.clone());
+    let vapid_ctx = use_context::<RwSignal<Option<String>>>();
+    let match_star = move || {
+        let push = vapid_ctx.is_some_and(|v| v.with(|x| x.is_some()));
+        (star_upcoming && push).then(|| {
+            view! {
+                <StarButton
+                    id=star_id
+                    game=star_game
+                    league=star_league.clone()
+                    team_a=star_a.clone()
+                    team_b=star_b.clone()
+                />
+            }
+        })
+    };
+
     // Scores/standings/bracket are spoilers: reveal when the global toggle is on
     // or this match was individually revealed (persisted, shared with the list).
     let global = use_context::<ShowScores>().map(|s| s.0);
@@ -1559,7 +1585,8 @@ fn detail_view(d: MatchDetail) -> impl IntoView {
     view! {
         <article class="detail">
             <A href="/">"← schedule"</A>
-            <h1 class="detail-title" class:detail-title-solo=is_solo>
+            <div class="detail-title-row">
+                <h1 class="detail-title match-title" class:detail-title-solo=is_solo>
                 {if is_solo {
                     view! {
                         <span class="detail-team detail-solo">
@@ -1598,7 +1625,9 @@ fn detail_view(d: MatchDetail) -> impl IntoView {
                     }
                     .into_any()
                 }}
-            </h1>
+                </h1>
+                {match_star}
+            </div>
             <div class="detail-meta">
                 <span class="detail-meta-line">
                     <span>{event_name}" · "</span>
@@ -2947,6 +2976,17 @@ fn f1_season_round(s: &ScheduleView) -> Option<(i64, i64)> {
         .find(|m| m.game == Game::F1)?
         .id;
     Some((id / 100_000, (id / 100) % 1000))
+}
+
+/// Whether an event still has something to be notified about — any upcoming or
+/// in-progress session. A fully-finished event (e.g. a past Grand Prix) returns
+/// false, so its "notify me" ★ can be hidden: a reminder there could never fire.
+fn event_has_upcoming(s: &ScheduleView) -> bool {
+    s.days
+        .iter()
+        .flat_map(|d| &d.leagues)
+        .flat_map(|lg| &lg.matches)
+        .any(|m| matches!(m.status, MatchStatus::Upcoming | MatchStatus::Live))
 }
 
 /// Whether a loaded schedule is a traditional sport (any match is, e.g. MLB) —
