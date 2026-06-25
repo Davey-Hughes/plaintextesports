@@ -1440,9 +1440,9 @@ fn TeamPage() -> impl IntoView {
                             <article class="detail">
                                 <A href="/">"← schedule"</A>
                                 <div class="team-head">
+                                    <SubscribeStar kind="team" value=name.clone() />
                                     {team_logo(&logo, "team-logo-lg")}
                                     <h1 class="detail-title">{name.clone()}</h1>
-                                    <SubscribeStar kind="team" value=name.clone() />
                                 </div>
                                 <div id="sched" class="spy">
                                     {render_schedule(s, false, push, true, windowed)}
@@ -1608,6 +1608,7 @@ fn detail_view(d: MatchDetail) -> impl IntoView {
         <article class="detail">
             <A href="/">"← schedule"</A>
             <div class="detail-title-row">
+                {match_star}
                 <h1 class="detail-title match-title" class:detail-title-solo=is_solo>
                 {if is_solo {
                     view! {
@@ -1648,7 +1649,6 @@ fn detail_view(d: MatchDetail) -> impl IntoView {
                     .into_any()
                 }}
                 </h1>
-                {match_star}
             </div>
             <div class="detail-meta">
                 <span class="detail-meta-line">
