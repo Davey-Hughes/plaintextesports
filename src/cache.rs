@@ -233,7 +233,7 @@ pub async fn mlb_series(match_id: i64, tz_name: &str, hour24: bool) -> Option<cr
     // lock before any await.
     let (sref, team_a, team_b, begin_at) = {
         let snap = SNAPSHOT.read().unwrap_or_else(PoisonError::into_inner);
-        let m = snap.matches.iter().find(|m| m.id == match_id)?;
+        let m = snap.matches.iter().find(|m| m.id == match_id && m.game == Game::Mlb)?;
         let sref = m.mlb_series?;
         (sref, m.team_a.label.clone(), m.team_b.label.clone(), m.begin_at)
     };
@@ -1470,16 +1470,17 @@ pub fn team_view(team: &str, tz_name: &str, hour24: bool) -> ScheduleView {
 /// Backs the notifications page — started/finished/canceled matches are dropped
 /// so the list only shows reminders that can still fire.
 #[must_use]
-pub fn upcoming_matches_by_ids(ids: &[i64], tz_name: &str, hour24: bool) -> Vec<MatchView> {
+pub fn upcoming_matches_by_uids(uids: &[String], tz_name: &str, hour24: bool) -> Vec<MatchView> {
     let cfg = config();
     let tz = resolve_tz(tz_name, cfg.tz);
     let now = Utc::now();
-    let wanted: std::collections::HashSet<i64> = ids.iter().copied().collect();
+    let wanted: std::collections::HashSet<&str> = uids.iter().map(String::as_str).collect();
     let snap = SNAPSHOT.read().unwrap_or_else(PoisonError::into_inner);
     let mut out: Vec<MatchView> = snap
         .matches
         .iter()
-        .filter(|m| wanted.contains(&m.id))
+        // Starred matches are keyed by their uid (id isn't unique across games).
+        .filter(|m| wanted.contains(crate::types::match_uid(m.game, m.id).as_str()))
         .filter(|m| m.status == MatchStatus::Upcoming && m.begin_at > now)
         .map(|m| to_view(m, &tz, now, hour24))
         .collect();
@@ -1583,13 +1584,19 @@ pub fn scope_reminder_seeds(kind: &str, value: &str, lead_ms: i64) -> Vec<Remind
 /// already started, or canceled. Lets the server (not the client) decide the
 /// notification's time/title/body/url for a starred match.
 #[must_use]
-pub fn reminder_seed_for_match(match_id: i64, lead_ms: i64) -> Option<ReminderSeed> {
+pub fn reminder_seed_for_match(match_id: i64, game: &str, lead_ms: i64) -> Option<ReminderSeed> {
     let cfg = config();
     let now = Utc::now();
     let snap = SNAPSHOT.read().unwrap_or_else(PoisonError::into_inner);
     snap.matches
         .iter()
-        .find(|m| m.id == match_id && m.status != MatchStatus::Canceled && m.begin_at > now)
+        // Match on (id, game); an empty game (older client) falls back to id-only.
+        .find(|m| {
+            m.id == match_id
+                && (game.is_empty() || m.game.slug() == game)
+                && m.status != MatchStatus::Canceled
+                && m.begin_at > now
+        })
         .map(|m| reminder_seed(m, lead_ms, &cfg.tz))
 }
 
@@ -1600,6 +1607,7 @@ pub fn reminder_seed_for_match(match_id: i64, lead_ms: i64) -> Option<ReminderSe
 #[must_use]
 pub fn match_basics(
     match_id: i64,
+    game: Game,
     tz_name: &str,
     hour24: bool,
 ) -> Option<(MatchView, Vec<StreamView>, Option<i64>, String)> {
@@ -1607,7 +1615,8 @@ pub fn match_basics(
     let tz = resolve_tz(tz_name, cfg.tz);
     let now = Utc::now();
     let snap = SNAPSHOT.read().unwrap_or_else(PoisonError::into_inner);
-    let m = snap.matches.iter().find(|m| m.id == match_id)?;
+    // (id, game) is the match identity — ids aren't unique across games.
+    let m = snap.matches.iter().find(|m| m.id == match_id && m.game == game)?;
     Some((
         to_view(m, &tz, now, hour24),
         m.streams.clone(),

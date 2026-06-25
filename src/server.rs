@@ -71,14 +71,18 @@ pub async fn get_day(
 /// Per-match detail: the match, its broadcasts, and its event's standings/bracket.
 #[server(GetMatchDetail, "/api")]
 pub async fn get_match_detail(
-    id: i64,
+    uid: String,
     tz: String,
     hour24: bool,
 ) -> Result<MatchDetail, ServerFnError> {
     #[cfg(feature = "ssr")]
     {
+        // `uid` is "{game}-{id}" — ids aren't unique across games.
+        let Some((game, id)) = crate::types::parse_match_uid(&uid) else {
+            return Ok(MatchDetail::default());
+        };
         let Some((match_view, streams, tournament_id, league)) =
-            crate::cache::match_basics(id, &tz, hour24)
+            crate::cache::match_basics(id, game, &tz, hour24)
         else {
             return Ok(MatchDetail::default());
         };
@@ -115,7 +119,7 @@ pub async fn get_match_detail(
     }
     #[cfg(not(feature = "ssr"))]
     {
-        let _ = (id, tz, hour24);
+        let _ = (uid, tz, hour24);
         Ok(MatchDetail::default())
     }
 }
@@ -138,21 +142,21 @@ pub async fn get_event_schedule(
     }
 }
 
-/// The given (starred) match ids that are still upcoming, sorted by start, for
+/// The given (starred) match uids that are still upcoming, sorted by start, for
 /// the notifications page. Started/finished matches are dropped server-side.
 #[server(GetNotifications, "/api")]
 pub async fn get_notifications(
-    ids: Vec<i64>,
+    uids: Vec<String>,
     tz: String,
     hour24: bool,
 ) -> Result<Vec<MatchView>, ServerFnError> {
     #[cfg(feature = "ssr")]
     {
-        Ok(crate::cache::upcoming_matches_by_ids(&ids, &tz, hour24))
+        Ok(crate::cache::upcoming_matches_by_uids(&uids, &tz, hour24))
     }
     #[cfg(not(feature = "ssr"))]
     {
-        let _ = (ids, tz, hour24);
+        let _ = (uids, tz, hour24);
         Ok(Vec::new())
     }
 }
@@ -290,7 +294,7 @@ pub async fn add_reminder(req: ReminderReq) -> Result<(), ServerFnError> {
         }
         // Derive time/title/body/url from the snapshot so a client can't forge an
         // arbitrary notification (it only supplies its push subscription + a match id).
-        let seed = crate::cache::reminder_seed_for_match(req.match_id, cfg.reminder_lead_ms)
+        let seed = crate::cache::reminder_seed_for_match(req.match_id, &req.game, cfg.reminder_lead_ms)
             .ok_or_else(|| ServerFnError::new("match not found or already started"))?;
         let conn = crate::store::shared(&cfg.db_path)
             .map_err(|e| ServerFnError::new(format!("db: {e}")))?;
@@ -365,7 +369,11 @@ pub async fn remove_subscription(
 
 /// Remove a previously-set reminder.
 #[server(RemoveReminder, "/api")]
-pub async fn remove_reminder(endpoint: String, match_id: i64) -> Result<(), ServerFnError> {
+pub async fn remove_reminder(
+    endpoint: String,
+    match_id: i64,
+    game: String,
+) -> Result<(), ServerFnError> {
     #[cfg(feature = "ssr")]
     {
         let cfg = crate::config::Config::from_env();
@@ -374,13 +382,13 @@ pub async fn remove_reminder(endpoint: String, match_id: i64) -> Result<(), Serv
         }
         let conn = crate::store::shared(&cfg.db_path)
             .map_err(|e| ServerFnError::new(format!("db: {e}")))?;
-        crate::store::remove_reminder(&conn, &endpoint, match_id)
+        crate::store::remove_reminder(&conn, &endpoint, match_id, &game)
             .map_err(|e| ServerFnError::new(format!("db: {e}")))?;
         Ok(())
     }
     #[cfg(not(feature = "ssr"))]
     {
-        let _ = (endpoint, match_id);
+        let _ = (endpoint, match_id, game);
         Ok(())
     }
 }
@@ -395,7 +403,7 @@ pub async fn exclude_reminder(req: ReminderReq) -> Result<(), ServerFnError> {
         if !cfg.push_enabled() || cfg.db_path.is_empty() {
             return Err(ServerFnError::new("reminders are not available"));
         }
-        let seed = crate::cache::reminder_seed_for_match(req.match_id, cfg.reminder_lead_ms)
+        let seed = crate::cache::reminder_seed_for_match(req.match_id, &req.game, cfg.reminder_lead_ms)
             .ok_or_else(|| ServerFnError::new("match not found or already started"))?;
         let conn = crate::store::shared(&cfg.db_path)
             .map_err(|e| ServerFnError::new(format!("db: {e}")))?;
