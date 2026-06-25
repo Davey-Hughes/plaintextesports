@@ -458,17 +458,23 @@ fn SiteHeader() -> impl IntoView {
             </div>
         </header>
         <div class="toggles">
-            // Left: the back-to-top arrow takes the brand's spot once it scrolls
-            // away (hidden at the top). Everything else sits in the right cluster,
-            // clear of the brand.
+            // Display preferences (icons / 24h / theme), grouped so they can sit at
+            // the right of the bar on desktop and share the brand's row on mobile.
+            <div class="toggle-prefs">
+                <IconsToggle />
+                <HourToggle />
+                <ThemeToggle />
+            </div>
+            // On narrow screens this forces the controls below onto a second row,
+            // leaving the prefs up beside the brand.
+            <span class="toggles-break" aria-hidden="true"></span>
+            // The back-to-top arrow takes the brand's spot once it scrolls away
+            // (hidden at the top), then the schedule controls.
             <ScrollTopButton />
             <RefreshButton />
             <SportToggle />
             <CalendarPicker />
             <ScoresToggle />
-            <IconsToggle />
-            <HourToggle />
-            <ThemeToggle />
         </div>
     }
 }
