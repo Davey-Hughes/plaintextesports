@@ -1264,6 +1264,14 @@ a {
   margin-bottom: 1.2rem;
 }
 
+// Venue name + city/country for a traditional-sport match (esports have none).
+// Tucked up under the meta line so the two read as one block.
+.detail-venue {
+  color: var(--muted);
+  font-size: 12px;
+  margin: -0.8rem 0 1.2rem;
+}
+
 // The date+time in a detail meta line is clickable to swap to the venue's local
 // date+time (it turns blue via .row-time-tz.on); a dotted underline hints it's
 // clickable, dropped once the colour carries the state.

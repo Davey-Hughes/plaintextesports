@@ -144,6 +144,39 @@ struct StatusType {
 struct Competition {
     #[serde(default)]
     competitors: Vec<Competitor>,
+    #[serde(default)]
+    venue: Venue,
+}
+
+#[derive(Deserialize, Default)]
+struct Venue {
+    #[serde(rename = "fullName", default)]
+    full_name: String,
+    #[serde(default)]
+    address: VenueAddress,
+}
+
+#[derive(Deserialize, Default)]
+struct VenueAddress {
+    #[serde(default)]
+    city: String,
+    #[serde(default)]
+    state: String,
+    #[serde(default)]
+    country: String,
+}
+
+impl Venue {
+    /// "City, State" (US) or "City, Country", whichever the feed provides.
+    fn location(&self) -> String {
+        let a = &self.address;
+        let region = if a.state.is_empty() { &a.country } else { &a.state };
+        match (a.city.is_empty(), region.is_empty()) {
+            (false, false) => format!("{}, {region}", a.city),
+            (false, true) => a.city.clone(),
+            _ => String::new(),
+        }
+    }
 }
 
 #[derive(Deserialize)]
@@ -211,7 +244,7 @@ fn to_match(e: Event, lg: &EspnLeague) -> Option<NormalizedMatch> {
     let home = comp.competitors.iter().find(|c| c.home_away == "home")?;
     let score = |c: &Competitor| c.score.parse::<i64>().ok();
     // ESPN exposes no venue IANA tz, so these carry no venue-time toggle.
-    Some(NormalizedMatch::team_sport(
+    let mut m = NormalizedMatch::team_sport(
         id,
         lg.game,
         lg.name,
@@ -227,7 +260,10 @@ fn to_match(e: Event, lg: &EspnLeague) -> Option<NormalizedMatch> {
             name: home.team.full_name(),
             score: score(home),
         },
-    ))
+    );
+    m.venue_name = comp.venue.full_name.clone();
+    m.venue_location = comp.venue.location();
+    Some(m)
 }
 
 /// Fetch every game of `lg` in the inclusive UTC-day range, normalized. ESPN's

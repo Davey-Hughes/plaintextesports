@@ -1439,6 +1439,12 @@ fn detail_view(d: MatchDetail) -> impl IntoView {
         .filter(|s| !s.is_empty())
         .collect::<Vec<_>>()
         .join(" · ");
+    // "Venue · City, Country" (whichever the source provides); empty for esports.
+    let venue_line = [m.venue_name.trim(), m.venue_location.trim()]
+        .into_iter()
+        .filter(|s| !s.is_empty())
+        .collect::<Vec<_>>()
+        .join(" · ");
 
     // Shared venue-time toggle (same one the schedule rows use), so the date+time
     // swaps to the venue's local date+time when clicked.
@@ -1560,6 +1566,8 @@ fn detail_view(d: MatchDetail) -> impl IntoView {
                         })
                 }}
             </div>
+            {(!venue_line.is_empty())
+                .then(|| view! { <div class="detail-venue">{venue_line}</div> })}
             <StreamsList streams=streams />
             // MLB series between the two teams. Each game row reveals on its own
             // (shared with the schedule); the record line waits until every played
@@ -4220,6 +4228,8 @@ mod tests {
             clock_label: String::new(),
             date_label: String::new(),
             venue_label: String::new(),
+            venue_name: String::new(),
+            venue_location: String::new(),
             best_of: "Bo3".into(),
             team_a: TeamView {
                 label: "A".into(),

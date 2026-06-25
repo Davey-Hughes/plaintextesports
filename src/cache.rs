@@ -1093,6 +1093,8 @@ fn to_view(m: &NormalizedMatch, tz: &Tz, now: DateTime<Utc>, hour24: bool) -> Ma
         clock_label: time_label(local, hour24),
         date_label: day_label(local),
         venue_label,
+        venue_name: m.venue_name.clone(),
+        venue_location: m.venue_location.clone(),
         best_of: m.best_of.map(|n| format!("Bo{n}")).unwrap_or_default(),
         team_a,
         team_b,
@@ -2296,6 +2298,8 @@ fn demo_match(
         stream_url: Some("https://www.twitch.tv/".to_string()),
         tournament_id: Some(demo_tournament_id(league)),
         venue_tz: None,
+        venue_name: String::new(),
+        venue_location: String::new(),
         streams: demo_streams(),
         mlb_series: None,
     }
@@ -2454,6 +2458,8 @@ mod tests {
             stream_url: None,
             tournament_id: None,
             venue_tz: None,
+            venue_name: String::new(),
+            venue_location: String::new(),
             streams: Vec::new(),
             mlb_series: None,
         }
@@ -2571,6 +2577,8 @@ mod tests {
             clock_label: String::new(),
             date_label: String::new(),
             venue_label: String::new(),
+            venue_name: String::new(),
+            venue_location: String::new(),
             best_of: bo.into(),
             team_a: TeamView {
                 label: "A".into(),
@@ -2623,6 +2631,8 @@ mod tests {
             clock_label: String::new(),
             date_label: String::new(),
             venue_label: String::new(),
+            venue_name: String::new(),
+            venue_location: String::new(),
             best_of: "Bo3".into(),
             team_a: TeamView {
                 label: "A".into(),
@@ -2671,6 +2681,8 @@ mod tests {
             clock_label: String::new(),
             date_label: String::new(),
             venue_label: String::new(),
+            venue_name: String::new(),
+            venue_location: String::new(),
             best_of: "Bo3".into(),
             team_a: TeamView { label: "A".into(), name: "A".into(), score: None, winner: false },
             team_b: TeamView { label: "B".into(), name: "B".into(), score: None, winner: false },

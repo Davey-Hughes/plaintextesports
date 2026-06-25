@@ -40,6 +40,8 @@ struct RawGame {
     game_type: i64,
     #[serde(rename = "venueTimezone", default)]
     venue_timezone: String,
+    #[serde(default)]
+    venue: LangStr,
     #[serde(rename = "awayTeam", default)]
     away_team: RawTeam,
     #[serde(rename = "homeTeam", default)]
@@ -130,6 +132,9 @@ fn to_match(g: RawGame) -> Option<NormalizedMatch> {
     // the local-time-at-the-venue toggle.
     m.serie_name = series_name(g.game_type);
     m.venue_tz = Some(g.venue_timezone).filter(|s| !s.is_empty());
+    // The arena name; the city is the home team's place (e.g. "Toronto").
+    m.venue_name = g.venue.default;
+    m.venue_location = g.home_team.place_name.default.trim().to_string();
     Some(m)
 }
 
