@@ -233,7 +233,7 @@ a {
 
   // Only on real pointers — otherwise a tap on a touchscreen leaves the hover
   // highlight stuck on (looking like an "on" state) until you tap elsewhere. The
-  // genuine on-state (scores / icons) is the separate `.state-toggle.on` rule.
+  // genuine on-state (scores / icons) is the filled data-attribute rule below.
   @media (hover: hover) {
     &:hover {
       color: var(--fg);
@@ -242,12 +242,32 @@ a {
   }
 }
 
-// The "scores" / "icons" state toggles keep a fixed label and signal their state
-// by brightness: dim (muted) when off, full foreground when on.
-.state-toggle.on {
+// The "scores" / "icons" state toggles signal their state by filling in the label
+// — the name brightens to --fg when on — instead of a filled box, so they stay a
+// light-touch button. Driven by the root data-attributes (set pre-paint in the
+// shell), so the on-state is correct at first paint with no flash.
+:root[data-icons="1"] .toggle.icons-toggle,
+:root[data-scores="1"] .toggle.scores-toggle {
   color: var(--fg);
-  border-color: var(--fg);
 }
+
+// For just these two, hover affects only the outline, not the label: re-assert the
+// muted label (the base .toggle:hover also brightens text, which we don't want
+// here). The on-state rule above is more specific, so a selected toggle keeps its
+// bright label on hover, while the outline still brightens via .toggle:hover.
+@media (hover: hover) {
+  .toggle.icons-toggle:hover,
+  .toggle.scores-toggle:hover {
+    color: var(--muted);
+  }
+}
+
+// The theme toggle's visible label is the current theme name, rendered from
+// `data-theme` (set pre-paint) via CSS so it shows the saved theme at first paint
+// with no flash or hydration mismatch (the button carries no reactive text).
+.theme-toggle::after { content: "dark"; }
+:root[data-theme="oled"] .theme-toggle::after { content: "oled"; }
+:root[data-theme="light"] .theme-toggle::after { content: "light"; }
 
 // The esports/sports toggle. Its outline hugs the current word, but the whole
 // control occupies a fixed-width slot (set by an invisible "esports" sizer
