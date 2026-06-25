@@ -70,7 +70,8 @@ impl Game {
             Self::Nba => "Basketball",
             Self::Nfl => "Football",
             Self::Soccer => "Soccer",
-            Self::F1 => "F1",
+            // The category is motorsport; the series (F1, …) is its sub-filter.
+            Self::F1 => "Motorsport",
         }
     }
 
@@ -102,6 +103,15 @@ impl Game {
     #[must_use]
     pub const fn single_entity(self) -> bool {
         matches!(self, Self::F1)
+    }
+
+    /// Whether this sport's leagues are a genuine sub-categorisation worth a
+    /// filter chip even when only one is present — soccer's competitions (Premier
+    /// League / World Cup) and motorsport's series (F1, …). For the other sports
+    /// the sole league just repeats the tab, so no chip.
+    #[must_use]
+    pub const fn has_sub_leagues(self) -> bool {
+        matches!(self, Self::Soccer | Self::F1)
     }
 
     /// The traditional sports, in display order — drives the in-mode sport tabs.
@@ -739,7 +749,7 @@ mod tests {
         assert_eq!(Game::Nfl.label(), "Football");
         assert_eq!(Game::Soccer.label(), "Soccer");
         assert_eq!(Game::Soccer.slug(), "football");
-        assert_eq!(Game::F1.label(), "F1");
+        assert_eq!(Game::F1.label(), "Motorsport");
     }
 
     #[test]

@@ -569,7 +569,7 @@ fn SiteFooter() -> impl IntoView {
                 <span>
                     {move || {
                         if traditional.get() {
-                            "baseball + hockey + basketball + football + soccer + F1 schedules"
+                            "baseball + hockey + basketball + football + soccer + motorsport schedules"
                         } else {
                             "tier-1 cs2 + lol schedules"
                         }
@@ -2877,10 +2877,11 @@ fn schedule_is_traditional(s: &ScheduleView) -> bool {
 /// away team "at" the home team (team_a is away, team_b home — see `mlb.rs`);
 /// esports use "vs".
 const fn versus_sep(game: Game) -> &'static str {
-    if game.traditional() {
-        "at"
-    } else {
-        "vs"
+    match game {
+        // The American team sports read "away at home"; soccer (its World Cup
+        // games are at neutral venues, with no home side) and esports read "vs".
+        Game::Mlb | Game::Nhl | Game::Nba | Game::Nfl => "at",
+        _ => "vs",
     }
 }
 
@@ -3345,13 +3346,26 @@ fn ScheduleSection(
                             let games_set = games.get();
                             // Competition chips within the current view. In esports
                             // these are the CS2/LoL events; in sports mode they're
-                            // shown only when the view spans more than one league —
-                            // e.g. soccer's Premier League + World Cup — so a single-
-                            // league sport doesn't get a chip that just repeats its
-                            // tab.
+                            // shown when the view spans more than one league (e.g.
+                            // soccer's Premier League + World Cup), or when the sport
+                            // sub-categorises by league (soccer, motorsport → its F1
+                            // series), so a plain single-league sport (MLB, …) doesn't
+                            // get a chip that just repeats its tab.
                             let available = leagues_for_games(&s, &games_set);
-                            let show_chips =
-                                if trad { available.len() > 1 } else { !available.is_empty() };
+                            let has_sub = s
+                                .days
+                                .iter()
+                                .flat_map(|d| &d.leagues)
+                                .flat_map(|lg| &lg.matches)
+                                .any(|m| {
+                                    (games_set.is_empty() || games_set.contains(m.game.slug()))
+                                        && m.game.has_sub_leagues()
+                                });
+                            let show_chips = if trad {
+                                !available.is_empty() && (available.len() > 1 || has_sub)
+                            } else {
+                                !available.is_empty()
+                            };
                             // Only apply the chip filter when chips are on screen, so
                             // a remembered selection can't silently empty a single-
                             // competition sport when you switch to its tab.
