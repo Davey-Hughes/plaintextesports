@@ -10,7 +10,7 @@ use crate::types::{
 };
 use leptos::prelude::*;
 use std::collections::HashSet;
-use leptos_meta::{provide_meta_context, MetaTags, Stylesheet, Title};
+use leptos_meta::{provide_meta_context, HashedStylesheet, MetaTags, Title};
 use leptos_router::{
     components::{Route, Router, Routes, A},
     hooks::use_params,
@@ -57,7 +57,10 @@ pub fn shell(options: LeptosOptions) -> impl IntoView {
                 <meta charset="utf-8" />
                 <meta name="viewport" content="width=device-width, initial-scale=1" />
                 <link rel="icon" href="data:," />
-                <link rel="preload" r#as="style" href="/pkg/plaintextesports.css" />
+                // Emits <link rel="stylesheet"> with the content-hashed CSS name
+                // (reads hash.txt via LeptosOptions). Must live here in the server
+                // shell since LeptosOptions isn't available in the App body.
+                <HashedStylesheet options=options.clone() id="leptos" />
                 <AutoReload options=options.clone() />
                 <HydrationScripts options />
                 <MetaTags />
@@ -238,7 +241,6 @@ pub fn App() -> impl IntoView {
     });
 
     view! {
-        <Stylesheet id="leptos" href="/pkg/plaintextesports.css" />
         <Title text="plaintextesports" />
         <Router>
             <FilterUrlSync />

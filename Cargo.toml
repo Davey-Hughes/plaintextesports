@@ -115,6 +115,11 @@ output-name = "plaintextesports"
 site-root = "target/site"
 site-pkg-dir = "pkg"
 style-file = "style/main.scss"
+# Append a content hash to the JS/WASM/CSS filenames so each build gets unique
+# URLs. Lets the CDN cache /pkg/* immutably with no chance of serving a stale
+# JS against a fresh WASM (the wasm-bindgen mismatch we hit). Must also be set at
+# runtime via LEPTOS_HASH_FILES=true so HydrationScripts emits the hashed names.
+hash-files = true
 site-addr = "127.0.0.1:4000"
 reload-port = 4001
 browserquery = "defaults"

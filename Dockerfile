@@ -23,12 +23,18 @@ WORKDIR /app
 
 COPY --from=builder /work/target/release/plaintextesports /app/
 COPY --from=builder /work/target/site /app/site
+# With hash-files enabled, the server reads the content hashes from hash.txt
+# next to the binary (current_exe dir), so it must sit alongside /app/plaintextesports.
+COPY --from=builder /work/target/release/hash.txt /app/
 
 RUN mkdir -p /app/data
 
 ENV RUST_LOG="info"
 ENV LEPTOS_SITE_ADDR="0.0.0.0:8080"
 ENV LEPTOS_SITE_ROOT="./site"
+# Must match `hash-files = true` in Cargo.toml so the server references the
+# content-hashed pkg filenames (resolved via the hash.txt copied above) at runtime.
+ENV LEPTOS_HASH_FILES="true"
 ENV DB_PATH="/app/data/cache.db"
 # Mount config.toml (token, vapid, etc.) and the data volume, e.g.:
 #   docker run -p 8080:8080 \
