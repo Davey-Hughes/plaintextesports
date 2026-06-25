@@ -1150,6 +1150,23 @@ a {
   align-items: center;
   flex-wrap: wrap;
   gap: 0.5rem;
+  // Carry the title's outer spacing on the row so the heading's own margin can be
+  // symmetric inside it — its larger top margin would otherwise push the text
+  // below the row's centre and leave the ★ floating above the matchup.
+  margin: 0.8rem 0 0.2rem;
+
+  .detail-title {
+    margin: 0;
+  }
+
+  // The ★ here is a title-level control, not the schedule's leading-column ★, so
+  // drop that column's left-shift/centering (which pulled it tight against the
+  // name) and size it to the heading. The glyph sits low in its box, so a small
+  // lift centres it visually on the matchup line.
+  .star {
+    transform: translateY(-2px);
+    font-size: 19px;
+  }
 }
 
 // Reserve the matchup line's height for the team logo (`team-logo-lg`, 1.6em) so
@@ -1360,6 +1377,17 @@ a {
   color: var(--muted);
   font-size: 12px;
   margin-bottom: 1.2rem;
+}
+
+// The event/league name in the meta line links to its event page; keep the muted
+// meta colour, underline on hover so it still reads as part of the line.
+.detail-event a {
+  color: inherit;
+  text-decoration: none;
+
+  &:hover {
+    text-decoration: underline;
+  }
 }
 
 // Venue name + city/country for a traditional-sport match (esports have none).

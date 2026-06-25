@@ -1005,7 +1005,7 @@ fn F1Results(results: Vec<F1Result>, season: i64, round: i64) -> impl IntoView {
                                 if revealed.get() {
                                     "hide results".to_string()
                                 } else {
-                                    format!("reveal results ({count})")
+                                    format!("show results ({count})")
                                 }
                             }}
                         </span>
@@ -1094,7 +1094,7 @@ fn F1StandingsView(standings: F1Standings, season: i64, round: i64) -> impl Into
             <button class="f1-session-head" on:click=toggle>
                 <span class="f1-session-toggle">
                     {move || {
-                        if revealed.get() { "hide standings".to_string() } else { "reveal standings".to_string() }
+                        if revealed.get() { "hide standings".to_string() } else { "show standings".to_string() }
                     }}
                 </span>
             </button>
@@ -1652,7 +1652,13 @@ fn detail_view(d: MatchDetail) -> impl IntoView {
             </div>
             <div class="detail-meta">
                 <span class="detail-meta-line">
-                    <span>{event_name}" · "</span>
+                    <span class="detail-event">
+                        <A href=format!(
+                            "/event/{}",
+                            enc_segment(&event_name),
+                        )>{event_name.clone()}</A>
+                        " · "
+                    </span>
                     {if has_venue {
                         let local = when_local.clone();
                         let venue = venue_when.clone();
