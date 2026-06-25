@@ -569,7 +569,7 @@ fn SiteFooter() -> impl IntoView {
                 <span>
                     {move || {
                         if traditional.get() {
-                            "MLB + NHL + NBA + NFL + football + F1 schedules"
+                            "baseball + hockey + basketball + football + soccer + F1 schedules"
                         } else {
                             "tier-1 cs2 + lol schedules"
                         }
