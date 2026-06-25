@@ -45,6 +45,11 @@ pub struct NormalizedMatch {
     /// Lets the UI show the local time at the event; `None` for esports (no
     /// venue tz). Persisted.
     pub venue_tz: Option<String>,
+    /// The venue's name (e.g. "loanDepot park", "Albert Park Grand Prix Circuit")
+    /// and its city/country (e.g. "Miami, FL", "Melbourne, Australia"), shown on
+    /// the match page. Empty for esports (no physical venue). Persisted.
+    pub venue_name: String,
+    pub venue_location: String,
     /// All broadcasts for the match (from `streams_list`). In-memory only —
     /// repopulated each poll, not persisted, and only used on the detail page.
     pub streams: Vec<StreamView>,
@@ -97,6 +102,8 @@ impl NormalizedMatch {
             stream_url: None,
             tournament_id: None,
             venue_tz: None,
+            venue_name: String::new(),
+            venue_location: String::new(),
             streams: Vec::new(),
             mlb_series: None,
         }
@@ -336,8 +343,10 @@ fn normalize(game: Game, raw: &RawMatch) -> Option<NormalizedMatch> {
         },
         stream_url,
         tournament_id: raw.tournament.as_ref().and_then(|t| t.id),
-        // PandaScore exposes no reliable venue timezone for esports matches.
+        // PandaScore exposes no reliable venue (name/timezone) for esports matches.
         venue_tz: None,
+        venue_name: String::new(),
+        venue_location: String::new(),
         streams: streams(&raw.streams_list),
         // Series are an MLB concept; esports matches have none.
         mlb_series: None,

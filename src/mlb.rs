@@ -47,8 +47,12 @@ struct RawGame {
 
 #[derive(Deserialize, Default)]
 struct RawVenue {
+    #[serde(default)]
+    name: String,
     #[serde(rename = "timeZone", default)]
     time_zone: RawTimeZone,
+    #[serde(default)]
+    location: RawVenueLocation,
 }
 
 #[derive(Deserialize, Default)]
@@ -56,6 +60,32 @@ struct RawTimeZone {
     /// IANA id, e.g. "America/Detroit" (from `hydrate=venue(timezone)`).
     #[serde(default)]
     id: String,
+}
+
+#[derive(Deserialize, Default)]
+struct RawVenueLocation {
+    #[serde(default)]
+    city: String,
+    #[serde(rename = "stateAbbrev", default)]
+    state_abbrev: String,
+    #[serde(default)]
+    country: String,
+}
+
+impl RawVenueLocation {
+    /// "City, ST" for US venues, else "City, Country" (e.g. "Toronto, Canada").
+    fn label(&self) -> String {
+        let region = if self.country == "USA" && !self.state_abbrev.is_empty() {
+            &self.state_abbrev
+        } else {
+            &self.country
+        };
+        match (self.city.is_empty(), region.is_empty()) {
+            (false, false) => format!("{}, {region}", self.city),
+            (false, true) => self.city.clone(),
+            _ => String::new(),
+        }
+    }
 }
 
 #[derive(Deserialize, Default)]
@@ -295,6 +325,8 @@ fn to_match(g: RawGame) -> Option<NormalizedMatch> {
     // The stadium's IANA timezone, so the UI can show the local time at the
     // ballpark (handles cross-country and neutral-site games).
     m.venue_tz = Some(g.venue.time_zone.id).filter(|s| !s.is_empty());
+    m.venue_name = g.venue.name;
+    m.venue_location = g.venue.location.label();
     m.streams = broadcasts(&g.broadcasts);
     // Carry the two teams' ids + this game's series position so the detail page
     // can fetch the whole series between them. Only when both ids and a sane
@@ -318,7 +350,7 @@ pub async fn fetch_schedule(
     end: NaiveDate,
 ) -> Result<Vec<NormalizedMatch>, reqwest::Error> {
     let url = format!(
-        "{BASE}/schedule?sportId=1&startDate={}&endDate={}&hydrate=team,broadcasts(all),venue(timezone)",
+        "{BASE}/schedule?sportId=1&startDate={}&endDate={}&hydrate=team,broadcasts(all),venue(timezone,location)",
         start.format("%Y-%m-%d"),
         end.format("%Y-%m-%d"),
     );

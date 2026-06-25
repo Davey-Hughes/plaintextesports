@@ -69,6 +69,30 @@ struct RawSession {
 struct RawCircuit {
     #[serde(rename = "circuitId", default)]
     circuit_id: String,
+    #[serde(rename = "circuitName", default)]
+    circuit_name: String,
+    #[serde(rename = "Location", default)]
+    location: RawCircuitLocation,
+}
+
+#[derive(Deserialize, Default)]
+struct RawCircuitLocation {
+    #[serde(default)]
+    locality: String,
+    #[serde(default)]
+    country: String,
+}
+
+impl RawCircuitLocation {
+    /// "Locality, Country" (e.g. "Melbourne, Australia").
+    fn label(&self) -> String {
+        match (self.locality.is_empty(), self.country.is_empty()) {
+            (false, false) => format!("{}, {}", self.locality, self.country),
+            (false, true) => self.locality.clone(),
+            (true, false) => self.country.clone(),
+            _ => String::new(),
+        }
+    }
 }
 
 /// The IANA timezone of each Grand Prix circuit (Jolpica gives only a locality,
@@ -178,6 +202,8 @@ fn to_matches(r: &RawRace, now: DateTime<Utc>) -> Vec<NormalizedMatch> {
             // The Grand Prix is the event (e.g. "Austrian Grand Prix").
             m.serie_name = r.race_name.clone();
             m.venue_tz = venue_tz.clone();
+            m.venue_name = r.circuit.circuit_name.clone();
+            m.venue_location = r.circuit.location.label();
             Some(m)
         })
         .collect()

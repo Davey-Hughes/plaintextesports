@@ -252,6 +252,12 @@ pub struct MatchView {
     /// (esports). `#[serde(default)]` so older cached payloads still load.
     #[serde(default)]
     pub venue_label: String,
+    /// The venue's name (e.g. "loanDepot park") and its city/country (e.g.
+    /// "Miami, FL"), shown on the match page. Empty for esports (no venue).
+    #[serde(default)]
+    pub venue_name: String,
+    #[serde(default)]
+    pub venue_location: String,
     /// e.g. "Bo3"; empty when unknown.
     pub best_of: String,
     pub team_a: TeamView,
