@@ -934,16 +934,22 @@ fn F1Results(results: Vec<F1Result>, season: i64, round: i64) -> impl IntoView {
                 rows.get_value()
                     .into_iter()
                     .map(|row| {
-                        let (driver, con, detail) = if show {
-                            (row.driver, row.constructor, row.detail)
+                        // Flags/logos are gated with the names — showing a flag while
+                        // the driver is blank would leak who finished where.
+                        let (driver, con, detail, flag, clogo) = if show {
+                            (row.driver, row.constructor, row.detail, row.flag, row.constructor_logo)
                         } else {
-                            (String::new(), String::new(), String::new())
+                            (String::new(), String::new(), String::new(), String::new(), String::new())
                         };
                         view! {
                             <li class="f1-row">
                                 <span class="f1-pos">{row.pos}</span>
-                                <span class="f1-driver">{driver}</span>
-                                <span class="f1-con">{con}</span>
+                                <span class="f1-driver">
+                                    {team_logo(&flag, "f1-flag")}{driver}
+                                </span>
+                                <span class="f1-con">
+                                    {team_logo(&clogo, "f1-clogo")}{con}
+                                </span>
                                 <span class="f1-detail">{detail}</span>
                             </li>
                         }
@@ -957,7 +963,7 @@ fn F1Results(results: Vec<F1Result>, season: i64, round: i64) -> impl IntoView {
                         <span class="f1-session-toggle">
                             {move || {
                                 if revealed.get() {
-                                    "hide".to_string()
+                                    "hide results".to_string()
                                 } else {
                                     format!("reveal results ({count})")
                                 }
@@ -993,16 +999,16 @@ fn F1StandingsView(standings: F1Standings, season: i64, round: i64) -> impl Into
             .get_value()
             .into_iter()
             .map(|r| {
-                let (name, con, pts) = if show {
-                    (r.name, r.detail, r.points)
+                let (name, con, pts, flag, clogo) = if show {
+                    (r.name, r.detail, r.points, r.flag, r.constructor_logo)
                 } else {
-                    (String::new(), String::new(), String::new())
+                    (String::new(), String::new(), String::new(), String::new(), String::new())
                 };
                 view! {
                     <li class="f1-standing-row">
                         <span class="f1-pos">{r.pos}</span>
-                        <span class="f1-standing-name">{name}</span>
-                        <span class="f1-standing-con">{con}</span>
+                        <span class="f1-standing-name">{team_logo(&flag, "f1-flag")}{name}</span>
+                        <span class="f1-standing-con">{team_logo(&clogo, "f1-clogo")}{con}</span>
                         <span class="f1-standing-pts">{pts}</span>
                     </li>
                 }
@@ -1012,15 +1018,15 @@ fn F1StandingsView(standings: F1Standings, season: i64, round: i64) -> impl Into
             .get_value()
             .into_iter()
             .map(|r| {
-                let (name, pts) = if show {
-                    (r.name, r.points)
+                let (name, pts, clogo) = if show {
+                    (r.name, r.points, r.constructor_logo)
                 } else {
-                    (String::new(), String::new())
+                    (String::new(), String::new(), String::new())
                 };
                 view! {
                     <li class="f1-standing-row f1-standing-row-con">
                         <span class="f1-pos">{r.pos}</span>
-                        <span class="f1-standing-name">{name}</span>
+                        <span class="f1-standing-name">{team_logo(&clogo, "f1-clogo")}{name}</span>
                         <span class="f1-standing-pts">{pts}</span>
                     </li>
                 }
@@ -1048,7 +1054,7 @@ fn F1StandingsView(standings: F1Standings, season: i64, round: i64) -> impl Into
             <button class="f1-session-head" on:click=toggle>
                 <span class="f1-session-toggle">
                     {move || {
-                        if revealed.get() { "hide".to_string() } else { "reveal standings".to_string() }
+                        if revealed.get() { "hide standings".to_string() } else { "reveal standings".to_string() }
                     }}
                 </span>
             </button>

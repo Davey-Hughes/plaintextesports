@@ -192,6 +192,10 @@ fn session_rows(
                 driver,
                 constructor,
                 detail: r.duration.as_f64().map(fmt_laptime).unwrap_or_default(),
+                // Practice comes from OpenF1 (team names, not Ergast ids); flags +
+                // constructor logos are only wired for the race/quali results.
+                flag: String::new(),
+                constructor_logo: String::new(),
             }
         })
         .collect()

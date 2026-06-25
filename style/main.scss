@@ -1149,10 +1149,13 @@ a {
   gap: 0.5rem;
 }
 
-// Team vector logos (NHL/MLB) beside the team names on the match + team pages.
-// SVG, so they scale crisply; sized in `em` to track the heading.
+// Team logos beside the team names on the match + team pages. Sized in `em` to
+// track the heading; inline-block + middle so they sit on the text in the F1
+// tables (which truncate with ellipsis) and as flex items in the match title.
 .team-logo {
   flex: none;
+  display: inline-block;
+  vertical-align: middle;
   object-fit: contain;
   width: 1.4em;
   height: 1.4em;
@@ -1161,6 +1164,20 @@ a {
 .team-logo-lg {
   width: 1.6em;
   height: 1.6em;
+}
+
+// F1 results/standings: a small inline nationality flag + constructor logo.
+.team-logo.f1-flag {
+  width: auto;
+  height: 0.8em;
+  margin-right: 0.35em;
+  border-radius: 2px;
+}
+
+.team-logo.f1-clogo {
+  width: 1.1em;
+  height: 1.1em;
+  margin-right: 0.3em;
 }
 
 // ----- Notifications management page ----------------------------------------
