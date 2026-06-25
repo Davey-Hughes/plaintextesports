@@ -828,36 +828,51 @@ fn EventStages(
 
 /// A Grand Prix's results — each finished session's full finishing order, each
 /// spoiler-gated (hidden until revealed, like the rest of the site's scores).
+/// Stable in-page anchor for an F1 session/section (e.g. "Practice 1" →
+/// "f1sec-practice-1"), shared by the section ids and the jump-to nav.
+fn f1_anchor(name: &str) -> String {
+    format!("f1sec-{}", name.to_lowercase().replace(' ', "-"))
+}
+
 #[component]
 fn F1Results(results: Vec<F1Result>, season: i64, round: i64) -> impl IntoView {
     let sections = results
         .into_iter()
         .map(|r| {
+            let session = r.session;
+            let anchor = f1_anchor(&session);
             let (revealed, toggle) =
-                section_reveal(format!("f1res:{season}:{round}:{}", r.session));
+                section_reveal(format!("f1res:{season}:{round}:{session}"));
             let count = r.rows.len();
             let rows = StoredValue::new(r.rows);
+            // Always render every row so revealing doesn't shift the page; the
+            // position column (just a row number) stays, and the driver /
+            // constructor / time blank out until revealed.
             let order = move || {
-                revealed.get().then(|| {
-                    rows.get_value()
-                        .into_iter()
-                        .map(|row| {
-                            view! {
-                                <li class="f1-row">
-                                    <span class="f1-pos">{row.pos}</span>
-                                    <span class="f1-driver">{row.driver}</span>
-                                    <span class="f1-con">{row.constructor}</span>
-                                    <span class="f1-detail">{row.detail}</span>
-                                </li>
-                            }
-                        })
-                        .collect_view()
-                })
+                let show = revealed.get();
+                rows.get_value()
+                    .into_iter()
+                    .map(|row| {
+                        let (driver, con, detail) = if show {
+                            (row.driver, row.constructor, row.detail)
+                        } else {
+                            (String::new(), String::new(), String::new())
+                        };
+                        view! {
+                            <li class="f1-row">
+                                <span class="f1-pos">{row.pos}</span>
+                                <span class="f1-driver">{driver}</span>
+                                <span class="f1-con">{con}</span>
+                                <span class="f1-detail">{detail}</span>
+                            </li>
+                        }
+                    })
+                    .collect_view()
             };
             view! {
-                <div class="f1-session">
+                <div class="f1-session" id=anchor>
                     <button class="f1-session-head" on:click=toggle>
-                        <span class="f1-session-name">{r.session}</span>
+                        <span class="f1-session-name">{session}</span>
                         <span class="f1-session-toggle">
                             {move || {
                                 if revealed.get() {
@@ -889,51 +904,62 @@ fn F1StandingsView(standings: F1Standings, season: i64, round: i64) -> impl Into
     let asof = standings.round;
     let drivers = StoredValue::new(standings.drivers);
     let constructors = StoredValue::new(standings.constructors);
+    // Always render both tables (blanked until revealed) so revealing doesn't
+    // shift the page — the position column stays, names/points blank out.
     let body = move || {
-        revealed.get().then(|| {
-            let drv = drivers
-                .get_value()
-                .into_iter()
-                .map(|r| {
-                    view! {
-                        <li class="f1-standing-row">
-                            <span class="f1-pos">{r.pos}</span>
-                            <span class="f1-standing-name">{r.name}</span>
-                            <span class="f1-standing-con">{r.detail}</span>
-                            <span class="f1-standing-pts">{r.points}</span>
-                        </li>
-                    }
-                })
-                .collect_view();
-            let con = constructors
-                .get_value()
-                .into_iter()
-                .map(|r| {
-                    view! {
-                        <li class="f1-standing-row f1-standing-row-con">
-                            <span class="f1-pos">{r.pos}</span>
-                            <span class="f1-standing-name">{r.name}</span>
-                            <span class="f1-standing-pts">{r.points}</span>
-                        </li>
-                    }
-                })
-                .collect_view();
-            view! {
-                <div class="f1-standings-tables">
-                    <div class="f1-standings-table">
-                        <h3 class="f1-standings-sub">"Drivers"</h3>
-                        <ol class="f1-standings">{drv}</ol>
-                    </div>
-                    <div class="f1-standings-table">
-                        <h3 class="f1-standings-sub">"Constructors"</h3>
-                        <ol class="f1-standings f1-standings-con">{con}</ol>
-                    </div>
+        let show = revealed.get();
+        let drv = drivers
+            .get_value()
+            .into_iter()
+            .map(|r| {
+                let (name, con, pts) = if show {
+                    (r.name, r.detail, r.points)
+                } else {
+                    (String::new(), String::new(), String::new())
+                };
+                view! {
+                    <li class="f1-standing-row">
+                        <span class="f1-pos">{r.pos}</span>
+                        <span class="f1-standing-name">{name}</span>
+                        <span class="f1-standing-con">{con}</span>
+                        <span class="f1-standing-pts">{pts}</span>
+                    </li>
+                }
+            })
+            .collect_view();
+        let con = constructors
+            .get_value()
+            .into_iter()
+            .map(|r| {
+                let (name, pts) = if show {
+                    (r.name, r.points)
+                } else {
+                    (String::new(), String::new())
+                };
+                view! {
+                    <li class="f1-standing-row f1-standing-row-con">
+                        <span class="f1-pos">{r.pos}</span>
+                        <span class="f1-standing-name">{name}</span>
+                        <span class="f1-standing-pts">{pts}</span>
+                    </li>
+                }
+            })
+            .collect_view();
+        view! {
+            <div class="f1-standings-tables">
+                <div class="f1-standings-table">
+                    <h3 class="f1-standings-sub">"Drivers"</h3>
+                    <ol class="f1-standings">{drv}</ol>
                 </div>
-            }
-        })
+                <div class="f1-standings-table">
+                    <h3 class="f1-standings-sub">"Constructors"</h3>
+                    <ol class="f1-standings f1-standings-con">{con}</ol>
+                </div>
+            </div>
+        }
     };
     view! {
-        <section class="detail-section">
+        <section class="detail-section" id="f1sec-standings">
             <h2 class="section-title f1-results-title">
                 "Standings"
                 <span class="f1-standings-asof">{format!(" · after Round {asof}")}</span>
@@ -1124,12 +1150,47 @@ fn EventPage() -> impl IntoView {
                         } else {
                             view! { <h1 class="detail-title">{title.clone()}</h1> }.into_any()
                         };
+                        // F1 GP pages get their own jump-to nav (schedule + each
+                        // session that has results + standings), built from the
+                        // results as they load. Empty for non-F1 events.
+                        let f1_nav = move || {
+                            f1_sr?;
+                            let sessions: Vec<String> = f1_results
+                                .get()
+                                .unwrap_or_default()
+                                .into_iter()
+                                .map(|r| r.session)
+                                .collect();
+                            let has_standings = f1_standings
+                                .get()
+                                .is_some_and(|s| !s.drivers.is_empty() || !s.constructors.is_empty());
+                            if sessions.is_empty() && !has_standings {
+                                return None;
+                            }
+                            let links = sessions
+                                .into_iter()
+                                .map(|s| {
+                                    let anchor = f1_anchor(&s);
+                                    view! { <a href=format!("#{anchor}")>{s.to_lowercase()}</a> }
+                                })
+                                .collect_view();
+                            Some(view! {
+                                <nav class="event-nav">
+                                    <span class="event-nav-label">"jump to"</span>
+                                    <a href="#sched">"schedule"</a>
+                                    {links}
+                                    {has_standings
+                                        .then(|| view! { <a href="#f1sec-standings">"standings"</a> })}
+                                </nav>
+                            })
+                        };
                         view! {
                             <article class="detail">
                                 <A href="/">"← schedule"</A>
                                 {title_head}
                                 {link}
                                 {nav}
+                                {f1_nav}
                                 <div id="sched" class="spy">
                                     {render_schedule(s, false, push, true, windowed)}
                                 </div>
@@ -4842,7 +4903,25 @@ fn render_schedule(
         // With no days to host it inline, the control stands alone above the notice.
         {(show_earlier && !has_days).then(|| view! { <EarlierControl /> })}
         {day_sections}
-        {empty.then(|| view! { <p class="empty">"No tier-1 matches in this window."</p> })}
+        {empty
+            .then(|| {
+                // "tier-1" is an esports framing; the traditional leagues already
+                // imply their scope. An empty *event* page is a traditional
+                // off-season one (its schedule has no matches to infer the mode
+                // from), and on the homepage the sport toggle says which it is.
+                let traditional = use_context::<SportMode>().map(|m| m.0);
+                view! {
+                    <p class="empty">
+                        {move || {
+                            if event_mode || traditional.is_some_and(|t| t.get()) {
+                                "No matches in this window."
+                            } else {
+                                "No tier-1 matches in this window."
+                            }
+                        }}
+                    </p>
+                }
+            })}
         // Traditional sports cap the forward window; let the reader reveal more
         // (LaterControl self-hides in esports mode and at the 1-week cap).
         {show_earlier.then(|| view! { <LaterControl /> })}
