@@ -56,17 +56,20 @@ impl Game {
         Self::F1,
     ];
 
+    /// Display name. Traditional sports use the sport (not the league), so the
+    /// top-level filter reads "Baseball/Hockey/…" rather than "MLB/NHL/…"; the
+    /// league name itself comes from the match data. American football is
+    /// "Football"; the other code uses "Soccer" for the international game.
     #[must_use]
     pub const fn label(self) -> &'static str {
         match self {
             Self::Cs2 => "CS2",
             Self::Lol => "LoL",
-            Self::Mlb => "MLB",
-            Self::Nhl => "NHL",
-            Self::Nba => "NBA",
-            Self::Nfl => "NFL",
-            // International football — named to disambiguate from the NFL.
-            Self::Soccer => "Football",
+            Self::Mlb => "Baseball",
+            Self::Nhl => "Hockey",
+            Self::Nba => "Basketball",
+            Self::Nfl => "Football",
+            Self::Soccer => "Soccer",
             Self::F1 => "F1",
         }
     }
@@ -716,6 +719,16 @@ mod tests {
         assert_eq!(Game::Lol.slug(), "lol");
         assert_eq!(Game::Cs2.label(), "CS2");
         assert_eq!(Game::Lol.label(), "LoL");
+        // Traditional sports label by the sport, not the league.
+        assert_eq!(Game::Mlb.label(), "Baseball");
+        assert_eq!(Game::Nhl.label(), "Hockey");
+        assert_eq!(Game::Nba.label(), "Basketball");
+        // American football is "Football"; the international game is "Soccer"
+        // (its slug stays "football", unchanged).
+        assert_eq!(Game::Nfl.label(), "Football");
+        assert_eq!(Game::Soccer.label(), "Soccer");
+        assert_eq!(Game::Soccer.slug(), "football");
+        assert_eq!(Game::F1.label(), "F1");
     }
 
     #[test]
