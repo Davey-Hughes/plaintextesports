@@ -230,6 +230,13 @@ a {
   }
 }
 
+// The "scores" / "icons" state toggles keep a fixed label and signal their state
+// by brightness: dim (muted) when off, full foreground when on.
+.state-toggle.on {
+  color: var(--fg);
+  border-color: var(--fg);
+}
+
 // The esports/sports toggle. Its outline hugs the current word, but the whole
 // control occupies a fixed-width slot (set by an invisible "esports" sizer
 // stacked under the button) so neighbours — chiefly the "updated" label to its
@@ -1159,6 +1166,12 @@ a {
   object-fit: contain;
   width: 1.4em;
   height: 1.4em;
+}
+
+// The header "icons" toggle hides every logo globally (set pre-paint in the
+// shell, so there's no flash when it starts off).
+[data-icons="0"] .team-logo {
+  display: none;
 }
 
 .team-logo-lg {

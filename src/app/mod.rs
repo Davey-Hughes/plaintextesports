@@ -45,6 +45,7 @@ mod keys {
     pub const RANGE: &str = "range";
     pub const GAMES: &str = "games";
     pub const LEAGUES: &str = "leagues";
+    pub const ICONS: &str = "icons";
 }
 
 #[must_use]
@@ -60,9 +61,10 @@ pub fn shell(options: LeptosOptions) -> impl IntoView {
                 <AutoReload options=options.clone() />
                 <HydrationScripts options />
                 <MetaTags />
-                // Apply the saved theme before paint to avoid a flash.
+                // Apply the saved theme + icon preference before paint to avoid a
+                // flash (icons default on; CSS hides logos when data-icons="0").
                 <script>
-                    r#"(function(){try{var t=localStorage.getItem('theme')||'dark';document.documentElement.setAttribute('data-theme',t);}catch(e){document.documentElement.setAttribute('data-theme','dark');}})();"#
+                    r#"(function(){try{var t=localStorage.getItem('theme')||'dark';document.documentElement.setAttribute('data-theme',t);document.documentElement.setAttribute('data-icons',localStorage.getItem('icons')==='0'?'0':'1');}catch(e){document.documentElement.setAttribute('data-theme','dark');}})();"#
                 </script>
                 // Web Push helper used by the reminder ★ buttons.
                 <script>
@@ -464,6 +466,7 @@ fn SiteHeader() -> impl IntoView {
             <SportToggle />
             <CalendarPicker />
             <ScoresToggle />
+            <IconsToggle />
             <HourToggle />
             <ThemeToggle />
         </div>
@@ -2013,6 +2016,61 @@ fn ThemeToggle() -> impl IntoView {
     }
 }
 
+/// Global on/off for team / driver / constructor logos. Default on; the actual
+/// hiding is CSS keyed on `data-icons` on <html> (set pre-paint in the shell to
+/// avoid a flash), so this only tracks state for the button's brightness and
+/// flips the attribute + saved preference. Mirrors [`ThemeToggle`].
+#[component]
+fn IconsToggle() -> impl IntoView {
+    let show = RwSignal::new(true);
+
+    Effect::new(move |_| {
+        #[cfg(feature = "hydrate")]
+        show.set(saved_icons());
+    });
+
+    let toggle = move |_| {
+        let next = !show.get_untracked();
+        show.set(next);
+        #[cfg(feature = "hydrate")]
+        apply_icons(next);
+    };
+
+    view! {
+        <button
+            class="toggle state-toggle"
+            class:on=move || show.get()
+            title=move || if show.get() { "Hide team icons" } else { "Show team icons" }
+            on:click=toggle
+        >
+            "icons"
+        </button>
+    }
+}
+
+/// The saved icon preference: on unless explicitly stored off.
+#[cfg(feature = "hydrate")]
+fn saved_icons() -> bool {
+    web_sys::window()
+        .and_then(|w| w.local_storage().ok().flatten())
+        .and_then(|s| s.get_item(keys::ICONS).ok().flatten())
+        != Some("0".to_string())
+}
+
+/// Apply the icon preference: set `data-icons` on <html> and persist it.
+#[cfg(feature = "hydrate")]
+fn apply_icons(on: bool) {
+    let val = if on { "1" } else { "0" };
+    if let Some(win) = web_sys::window() {
+        if let Some(root) = win.document().and_then(|d| d.document_element()) {
+            let _ = root.set_attribute("data-icons", val);
+        }
+        if let Ok(Some(storage)) = win.local_storage() {
+            let _ = storage.set_item(keys::ICONS, val);
+        }
+    }
+}
+
 /// The saved theme ("dark"/"light"/"oled"), if a valid one is stored.
 #[cfg(feature = "hydrate")]
 fn saved_theme() -> Option<String> {
@@ -2065,8 +2123,16 @@ fn ScoresToggle() -> impl IntoView {
         save_scores_pref(next);
     };
     view! {
-        <button class="toggle" on:click=toggle>
-            {move || if show.get() { "hide scores" } else { "show scores" }}
+        // Fixed "scores" label; it brightens (the `on` class) once scores are
+        // revealed, which is more compact than a "show"/"hide" prefix. The action
+        // it'll perform is spelled out in the hover tooltip.
+        <button
+            class="toggle state-toggle"
+            class:on=move || show.get()
+            title=move || if show.get() { "Hide scores" } else { "Show scores" }
+            on:click=toggle
+        >
+            "scores"
         </button>
     }
 }
