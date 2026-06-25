@@ -200,6 +200,14 @@ struct RawTeam {
     name: Option<String>,
     #[serde(default)]
     acronym: Option<String>,
+    /// Raster (PNG) logo URL, when the org has one uploaded.
+    #[serde(default)]
+    image_url: Option<String>,
+}
+
+/// The opponent's logo URL (PandaScore PNG), or empty when absent.
+fn team_logo(team: Option<&RawTeam>) -> String {
+    team.and_then(|t| t.image_url.clone()).unwrap_or_default()
 }
 
 #[derive(Debug, Deserialize)]
@@ -312,6 +320,8 @@ fn normalize(game: Game, raw: &RawMatch) -> Option<NormalizedMatch> {
         team_label(raw.opponents.first().and_then(|o| o.opponent.as_ref()));
     let (label_b, name_b, id_b) =
         team_label(raw.opponents.get(1).and_then(|o| o.opponent.as_ref()));
+    let logo_a = team_logo(raw.opponents.first().and_then(|o| o.opponent.as_ref()));
+    let logo_b = team_logo(raw.opponents.get(1).and_then(|o| o.opponent.as_ref()));
 
     let tier = raw
         .tournament
@@ -354,8 +364,8 @@ fn normalize(game: Game, raw: &RawMatch) -> Option<NormalizedMatch> {
         venue_tz: None,
         venue_name: String::new(),
         venue_location: String::new(),
-            team_a_logo: String::new(),
-            team_b_logo: String::new(),
+        team_a_logo: logo_a,
+        team_b_logo: logo_b,
         streams: streams(&raw.streams_list),
         // Series are an MLB concept; esports matches have none.
         mlb_series: None,
@@ -1186,18 +1196,21 @@ mod tests {
             id: Some(1),
             name: Some("Team Liquid".into()),
             acronym: Some("TL".into()),
+            image_url: None,
         };
         assert_eq!(team_label(Some(&full)).0, "TL");
         let no_acr = RawTeam {
             id: Some(2),
             name: Some("Team Liquid".into()),
             acronym: None,
+            image_url: None,
         };
         assert_eq!(team_label(Some(&no_acr)).0, "Team Liquid");
         let blank = RawTeam {
             id: Some(3),
             name: None,
             acronym: Some("   ".into()),
+            image_url: None,
         };
         assert_eq!(team_label(Some(&blank)).0, "TBD");
         assert_eq!(team_label(None).0, "TBD");

@@ -95,6 +95,44 @@ impl RawCircuitLocation {
     }
 }
 
+/// The Grand Prix host country's flag (a vector SVG from flagcdn) — F1 has no
+/// teams, so the GP's national flag stands in as its icon. Empty for an unmapped
+/// country. Ergast/Jolpica country names are mostly the common English ones.
+fn country_flag(country: &str) -> String {
+    let code = match country {
+        "Australia" => "au",
+        "Bahrain" => "bh",
+        "Saudi Arabia" => "sa",
+        "Japan" => "jp",
+        "China" => "cn",
+        "USA" | "United States" => "us",
+        "Italy" => "it",
+        "Monaco" => "mc",
+        "Canada" => "ca",
+        "Spain" => "es",
+        "Austria" => "at",
+        "UK" | "United Kingdom" => "gb",
+        "Hungary" => "hu",
+        "Belgium" => "be",
+        "Netherlands" => "nl",
+        "Azerbaijan" => "az",
+        "Singapore" => "sg",
+        "Mexico" => "mx",
+        "Brazil" => "br",
+        "Qatar" => "qa",
+        "UAE" | "United Arab Emirates" => "ae",
+        "France" => "fr",
+        "Germany" => "de",
+        "Portugal" => "pt",
+        "Turkey" => "tr",
+        "Russia" => "ru",
+        "South Africa" => "za",
+        "Argentina" => "ar",
+        _ => return String::new(),
+    };
+    format!("https://flagcdn.com/{code}.svg")
+}
+
 /// The IANA timezone of each Grand Prix circuit (Jolpica gives only a locality,
 /// not a tz), so the schedule can show the local time at the track. Keyed on the
 /// stable `circuitId`.
@@ -204,6 +242,8 @@ fn to_matches(r: &RawRace, now: DateTime<Utc>) -> Vec<NormalizedMatch> {
             m.venue_tz = venue_tz.clone();
             m.venue_name = r.circuit.circuit_name.clone();
             m.venue_location = r.circuit.location.label();
+            // F1 has no teams; use the GP host country's flag as the session icon.
+            m.team_a_logo = country_flag(&r.circuit.location.country);
             Some(m)
         })
         .collect()
