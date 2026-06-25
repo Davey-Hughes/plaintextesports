@@ -86,6 +86,9 @@ pub fn open(path: &str) -> rusqlite::Result<Connection> {
             league       TEXT    NOT NULL DEFAULT '',
             team_a       TEXT    NOT NULL DEFAULT '',
             team_b       TEXT    NOT NULL DEFAULT '',
+            -- Full event name (league + edition, e.g. F1 Austrian Grand Prix), so
+            -- an event subscription's reminders can be cleaned up on unsub.
+            event        TEXT    NOT NULL DEFAULT '',
             sent         INTEGER NOT NULL DEFAULT 0,
             -- A tombstone row (excluded=1) opts this match out of a covering
             -- subscription: expansion's insert-if-absent leaves it, and the
@@ -114,6 +117,7 @@ pub fn open(path: &str) -> rusqlite::Result<Connection> {
     let _ = conn.execute("ALTER TABLE reminders ADD COLUMN league TEXT NOT NULL DEFAULT ''", []);
     let _ = conn.execute("ALTER TABLE reminders ADD COLUMN team_a TEXT NOT NULL DEFAULT ''", []);
     let _ = conn.execute("ALTER TABLE reminders ADD COLUMN team_b TEXT NOT NULL DEFAULT ''", []);
+    let _ = conn.execute("ALTER TABLE reminders ADD COLUMN event TEXT NOT NULL DEFAULT ''", []);
     let _ = conn.execute("ALTER TABLE reminders ADD COLUMN excluded INTEGER NOT NULL DEFAULT 0", []);
     Ok(conn)
 }
@@ -292,17 +296,19 @@ pub struct Reminder {
     pub title: String,
     pub body: String,
     pub url: String,
-    /// Game/league/teams the match belongs to (for scope-based cleanup).
+    /// Game/league/teams/event the match belongs to (for scope-based cleanup).
     pub game: String,
     pub league: String,
     pub team_a: String,
     pub team_b: String,
+    /// Full event name (e.g. F1 Austrian Grand Prix), for event-scope cleanup.
+    pub event: String,
 }
 
-const REMINDER_COLS: &str =
-    "endpoint, p256dh, auth, match_id, notify_at_ms, title, body, url, game, league, team_a, team_b";
+const REMINDER_COLS: &str = "endpoint, p256dh, auth, match_id, notify_at_ms, title, body, url, \
+     game, league, team_a, team_b, event";
 
-fn reminder_params(r: &Reminder) -> [&dyn rusqlite::ToSql; 12] {
+fn reminder_params(r: &Reminder) -> [&dyn rusqlite::ToSql; 13] {
     [
         &r.endpoint,
         &r.p256dh,
@@ -316,6 +322,7 @@ fn reminder_params(r: &Reminder) -> [&dyn rusqlite::ToSql; 12] {
         &r.league,
         &r.team_a,
         &r.team_b,
+        &r.event,
     ]
 }
 
@@ -325,13 +332,13 @@ pub fn add_reminder(conn: &Connection, r: &Reminder) -> rusqlite::Result<()> {
     conn.execute(
         &format!(
             "INSERT INTO reminders ({REMINDER_COLS}, sent, excluded)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, 0, 0)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, 0, 0)
              ON CONFLICT(endpoint, match_id) DO UPDATE SET
                 p256dh=excluded.p256dh, auth=excluded.auth,
                 notify_at_ms=excluded.notify_at_ms, title=excluded.title,
                 body=excluded.body, url=excluded.url, game=excluded.game,
                 league=excluded.league, team_a=excluded.team_a,
-                team_b=excluded.team_b, sent=0, excluded=0"
+                team_b=excluded.team_b, event=excluded.event, sent=0, excluded=0"
         ),
         &reminder_params(r)[..],
     )?;
@@ -345,7 +352,7 @@ pub fn exclude_reminder(conn: &Connection, r: &Reminder) -> rusqlite::Result<()>
     conn.execute(
         &format!(
             "INSERT INTO reminders ({REMINDER_COLS}, sent, excluded)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, 0, 1)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, 0, 1)
              ON CONFLICT(endpoint, match_id) DO UPDATE SET excluded=1, sent=0"
         ),
         &reminder_params(r)[..],
@@ -359,7 +366,7 @@ pub fn add_reminder_if_absent(conn: &Connection, r: &Reminder) -> rusqlite::Resu
     conn.execute(
         &format!(
             "INSERT INTO reminders ({REMINDER_COLS}, sent)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, 0)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, 0)
              ON CONFLICT(endpoint, match_id) DO NOTHING"
         ),
         &reminder_params(r)[..],
@@ -397,6 +404,7 @@ pub fn due_reminders(conn: &Connection, now_ms: i64) -> rusqlite::Result<Vec<Rem
             league: String::new(),
             team_a: String::new(),
             team_b: String::new(),
+            event: String::new(),
         })
     })?;
     rows.collect()
@@ -493,6 +501,7 @@ pub fn delete_unsent_reminders_by_scope(
     let where_scope = match kind {
         "game" => "game=?2",
         "team" => "(team_a=?2 OR team_b=?2)",
+        "event" => "event=?2",
         _ => "league=?2",
     };
     conn.execute(
@@ -594,6 +603,7 @@ mod tests {
             league: "LCK".into(),
             team_a: "T1".into(),
             team_b: "Gen.G".into(),
+            event: "LCK Spring".into(),
         }
     }
 
@@ -615,6 +625,30 @@ mod tests {
         // Re-include it (explicit arm) → due again.
         add_reminder(&conn, &r).unwrap();
         assert_eq!(due_reminders(&conn, 1000).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn delete_by_event_scope_removes_only_that_event() {
+        let conn = open(":memory:").unwrap();
+        let mut a = reminder(1);
+        a.event = "F1 Austrian Grand Prix".into();
+        let mut b = reminder(2);
+        b.event = "F1 British Grand Prix".into();
+        add_reminder(&conn, &a).unwrap();
+        add_reminder(&conn, &b).unwrap();
+        assert_eq!(due_reminders(&conn, 1000).unwrap().len(), 2);
+
+        // Unsubscribing from one GP drops only its reminders.
+        delete_unsent_reminders_by_scope(
+            &conn,
+            "https://push.example/x",
+            "event",
+            "F1 Austrian Grand Prix",
+        )
+        .unwrap();
+        let due = due_reminders(&conn, 1000).unwrap();
+        assert_eq!(due.len(), 1);
+        assert_eq!(due[0].match_id, 2);
     }
 
     #[test]

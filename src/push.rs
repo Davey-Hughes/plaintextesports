@@ -209,6 +209,7 @@ fn expand_subscriptions(conn: &rusqlite::Connection) {
                 league: seed.league,
                 team_a: seed.team_a,
                 team_b: seed.team_b,
+                event: seed.event,
             };
             if let Err(e) = store::add_reminder_if_absent(conn, &r) {
                 leptos::logging::log!("expand_subscriptions: add_reminder_if_absent failed: {e}");
@@ -262,6 +263,7 @@ mod tests {
             league: "LCK".into(),
             team_a: "T1".into(),
             team_b: "Gen.G".into(),
+            event: "LCK Spring".into(),
         };
 
         let req = build_push_request(&key, "mailto:dev@example.com", &r).expect("build");

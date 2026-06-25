@@ -681,6 +681,17 @@ a {
   transform: translateX(-4px);
 }
 
+// The ★ to subscribe to a whole event (F1 GP page), sat beside its title.
+.event-title-head {
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+
+  .sub-star {
+    font-size: 19px;
+  }
+}
+
 // Map each hashed league class to its palette color.
 .lc-0 { --lc: var(--c0); }
 .lc-1 { --lc: var(--c1); }
