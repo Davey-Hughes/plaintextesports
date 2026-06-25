@@ -520,7 +520,7 @@ fn SiteFooter() -> impl IntoView {
                 <span>
                     {move || {
                         if traditional.get() {
-                            "MLB + F1 schedules"
+                            "MLB + NHL + F1 schedules"
                         } else {
                             "tier-1 cs2 + lol schedules"
                         }
@@ -530,7 +530,7 @@ fn SiteFooter() -> impl IntoView {
                 <span>
                     {move || {
                         if traditional.get() {
-                            "data via MLB Stats API & Jolpica"
+                            "data via MLB Stats API, NHL & Jolpica"
                         } else {
                             "data via PandaScore"
                         }
@@ -2160,10 +2160,13 @@ fn StandingsTable(rows: Vec<StandingRow>, tournament_id: i64, game: Game) -> imp
         Game::Lol => "Games",
         Game::Cs2 => "Maps",
         Game::Mlb => "GB",
+        Game::Nhl => "PTS",
         // F1 has no standings table (it uses a results rendering instead).
         Game::F1 => "",
     };
-    let mlb = matches!(game, Game::Mlb);
+    // MLB and NHL put a single value in the last column (games-back / points)
+    // rather than a map/game record.
+    let show_last = matches!(game, Game::Mlb | Game::Nhl);
     // Click the "Standings" title to reveal/hide the table.
     let (revealed, toggle) = section_reveal(format!("st:{tournament_id}"));
     // Always render every row so the table reserves its height — when hidden, the
@@ -2174,12 +2177,18 @@ fn StandingsTable(rows: Vec<StandingRow>, tournament_id: i64, game: Game) -> imp
             .into_iter()
             .map(|r| {
                 let (team, wl, maps) = if show {
-                    let last = if mlb {
+                    let last = if show_last {
                         r.gb
                     } else {
                         format!("{}-{}", r.game_wins, r.game_losses)
                     };
-                    (r.team, format!("{}-{}", r.wins, r.losses), last)
+                    // NHL carries OT losses as the third record number (W-L-OTL).
+                    let wl = if r.ties > 0 {
+                        format!("{}-{}-{}", r.wins, r.losses, r.ties)
+                    } else {
+                        format!("{}-{}", r.wins, r.losses)
+                    };
+                    (r.team, wl, last)
                 } else {
                     ("—".to_string(), "—".to_string(), "—".to_string())
                 };
@@ -3880,7 +3889,9 @@ fn schedule_needs_window(s: &ScheduleView) -> bool {
         .iter()
         .flat_map(|d| &d.leagues)
         .flat_map(|lg| &lg.matches)
-        .any(|m| m.game == Game::Mlb)
+        // MLB and NHL play daily, so an event schedule of them caps its horizon
+        // like the homepage; F1 (single-entity) shows its whole GP instead.
+        .any(|m| matches!(m.game, Game::Mlb | Game::Nhl))
 }
 
 /// `(season, round)` for an F1 event's schedule, recovered from a session id
@@ -4354,6 +4365,7 @@ fn SportTabs(
         <div class="tabs" class:tabs-off=move || !traditional.get()>
             <div class="tabs-list">
                 {with_star("MLB", "mlb")}
+                {with_star("NHL", "nhl")}
                 {with_star("F1", "f1")}
             </div>
             {move || {
