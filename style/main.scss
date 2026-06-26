@@ -2108,20 +2108,34 @@ a.sw-link {
   white-space: nowrap;
 }
 
-// Long names (e.g. WEC crews "A · B · C") truncate; on hover the name expands to
-// its full width and overlays the columns to its right (the points) with the page
-// background so it's readable. Scoped to the single-name tables (WRC/WEC + F1
-// constructors), not the F1 drivers table which has an extra constructor column.
+// Long names (e.g. WEC crews "A · B · C") truncate; on hover the name pops out to
+// its full width over the columns to its right (the points) as a little boxed
+// popover — a border + shadow so the overflow reads as deliberate. Scoped to the
+// single-name tables (WRC/WEC + F1 constructors), not the F1 drivers table (which
+// has an extra constructor column). The default cursor (not the text I-beam)
+// reinforces that it's a hover affordance.
+.f1-standings-con .f1-standing-name {
+  cursor: default;
+}
+
 @media (hover: hover) {
   .f1-standings-con .f1-standing-name:hover {
     overflow: visible;
     width: max-content;
-    max-width: 24rem;
+    // Wide enough to hold the full name inside the box (the longest WEC crews are
+    // ~30rem) — otherwise the text spills past the box, unboxed, into the next
+    // column and collides with it.
+    max-width: 34rem;
     justify-self: start;
     position: relative;
     z-index: 2;
     background: var(--bg);
-    padding-right: 0.35rem;
+    border-radius: 4px;
+    box-shadow: 0 0 0 1px var(--border), 0 2px 10px rgba(0, 0, 0, 0.4);
+    // Inset the text from the box edges without shifting it (the negative margin
+    // cancels the padding, so only the box grows outward).
+    padding: 0.1rem 0.45rem;
+    margin: -0.1rem -0.45rem;
   }
 }
 
