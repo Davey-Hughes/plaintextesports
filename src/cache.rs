@@ -668,6 +668,14 @@ pub fn spawn_poller() {
             if headroom_ok(rate_remaining, cfg.rate_limit_floor) {
                 prewarm_active(now).await;
             }
+            // Likewise keep the current F1 championship standings hot: the home
+            // (and the current-GP page) request `f1_standings(season, 0)` on
+            // demand from Jolpica (~0.5s cold), so without this the first viewer
+            // after each 10-min TTL eats that fetch. `f1_standings` self-gates on
+            // its own TTL and Jolpica is keyless (separate from the PandaScore
+            // budget), so this adds at most one keyless request per cycle and
+            // isn't headroom-gated.
+            let _ = f1_standings(i64::from(now.year()), 0).await;
 
             // Low-priority past-day work: only when nothing is live/imminent and
             // the API budget has headroom, so current/future polling comes first.
