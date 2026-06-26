@@ -1133,6 +1133,15 @@ fn to_view(m: &NormalizedMatch, tz: &Tz, now: DateTime<Utc>, hour24: bool) -> Ma
     let local = m.begin_at.with_timezone(tz);
     let status = effective_status(m, now);
 
+    // Motorsport rows that carry only a calendar date (no session time), anchored
+    // at noon UTC so the viewer's day comes out right: every WRC rally (the feed
+    // gives no per-stage times), and a WEC round whose schedule isn't published
+    // yet — a placeholder with no venue tz (every real WEC session carries one).
+    // There's no real clock to show, so the time cell stays blank and there's no
+    // venue time to toggle to; the day heading still carries the date.
+    let date_only = m.sport == Sport::Motorsport
+        && (m.league == "WRC" || (m.league == "WEC" && m.venue_tz.is_none()));
+
     // PandaScore returns placeholder 0-0 results on unplayed matches, so only
     // trust a finished match's score, or a live match's score once it's nonzero
     // (a real in-progress map count rather than the 0-0 placeholder).
@@ -1172,20 +1181,23 @@ fn to_view(m: &NormalizedMatch, tz: &Tz, now: DateTime<Utc>, hour24: bool) -> Ma
     // the local date+time at the venue. The date is included because the venue can
     // sit on a different calendar day than the viewer, which showing only the time
     // would silently hide. Empty otherwise (esports has no venue tz).
-    let venue_label = m
-        .venue_tz
-        .as_deref()
-        .and_then(|id| id.parse::<Tz>().ok())
-        .map(|vtz| {
-            let vlocal = m.begin_at.with_timezone(&vtz);
-            format!(
-                "{} · {} {}",
-                vlocal.format("%a, %b %-d"),
-                time_label(vlocal, hour24),
-                vlocal.format("%Z")
-            )
-        })
-        .unwrap_or_default();
+    let venue_label = if date_only {
+        String::new()
+    } else {
+        m.venue_tz
+            .as_deref()
+            .and_then(|id| id.parse::<Tz>().ok())
+            .map(|vtz| {
+                let vlocal = m.begin_at.with_timezone(&vtz);
+                format!(
+                    "{} · {} {}",
+                    vlocal.format("%a, %b %-d"),
+                    time_label(vlocal, hour24),
+                    vlocal.format("%Z")
+                )
+            })
+            .unwrap_or_default()
+    };
 
     MatchView {
         id: m.id,
@@ -1194,7 +1206,7 @@ fn to_view(m: &NormalizedMatch, tz: &Tz, now: DateTime<Utc>, hour24: bool) -> Ma
         series_name: m.series_name.clone(),
         tier: m.tier.clone(),
         status,
-        clock_label: time_label(local, hour24),
+        clock_label: if date_only { String::new() } else { time_label(local, hour24) },
         date_label: day_label(local),
         venue_label,
         venue_name: m.venue_name.clone(),
@@ -3080,5 +3092,46 @@ mod tests {
         let mut e = at(when, MatchStatus::Upcoming);
         e.venue_tz = None;
         assert!(to_view(&e, &la, when, false).venue_label.is_empty());
+    }
+
+    #[test]
+    fn to_view_blanks_the_clock_for_date_only_wrc() {
+        // WRC rallies are date-only, anchored at noon UTC. Even for a viewer well
+        // west of UTC the day must read as the rally's date (not slip a day back),
+        // and the clock must be blank rather than a fabricated time.
+        let la = "America/Los_Angeles".parse::<Tz>().unwrap();
+        let noon = "2026-01-22T12:00:00Z".parse::<DateTime<Utc>>().unwrap();
+        let mut m = at(noon, MatchStatus::Upcoming);
+        m.sport = Sport::Motorsport;
+        m.league = "WRC".into();
+        let view = to_view(&m, &la, noon, false);
+        assert_eq!(view.clock_label, "");
+        assert!(view.venue_label.is_empty());
+        assert_eq!(view.date_label, "Thursday, January 22");
+    }
+
+    #[test]
+    fn to_view_wec_placeholder_is_date_only_but_a_session_keeps_its_clock() {
+        let la = "America/Los_Angeles".parse::<Tz>().unwrap();
+        let now = "2026-07-12T12:00:00Z".parse::<DateTime<Utc>>().unwrap();
+
+        // A WEC round with no published schedule: a noon-anchored placeholder with
+        // no venue tz → blank clock, no toggle (like WRC).
+        let mut ph = at(now, MatchStatus::Upcoming);
+        ph.sport = Sport::Motorsport;
+        ph.league = "WEC".into();
+        ph.venue_tz = None;
+        let v = to_view(&ph, &la, now, false);
+        assert_eq!(v.clock_label, "");
+        assert!(v.venue_label.is_empty());
+
+        // A real session (has a venue tz) keeps its clock and venue-time toggle.
+        let mut sess = at("2026-07-12T18:30:00Z".parse().unwrap(), MatchStatus::Upcoming);
+        sess.sport = Sport::Motorsport;
+        sess.league = "WEC".into();
+        sess.venue_tz = Some("America/Sao_Paulo".into());
+        let vs = to_view(&sess, &la, now, false);
+        assert!(!vs.clock_label.is_empty());
+        assert!(!vs.venue_label.is_empty());
     }
 }
