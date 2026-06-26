@@ -9,6 +9,12 @@ pandascore_token = ""
 # Free tier is 250 req/day; these series are polled conservatively (schedule
 # first), so it fits easily. Omit to skip WRC/WEC.
 ocblacktop_token = ""
+# How often to refresh the WRC/WEC calendars / standings (seconds), and a hard
+# per-UTC-day request cap as a backstop under the 250/day free tier. Defaults:
+# calendars 30 min, standings 2 h, cap 240 (≈120/day at the defaults).
+# ocblacktop_poll_secs = 1800
+# ocblacktop_standings_poll_secs = 7200
+# ocblacktop_daily_cap = 240
 
 # Force demo/fixture data, ignoring the token + cache DB (dev/UI work).
 # demo = true
