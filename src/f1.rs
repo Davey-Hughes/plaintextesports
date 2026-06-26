@@ -221,7 +221,7 @@ fn to_matches(r: &RawRace, now: DateTime<Utc>) -> Vec<NormalizedMatch> {
             let mut m = NormalizedMatch::team_sport(
                 // Stable, collision-free id from (season, round, session order).
                 season * 100_000 + round * 100 + s.ord,
-                Game::F1,
+                Game::Motorsport,
                 "F1",
                 begin_at,
                 status,
@@ -697,7 +697,7 @@ mod tests {
             resp.data.race_table.races.iter().flat_map(|r| to_matches(r, now)).collect();
         // FP1, FP2, FP3, Qualifying, Race — no sprint sessions this weekend.
         assert_eq!(ms.len(), 5);
-        assert!(ms.iter().all(|m| m.game == Game::F1 && m.league == "F1"));
+        assert!(ms.iter().all(|m| m.game == Game::Motorsport && m.league == "F1"));
         // The serie is the GP qualified by season, so editions don't collide.
         assert!(ms.iter().all(|m| m.serie_name == "Austrian Grand Prix 2026"));
         let labels: Vec<&str> = ms.iter().map(|m| m.team_a.label.as_str()).collect();

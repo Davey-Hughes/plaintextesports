@@ -35,10 +35,12 @@ pub enum Game {
     /// more than one competition (the Premier League and the World Cup), each its
     /// own `league`. Two teams per game; matches can draw.
     Soccer,
-    /// Formula 1 — a traditional sport, fetched from the Jolpica (Ergast) API.
-    /// A "match" is a single session of a Grand Prix weekend (practice/quali/
-    /// sprint/race); the Grand Prix is the event. Single-entity (no opponent).
-    F1,
+    /// Motorsport — one category covering several series via the `league` field:
+    /// F1 (Jolpica/Ergast), WRC + WEC (Orange Cat Blacktop). A "match" is a single
+    /// session/round (an F1 session, a WEC session, or a WRC rally); the event is
+    /// the Grand Prix / race meeting / rally. Single-entity (no opponent). The
+    /// series are the sub-league chips, like soccer's competitions.
+    Motorsport,
 }
 
 impl Game {
@@ -53,7 +55,7 @@ impl Game {
         Self::Nba,
         Self::Nfl,
         Self::Soccer,
-        Self::F1,
+        Self::Motorsport,
     ];
 
     /// Display name. Traditional sports use the sport (not the league), so the
@@ -71,7 +73,7 @@ impl Game {
             Self::Nfl => "Football",
             Self::Soccer => "Soccer",
             // The category is motorsport; the series (F1, …) is its sub-filter.
-            Self::F1 => "Motorsport",
+            Self::Motorsport => "Motorsport",
         }
     }
 
@@ -85,7 +87,7 @@ impl Game {
             Self::Nba => "nba",
             Self::Nfl => "nfl",
             Self::Soccer => "football",
-            Self::F1 => "f1",
+            Self::Motorsport => "motorsport",
         }
     }
 
@@ -94,7 +96,7 @@ impl Game {
     pub const fn traditional(self) -> bool {
         matches!(
             self,
-            Self::Mlb | Self::Nhl | Self::Nba | Self::Nfl | Self::Soccer | Self::F1
+            Self::Mlb | Self::Nhl | Self::Nba | Self::Nfl | Self::Soccer | Self::Motorsport
         )
     }
 
@@ -102,7 +104,7 @@ impl Game {
     /// shows one competitor label rather than "A vs B".
     #[must_use]
     pub const fn single_entity(self) -> bool {
-        matches!(self, Self::F1)
+        matches!(self, Self::Motorsport)
     }
 
     /// Whether this sport's leagues are a genuine sub-categorisation worth a
@@ -111,13 +113,13 @@ impl Game {
     /// the sole league just repeats the tab, so no chip.
     #[must_use]
     pub const fn has_sub_leagues(self) -> bool {
-        matches!(self, Self::Soccer | Self::F1)
+        matches!(self, Self::Soccer | Self::Motorsport)
     }
 
     /// The traditional sports, in display order — drives the in-mode sport tabs.
     #[must_use]
     pub fn traditional_sports() -> &'static [Game] {
-        &[Self::Mlb, Self::Nhl, Self::Nba, Self::Nfl, Self::Soccer, Self::F1]
+        &[Self::Mlb, Self::Nhl, Self::Nba, Self::Nfl, Self::Soccer, Self::Motorsport]
     }
 
     /// The label for the standings table's last column: a map/game record for
@@ -131,7 +133,7 @@ impl Game {
             Self::Mlb | Self::Nba => "GB",
             Self::Nhl | Self::Soccer => "PTS",
             Self::Nfl => "PCT",
-            Self::F1 => "",
+            Self::Motorsport => "",
         }
     }
 
@@ -157,7 +159,9 @@ impl Game {
             "nba" => Some(Self::Nba),
             "nfl" => Some(Self::Nfl),
             "football" => Some(Self::Soccer),
-            "f1" => Some(Self::F1),
+            // "f1" kept for back-compat with saved filters/links from when the
+            // motorsport game's slug was "f1" (now "motorsport").
+            "motorsport" | "f1" => Some(Self::Motorsport),
             _ => None,
         }
     }
@@ -691,6 +695,34 @@ pub struct F1StandingRow {
     pub constructor_abbrev: String,
 }
 
+/// Championship standings for WRC/WEC (Orange Cat Blacktop) — a list of titled
+/// tables, since each series has several (WRC: drivers / co-drivers /
+/// manufacturers; WEC: per class × drivers / teams / manufacturers). Generic
+/// enough for both, unlike the F1-specific [`F1Standings`].
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MotorStandings {
+    pub tables: Vec<MotorStandingTable>,
+}
+
+/// One championship table within a series' standings.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MotorStandingTable {
+    /// e.g. "Drivers", "Manufacturers", or "Hypercar · Drivers" for WEC classes.
+    pub title: String,
+    pub rows: Vec<MotorStandingRow>,
+}
+
+/// One line in a WRC/WEC championship table.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MotorStandingRow {
+    pub pos: String,
+    pub name: String,
+    pub points: String,
+    /// Nationality flag (from the API's 2-letter country code); empty when none.
+    #[serde(default)]
+    pub flag: String,
+}
+
 /// Everything the per-match detail page shows.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MatchDetail {
@@ -772,7 +804,7 @@ mod tests {
         assert_eq!(Game::Nfl.label(), "Football");
         assert_eq!(Game::Soccer.label(), "Soccer");
         assert_eq!(Game::Soccer.slug(), "football");
-        assert_eq!(Game::F1.label(), "Motorsport");
+        assert_eq!(Game::Motorsport.label(), "Motorsport");
     }
 
     #[test]
@@ -829,8 +861,8 @@ mod tests {
             assert!(g.standings_single_value(), "{g:?}");
         }
         // F1 has no standings table.
-        assert_eq!(Game::F1.standings_last_label(), "");
-        assert!(!Game::F1.standings_single_value());
+        assert_eq!(Game::Motorsport.standings_last_label(), "");
+        assert!(!Game::Motorsport.standings_single_value());
     }
 
     #[test]
