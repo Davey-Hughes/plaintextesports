@@ -1,12 +1,12 @@
 use crate::bracket;
 use crate::server::{
     get_day, get_event_schedule, get_event_stages, get_event_stages_by_league, get_f1_results,
-    get_f1_standings, get_match_detail, get_notifications, get_range, get_schedule, get_site,
-    get_team_schedule,
+    get_f1_standings, get_match_detail, get_motor_standings, get_notifications, get_range,
+    get_schedule, get_site, get_team_schedule,
 };
 use crate::types::{
     full_event_name, DayGroup, EventInfo, F1Result, F1Standings, Game, MatchDetail, MatchStatus,
-    MatchView, ScheduleView, Series, SeriesGame, StreamView,
+    MatchView, MotorStandings, ScheduleView, Series, SeriesGame, StreamView,
 };
 use leptos::prelude::*;
 use std::collections::HashSet;
@@ -1047,6 +1047,63 @@ fn F1StandingsView(standings: F1Standings, season: i64, round: i64) -> impl Into
     }
 }
 
+/// WRC/WEC championship standings — a set of titled tables (WRC: drivers /
+/// co-drivers / manufacturers; WEC: per class × kind). Like the F1 table it's a
+/// spoiler, so it's blanked behind a reveal toggle. `league` is the series name.
+#[component]
+fn MotorStandingsView(standings: MotorStandings, league: String) -> impl IntoView {
+    let (revealed, toggle) = section_reveal(format!("motorstand:{league}"));
+    let tables = StoredValue::new(standings.tables);
+    // Keep the rows present (position column stays) but blank names/points until
+    // revealed, so revealing doesn't shift the page.
+    let body = move || {
+        let show = revealed.get();
+        tables
+            .get_value()
+            .into_iter()
+            .map(|t| {
+                let rows = t
+                    .rows
+                    .into_iter()
+                    .map(|r| {
+                        let (name, pts, flag) = if show {
+                            (r.name, r.points, r.flag)
+                        } else {
+                            (String::new(), String::new(), String::new())
+                        };
+                        view! {
+                            <li class="f1-standing-row f1-standing-row-con">
+                                <span class="f1-pos">{r.pos}</span>
+                                <span class="f1-standing-name">{team_logo(&flag, "f1-flag")}{name}</span>
+                                <span class="f1-standing-pts">{pts}</span>
+                            </li>
+                        }
+                    })
+                    .collect_view();
+                view! {
+                    <div class="f1-standings-table">
+                        <h3 class="f1-standings-sub">{t.title}</h3>
+                        <ol class="f1-standings f1-standings-con">{rows}</ol>
+                    </div>
+                }
+            })
+            .collect_view()
+    };
+    view! {
+        <section class="detail-section" id="motorsec-standings">
+            <h2 class="section-title f1-results-title">"Standings"</h2>
+            <button class="f1-session-head" on:click=toggle>
+                <span class="f1-session-toggle">
+                    {move || {
+                        if revealed.get() { "hide standings".to_string() } else { "show standings".to_string() }
+                    }}
+                </span>
+            </button>
+            <div class="f1-standings-tables">{body}</div>
+        </section>
+    }
+}
+
 /// Internal event page: the event's standings/bracket, its full schedule, and a
 /// link out to the event's Liquipedia/official page.
 #[component]
@@ -1099,6 +1156,18 @@ fn EventPage() -> impl IntoView {
                     get_f1_standings(season, round).await.unwrap_or_default()
                 }
                 None => F1Standings::default(),
+            }
+        },
+    );
+    // WRC/WEC event pages show the series' current championship standings (from
+    // the ocblacktop poller cache); empty for F1 / non-motorsport events.
+    let motor_standings = Resource::new(
+        move || schedule.get().and_then(Result::ok).map(|s| motor_series(&s)).unwrap_or_default(),
+        |lg| async move {
+            if lg.is_empty() {
+                MotorStandings::default()
+            } else {
+                get_motor_standings(lg).await.unwrap_or_default()
             }
         },
     );
@@ -1207,6 +1276,8 @@ fn EventPage() -> impl IntoView {
                             .is_some_and(|v| v.get().is_some());
                         // (season, round) for an F1 GP — keys its results' reveal.
                         let f1_sr = f1_season_round(&s);
+                        // The series ("WRC"/"WEC") if this is one — for its standings.
+                        let motor_league = motor_series(&s);
                         // An F1 Grand Prix gets a ★ to subscribe to the whole
                         // event (all its sessions) — but only while a session is
                         // still to come; a wholly-finished GP can't be notified
@@ -1297,6 +1368,19 @@ fn EventPage() -> impl IntoView {
                                                     round=round
                                                 />
                                             }
+                                        })
+                                }}
+                                // WRC/WEC: the series' championship tables.
+                                {move || {
+                                    let lg = motor_league.clone();
+                                    if lg.is_empty() {
+                                        return None;
+                                    }
+                                    motor_standings
+                                        .get()
+                                        .filter(|s| !s.tables.is_empty())
+                                        .map(move |standings| {
+                                            view! { <MotorStandingsView standings=standings league=lg /> }
                                         })
                                 }}
                             </article>
@@ -2955,16 +3039,29 @@ fn schedule_needs_window(s: &ScheduleView) -> bool {
 }
 
 /// `(season, round)` for an F1 event's schedule, recovered from a session id
-/// (`season * 100000 + round * 100 + session`, see `f1.rs`). `None` for non-F1.
+/// (`season * 100000 + round * 100 + session`, see `f1.rs`). `None` for non-F1
+/// — including the other motorsport series (WRC/WEC), which share the game but
+/// use a different id scheme and the league name to distinguish themselves.
 fn f1_season_round(s: &ScheduleView) -> Option<(i64, i64)> {
     let id = s
         .days
         .iter()
         .flat_map(|d| &d.leagues)
         .flat_map(|lg| &lg.matches)
-        .find(|m| m.game == Game::Motorsport)?
+        .find(|m| m.game == Game::Motorsport && m.league == "F1")?
         .id;
     Some((id / 100_000, (id / 100) % 1000))
+}
+
+/// The motorsport series ("WRC"/"WEC") an event page is for, else "". F1 is
+/// excluded — it has its own results+standings path keyed on session ids.
+fn motor_series(s: &ScheduleView) -> String {
+    s.days
+        .iter()
+        .flat_map(|d| &d.leagues)
+        .map(|lg| lg.league.clone())
+        .find(|l| matches!(l.as_str(), "WRC" | "WEC"))
+        .unwrap_or_default()
 }
 
 /// Whether an event still has something to be notified about — any upcoming or
@@ -3484,17 +3581,33 @@ fn ScheduleSection(
             f1_home_season.set(season);
         }
     });
-    // The team sports show their division/group tables; F1 has no such tables —
-    // it gets the championship standings instead (handled below), so it's excluded
-    // here.
+    // The team sports show their division/group tables; the motorsport series
+    // (F1/WRC/WEC) have no such tables — they get championship standings instead
+    // (handled below), so they're excluded here.
     let trad_standings_league = Memo::new(move |_| {
         let l = single_league.get();
-        if l == "F1" {
+        if matches!(l.as_str(), "F1" | "WRC" | "WEC") {
             String::new()
         } else {
             l
         }
     });
+    // WRC/WEC (the non-F1 motorsport series) — their championship tables from the
+    // ocblacktop poller cache, when the filters narrow to one of them.
+    let motor_home_league = Memo::new(move |_| {
+        let l = single_league.get();
+        if matches!(l.as_str(), "WRC" | "WEC") { l } else { String::new() }
+    });
+    let motor_home_standings = Resource::new(
+        move || motor_home_league.get(),
+        |lg| async move {
+            if lg.is_empty() {
+                MotorStandings::default()
+            } else {
+                get_motor_standings(lg).await.unwrap_or_default()
+            }
+        },
+    );
     // Round 0 has no standings, so `fetch_standings` falls back to the latest
     // completed round — i.e. the current championship picture. `f1_home_season`
     // is set by the effect above.
@@ -3578,6 +3691,17 @@ fn ScheduleSection(
                     let round = s.round;
                     view! { <F1StandingsView standings=s season=season round=round /> }
                 })
+            }}
+        </Suspense>
+        // WRC/WEC get their championship tables (from ocblacktop) the same way.
+        <Suspense>
+            {move || {
+                let lg = motor_home_league.get();
+                if lg.is_empty() {
+                    return None;
+                }
+                let s = motor_home_standings.get()?;
+                (!s.tables.is_empty()).then(|| view! { <MotorStandingsView standings=s league=lg /> })
             }}
         </Suspense>
     }
