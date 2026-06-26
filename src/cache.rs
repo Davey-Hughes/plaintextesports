@@ -560,19 +560,30 @@ pub fn spawn_poller() {
                 let cap = cfg.ocblacktop_daily_cap;
                 let events_iv = Duration::seconds(cfg.ocblacktop_poll.as_secs() as i64);
                 let standings_iv = Duration::seconds(cfg.ocblacktop_standings_poll.as_secs() as i64);
-                // Calendars: 2 requests (WRC rallies + WEC events).
-                if ocb_events_at.is_none_or(|t| now - t >= events_iv) && ocb_used + 2 <= cap {
+                // Calendars: up to 3 requests — WEC events (1) plus WRC, which is
+                // the rallies calendar (1) and, when a rally is live or imminent,
+                // its per-stage timetable (1 more). Reserve 3; bill the exact count
+                // WRC reports back so the daily quota stays accurate off-week too.
+                if ocb_events_at.is_none_or(|t| now - t >= events_iv) && ocb_used + 3 <= cap {
                     let year = now.year();
                     let (wrc, wec) = tokio::join!(
-                        crate::ocblacktop::fetch_wrc(&client, key, year),
+                        crate::ocblacktop::fetch_wrc(&client, key, year, now),
                         crate::ocblacktop::fetch_wec(&client, key, year),
                     );
-                    ocb_used += 2;
                     ocb_events_at = Some(now);
                     match wrc {
-                        Ok(v) => last_wrc = v,
-                        Err(e) => leptos::logging::log!("WRC fetch failed: {e}"),
+                        Ok((v, used)) => {
+                            last_wrc = v;
+                            ocb_used += used;
+                        }
+                        // A failure means the calendar request itself failed (detail
+                        // is best-effort and never errors out) — bill the one.
+                        Err(e) => {
+                            ocb_used += 1;
+                            leptos::logging::log!("WRC fetch failed: {e}");
+                        }
                     }
+                    ocb_used += 1; // WEC events
                     match wec {
                         Ok(v) => last_wec = v,
                         Err(e) => leptos::logging::log!("WEC fetch failed: {e}"),
@@ -821,11 +832,21 @@ fn apply_poll(
 
     if let Some(conn) = store {
         // Upsert successes; matches for an errored sport stay in the DB (we only
-        // prune by age), so the reload below preserves them.
+        // prune by age), so the reload below preserves them. WRC is the exception:
+        // its season feed is complete every poll, so it's league-scoped replaced —
+        // a rally placeholder superseded by its stages (or a finished rally's stale
+        // stages) is dropped rather than retained. Empty keep = no WRC this poll
+        // (skipped in the store), so a failed fetch never clears the league.
         if any_ok {
-            if let Err(e) =
-                crate::store::upsert_and_prune(conn, &fresh, now.timestamp_millis(), cutoff_ms)
-            {
+            let wrc_keep: Vec<i64> =
+                fresh.iter().filter(|m| m.league == "WRC").map(|m| m.id).collect();
+            if let Err(e) = crate::store::upsert_and_prune(
+                conn,
+                &fresh,
+                now.timestamp_millis(),
+                cutoff_ms,
+                &[("WRC", wrc_keep)],
+            ) {
                 leptos::logging::log!("cache db write failed: {e}");
             }
         }
@@ -922,7 +943,7 @@ fn apply_past(matches: Vec<NormalizedMatch>, store: Option<&mut rusqlite::Connec
     if let Some(conn) = store {
         let now = Utc::now();
         if let Err(e) =
-            crate::store::upsert_and_prune(conn, &matches, now.timestamp_millis(), cutoff_ms)
+            crate::store::upsert_and_prune(conn, &matches, now.timestamp_millis(), cutoff_ms, &[])
         {
             leptos::logging::log!("past write failed: {e}");
             return;
@@ -1134,13 +1155,14 @@ fn to_view(m: &NormalizedMatch, tz: &Tz, now: DateTime<Utc>, hour24: bool) -> Ma
     let status = effective_status(m, now);
 
     // Motorsport rows that carry only a calendar date (no session time), anchored
-    // at noon UTC so the viewer's day comes out right: every WRC rally (the feed
-    // gives no per-stage times), and a WEC round whose schedule isn't published
-    // yet — a placeholder with no venue tz (every real WEC session carries one).
-    // There's no real clock to show, so the time cell stays blank and there's no
-    // venue time to toggle to; the day heading still carries the date.
+    // at noon UTC so the viewer's day comes out right: a WRC rally or WEC round
+    // whose timetable isn't published yet — a placeholder with no venue tz (every
+    // real WRC stage / WEC session carries one). There's no real clock to show, so
+    // the time cell stays blank and there's no venue time to toggle to; the day
+    // heading still carries the date.
     let date_only = m.sport == Sport::Motorsport
-        && (m.league == "WRC" || (m.league == "WEC" && m.venue_tz.is_none()));
+        && (m.league == "WRC" || m.league == "WEC")
+        && m.venue_tz.is_none();
 
     // PandaScore returns placeholder 0-0 results on unplayed matches, so only
     // trust a finished match's score, or a live match's score once it's nonzero
@@ -1356,6 +1378,87 @@ fn group_days(views: Vec<MatchView>, tz: &Tz) -> Vec<DayGroup> {
     days
 }
 
+/// Fold a rally's per-stage rows into one landmark row per local day for the
+/// schedule views — "Day 1", "Day 2", … with the day carrying the power stage
+/// flagged. The event page keeps the full per-stage breakdown; only the main
+/// schedule condenses, so a 16-stage rally reads as a handful of day rows beside
+/// the other sports. Each day row anchors at that day's first stage (its real
+/// start time and venue-local clock). Non-WRC rows — placeholders, F1/WEC
+/// sessions, every other sport — pass straight through. Output is re-sorted by
+/// start time, which also reorders any events `next_motorsport_events` appended
+/// out of window. Idempotent on input with no timed WRC stages.
+fn collapse_wrc_days(views: Vec<MatchView>, tz: &Tz, snap: &Snapshot) -> Vec<MatchView> {
+    use std::collections::{BTreeSet, HashMap, HashSet};
+
+    let is_stage = |m: &MatchView| {
+        m.sport == Sport::Motorsport && m.league == "WRC" && !m.clock_label.is_empty()
+    };
+
+    // Leg ordinal + power-stage flag per (series, local day), taken from the whole
+    // rally in the snapshot — not just the windowed subset — so a single-day view
+    // still numbers its leg from the rally's first day.
+    let mut days_by_series: HashMap<&str, BTreeSet<String>> = HashMap::new();
+    let mut power_days: HashSet<(String, String)> = HashSet::new();
+    for m in &snap.matches {
+        if m.sport != Sport::Motorsport || m.league != "WRC" || m.venue_tz.is_none() {
+            continue;
+        }
+        let day = m.begin_at.with_timezone(tz).format("%Y-%m-%d").to_string();
+        if m.team_a.label.contains("Power Stage") {
+            power_days.insert((m.series_name.clone(), day.clone()));
+        }
+        days_by_series.entry(m.series_name.as_str()).or_default().insert(day);
+    }
+
+    let mut out: Vec<MatchView> = Vec::new();
+    let mut groups: HashMap<(String, String), Vec<MatchView>> = HashMap::new();
+    for v in views {
+        if is_stage(&v) {
+            let day = DateTime::from_timestamp_millis(v.begin_at_ms)
+                .unwrap_or_else(Utc::now)
+                .with_timezone(tz)
+                .format("%Y-%m-%d")
+                .to_string();
+            groups.entry((v.series_name.clone(), day)).or_default().push(v);
+        } else {
+            out.push(v);
+        }
+    }
+
+    for ((series, day), mut stages) in groups {
+        stages.sort_by_key(|m| m.begin_at_ms);
+        // The group came from a non-empty push, so a first element exists.
+        let mut rep = stages[0].clone();
+        let ordinal = days_by_series
+            .get(series.as_str())
+            .and_then(|days| days.iter().position(|d| *d == day))
+            .map_or(1, |i| i + 1);
+        rep.team_a.label = if power_days.contains(&(series.clone(), day)) {
+            format!("Day {ordinal} · Power Stage")
+        } else {
+            format!("Day {ordinal}")
+        };
+        rep.team_a.name = String::new();
+        rep.status = day_status(&stages);
+        out.push(rep);
+    }
+
+    out.sort_by_key(|m| m.begin_at_ms);
+    out
+}
+
+/// Aggregate status of a rally day from its stages: live if any stage is, finished
+/// only once every stage is, otherwise still upcoming.
+fn day_status(stages: &[MatchView]) -> MatchStatus {
+    if stages.iter().any(|m| m.status == MatchStatus::Live) {
+        MatchStatus::Live
+    } else if stages.iter().all(|m| m.status == MatchStatus::Finished) {
+        MatchStatus::Finished
+    } else {
+        MatchStatus::Upcoming
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn matches_in_window(
     snap: &Snapshot,
@@ -1421,13 +1524,25 @@ pub fn homepage_view(game_filter: &str, tz_name: &str, hour24: bool) -> Schedule
     // WEC) current-or-next event in full (MLB etc. stay compact). The client
     // sport-tabs/chips still filter it down if that series isn't selected.
     if traditional {
+        let start_ms = start.timestamp_millis();
         let have: std::collections::HashSet<i64> = all.iter().map(|m| m.id).collect();
         for mv in next_motorsport_events(&snap, now, &tz, hour24) {
-            if !have.contains(&mv.id) {
+            // Surface the event's today-or-later rows only. Its already-finished
+            // past days (e.g. the opening leg of a rally that's already under way)
+            // belong on the event page, not the main schedule, which runs from
+            // today forward. Rows within the window arrive via matches_in_window;
+            // this only adds what's beyond it (a future event, or later days of one
+            // running past the forward cap).
+            if mv.begin_at_ms >= start_ms && !have.contains(&mv.id) {
                 all.push(mv);
             }
         }
     }
+    // Condense each rally's stages into per-day rows and re-sort by start. The
+    // re-sort matters even with no WRC stages: next_motorsport_events appends
+    // events from outside the daily window (e.g. a live multi-day event that began
+    // before today), and group_days needs time-sorted input.
+    let all = collapse_wrc_days(all, &tz, &snap);
 
     ScheduleView {
         days: group_days(all, &tz),
@@ -1498,6 +1613,7 @@ pub fn day_view(date: &str, game_filter: &str, tz_name: &str, hour24: bool) -> S
 
     let snap = SNAPSHOT.read().unwrap_or_else(PoisonError::into_inner);
     let all = matches_in_window(&snap, traditional, sport, start, end, &tz, now, hour24);
+    let all = collapse_wrc_days(all, &tz, &snap);
 
     let local_noon = tz
         .from_local_datetime(&day.and_hms_opt(12, 0, 0).unwrap())
@@ -1543,6 +1659,7 @@ pub fn range_view(
 
     let snap = SNAPSHOT.read().unwrap_or_else(PoisonError::into_inner);
     let all = matches_in_window(&snap, traditional, sport, start, end, &tz, now, hour24);
+    let all = collapse_wrc_days(all, &tz, &snap);
 
     ScheduleView {
         days: group_days(all, &tz),
@@ -2594,6 +2711,82 @@ fn demo_matches(now: DateTime<Utc>) -> Vec<NormalizedMatch> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A WRC stage row (real start + venue tz) for the collapse test.
+    fn wrc_stage(id: i64, label: &str, series: &str, begin: &str) -> NormalizedMatch {
+        let mut m = NormalizedMatch::team_sport(
+            id,
+            Sport::Motorsport,
+            "WRC",
+            begin.parse::<DateTime<Utc>>().unwrap(),
+            MatchStatus::Upcoming,
+            NormTeam { label: label.into(), name: String::new(), abbrev: String::new(), score: None },
+            NormTeam { label: String::new(), name: String::new(), abbrev: String::new(), score: None },
+        );
+        m.series_name = series.to_string();
+        m.venue_tz = Some("Europe/Athens".to_string());
+        m
+    }
+
+    #[test]
+    fn collapse_folds_wrc_stages_into_per_day_rows() {
+        let series = "EKO Acropolis Rally Greece 2026";
+        let mut matches = vec![
+            wrc_stage(101, "SS1 EKO SSS", series, "2026-06-25T16:02:00Z"),
+            wrc_stage(102, "SS2 Bauxites", series, "2026-06-26T05:45:00Z"),
+            wrc_stage(103, "SS3 Parnassos", series, "2026-06-26T06:48:00Z"),
+            wrc_stage(104, "SS4 Stiri", series, "2026-06-27T04:51:00Z"),
+            wrc_stage(105, "SS17 Wolf Power Stage", series, "2026-06-28T11:12:00Z"),
+        ];
+        // A different rally with no published timetable stays a date-only
+        // placeholder (no venue tz) and must pass through untouched.
+        let mut placeholder = NormalizedMatch::team_sport(
+            200,
+            Sport::Motorsport,
+            "WRC",
+            "2026-07-16T12:00:00Z".parse().unwrap(),
+            MatchStatus::Upcoming,
+            NormTeam { label: "Rally Estonia".into(), name: String::new(), abbrev: String::new(), score: None },
+            NormTeam { label: String::new(), name: String::new(), abbrev: String::new(), score: None },
+        );
+        placeholder.series_name = "Rally Estonia 2026".to_string();
+        matches.push(placeholder);
+        // An F1 session shares the sport but must keep its own per-session row.
+        let mut f1 = NormalizedMatch::team_sport(
+            300,
+            Sport::Motorsport,
+            "F1",
+            "2026-06-26T13:00:00Z".parse().unwrap(),
+            MatchStatus::Upcoming,
+            NormTeam { label: "Race".into(), name: String::new(), abbrev: String::new(), score: None },
+            NormTeam { label: String::new(), name: String::new(), abbrev: String::new(), score: None },
+        );
+        f1.series_name = "Austrian Grand Prix 2026".to_string();
+        f1.venue_tz = Some("Europe/Vienna".to_string());
+        matches.push(f1);
+
+        let tz: Tz = "Europe/Athens".parse().unwrap();
+        let now = "2026-06-20T00:00:00Z".parse::<DateTime<Utc>>().unwrap();
+        let snap = Snapshot { matches, fetched_at: now, stale: false, using_fixture: false };
+        let views: Vec<MatchView> = snap.matches.iter().map(|m| to_view(m, &tz, now, false)).collect();
+        let out = collapse_wrc_days(views, &tz, &snap);
+
+        // The five stages fold into four day rows (June 25–28), labelled Day 1..4
+        // with the power-stage day flagged; the placeholder and F1 row survive — so
+        // six rows in all, in start order.
+        let labels: Vec<&str> = out.iter().map(|m| m.team_a.label.as_str()).collect();
+        assert_eq!(
+            labels,
+            ["Day 1", "Day 2", "Race", "Day 3", "Day 4 · Power Stage", "Rally Estonia"]
+        );
+        // Each day row anchors at that day's first stage (Day 2 → SS2, not SS3).
+        let day2 = out.iter().find(|m| m.team_a.label == "Day 2").unwrap();
+        assert_eq!(day2.begin_at_ms, "2026-06-26T05:45:00Z".parse::<DateTime<Utc>>().unwrap().timestamp_millis());
+        // The collapsed rows keep a real venue-local clock (not the blank date-only
+        // cell), while the untouched placeholder stays date-only.
+        assert!(!out.iter().find(|m| m.team_a.label == "Day 1").unwrap().clock_label.is_empty());
+        assert!(out.iter().find(|m| m.team_a.label == "Rally Estonia").unwrap().clock_label.is_empty());
+    }
 
     fn at(begin: DateTime<Utc>, status: MatchStatus) -> NormalizedMatch {
         NormalizedMatch {
