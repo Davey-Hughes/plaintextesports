@@ -306,7 +306,11 @@ pub async fn fetch_wrc_standings(client: &reqwest::Client, key: &str) -> MotorSt
         let url = format!("{BASE}/wrc/standings/{path}");
         if let Ok(rows) = get::<Vec<RawStandRow>>(client, key, &url).await {
             if !rows.is_empty() {
-                tables.push(MotorStandingTable { title: title.to_string(), rows: stand_rows(&rows) });
+                tables.push(MotorStandingTable {
+                    group: String::new(),
+                    title: title.to_string(),
+                    rows: stand_rows(&rows),
+                });
             }
         }
     }
@@ -323,29 +327,29 @@ struct WecStandTable {
     rows: Vec<RawStandRow>,
 }
 
-fn wec_table_title(t: &WecStandTable) -> String {
-    let kind = match t.kind.as_str() {
+fn kind_label(kind: &str) -> &str {
+    match kind {
         "drivers" => "Drivers",
         "teams" => "Teams",
         "manufacturers" => "Manufacturers",
         other => other,
-    };
-    if t.class_label.is_empty() {
-        kind.to_string()
-    } else {
-        format!("{} · {kind}", t.class_label)
     }
 }
 
 /// WEC standings: one request returns every parallel-championship table (per
-/// class × drivers/teams/manufacturers).
+/// class × drivers/teams/manufacturers). The class is carried in `group` so each
+/// class renders on its own row.
 pub async fn fetch_wec_standings(client: &reqwest::Client, key: &str) -> MotorStandings {
     let url = format!("{BASE}/wec/standings");
     let tables = match get::<Vec<WecStandTable>>(client, key, &url).await {
         Ok(ts) => ts
             .into_iter()
             .filter(|t| !t.rows.is_empty())
-            .map(|t| MotorStandingTable { title: wec_table_title(&t), rows: stand_rows(&t.rows) })
+            .map(|t| MotorStandingTable {
+                group: t.class_label.clone(),
+                title: kind_label(&t.kind).to_string(),
+                rows: stand_rows(&t.rows),
+            })
             .collect(),
         Err(_) => Vec::new(),
     };
@@ -459,15 +463,18 @@ mod tests {
     }
 
     #[test]
-    fn wec_standings_titles_combine_class_and_kind() {
+    fn wec_standings_carry_class_in_group() {
         let json = r#"[
           {"code":"hypercar-drivers","name":"...","classLabel":"Hypercar","kind":"drivers",
            "rows":[{"position":1,"name":"Kamui Kobayashi · Mike Conway","country":null,"points":75}]},
           {"code":"lmgt3-teams","name":"...","classLabel":"LMGT3","kind":"teams","rows":[]}
         ]"#;
         let ts: Vec<WecStandTable> = serde_json::from_str(json).unwrap();
-        let title = wec_table_title(&ts[0]);
-        assert_eq!(title, "Hypercar · Drivers");
+        // The class goes to `group` and the kind to `title`, so the view can keep
+        // each class on its own row.
+        assert_eq!(ts[0].class_label, "Hypercar");
+        assert_eq!(kind_label(&ts[0].kind), "Drivers");
+        assert_eq!(kind_label(&ts[1].kind), "Teams");
         // The drivers crew has a null country → no flag, no panic.
         let rows = stand_rows(&ts[0].rows);
         assert_eq!(rows[0].flag, "");
