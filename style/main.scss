@@ -2108,18 +2108,24 @@ a.sw-link {
   white-space: nowrap;
 }
 
-// Long names (e.g. WEC crews "A · B · C") truncate; on hover the name pops out to
-// its full width over the columns to its right (the points) as a little boxed
-// popover — a border + shadow so the overflow reads as deliberate. Scoped to the
-// single-name tables (WRC/WEC + F1 constructors), not the F1 drivers table (which
-// has an extra constructor column). The default cursor (not the text I-beam)
-// reinforces that it's a hover affordance.
-.f1-standings-con .f1-standing-name {
+// Cells that truncate long names/teams in the motorsport standings AND results
+// (WEC crews "A · B · C", driver/constructor names): on hover the full text pops
+// out to its full width over the columns to its right (points, time) as a little
+// boxed popover — a border + shadow over an opaque background so the overflow
+// reads as deliberate. The default cursor (not the text I-beam) reinforces that
+// it's a hover affordance.
+.f1-standing-name,
+.f1-standing-con,
+.f1-driver,
+.f1-con {
   cursor: default;
 }
 
 @media (hover: hover) {
-  .f1-standings-con .f1-standing-name:hover {
+  .f1-standing-name:hover,
+  .f1-standing-con:hover,
+  .f1-driver:hover,
+  .f1-con:hover {
     overflow: visible;
     width: max-content;
     // Wide enough to hold the full name inside the box (the longest WEC crews are
