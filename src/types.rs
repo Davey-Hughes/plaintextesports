@@ -289,6 +289,12 @@ pub struct MatchView {
     /// Link to the event page: official site when known, else a Liquipedia search.
     pub event_url: String,
     pub begin_at_ms: i64,
+    /// When set, the whole row links here instead of its own `/match` page. The
+    /// WRC schedule's collapsed "Day N" rows use it to jump to that day on the
+    /// rally's event page, where the day's individual stages are listed.
+    /// `#[serde(default)]` so older cached payloads still load.
+    #[serde(default)]
+    pub row_href: Option<String>,
 }
 
 impl MatchView {
