@@ -2,8 +2,8 @@
 //! on the client the `#[server]` macro replaces them with a network call.
 
 use crate::types::{
-    EventInfo, F1Result, F1Standings, MatchDetail, MatchView, ReminderReq, ScheduleView, SiteInfo,
-    SubscribeReq,
+    EventInfo, F1Result, F1Standings, MatchDetail, MatchView, MotorStandings, ReminderReq,
+    ScheduleView, SiteInfo, SubscribeReq,
 };
 #[cfg(feature = "ssr")]
 use crate::types::Game;
@@ -245,6 +245,22 @@ pub async fn get_f1_standings(season: i64, round: i64) -> Result<F1Standings, Se
     {
         let _ = (season, round);
         Ok(F1Standings::default())
+    }
+}
+
+/// The WRC or WEC championship standings (by series league name), for the home
+/// page and event page. Refreshed by the poller and served from its cache — never
+/// fetched per request, to stay inside the free tier's daily quota.
+#[server(GetMotorStandings, "/api")]
+pub async fn get_motor_standings(league: String) -> Result<MotorStandings, ServerFnError> {
+    #[cfg(feature = "ssr")]
+    {
+        Ok(crate::cache::motor_standings(&league))
+    }
+    #[cfg(not(feature = "ssr"))]
+    {
+        let _ = league;
+        Ok(MotorStandings::default())
     }
 }
 
