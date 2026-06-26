@@ -1242,15 +1242,25 @@ fn EventPage() -> impl IntoView {
                                     </p>
                                 }
                             });
-                        // A motorsport series' official live-stream link (no
-                        // per-event broadcast data exists, so it's per-series).
-                        let watch = motorsport_watch(&motorsport_league(&s)).map(|(name, url)| {
+                        // A motorsport series' official live-stream link(s) (no
+                        // per-event broadcast data exists, so it's per-series; F1
+                        // lists both its US and rest-of-world services).
+                        let watch_opts = motorsport_watch(&motorsport_league(&s));
+                        let watch = (!watch_opts.is_empty()).then(|| {
+                            let links = watch_opts
+                                .iter()
+                                .enumerate()
+                                .map(|(i, (name, url))| {
+                                    view! {
+                                        {(i > 0).then(|| view! { <span class="sep">" · "</span> })}
+                                        <a href=*url target="_blank" rel="noreferrer">
+                                            {format!("{name} ↗")}
+                                        </a>
+                                    }
+                                })
+                                .collect_view();
                             view! {
-                                <p class="event-link event-watch">
-                                    <a href=url target="_blank" rel="noreferrer">
-                                        {format!("watch · {name} ↗")}
-                                    </a>
-                                </p>
+                                <p class="event-link event-watch">"watch · "{links}</p>
                             }
                         });
                         // Each event match's (day, time), so the bracket can date its
@@ -3107,17 +3117,22 @@ fn motorsport_league(s: &ScheduleView) -> String {
         .unwrap_or_default()
 }
 
-/// The official live-streaming service for a motorsport series — `(name, url)` —
-/// shown as a "watch" link on its event page. There's no per-event broadcast data
-/// anywhere, so these are the stable per-series services (WEC's is free on
-/// YouTube; F1 TV / Rally.TV are paid, linked for convenience). `None` otherwise.
-fn motorsport_watch(league: &str) -> Option<(&'static str, &'static str)> {
-    Some(match league {
-        "F1" => ("F1 TV", "https://f1tv.formula1.com/"),
-        "WRC" => ("Rally.TV", "https://www.rally.tv/en"),
-        "WEC" => ("FIA WEC on YouTube", "https://www.youtube.com/@FIAWEC/streams"),
-        _ => return None,
-    })
+/// The official live-streaming service(s) for a motorsport series — `(name, url)`
+/// each — shown as "watch" links on its event page. There's no per-event broadcast
+/// data anywhere, so these are the stable per-series services (WEC's is free on
+/// YouTube; the others paid, linked for convenience). Empty for non-motorsport.
+fn motorsport_watch(league: &str) -> &'static [(&'static str, &'static str)] {
+    match league {
+        // From 2026 Apple TV is F1's exclusive US broadcaster (so F1 TV is blacked
+        // out in the US); F1 TV still covers the rest of the world.
+        "F1" => &[
+            ("Apple TV (US)", "https://tv.apple.com/us/channel/formula-1/tvs.sbd.241000"),
+            ("F1 TV (outside US)", "https://f1tv.formula1.com/"),
+        ],
+        "WRC" => &[("Rally.TV", "https://www.rally.tv/en")],
+        "WEC" => &[("FIA WEC on YouTube", "https://www.youtube.com/@FIAWEC/streams")],
+        _ => &[],
+    }
 }
 
 /// Whether an event still has something to be notified about — any upcoming or
