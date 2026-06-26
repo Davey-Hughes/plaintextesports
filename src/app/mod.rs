@@ -4163,25 +4163,18 @@ fn render_schedule(
                     // e.g. "IEM Katowice"); the subscribe key stays the short
                     // league name, while the full name keys the event link.
                     let series = lg.series_name.clone();
-                    // A single-league traditional sport (MLB/NHL/NBA/NFL) is 1:1 with
-                    // its sport, so its sport tab's ★ already covers every match — a
-                    // league ★ here would be a duplicate (same notifications, same
-                    // scope). Esports and the multi-league sports (soccer, motorsport)
-                    // keep it: there the league is a real sub-set of the sport.
-                    let dup_league_star = lg
-                        .matches
-                        .first()
-                        .is_some_and(|m| m.sport.traditional() && !m.sport.has_sub_leagues());
                     let head = (!event_mode).then(move || {
                         let display = full_event_name(&league_name, &series);
                         // The full edition name keys its event page, so distinct
                         // editions get distinct URLs.
                         let event_href = format!("/event/{}", enc_segment(&display));
+                        // The ★ subscribes to the whole competition (`league|<name>`).
+                        // For a single-edition league like MLB/NHL/NBA/NFL this is the
+                        // same match set — and the same key — as its filter chip's ★,
+                        // so the two stay in lock-step; for F1/WEC it spans every round.
                         view! {
                             <div class="league-head">
-                                {(!dup_league_star).then(|| {
-                                    view! { <SubscribeStar kind="league" value=league_name.clone() /> }
-                                })}
+                                <SubscribeStar kind="league" value=league_name.clone() />
                                 <h3 class="league-title">
                                     <A href=event_href>{display}</A>
                                 </h3>

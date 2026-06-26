@@ -1197,7 +1197,7 @@ a {
   // name) and size it to the heading. The glyph sits low in its box, so a small
   // lift centres it visually on the matchup line.
   .star {
-    transform: translateY(-2px);
+    transform: translateY(-3px);
     font-size: 19px;
   }
 }
@@ -1250,6 +1250,14 @@ a {
 
   .detail-title {
     margin: 0;
+  }
+
+  // The ★ subscribes to the whole team — a title-level control beside the name, so
+  // size it to the heading. The glyph sits low in its box, so a small lift centres
+  // it on the team name (same trick as the match-title ★).
+  .sub-star {
+    font-size: 19px;
+    transform: translateY(-3px);
   }
 }
 
