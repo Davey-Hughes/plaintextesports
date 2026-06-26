@@ -136,7 +136,7 @@ pub fn team_standings_for_match(
         Game::Nba => tables_with_team(&read_tables(&NBA_STANDINGS), a_name, b_name),
         Game::Nfl => tables_with_team(&read_tables(&NFL_STANDINGS), a_name, b_name),
         Game::Soccer => tables_with_team(&soccer_tables(league), a_name, b_name),
-        Game::Cs2 | Game::Lol | Game::F1 => Vec::new(),
+        Game::Cs2 | Game::Lol | Game::Motorsport => Vec::new(),
     }
 }
 
@@ -532,7 +532,7 @@ pub fn spawn_poller() {
                     (Game::Nba, nba_raw.map_err(Into::into)),
                     (Game::Nfl, nfl_raw.map_err(Into::into)),
                     (Game::Soccer, soccer_res),
-                    (Game::F1, f1_raw.map_err(Into::into)),
+                    (Game::Motorsport, f1_raw.map_err(Into::into)),
                 ],
                 store.as_mut(),
                 cfg.archive_cutoff(now).timestamp_millis(),
@@ -1153,7 +1153,12 @@ fn traditional_event_url(game: Game, league: &str) -> String {
         Game::Nhl => "https://www.nhl.com/scores",
         Game::Nba => "https://www.nba.com/games",
         Game::Nfl => "https://www.nfl.com/scores",
-        Game::F1 => "https://www.formula1.com/en/racing.html",
+        // The series' official site, by league (F1 / WRC / WEC).
+        Game::Motorsport => match league {
+            "WRC" => "https://www.wrc.com/",
+            "WEC" => "https://www.fiawec.com/",
+            _ => "https://www.formula1.com/en/racing.html",
+        },
         Game::Soccer => match league {
             "Premier League" => "https://www.premierleague.com/fixtures",
             "World Cup" => "https://www.fifa.com/en/tournaments/mens/worldcup/canadamexicousa2026",
@@ -1235,7 +1240,7 @@ fn group_days(views: Vec<MatchView>, tz: &Tz) -> Vec<DayGroup> {
             Some(Game::Nba) => 4,
             Some(Game::Nfl) => 5,
             Some(Game::Soccer) => 6,
-            Some(Game::F1) => 7,
+            Some(Game::Motorsport) => 7,
             None => 8,
         });
     }
@@ -1340,7 +1345,7 @@ fn next_gp_sessions(
         .matches
         .iter()
         .filter(|m| {
-            m.game == Game::F1 && m.status != MatchStatus::Canceled && m.begin_at >= now
+            m.game == Game::Motorsport && m.status != MatchStatus::Canceled && m.begin_at >= now
         })
         .min_by_key(|m| m.begin_at)
         .map(|m| m.serie_name.clone());
@@ -1350,7 +1355,7 @@ fn next_gp_sessions(
     snap.matches
         .iter()
         .filter(|m| {
-            m.game == Game::F1 && m.status != MatchStatus::Canceled && m.serie_name == next_gp
+            m.game == Game::Motorsport && m.status != MatchStatus::Canceled && m.serie_name == next_gp
         })
         .map(|m| to_view(m, tz, now, hour24))
         .collect()
@@ -2888,7 +2893,7 @@ mod tests {
 
     #[test]
     fn team_standings_for_match_is_empty_for_esports_and_f1() {
-        for g in [Game::Cs2, Game::Lol, Game::F1] {
+        for g in [Game::Cs2, Game::Lol, Game::Motorsport] {
             assert!(
                 team_standings_for_match(g, "X", "a", "a", "b", "b").is_empty(),
                 "{g:?}"

@@ -2962,7 +2962,7 @@ fn f1_season_round(s: &ScheduleView) -> Option<(i64, i64)> {
         .iter()
         .flat_map(|d| &d.leagues)
         .flat_map(|lg| &lg.matches)
-        .find(|m| m.game == Game::F1)?
+        .find(|m| m.game == Game::Motorsport)?
         .id;
     Some((id / 100_000, (id / 100) % 1000))
 }

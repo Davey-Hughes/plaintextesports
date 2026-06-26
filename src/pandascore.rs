@@ -410,7 +410,7 @@ const fn game_path(game: Game) -> &'static str {
         Game::Nba => "nba",
         Game::Nfl => "nfl",
         Game::Soccer => "soccer",
-        Game::F1 => "f1",
+        Game::Motorsport => "motorsport",
     }
 }
 
