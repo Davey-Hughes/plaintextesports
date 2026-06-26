@@ -391,6 +391,9 @@ a {
 
   .sub-star {
     padding: 0.2rem 0.5rem 0.2rem 0.15rem;
+    // The ★/☆ glyph's ink sits low in its line-box, so flex-centring still reads
+    // a touch low; nudge it up to optically centre the star with the label text.
+    transform: translateY(-0.1em);
   }
 
   // Keep the ★ legible against the inverted fill when the tab is active.
@@ -427,6 +430,37 @@ a {
   &.active {
     background: var(--lc, var(--fg));
     border-color: var(--lc, var(--fg));
+    color: var(--bg);
+  }
+}
+
+// A chip that embeds a subscribe ★ (mirrors .tab-with-star): the label clicks to
+// filter the schedule, the ★ clicks to (un)subscribe to the whole league/chip.
+// The wrapper carries the border + active fill; padding shifts onto the inner
+// controls so each half is its own click target.
+.chip-with-star {
+  display: inline-flex;
+  align-items: center;
+  padding: 0;
+
+  .chip-label {
+    background: none;
+    border: none;
+    color: inherit;
+    font: inherit;
+    padding: 0.1rem 0.15rem 0.1rem 0.55rem;
+    cursor: pointer;
+  }
+
+  .sub-star {
+    padding: 0.1rem 0.45rem 0.1rem 0.1rem;
+    font-size: 12px;
+    // Optically centre the star with the label text (see .tab-with-star above).
+    transform: translateY(-0.1em);
+  }
+
+  // Keep the ★ legible against the inverted fill when the chip is active.
+  &.active .sub-star {
     color: var(--bg);
   }
 }

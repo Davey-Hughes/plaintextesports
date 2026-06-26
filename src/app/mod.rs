@@ -3616,32 +3616,39 @@ fn FilterTabs(
 
 #[component]
 fn LeagueChips(leagues: Vec<String>, selected: RwSignal<HashSet<String>>) -> impl IntoView {
-    // Multi-select: no active chip means all events. Click an event to include it;
-    // click again to drop it.
+    // Multi-select: no active chip means all events. Click a chip's label to
+    // include its league in the filter; click again to drop it. The embedded ★
+    // subscribes to the whole chip via the `league` scope. For a single-edition
+    // league like MLB that's the same match set as its "MLB" event, so the chip
+    // ★ and the home league-header ★ share one key (`league|MLB`) and stay in
+    // lock-step; for F1/WEC it spans every round, distinct from one GP's event.
     let chips = leagues
         .into_iter()
         .map(|name| {
             let lc = league_color_class(&name);
             let sel_name = name.clone();
             let click_name = name.clone();
+            let sub_value = name.clone();
             let is_active = move || selected.with(|s| s.contains(&sel_name));
             view! {
-                <button
-                    class=format!("chip {lc}")
-                    class:active=is_active
-                    on:click=move |_| {
-                        selected
-                            .update(|s| {
-                                if !s.remove(&click_name) {
-                                    s.insert(click_name.clone());
-                                }
-                            });
-                        #[cfg(feature = "hydrate")]
-                        save_str_set(keys::LEAGUES, &selected.get_untracked());
-                    }
-                >
-                    {name}
-                </button>
+                <span class=format!("chip chip-with-star {lc}") class:active=is_active>
+                    <button
+                        class="chip-label"
+                        on:click=move |_| {
+                            selected
+                                .update(|s| {
+                                    if !s.remove(&click_name) {
+                                        s.insert(click_name.clone());
+                                    }
+                                });
+                            #[cfg(feature = "hydrate")]
+                            save_str_set(keys::LEAGUES, &selected.get_untracked());
+                        }
+                    >
+                        {name}
+                    </button>
+                    <SubscribeStar kind="league" value=sub_value />
+                </span>
             }
         })
         .collect_view();
