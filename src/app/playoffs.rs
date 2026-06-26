@@ -374,10 +374,14 @@ pub(crate) fn StandingsTable(
                 } else {
                     ("—".to_string(), "—".to_string(), "—".to_string())
                 };
+                // The full name rides along in `data-team` for the hover popover.
+                let team_full = team.clone();
                 view! {
                     <tr>
                         <td class="st-rank">{r.rank}</td>
-                        <td class="st-team">{team}</td>
+                        <td class="st-team" data-team=team_full>
+                            <span class="st-team-name">{team}</span>
+                        </td>
                         <td class="st-wl">{wl}</td>
                         <td class="st-diff">{maps}</td>
                     </tr>

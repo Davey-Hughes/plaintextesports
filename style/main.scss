@@ -2231,6 +2231,63 @@ a.sw-link {
     width: 100%;
   }
 
+  // Truncate long team names and, on hover, pop the full name out over the
+  // columns to its right as a little boxed popover — the same affordance the
+  // motorsport/F1 standings use (see `.f1-standing-name`), so every standings
+  // table behaves the same even though most of these team names are short
+  // enough to never actually truncate. The full name rides along in the cell's
+  // `data-team` attribute and is drawn by the `::after` popover.
+  tbody .st-team {
+    position: relative;
+    // Let the name truncate instead of stretching the table past its max-width:
+    // in an auto-layout table a `nowrap` cell sets the column's min width to the
+    // full text, so without this the table just grows. Capping max-width hands
+    // the column the leftover space (it keeps `width: 100%`) and lets the inner
+    // span ellipsize — the same "fill the track, then truncate" behaviour the
+    // grid-based motorsport standings get for free.
+    max-width: 0;
+  }
+
+  .st-team-name {
+    display: block;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    // Default cursor (not the text I-beam) reinforces that it's a hover
+    // affordance, matching the motorsport tables.
+    cursor: default;
+  }
+
+  @media (hover: hover) {
+    tbody .st-team::after {
+      content: attr(data-team);
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: max-content;
+      max-width: 24rem;
+      // Match the cell padding so the popover text overlays the cell text
+      // exactly instead of shifting it.
+      padding: 0.2rem 0.5rem;
+      white-space: nowrap;
+      z-index: 2;
+      background: var(--bg);
+      border-radius: 4px;
+      box-shadow: 0 0 0 1px var(--border), 0 2px 10px rgba(0, 0, 0, 0.4);
+      visibility: hidden;
+      pointer-events: none;
+    }
+
+    tbody .st-team:hover::after {
+      visibility: visible;
+    }
+  }
+
+  // While collapsed the cells are muted "—" placeholders — nothing to reveal.
+  &.placeholder tbody .st-team::after {
+    content: none;
+  }
+
   tbody tr:hover {
     background: var(--card-bg);
   }
