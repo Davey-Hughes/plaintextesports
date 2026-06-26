@@ -266,6 +266,7 @@ pub fn upsert_and_prune(
     matches: &[NormalizedMatch],
     fetched_at_ms: i64,
     cutoff_ms: i64,
+    replace_leagues: &[(&str, Vec<i64>)],
 ) -> rusqlite::Result<()> {
     let tx = conn.transaction()?;
     {
@@ -318,6 +319,24 @@ pub fn upsert_and_prune(
                 m.team_a.abbrev,
                 m.team_b.abbrev,
             ])?;
+        }
+        // Fully-enumerated feeds (the WRC season feed returns every rally each
+        // poll) are league-scoped replaced: drop any row of the league whose id
+        // isn't in this poll's set, so a placeholder superseded by its stages — or
+        // stale stages of a rally no longer detailed — doesn't linger the way a
+        // dropped-from-window esports match is deliberately retained. Skipped when
+        // the league brought back nothing this poll (e.g. its fetch errored), so a
+        // transient failure never wipes the league.
+        for (league, keep) in replace_leagues {
+            if keep.is_empty() {
+                continue;
+            }
+            let holes = std::iter::repeat_n("?", keep.len()).collect::<Vec<_>>().join(",");
+            let sql = format!("DELETE FROM matches WHERE league = ?1 AND id NOT IN ({holes})");
+            let mut vals: Vec<rusqlite::types::Value> = Vec::with_capacity(keep.len() + 1);
+            vals.push(rusqlite::types::Value::Text((*league).to_string()));
+            vals.extend(keep.iter().map(|&id| rusqlite::types::Value::Integer(id)));
+            tx.execute(&sql, rusqlite::params_from_iter(vals))?;
         }
         tx.execute(
             "DELETE FROM matches WHERE begin_at_ms < ?1",
@@ -644,7 +663,7 @@ mod tests {
         let old = sample(2, now - chrono::Duration::days(10));
         let cutoff = (now - chrono::Duration::days(2)).timestamp_millis();
 
-        upsert_and_prune(&mut conn, &[recent, old], now.timestamp_millis(), cutoff).unwrap();
+        upsert_and_prune(&mut conn, &[recent, old], now.timestamp_millis(), cutoff, &[]).unwrap();
 
         // The old match is pruned; the recent one survives and round-trips.
         let all = load_all(&conn).unwrap();
@@ -663,11 +682,46 @@ mod tests {
         let mut updated = sample(1, now);
         updated.status = MatchStatus::Finished;
         updated.team_a.score = Some(2);
-        upsert_and_prune(&mut conn, &[updated], now.timestamp_millis(), cutoff).unwrap();
+        upsert_and_prune(&mut conn, &[updated], now.timestamp_millis(), cutoff, &[]).unwrap();
         let all = load_all(&conn).unwrap();
         assert_eq!(all.len(), 1);
         assert_eq!(all[0].status, MatchStatus::Finished);
         assert_eq!(all[0].team_a.score, Some(2));
+    }
+
+    #[test]
+    fn league_replace_drops_superseded_rows_but_spares_other_leagues() {
+        let mut conn = open(":memory:").unwrap();
+        let now = Utc::now();
+        let cutoff = (now - chrono::Duration::days(30)).timestamp_millis();
+        let ms = now.timestamp_millis();
+        let motor = |id: i64, league: &str| {
+            let mut m = sample(id, now);
+            m.sport = Sport::Motorsport;
+            m.league = league.into();
+            m
+        };
+
+        // First poll: a WRC rally placeholder, plus an F1 row under the same sport.
+        upsert_and_prune(&mut conn, &[motor(100, "WRC"), motor(200, "F1")], ms, cutoff, &[]).unwrap();
+        assert_eq!(load_all(&conn).unwrap().len(), 2);
+
+        // Next poll: the rally is expanded into stage rows with new ids, so the WRC
+        // set no longer contains the placeholder. The league-scoped replace drops it.
+        upsert_and_prune(
+            &mut conn,
+            &[motor(101, "WRC"), motor(102, "WRC"), motor(200, "F1")],
+            ms,
+            cutoff,
+            &[("WRC", vec![101, 102])],
+        )
+        .unwrap();
+
+        let ids: std::collections::HashSet<i64> =
+            load_all(&conn).unwrap().iter().map(|m| m.id).collect();
+        // Superseded WRC placeholder (100) gone; its stages and the F1 row (a league
+        // not being replaced) survive.
+        assert_eq!(ids, std::collections::HashSet::from([101, 102, 200]));
     }
 
     #[test]

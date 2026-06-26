@@ -120,6 +120,35 @@ fn wec_venue_tz(country_code: &str) -> Option<&'static str> {
     })
 }
 
+/// IANA timezone for a WRC rally's host country, mirroring [`wec_venue_tz`]. The
+/// calendar runs one venue per country, so the alpha-2 code fixes the zone — with
+/// one catch: Spain's round is the Rally Islas Canarias, an hour behind the
+/// mainland, so "ES" pins Atlantic/Canary, not Europe/Madrid. `None` for an
+/// unmapped country → the stage shows no venue-local clock. Update with the
+/// calendar.
+fn wrc_venue_tz(country_code: &str) -> Option<&'static str> {
+    Some(match country_code.to_ascii_uppercase().as_str() {
+        "MC" => "Europe/Monaco",
+        "SE" => "Europe/Stockholm",
+        "KE" => "Africa/Nairobi",
+        "HR" => "Europe/Zagreb",
+        // Rally Islas Canarias runs on the Canary Islands (WET), an hour behind
+        // mainland Spain — pin the island zone, not Europe/Madrid.
+        "ES" => "Atlantic/Canary",
+        "PT" => "Europe/Lisbon",
+        // The feed reports Japan as alpha-3 "JPN", not "JP" — accept both.
+        "JP" | "JPN" => "Asia/Tokyo",
+        "GR" => "Europe/Athens",
+        "EE" => "Europe/Tallinn",
+        "FI" => "Europe/Helsinki",
+        "PY" => "America/Asuncion",
+        "CL" => "America/Santiago",
+        "IT" => "Europe/Rome",
+        "SA" => "Asia/Riyadh",
+        _ => return None,
+    })
+}
+
 impl Location {
     /// "City, Country" (or whichever is present).
     fn label(&self) -> String {
@@ -207,16 +236,143 @@ fn rally_to_match(r: &Rally, now: DateTime<Utc>) -> Option<NormalizedMatch> {
     ))
 }
 
-/// The WRC season calendar as single-entity rows (one per rally). One request.
+// ----- WRC rally detail: /v1/wrc/rallies/{id} (the per-stage timetable) -------
+
+/// The detail endpoint returns the rally object directly (no `data` wrapper),
+/// carrying a `schedule` the list endpoint omits. We only need the timetable; the
+/// rally's name/location come from the matching list entry.
+#[derive(Deserialize, Default)]
+struct RallyDetail {
+    #[serde(default)]
+    schedule: RallySchedule,
+}
+
+/// A rally's timetable: an optional shakedown, the numbered special stages, and
+/// the power stage broken out on its own (the points-paying TV finale).
+#[derive(Deserialize, Default)]
+struct RallySchedule {
+    #[serde(default)]
+    shakedown: Vec<Stage>,
+    #[serde(rename = "specialStages", default)]
+    special_stages: Vec<Stage>,
+    #[serde(rename = "powerStage", default)]
+    power_stage: Option<Stage>,
+}
+
+#[derive(Deserialize)]
+struct Stage {
+    id: String,
+    #[serde(rename = "stageCode", default)]
+    stage_code: String,
+    #[serde(default)]
+    name: String,
+    #[serde(rename = "startTime", default)]
+    start_time: Option<String>,
+    #[serde(default)]
+    status: String,
+}
+
+/// The row label for a stage: its published name ("SS4 Stiri 1", "SS17 … Power
+/// Stage", "Shakedown"), falling back to the bare stage code.
+fn stage_label(s: &Stage) -> String {
+    let name = s.name.trim();
+    if !name.is_empty() {
+        name.to_string()
+    } else {
+        s.stage_code.clone()
+    }
+}
+
+/// One single-entity row per timed stage of a rally, each at its real UTC start
+/// with the host country's venue-local time available (like a WEC session). A
+/// stage with no start time is skipped. The id hashes the stage's own UUID, so it
+/// never collides with the rally's date-only placeholder (keyed off the rally id).
+fn rally_stage_matches(r: &Rally, detail: &RallyDetail, now: DateTime<Utc>) -> Vec<NormalizedMatch> {
+    let venue_tz = wrc_venue_tz(&r.location.country.two_code);
+    let sch = &detail.schedule;
+    sch.shakedown
+        .iter()
+        .chain(sch.special_stages.iter())
+        .chain(sch.power_stage.iter())
+        .filter_map(|s| {
+            let begin = s.start_time.as_deref().and_then(parse_dt)?;
+            // Stages are short (a closed road, run once); give a vague status a
+            // one-hour live window before it reads as finished.
+            let status = status_of(&s.status, begin, begin + Duration::hours(1), now);
+            let mut m = motorsport_match(
+                WRC_ID_BASE + stable_hash(&s.id),
+                "WRC",
+                &stage_label(s),
+                &r.name,
+                begin.year(),
+                begin,
+                status,
+                &r.location,
+            );
+            m.venue_tz = venue_tz.map(str::to_string);
+            Some(m)
+        })
+        .collect()
+}
+
+/// The rally whose stage timetable to fetch this cycle: the live one, else the
+/// soonest upcoming whose start is within the window where the detailed schedule
+/// is typically published (~2 weeks out). `None` off-week, so no detail request is
+/// spent. Picking just one keeps WRC at one extra request per cycle.
+fn active_rally(rallies: &[Rally], now: DateTime<Utc>) -> Option<&Rally> {
+    let publish_lead = Duration::days(14);
+    let mut soonest: Option<(&Rally, DateTime<Utc>)> = None;
+    for r in rallies {
+        let Some(begin) = parse_date(&r.date_start).map(|d| d + Duration::hours(12)) else {
+            continue;
+        };
+        let end = parse_date(&r.date_end).unwrap_or(begin) + Duration::days(1);
+        match status_of(&r.status, begin, end, now) {
+            MatchStatus::Live => return Some(r),
+            MatchStatus::Upcoming
+                if begin - now <= publish_lead && soonest.is_none_or(|(_, b)| begin < b) =>
+            {
+                soonest = Some((r, begin));
+            }
+            _ => {}
+        }
+    }
+    soonest.map(|(r, _)| r)
+}
+
+/// The WRC season as single-entity rows: one date-only placeholder per rally, with
+/// the current/imminent rally expanded into its real per-stage timetable in place
+/// of its placeholder. Returns the rows and the number of requests spent (1 for
+/// the calendar alone, 2 when an active rally's detail was also fetched), so the
+/// poller can keep its daily-quota accounting exact.
 pub async fn fetch_wrc(
     client: &reqwest::Client,
     key: &str,
     year: i32,
-) -> Result<Vec<NormalizedMatch>, reqwest::Error> {
+    now: DateTime<Utc>,
+) -> Result<(Vec<NormalizedMatch>, u64), reqwest::Error> {
     let url = format!("{BASE}/wrc/rallies?year={year}&limit=100");
     let resp: RalliesResp = get(client, key, &url).await?;
-    let now = Utc::now();
-    Ok(resp.data.iter().filter_map(|r| rally_to_match(r, now)).collect())
+    let mut rows: Vec<NormalizedMatch> =
+        resp.data.iter().filter_map(|r| rally_to_match(r, now)).collect();
+
+    // Spend a second request on the active rally's stage timetable, when there is
+    // one. Until its schedule is published the detail carries no timed stages, so
+    // we simply keep the placeholder.
+    let Some(active) = active_rally(&resp.data, now) else {
+        return Ok((rows, 1));
+    };
+    let detail_url = format!("{BASE}/wrc/rallies/{}", active.id);
+    let Ok(detail) = get::<RallyDetail>(client, key, &detail_url).await else {
+        return Ok((rows, 2));
+    };
+    let stages = rally_stage_matches(active, &detail, now);
+    if !stages.is_empty() {
+        let placeholder_id = WRC_ID_BASE + stable_hash(&active.id);
+        rows.retain(|m| m.id != placeholder_id);
+        rows.extend(stages);
+    }
+    Ok((rows, 2))
 }
 
 // ----- WEC: /v1/wec/events?year= --------------------------------------------
@@ -510,6 +666,94 @@ mod tests {
         assert_eq!(ms[1].status, MatchStatus::Finished);
         assert_ne!(mc.id, ms[1].id);
         assert!(mc.id >= WRC_ID_BASE && mc.id < WEC_ID_BASE);
+    }
+
+    #[test]
+    fn wrc_rally_detail_expands_each_stage_with_venue_time() {
+        // The rally's name/location come from the list entry; the detail adds the
+        // timetable (shakedown + numbered stages + the power stage broken out).
+        let r: Rally = serde_json::from_str(
+            r#"{"id":"r-gr","name":"EKO Acropolis Rally Greece","dateStart":"2026-06-25",
+                "dateEnd":"2026-06-28","status":"ongoing",
+                "location":{"name":"Loutraki","city":"Loutraki","country":{"name":"Greece","twoCode":"GR"}}}"#,
+        )
+        .unwrap();
+        let detail: RallyDetail = serde_json::from_str(
+            r#"{"schedule":{
+                 "shakedown":[],
+                 "specialStages":[
+                   {"id":"ss1","stageCode":"SS1","name":"SS1 EKO SSS","type":"special_stage",
+                    "status":"completed","startTime":"2026-06-25T16:02:00.000Z"},
+                   {"id":"ss2","stageCode":"SS2","name":"SS2 Bauxites","type":"special_stage",
+                    "status":"scheduled","startTime":"2026-06-26T05:45:00.000Z"}
+                 ],
+                 "powerStage":{"id":"ss17","stageCode":"SS17","name":"SS17 Loutraki 2 Wolf Power Stage",
+                   "type":"power_stage","status":"scheduled","startTime":"2026-06-28T11:12:00.000Z"}
+               }}"#,
+        )
+        .unwrap();
+        // Mid-rally: SS1 has run, SS2 is on, the power stage is days away.
+        let now = "2026-06-26T05:50:00Z".parse::<DateTime<Utc>>().unwrap();
+        let ms = rally_stage_matches(&r, &detail, now);
+        // One row per timed stage (2 special + the power stage), all WRC under the
+        // season-qualified series, each carrying Greece's tz for a venue-local clock.
+        assert_eq!(ms.len(), 3);
+        assert!(ms
+            .iter()
+            .all(|m| m.league == "WRC" && m.series_name == "EKO Acropolis Rally Greece 2026"));
+        assert!(ms.iter().all(|m| m.venue_tz.as_deref() == Some("Europe/Athens")));
+        let ss1 = ms.iter().find(|m| m.team_a.label == "SS1 EKO SSS").unwrap();
+        assert_eq!(ss1.begin_at.to_rfc3339(), "2026-06-25T16:02:00+00:00");
+        assert_eq!(ss1.status, MatchStatus::Finished);
+        // A vague "scheduled" status is read off the window — SS2 is in progress.
+        let ss2 = ms.iter().find(|m| m.team_a.label == "SS2 Bauxites").unwrap();
+        assert_eq!(ss2.status, MatchStatus::Live);
+        // The power stage rides in as its own row, labelled so the schedule can flag
+        // the day, and still upcoming.
+        let ps = ms.iter().find(|m| m.team_a.label.contains("Power Stage")).unwrap();
+        assert_eq!(ps.begin_at.to_rfc3339(), "2026-06-28T11:12:00+00:00");
+        assert_eq!(ps.status, MatchStatus::Upcoming);
+        // Stage ids hash the stage UUID, so none collides with the rally's date-only
+        // placeholder (keyed off the rally id) and all stay in the WRC id band.
+        let placeholder = WRC_ID_BASE + stable_hash("r-gr");
+        assert!(ms.iter().all(|m| m.id != placeholder));
+        assert!(ms.iter().all(|m| m.id >= WRC_ID_BASE && m.id < WEC_ID_BASE));
+    }
+
+    #[test]
+    fn active_rally_prefers_live_then_the_imminent_one() {
+        let resp: RalliesResp = serde_json::from_str(
+            r#"{"data":[
+              {"id":"past","name":"A","dateStart":"2026-05-01","dateEnd":"2026-05-04",
+               "status":"completed","location":{"country":{"twoCode":"FI"}}},
+              {"id":"live","name":"B","dateStart":"2026-06-25","dateEnd":"2026-06-28",
+               "status":"ongoing","location":{"country":{"twoCode":"GR"}}},
+              {"id":"soon","name":"C","dateStart":"2026-07-02","dateEnd":"2026-07-05",
+               "status":"scheduled","location":{"country":{"twoCode":"EE"}}},
+              {"id":"far","name":"D","dateStart":"2026-09-01","dateEnd":"2026-09-04",
+               "status":"scheduled","location":{"country":{"twoCode":"CL"}}}
+            ]}"#,
+        )
+        .unwrap();
+        let now = "2026-06-26T00:00:00Z".parse::<DateTime<Utc>>().unwrap();
+        // A live rally wins outright, even over an earlier-listed finished one.
+        assert_eq!(active_rally(&resp.data, now).unwrap().id, "live");
+        // With none live, the soonest within the ~2-week publish lead is taken; the
+        // far-off September rally is skipped, so no detail request is wasted on it.
+        assert_eq!(active_rally(&resp.data[2..], now).unwrap().id, "soon");
+        assert!(active_rally(&resp.data[3..], now).is_none());
+    }
+
+    #[test]
+    fn wrc_venue_tz_maps_calendar_hosts() {
+        assert_eq!(wrc_venue_tz("GR"), Some("Europe/Athens"));
+        assert_eq!(wrc_venue_tz("jp"), Some("Asia/Tokyo")); // case-insensitive alpha-2
+        assert_eq!(wrc_venue_tz("JPN"), Some("Asia/Tokyo")); // alpha-3, as the feed sends
+        // Spain's round runs on the Canary Islands, an hour behind the mainland.
+        assert_eq!(wrc_venue_tz("ES"), Some("Atlantic/Canary"));
+        // Off-calendar countries simply have no venue clock.
+        assert_eq!(wrc_venue_tz("US"), None);
+        assert_eq!(wrc_venue_tz(""), None);
     }
 
     #[test]
