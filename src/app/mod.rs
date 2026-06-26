@@ -190,8 +190,10 @@ pub fn App() -> impl IntoView {
     let earlier = RwSignal::new(0i64);
     let later = RwSignal::new(0i64);
     // Schedule filters (shared + persisted across navigation).
-    let games = RwSignal::new(HashSet::<String>::new());
-    let leagues = RwSignal::new(HashSet::<String>::new());
+    // Seed the filters from the URL at render (server + hydrate) so a filtered
+    // link paints already-filtered, with no flash of the full schedule.
+    let games = RwSignal::new(initial_games());
+    let leagues = RwSignal::new(initial_leagues());
     // Header data-freshness label + a manual-refresh trigger.
     let last_updated = RwSignal::new(None::<String>);
     let refresh_trigger = RwSignal::new(0u64);
@@ -390,13 +392,16 @@ fn FilterUrlSync() -> impl IntoView {
         Effect::new(move |_| {
             let q = query.get_untracked();
             let g_param = q.get("g").filter(|v| !v.is_empty());
-            match &g_param {
-                Some(v) => games.set(parse_set(v)),
-                None => games.set(load_str_set(keys::GAMES)),
-            }
-            match q.get("e").filter(|v| !v.is_empty()) {
-                Some(v) => leagues.set(parse_set(&v)),
-                None => leagues.set(load_str_set(keys::LEAGUES)),
+            let e_param = q.get("e").filter(|v| !v.is_empty());
+            // The URL filter is already applied at render (`initial_games`/
+            // `initial_leagues`). Only restore the saved (localStorage) filter when
+            // the URL carries NO filter at all; if it carries any, the URL is
+            // authoritative — so a shared/refreshed ?e=… link isn't polluted by a
+            // stale saved game filter, and nothing changes post-hydration (no flash
+            // and no hydration churn).
+            if g_param.is_none() && e_param.is_none() {
+                games.set(load_str_set(keys::GAMES));
+                leagues.set(load_str_set(keys::LEAGUES));
             }
             // Sport mode is already resolved at render (`initial_sport_mode`); re-
             // apply the URL's view here so an in-app navigation to a ?mode/?g link
@@ -2759,6 +2764,45 @@ fn initial_vapid() -> Option<String> {
 #[cfg(not(any(feature = "ssr", feature = "hydrate")))]
 fn initial_vapid() -> Option<String> {
     None
+}
+
+/// The game/league filter sets (`?g=`/`?e=`, comma-separated, percent-encoded) for
+/// this render — read from the request on the server and the location on hydrate,
+/// so the schedule is already filtered on the first paint instead of flashing the
+/// full schedule until the client applies the filter. Only the URL is read here
+/// (localStorage isn't available on the server); a saved-but-unlinked filter is
+/// still applied by `FilterUrlSync` after hydration.
+#[cfg(any(feature = "ssr", feature = "hydrate"))]
+fn parse_filter_param(query: &str, key: &str) -> HashSet<String> {
+    query_param(query, key)
+        .map(|v| v.split(',').filter(|p| !p.is_empty()).map(dec_segment).collect())
+        .unwrap_or_default()
+}
+
+#[cfg(feature = "ssr")]
+fn initial_filter(key: &str) -> HashSet<String> {
+    use_context::<http::request::Parts>()
+        .map(|parts| parse_filter_param(parts.uri.query().unwrap_or_default(), key))
+        .unwrap_or_default()
+}
+
+#[cfg(feature = "hydrate")]
+fn initial_filter(key: &str) -> HashSet<String> {
+    let search = web_sys::window().and_then(|w| w.location().search().ok()).unwrap_or_default();
+    parse_filter_param(search.trim_start_matches('?'), key)
+}
+
+#[cfg(not(any(feature = "ssr", feature = "hydrate")))]
+fn initial_filter(_key: &str) -> HashSet<String> {
+    HashSet::new()
+}
+
+fn initial_games() -> HashSet<String> {
+    initial_filter("g")
+}
+
+fn initial_leagues() -> HashSet<String> {
+    initial_filter("e")
 }
 
 #[cfg(feature = "hydrate")]
