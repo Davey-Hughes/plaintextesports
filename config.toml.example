@@ -5,6 +5,11 @@
 # serve demo data.
 pandascore_token = ""
 
+# Orange Cat Blacktop API key (https://ocblacktop.com/api) — adds WRC + WEC.
+# Free tier is 250 req/day; these series are polled conservatively (schedule
+# first), so it fits easily. Omit to skip WRC/WEC.
+ocblacktop_token = ""
+
 # Force demo/fixture data, ignoring the token + cache DB (dev/UI work).
 # demo = true
 

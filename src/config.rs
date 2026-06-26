@@ -14,6 +14,8 @@ use std::time::Duration;
 #[derive(Debug, Default, Deserialize)]
 struct FileConfig {
     pandascore_token: Option<String>,
+    /// Orange Cat Blacktop API key (WRC + WEC). `x-api-key` header.
+    ocblacktop_token: Option<String>,
     demo: Option<bool>,
     display_tz: Option<String>,
     upcoming_days: Option<i64>,
@@ -57,6 +59,7 @@ impl FileConfig {
             }
         };
         put("PANDASCORE_TOKEN", self.pandascore_token.clone());
+        put("OCBLACKTOP_TOKEN", self.ocblacktop_token.clone());
         put("DEMO", self.demo.map(|b| b.to_string()));
         put("DISPLAY_TZ", self.display_tz.clone());
         put("UPCOMING_DAYS", self.upcoming_days.map(|n| n.to_string()));
@@ -82,6 +85,10 @@ impl FileConfig {
 pub struct Config {
     /// PandaScore API token. `None` => serve demo fixture data.
     pub token: Option<String>,
+    /// Orange Cat Blacktop API key for WRC + WEC (free tier: 250 req/day). `None`
+    /// => those series are skipped. Polled conservatively (schedule-first), so the
+    /// daily quota comfortably covers two episodic series.
+    pub ocblacktop_token: Option<String>,
     /// Timezone for formatting times and grouping by day.
     pub tz: Tz,
     /// Poll interval when nothing is live or about to start. Schedules change
@@ -204,6 +211,10 @@ impl Config {
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty());
 
+        let ocblacktop_token = get("OCBLACKTOP_TOKEN")
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
+
         let tz = get("DISPLAY_TZ")
             .and_then(|s| s.parse::<Tz>().ok())
             .unwrap_or(chrono_tz::America::Los_Angeles);
@@ -257,6 +268,7 @@ impl Config {
 
         Self {
             token,
+            ocblacktop_token,
             tz,
             idle_poll,
             active_poll,
@@ -294,6 +306,7 @@ mod tests {
     fn defaults_when_unset() {
         let c = cfg(&[]);
         assert!(c.token.is_none());
+        assert!(c.ocblacktop_token.is_none());
         assert_eq!(c.tz, chrono_tz::America::Los_Angeles);
         assert_eq!(c.idle_poll.as_secs(), 1200);
         assert_eq!(c.active_poll.as_secs(), 60);
@@ -357,11 +370,13 @@ mod tests {
     fn parses_values_and_trims_token() {
         let c = cfg(&[
             ("PANDASCORE_TOKEN", "  abc  "),
+            ("OCBLACKTOP_TOKEN", "  ocb-key  "),
             ("DISPLAY_TZ", "Europe/London"),
             ("POLL_ACTIVE_SECS", "120"),
             ("DB_PATH", "/tmp/x.db"),
         ]);
         assert_eq!(c.token.as_deref(), Some("abc"));
+        assert_eq!(c.ocblacktop_token.as_deref(), Some("ocb-key"));
         assert_eq!(c.tz, chrono_tz::Europe::London);
         assert_eq!(c.active_poll.as_secs(), 120);
         assert_eq!(c.db_path, "/tmp/x.db");

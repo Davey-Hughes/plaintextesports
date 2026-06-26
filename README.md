@@ -78,6 +78,7 @@ container `-e` flags.
 | `config.toml` key | env override | Default | Purpose |
 |---|---|---|---|
 | `pandascore_token` | `PANDASCORE_TOKEN` | _(none)_ | API token; unset = demo data |
+| `ocblacktop_token` | `OCBLACKTOP_TOKEN` | _(none)_ | [ocblacktop.com](https://ocblacktop.com/api) key for WRC + WEC; unset = those series skipped |
 | `demo` | `DEMO` | `false` | `true` forces fixture data even with a token/DB |
 | `display_tz` | `DISPLAY_TZ` | `America/Los_Angeles` | Fallback tz (viewers' own is auto-detected) |
 | `idle_poll_secs` | `POLL_INTERVAL_SECS` | `1200` | Idle poll interval (min 60) |
