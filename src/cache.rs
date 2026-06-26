@@ -1396,12 +1396,13 @@ pub fn homepage_view(game_filter: &str, tz_name: &str, hour24: bool) -> Schedule
 
     let snap = SNAPSHOT.read().unwrap_or_else(PoisonError::into_inner);
     let mut all = matches_in_window(&snap, traditional, game, start, end, &tz, now, hour24);
-    // F1 races are weekly, so the short daily window catches only the first
-    // session(s). Always surface the next Grand Prix's whole weekend (MLB stays
-    // compact). The client sport-tabs still filter it down if F1 isn't selected.
+    // Motorsport is episodic — events are days/weeks apart and span several days,
+    // so the short daily window misses them. Always surface each series' (F1/WRC/
+    // WEC) current-or-next event in full (MLB etc. stay compact). The client
+    // sport-tabs/chips still filter it down if that series isn't selected.
     if traditional {
         let have: std::collections::HashSet<i64> = all.iter().map(|m| m.id).collect();
-        for mv in next_gp_sessions(&snap, now, &tz, hour24) {
+        for mv in next_motorsport_events(&snap, now, &tz, hour24) {
             if !have.contains(&mv.id) {
                 all.push(mv);
             }
@@ -1424,28 +1425,40 @@ pub fn homepage_view(game_filter: &str, tz_name: &str, hour24: bool) -> Schedule
 
 /// Every session of the next upcoming Grand Prix (its whole weekend) as views.
 /// Empty when no F1 session is upcoming (off-season).
-fn next_gp_sessions(
+fn next_motorsport_events(
     snap: &Snapshot,
     now: DateTime<Utc>,
     tz: &Tz,
     hour24: bool,
 ) -> Vec<MatchView> {
-    let next_gp = snap
+    // Motorsport series are episodic — often more than a week between events, and
+    // a single event (an F1 weekend, a rally, an endurance race) can run several
+    // days. So surface, per series (F1/WRC/WEC, by league), the whole of its
+    // soonest not-yet-finished event, even when it's beyond the short traditional
+    // forward window. Without this an episodic series shows nothing for days.
+    let leagues: std::collections::BTreeSet<&str> = snap
         .matches
         .iter()
-        .filter(|m| {
-            m.game == Game::Motorsport && m.status != MatchStatus::Canceled && m.begin_at >= now
+        .filter(|m| m.game == Game::Motorsport)
+        .map(|m| m.league.as_str())
+        .collect();
+    let series: Vec<String> = leagues
+        .into_iter()
+        .filter_map(|lg| {
+            snap.matches
+                .iter()
+                .filter(|m| {
+                    m.game == Game::Motorsport
+                        && m.league == lg
+                        && matches!(m.status, MatchStatus::Live | MatchStatus::Upcoming)
+                })
+                .min_by_key(|m| m.begin_at)
+                .map(|m| m.serie_name.clone())
         })
-        .min_by_key(|m| m.begin_at)
-        .map(|m| m.serie_name.clone());
-    let Some(next_gp) = next_gp else {
-        return Vec::new();
-    };
+        .collect();
     snap.matches
         .iter()
-        .filter(|m| {
-            m.game == Game::Motorsport && m.status != MatchStatus::Canceled && m.serie_name == next_gp
-        })
+        .filter(|m| m.game == Game::Motorsport && series.contains(&m.serie_name))
         .map(|m| to_view(m, tz, now, hour24))
         .collect()
 }
