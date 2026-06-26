@@ -1438,7 +1438,9 @@ fn collapse_wrc_days(views: Vec<MatchView>, tz: &Tz, snap: &Snapshot) -> Vec<Mat
         // where its stages are listed individually — the schedule can't show them
         // itself without undoing the per-day condensing the day grouping relies on.
         let event = full_event_name(&rep.league, &series);
-        rep.row_href = Some(format!("/event/{}#day-{}", pct_encode(&event), day));
+        // The event route is sport-scoped (`/event/{slug}/{name}`); WRC is Motorsport.
+        rep.row_href =
+            Some(format!("/event/{}/{}#day-{}", rep.sport.slug(), pct_encode(&event), day));
         rep.team_a.label = if power_days.contains(&(series, day)) {
             format!("Day {ordinal} · Power Stage")
         } else {

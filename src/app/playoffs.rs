@@ -617,7 +617,7 @@ pub(crate) fn SwissBracket(
             view! {
                 <a
                     class="sw-team sw-link"
-                    href=format!("/match/{muid}")
+                    href=crate::types::match_path(sport, mid)
                     title="Find this match in the schedule"
                     on:click=move |e: leptos::ev::MouseEvent| {
                         e.stop_propagation();
@@ -1019,7 +1019,7 @@ pub(crate) fn Bracket(
                             view! {
                                 <a
                                     class="bk-team bk-team-link"
-                                    href=format!("/match/{muid}")
+                                    href=crate::types::match_path(sport, mid)
                                     title=link_title.clone()
                                     on:click=move |e: leptos::ev::MouseEvent| {
                                         e.stop_propagation();
