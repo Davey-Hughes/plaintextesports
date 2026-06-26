@@ -15,7 +15,7 @@ pub const TRAD_FORWARD_DAYS: i64 = 2;
 pub const TRAD_FORWARD_MAX: i64 = 7;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub enum Game {
+pub enum Sport {
     #[default]
     Cs2,
     Lol,
@@ -23,17 +23,17 @@ pub enum Game {
     /// API rather than PandaScore. Lives behind the esports/traditional toggle.
     Mlb,
     /// National Hockey League — a traditional sport, fetched from the keyless
-    /// NHL Web API (`api-web.nhle.com`). Like MLB: two teams per game.
+    /// NHL Web API (`api-web.nhle.com`). Like MLB: two teams per sport.
     Nhl,
     /// National Basketball Association — a traditional sport, fetched from the
-    /// keyless ESPN API. Two teams per game.
+    /// keyless ESPN API. Two teams per sport.
     Nba,
     /// National Football League — a traditional sport, fetched from the keyless
-    /// ESPN API. Two teams per game.
+    /// ESPN API. Two teams per sport.
     Nfl,
     /// Soccer — a traditional sport, fetched from the keyless ESPN API. Covers
     /// more than one competition (the Premier League and the World Cup), each its
-    /// own `league`. Two teams per game; matches can draw.
+    /// own `league`. Two teams per sport; matches can draw.
     Soccer,
     /// Motorsport — one category covering several series via the `league` field:
     /// F1 (Jolpica/Ergast), WRC + WEC (Orange Cat Blacktop). A "match" is a single
@@ -43,11 +43,11 @@ pub enum Game {
     Motorsport,
 }
 
-impl Game {
-    /// Every game, in canonical (display) order. The single source of truth for
-    /// "which game slugs are valid" — drives the DB cleanup migration (purging
+impl Sport {
+    /// Every sport, in canonical (display) order. The single source of truth for
+    /// "which sport slugs are valid" — drives the DB cleanup migration (purging
     /// rows written under a since-renamed slug) and exhaustiveness tests.
-    pub const ALL: &'static [Game] = &[
+    pub const ALL: &'static [Sport] = &[
         Self::Cs2,
         Self::Lol,
         Self::Mlb,
@@ -61,7 +61,7 @@ impl Game {
     /// Display name. Traditional sports use the sport (not the league), so the
     /// top-level filter reads "Baseball/Hockey/…" rather than "MLB/NHL/…"; the
     /// league name itself comes from the match data. American football is
-    /// "Football"; the other code uses "Soccer" for the international game.
+    /// "Football"; the other code uses "Soccer" for the international sport.
     #[must_use]
     pub const fn label(self) -> &'static str {
         match self {
@@ -118,7 +118,7 @@ impl Game {
 
     /// The traditional sports, in display order — drives the in-mode sport tabs.
     #[must_use]
-    pub fn traditional_sports() -> &'static [Game] {
+    pub fn traditional_sports() -> &'static [Sport] {
         &[Self::Mlb, Self::Nhl, Self::Nba, Self::Nfl, Self::Soccer, Self::Motorsport]
     }
 
@@ -160,7 +160,7 @@ impl Game {
             "nfl" => Some(Self::Nfl),
             "football" => Some(Self::Soccer),
             // "f1" kept for back-compat with saved filters/links from when the
-            // motorsport game's slug was "f1" (now "motorsport").
+            // motorsport sport's slug was "f1" (now "motorsport").
             "motorsport" | "f1" => Some(Self::Motorsport),
             _ => None,
         }
@@ -252,14 +252,14 @@ pub struct TeamView {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MatchView {
     pub id: i64,
-    pub game: Game,
+    pub sport: Sport,
     /// Short league name, e.g. "LCK" or "IEM".
     pub league: String,
-    /// The serie/edition name within the league (e.g. "Cologne Major"), empty
+    /// The series/edition name within the league (e.g. "Cologne Major"), empty
     /// when the league name is already the full event name. Combined with
     /// `league` to title the event/match pages (e.g. "IEM Cologne Major").
     #[serde(default)]
-    pub serie_name: String,
+    pub series_name: String,
     pub tier: String,
     pub status: MatchStatus,
     /// Start time in the display tz, e.g. "6:00 PM" (always the clock time; the
@@ -295,64 +295,90 @@ impl MatchView {
     /// This match's globally-unique id (see [`match_uid`]).
     #[must_use]
     pub fn uid(&self) -> String {
-        match_uid(self.game, self.id)
+        match_uid(self.sport, self.id)
     }
 }
 
 /// A globally-unique match identifier, `"{slug}-{id}"` (e.g. `"cs2-1494586"`,
 /// `"mlb-822869"`). Source match ids aren't unique across games/sources (an ESPN
-/// event id can equal an MLB gamePk), so identity is keyed by `(game, id)`. Game
+/// event id can equal an MLB gamePk), so identity is keyed by `(sport, id)`. Sport
 /// slugs contain no `-` and ids are numeric, so the uid splits cleanly. Used in
 /// the `/match/{uid}` route, the client reveal/star sets + DOM ids, the
 /// notifications round-trip, and reminder keys.
 #[must_use]
-pub fn match_uid(game: Game, id: i64) -> String {
-    format!("{}-{}", game.slug(), id)
+pub fn match_uid(sport: Sport, id: i64) -> String {
+    format!("{}-{}", sport.slug(), id)
 }
 
-/// Parse a [`match_uid`] back into its game + source id; `None` if malformed or
+/// Parse a [`match_uid`] back into its sport + source id; `None` if malformed or
 /// the slug is unknown.
 #[must_use]
-pub fn parse_match_uid(uid: &str) -> Option<(Game, i64)> {
+pub fn parse_match_uid(uid: &str) -> Option<(Sport, i64)> {
     let (slug, id) = uid.split_once('-')?;
-    Some((Game::from_filter(slug)?, id.parse().ok()?))
+    Some((Sport::from_filter(slug)?, id.parse().ok()?))
 }
 
-/// The display name for an event: the league plus its serie/edition, e.g.
-/// ("IEM", "Cologne Major") -> "IEM Cologne Major". An empty serie returns the
+/// The display name for an event: the league plus its series/edition, e.g.
+/// ("IEM", "Cologne Major") -> "IEM Cologne Major". An empty series returns the
 /// league alone (league seasons already name themselves). Also the key for the
 /// `/event` page, so each edition is addressed distinctly.
 #[must_use]
-pub fn full_event_name(league: &str, serie: &str) -> String {
-    if serie.is_empty() {
+pub fn full_event_name(league: &str, series: &str) -> String {
+    if series.is_empty() {
         league.to_string()
     } else {
-        format!("{league} {serie}")
+        format!("{league} {series}")
     }
 }
 
-/// Whether `full_event_name(league, serie) == target`, without allocating — used
+/// Whether `full_event_name(league, series) == target`, without allocating — used
 /// to filter the snapshot by edition on every event request.
 #[must_use]
-pub fn event_name_eq(league: &str, serie: &str, target: &str) -> bool {
-    if serie.is_empty() {
+pub fn event_name_eq(league: &str, series: &str, target: &str) -> bool {
+    if series.is_empty() {
         target == league
     } else {
         target
             .strip_prefix(league)
             .and_then(|rest| rest.strip_prefix(' '))
-            .is_some_and(|rest| rest == serie)
+            .is_some_and(|rest| rest == series)
     }
+}
+
+/// The best-fit noun for a tier-2 competition, for display (the subscription tag).
+/// The `league` field is a mix of true leagues (MLB, LCK, "… Pro League"),
+/// knockout tournaments (World Cup, IEM, the invitationals/majors), and racing
+/// championships (F1, WRC, WEC) — "league" alone mislabels the latter two. We only
+/// have the name here (not the `Sport`), so this is name-based: exact for the
+/// fixed sports/motorsport names, keyword heuristics for the open-ended esports
+/// ones (where an occasional miss is acceptable). Returns "league" by default.
+#[must_use]
+pub fn competition_kind(league: &str) -> &'static str {
+    // Racing championships go by "series" (and "WEC"/"WRC" must match before the
+    // "championship" keyword below, which their full names would otherwise hit).
+    if matches!(league, "F1" | "WRC" | "WEC") {
+        return "series";
+    }
+    // Knockout/standalone competitions: cups, invitationals, majors, masters,
+    // championships, and Intel Extreme Masters ("IEM"). A domestic "… League"
+    // (Premier League, XSE Pro League) has none of these, so it stays a league.
+    const TOURNAMENT_WORDS: &[&str] =
+        &["cup", "invitational", "major", "masters", "championship", "iem"];
+    let lower = league.to_ascii_lowercase();
+    if TOURNAMENT_WORDS.iter().any(|w| lower.contains(w)) {
+        return "tournament";
+    }
+    "league"
 }
 
 /// Matches for one league/event within a day.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LeagueGroup {
     pub league: String,
-    /// The serie/edition name within the league (e.g. "Cologne Major"); empty
+    /// The series/edition name within the league (e.g. "Cologne Major"); empty
     /// for league seasons. Combined with `league` for the header + event link.
     #[serde(default)]
-    pub serie_name: String,
+    pub series_name: String,
     /// Event-page link shown on the league header (see `MatchView::event_url`).
     pub event_url: String,
     /// Best-of label shown in the header when uniform across the group (e.g.
@@ -403,19 +429,19 @@ pub struct PushSub {
 pub struct ReminderReq {
     pub sub: PushSub,
     pub match_id: i64,
-    /// The match's game slug, so the server resolves the right match (ids aren't
+    /// The match's sport slug, so the server resolves the right match (ids aren't
     /// unique across games) and keys the reminder by `(match_id, game)`.
     #[serde(default)]
-    pub game: String,
+    pub sport: String,
 }
 
-/// Subscribe/unsubscribe to a whole game or event.
+/// Subscribe/unsubscribe to a whole sport or event.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SubscribeReq {
     pub sub: PushSub,
-    /// "game" or "league".
+    /// "sport" or "league".
     pub kind: String,
-    /// "cs2"/"lol" for a game, else the league name.
+    /// "cs2"/"lol" for a sport, else the league name.
     pub value: String,
 }
 
@@ -548,8 +574,8 @@ pub struct EventInfo {
     /// so a multi-stage event can label each stage. Empty for single-stage events.
     #[serde(default)]
     pub stage: String,
-    /// Which game this event is, so standings can use game-appropriate labels.
-    pub game: Game,
+    /// Which sport this event is, so standings can use sport-appropriate labels.
+    pub sport: Sport,
     pub standings: Vec<StandingRow>,
     pub rounds: Vec<BracketRound>,
     /// Swiss-stage rounds (buchholz grid), when this stage is a Swiss/group
@@ -775,40 +801,56 @@ mod tests {
 
     #[test]
     fn event_name_eq_agrees_with_full_event_name() {
-        for (league, serie) in [("IEM", "Cologne Major"), ("LCK", ""), ("A B", "C")] {
-            let full = full_event_name(league, serie);
-            assert!(event_name_eq(league, serie, &full));
+        for (league, series) in [("IEM", "Cologne Major"), ("LCK", ""), ("A B", "C")] {
+            let full = full_event_name(league, series);
+            assert!(event_name_eq(league, series, &full));
         }
         assert!(!event_name_eq("IEM", "Cologne Major", "IEM Katowice"));
-        assert!(!event_name_eq("IEM", "Cologne", "IEM Cologne Major")); // serie is a prefix
+        assert!(!event_name_eq("IEM", "Cologne", "IEM Cologne Major")); // series is a prefix
         assert!(!event_name_eq("LCK", "", "LCK Spring"));
         assert!(!event_name_eq("IEM", "Cologne", "IEMCologne")); // missing the space
     }
 
     #[test]
+    fn competition_kind_labels_the_real_competitions() {
+        // Racing championships → "series".
+        for s in ["F1", "WRC", "WEC"] {
+            assert_eq!(competition_kind(s), "series", "{s}");
+        }
+        // Knockout/standalone competitions → "tournament".
+        for t in ["World Cup", "IEM", "Mid-Season Invitational"] {
+            assert_eq!(competition_kind(t), "tournament", "{t}");
+        }
+        // Domestic/regional leagues (incl. a "… Pro League") → "league".
+        for l in ["MLB", "LCK", "LCS", "LEC", "LPL", "CBLOL", "XSE Pro League"] {
+            assert_eq!(competition_kind(l), "league", "{l}");
+        }
+    }
+
+    #[test]
     fn game_from_filter_maps_known_and_rejects_other() {
-        assert_eq!(Game::from_filter("cs2"), Some(Game::Cs2));
-        assert_eq!(Game::from_filter("lol"), Some(Game::Lol));
-        assert_eq!(Game::from_filter("all"), None);
-        assert_eq!(Game::from_filter(""), None);
+        assert_eq!(Sport::from_filter("cs2"), Some(Sport::Cs2));
+        assert_eq!(Sport::from_filter("lol"), Some(Sport::Lol));
+        assert_eq!(Sport::from_filter("all"), None);
+        assert_eq!(Sport::from_filter(""), None);
     }
 
     #[test]
     fn game_slug_and_label() {
-        assert_eq!(Game::Cs2.slug(), "cs2");
-        assert_eq!(Game::Lol.slug(), "lol");
-        assert_eq!(Game::Cs2.label(), "CS2");
-        assert_eq!(Game::Lol.label(), "LoL");
+        assert_eq!(Sport::Cs2.slug(), "cs2");
+        assert_eq!(Sport::Lol.slug(), "lol");
+        assert_eq!(Sport::Cs2.label(), "CS2");
+        assert_eq!(Sport::Lol.label(), "LoL");
         // Traditional sports label by the sport, not the league.
-        assert_eq!(Game::Mlb.label(), "Baseball");
-        assert_eq!(Game::Nhl.label(), "Hockey");
-        assert_eq!(Game::Nba.label(), "Basketball");
-        // American football is "Football"; the international game is "Soccer"
+        assert_eq!(Sport::Mlb.label(), "Baseball");
+        assert_eq!(Sport::Nhl.label(), "Hockey");
+        assert_eq!(Sport::Nba.label(), "Basketball");
+        // American football is "Football"; the international sport is "Soccer"
         // (its slug stays "football", unchanged).
-        assert_eq!(Game::Nfl.label(), "Football");
-        assert_eq!(Game::Soccer.label(), "Soccer");
-        assert_eq!(Game::Soccer.slug(), "football");
-        assert_eq!(Game::Motorsport.label(), "Motorsport");
+        assert_eq!(Sport::Nfl.label(), "Football");
+        assert_eq!(Sport::Soccer.label(), "Soccer");
+        assert_eq!(Sport::Soccer.slug(), "football");
+        assert_eq!(Sport::Motorsport.label(), "Motorsport");
     }
 
     #[test]
@@ -826,13 +868,13 @@ mod tests {
 
     #[test]
     fn every_game_slug_round_trips_through_from_filter() {
-        // `slug` and `from_filter` must be inverse over every game — store.rs
+        // `slug` and `from_filter` must be inverse over every sport — store.rs
         // persists `slug()` and reads it back with `from_filter`, so a mismatch
-        // would make a row load as a different (default) game. Also asserts `ALL`
+        // would make a row load as a different (default) sport. Also asserts `ALL`
         // is exhaustive (a new variant trips the count).
-        assert_eq!(Game::ALL.len(), 8);
-        for &g in Game::ALL {
-            assert_eq!(Game::from_filter(g.slug()), Some(g), "slug {:?}", g.slug());
+        assert_eq!(Sport::ALL.len(), 8);
+        for &g in Sport::ALL {
+            assert_eq!(Sport::from_filter(g.slug()), Some(g), "slug {:?}", g.slug());
         }
     }
 
@@ -840,48 +882,48 @@ mod tests {
     fn soccer_slug_is_football_not_legacy_soccer() {
         // Regression: soccer's slug was renamed "soccer" → "football". The old
         // slug must not parse, so legacy rows are dropped rather than loaded as
-        // the default game (which surfaced the World Cup on the esports page).
-        assert_eq!(Game::Soccer.slug(), "football");
-        assert_eq!(Game::from_filter("football"), Some(Game::Soccer));
-        assert_eq!(Game::from_filter("soccer"), None);
+        // the default sport (which surfaced the World Cup on the esports page).
+        assert_eq!(Sport::Soccer.slug(), "football");
+        assert_eq!(Sport::from_filter("football"), Some(Sport::Soccer));
+        assert_eq!(Sport::from_filter("soccer"), None);
     }
 
     #[test]
     fn standings_columns_match_the_sport() {
         // Esports show a map/game record (not a single value); the team sports a
         // single ranking figure with a sport-specific label.
-        assert_eq!(Game::Cs2.standings_last_label(), "Maps");
-        assert_eq!(Game::Lol.standings_last_label(), "Games");
-        assert!(!Game::Cs2.standings_single_value());
-        assert!(!Game::Lol.standings_single_value());
+        assert_eq!(Sport::Cs2.standings_last_label(), "Maps");
+        assert_eq!(Sport::Lol.standings_last_label(), "Games");
+        assert!(!Sport::Cs2.standings_single_value());
+        assert!(!Sport::Lol.standings_single_value());
         for (g, label) in [
-            (Game::Mlb, "GB"),
-            (Game::Nhl, "PTS"),
-            (Game::Nba, "GB"),
-            (Game::Nfl, "PCT"),
-            (Game::Soccer, "PTS"),
+            (Sport::Mlb, "GB"),
+            (Sport::Nhl, "PTS"),
+            (Sport::Nba, "GB"),
+            (Sport::Nfl, "PCT"),
+            (Sport::Soccer, "PTS"),
         ] {
             assert_eq!(g.standings_last_label(), label, "{g:?}");
             assert!(g.standings_single_value(), "{g:?}");
         }
         // F1 has no standings table.
-        assert_eq!(Game::Motorsport.standings_last_label(), "");
-        assert!(!Game::Motorsport.standings_single_value());
+        assert_eq!(Sport::Motorsport.standings_last_label(), "");
+        assert!(!Sport::Motorsport.standings_single_value());
     }
 
     #[test]
     fn match_uid_round_trips_for_every_game() {
-        for &g in Game::ALL {
+        for &g in Sport::ALL {
             let uid = match_uid(g, 1494586);
             assert_eq!(parse_match_uid(&uid), Some((g, 1494586)), "uid {uid}");
             // The slug has no '-', so the split is unambiguous.
             assert_eq!(uid, format!("{}-1494586", g.slug()));
         }
-        assert_eq!(parse_match_uid("cs2-1494586"), Some((Game::Cs2, 1494586)));
-        assert_eq!(parse_match_uid("mlb-822869"), Some((Game::Mlb, 822869)));
+        assert_eq!(parse_match_uid("cs2-1494586"), Some((Sport::Cs2, 1494586)));
+        assert_eq!(parse_match_uid("mlb-822869"), Some((Sport::Mlb, 822869)));
         // Malformed / unknown slug → None.
         assert_eq!(parse_match_uid("1494586"), None); // no separator
-        assert_eq!(parse_match_uid("bogus-1"), None); // unknown game
+        assert_eq!(parse_match_uid("bogus-1"), None); // unknown sport
         assert_eq!(parse_match_uid("cs2-abc"), None); // non-numeric id
     }
 

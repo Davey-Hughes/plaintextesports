@@ -9,7 +9,7 @@
 //! the resolver loop + SQLite cache in `cache.rs` — which keeps us within
 //! Liquipedia's API terms (descriptive User-Agent, aggressive caching, low rate).
 
-use crate::types::Game;
+use crate::types::Sport;
 use serde::Deserialize;
 
 type DynError = Box<dyn std::error::Error + Send + Sync>;
@@ -20,12 +20,12 @@ const USER_AGENT: &str =
 /// Tokens too generic to require a match on.
 const STOPWORDS: &[&str] = &["the", "of", "and"];
 
-const fn wiki(game: Game) -> &'static str {
-    match game {
-        Game::Cs2 => "counterstrike",
-        Game::Lol => "leagueoflegends",
+const fn wiki(sport: Sport) -> &'static str {
+    match sport {
+        Sport::Cs2 => "counterstrike",
+        Sport::Lol => "leagueoflegends",
         // Traditional sports aren't resolved against Liquipedia.
-        Game::Mlb | Game::Nhl | Game::Nba | Game::Nfl | Game::Soccer | Game::Motorsport => "",
+        Sport::Mlb | Sport::Nhl | Sport::Nba | Sport::Nfl | Sport::Soccer | Sport::Motorsport => "",
     }
 }
 
@@ -50,11 +50,11 @@ struct SearchHit {
 /// confident match (caller then keeps its generic fallback link).
 pub async fn resolve_event(
     client: &reqwest::Client,
-    game: Game,
+    sport: Sport,
     league: &str,
     year: i32,
 ) -> Result<Option<String>, DynError> {
-    let wiki = wiki(game);
+    let wiki = wiki(sport);
     let term = format!("{league} {year}");
     let url = format!("https://liquipedia.net/{wiki}/api.php");
     let resp: SearchResp = client

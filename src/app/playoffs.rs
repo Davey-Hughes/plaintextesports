@@ -4,7 +4,7 @@
 //! `pub(crate)` entry points `StandingsTable`, `SwissBracket`, `Bracket`).
 
 use super::*;
-use crate::types::{BracketMatch, BracketRound, Game, StandingRow, SwissMatch, SwissRound};
+use crate::types::{BracketMatch, BracketRound, Sport, StandingRow, SwissMatch, SwissRound};
 use std::collections::HashSet;
 
 /// Reveal state for a persisted section key (standings / one bracket round),
@@ -340,15 +340,15 @@ pub(crate) fn apply_bracket_op(set: &mut HashSet<String>, grid: &[Vec<BkCell>], 
 pub(crate) fn StandingsTable(
     rows: Vec<StandingRow>,
     tournament_id: i64,
-    game: Game,
+    sport: Sport,
 ) -> impl IntoView {
     if rows.is_empty() {
         return ().into_any();
     }
     // The last column: CS2 counts maps, LoL games, the team sports a single
     // ranking value (games-back / points / win%).
-    let record_label = game.standings_last_label();
-    let show_last = game.standings_single_value();
+    let record_label = sport.standings_last_label();
+    let show_last = sport.standings_single_value();
     // Click the "Standings" title to reveal/hide the table.
     let (revealed, toggle) = section_reveal(format!("st:{tournament_id}"));
     // Always render every row so the table reserves its height — when hidden, the
@@ -501,7 +501,7 @@ type SwOutcome = (String, bool, Vec<(usize, usize)>);
 pub(crate) fn SwissBracket(
     rounds: Vec<SwissRound>,
     tournament_id: i64,
-    game: Game,
+    sport: Sport,
 ) -> impl IntoView {
     if rounds.is_empty() {
         return ().into_any();
@@ -609,7 +609,7 @@ pub(crate) fn SwissBracket(
             if mid <= 0 {
                 return view! { <span class="sw-team">{name}</span> }.into_any();
             }
-            let muid = crate::types::match_uid(game, mid);
+            let muid = crate::types::match_uid(sport, mid);
             view! {
                 <a
                     class="sw-team sw-link"
@@ -842,8 +842,8 @@ pub(crate) fn SwissBracket(
 pub(crate) fn Bracket(
     rounds: Vec<BracketRound>,
     tournament_id: i64,
-    /// The event's game, so a match link can build the right `/match/{uid}`.
-    game: Game,
+    /// The event's sport, so a match link can build the right `/match/{uid}`.
+    sport: Sport,
     bracket_only: bool,
     /// `match_id -> (day_key, clock_label)` for the event's matches, so the
     /// bracket can date each round and show a per-match time on hover. Empty
@@ -1008,7 +1008,7 @@ pub(crate) fn Bracket(
                     // (so you see it in context, then open it from there); where
                     // that row isn't on the page, the href opens the match page.
                     let link_title = format!("Find {ta} vs {tb} in the schedule");
-                    let muid = crate::types::match_uid(game, mid);
+                    let muid = crate::types::match_uid(sport, mid);
                     let team_cell = move |name: String| {
                         if mid > 0 {
                             let muid = muid.clone();

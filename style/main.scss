@@ -325,12 +325,12 @@ a {
   margin: 0.8rem 0 0.4rem;
 }
 
-// In traditional-sports (MLB) mode the CS2/LoL game tabs don't apply.
+// In traditional-sports (MLB) mode the CS2/LoL sport tabs don't apply.
 .tabs.tabs-off {
   display: none;
 }
 
-// The game tabs sit on the left; the "clear" sits right-aligned opposite them.
+// The sport tabs sit on the left; the "clear" sits right-aligned opposite them.
 // They wrap onto extra rows rather than overflow the viewport — the team-sport
 // modes carry enough league/team tabs to exceed a phone's width.
 .tabs-list {
@@ -373,7 +373,7 @@ a {
 }
 
 
-// A game filter tab that embeds a subscribe ★. The label and the ★ split the
+// A sport filter tab that embeds a subscribe ★. The label and the ★ split the
 // box so each part of it is clickable (filter vs. subscribe).
 .tab-with-star {
   display: inline-flex;
@@ -408,7 +408,7 @@ a {
   gap: 0.35rem;
   margin: 0.1rem 0 0.6rem;
   // Reserve one chip-row of height even when there are no event chips, so the
-  // schedule below doesn't jump as the game filter changes the chip count.
+  // schedule below doesn't jump as the sport filter changes the chip count.
   min-height: 1.4rem;
 }
 
@@ -732,7 +732,7 @@ a {
   }
 }
 
-// Subscribe ★ — shared by the game filter tabs and the event headers. Matches
+// Subscribe ★ — shared by the sport filter tabs and the league/event headers. Matches
 // the per-match ★ (same gold when active) so "follow this" reads consistently.
 .sub-star {
   background: none;
@@ -1361,7 +1361,7 @@ a {
   }
 }
 
-// Small tag marking what kind of subscription a row is (game/event/team).
+// Small tag marking what kind of subscription a row is (sport/league/event/team).
 .notif-kind {
   font-size: 11px;
   text-transform: uppercase;

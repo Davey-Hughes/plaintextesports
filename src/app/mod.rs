@@ -5,8 +5,9 @@ use crate::server::{
     get_schedule, get_site, get_team_schedule,
 };
 use crate::types::{
-    full_event_name, DayGroup, EventInfo, F1Result, F1Standings, Game, MatchDetail, MatchStatus,
-    MatchView, MotorStandingTable, MotorStandings, ScheduleView, Series, SeriesGame, StreamView,
+    competition_kind, full_event_name, DayGroup, EventInfo, F1Result, F1Standings, Sport,
+    MatchDetail, MatchStatus, MatchView, MotorStandingTable, MotorStandings, ScheduleView, Series,
+    SeriesGame, StreamView,
 };
 use leptos::prelude::*;
 use std::collections::HashSet;
@@ -103,13 +104,13 @@ pub fn shell(options: LeptosOptions) -> impl IntoView {
 #[derive(Clone, Copy)]
 struct ShowScores(RwSignal<bool>);
 
-/// Whether to show the venue-local time on every game's row at once — clicking
+/// Whether to show the venue-local time on every sport's row at once — clicking
 /// any one time toggles it for all of them.
 #[derive(Clone, Copy)]
 struct ShowVenue(RwSignal<bool>);
 
 /// Set of match uids whose scores are individually revealed (by clicking the
-/// match's "Final" badge). Keyed by uid (`"{game}-{id}"`) since a match id isn't
+/// match's "Final" badge). Keyed by uid (`"{sport}-{id}"`) since a match id isn't
 /// unique across games.
 #[derive(Clone, Copy)]
 struct RevealedMatches(RwSignal<HashSet<String>>);
@@ -120,7 +121,7 @@ struct RevealedMatches(RwSignal<HashSet<String>>);
 #[derive(Clone, Copy)]
 struct RevealedSections(RwSignal<HashSet<String>>);
 
-/// Set of "kind|value" scopes the user is subscribed to (game/event reminders).
+/// Set of "kind|value" scopes the user is subscribed to (sport/event reminders).
 #[derive(Clone, Copy)]
 struct Subscribed(RwSignal<HashSet<String>>);
 
@@ -142,7 +143,7 @@ struct EarlierDays(RwSignal<i64>);
 #[derive(Clone, Copy)]
 struct LaterDays(RwSignal<i64>);
 
-/// Selected game filters (slugs) and event filters (league names) — shared and
+/// Selected sport filters (slugs) and event filters (league names) — shared and
 /// persisted so they survive navigating to a match and back.
 #[derive(Clone, Copy)]
 struct Games(RwSignal<HashSet<String>>);
@@ -397,7 +398,7 @@ fn FilterUrlSync() -> impl IntoView {
             // `initial_leagues`). Only restore the saved (localStorage) filter when
             // the URL carries NO filter at all; if it carries any, the URL is
             // authoritative — so a shared/refreshed ?e=… link isn't polluted by a
-            // stale saved game filter, and nothing changes post-hydration (no flash
+            // stale saved sport filter, and nothing changes post-hydration (no flash
             // and no hydration churn).
             if g_param.is_none() && e_param.is_none() {
                 games.set(load_str_set(keys::GAMES));
@@ -410,9 +411,9 @@ fn FilterUrlSync() -> impl IntoView {
                 traditional.set(m == "sports");
             } else if let Some(v) = &g_param {
                 let slugs = parse_set(v);
-                if slugs.iter().any(|s| Game::from_filter(s).is_some()) {
+                if slugs.iter().any(|s| Sport::from_filter(s).is_some()) {
                     traditional
-                        .set(slugs.iter().any(|s| Game::from_filter(s).is_some_and(Game::traditional)));
+                        .set(slugs.iter().any(|s| Sport::from_filter(s).is_some_and(Sport::traditional)));
                 }
             }
         });
@@ -628,7 +629,7 @@ fn AboutPage() -> impl IntoView {
                 <li><span class="kbd">"☆"</span> " on a match — just that match."</li>
                 <li>
                     <span class="kbd">"☆"</span>
-                    " by a game tab or in an event's header — every match in that game or "
+                    " by a sport tab or in an event's header — every match in that sport or "
                     "event, including ones added later."
                 </li>
             </ul>
@@ -636,7 +637,7 @@ fn AboutPage() -> impl IntoView {
 
             <h2>"Finding matches"</h2>
             <p>
-                "You start with every tier-1 match. Click game tabs ("
+                "You start with every tier-1 match. Click sport tabs ("
                 <span class="kbd">"CS2"</span> " / " <span class="kbd">"LoL"</span>
                 ") and event chips to narrow it — the address bar updates so a filtered view "
                 "is shareable. Use " <span class="kbd">"‹ show earlier days"</span>
@@ -659,7 +660,7 @@ fn AboutPage() -> impl IntoView {
 
 #[derive(Params, PartialEq, Clone)]
 struct DetailParams {
-    /// The match uid, `"{game}-{id}"` (see [`crate::types::match_uid`]).
+    /// The match uid, `"{sport}-{id}"` (see [`crate::types::match_uid`]).
     uid: String,
 }
 
@@ -823,7 +824,7 @@ fn EventStageCombo(
             swiss_grid.set(grid);
         }
     };
-    let EventInfo { tournament_id, stage, game, standings, rounds, swiss, .. } = event;
+    let EventInfo { tournament_id, stage, sport, standings, rounds, swiss, .. } = event;
     let bracket_only = standings.is_empty();
     let has_swiss = !swiss.is_empty();
     let label = (!stage.is_empty()).then(|| view! { <h2 class="stage-head">{stage}</h2> });
@@ -855,13 +856,13 @@ fn EventStageCombo(
     let grid_view = has_swiss.then(|| {
         view! {
             <div class="swiss-view" class:swiss-view-off=move || !swiss_grid.get()>
-                <SwissBracket rounds=swiss tournament_id game />
+                <SwissBracket rounds=swiss tournament_id sport />
             </div>
         }
     });
     let list_view = view! {
         <div class="swiss-view" class:swiss-view-off=move || has_swiss && swiss_grid.get()>
-            <StandingsTable rows=standings tournament_id game />
+            <StandingsTable rows=standings tournament_id sport />
         </div>
     };
     view! {
@@ -874,7 +875,7 @@ fn EventStageCombo(
                 {grid_view}
                 {list_view}
             </div>
-            <Bracket rounds=rounds tournament_id game bracket_only times=times.get_value() />
+            <Bracket rounds=rounds tournament_id sport bracket_only times=times.get_value() />
         </div>
     }
 }
@@ -1229,6 +1230,18 @@ fn EventPage() -> impl IntoView {
                     Some(Ok(mut s)) => {
                         // The route segment is already the full edition name.
                         let title = lg_name.clone();
+                        // The sport this event belongs to (all its matches share
+                        // one). Computed before the schedule is windowed below, with
+                        // the standings as a fallback for when there are no matches
+                        // to read it from (e.g. an off-season team sport).
+                        let event_sport = s
+                            .days
+                            .iter()
+                            .flat_map(|d| &d.leagues)
+                            .flat_map(|lg| &lg.matches)
+                            .map(|m| m.sport)
+                            .next()
+                            .or_else(|| stage_list.first().map(|e| e.sport));
                         // The event's external (Liquipedia/official) link, pulled
                         // from any of its league groups.
                         let url = s
@@ -1325,15 +1338,29 @@ fn EventPage() -> impl IntoView {
                         let f1_sr = f1_season_round(&s);
                         // The series ("WRC"/"WEC") if this is one — for its standings.
                         let motor_league = motor_series(&s);
-                        // An F1 Grand Prix gets a ★ to subscribe to the whole
-                        // event (all its sessions) — but only while a session is
-                        // still to come; a wholly-finished GP can't be notified
-                        // about, so it shows the bare title. Other event pages keep
-                        // the bare title too — their schedule carries league ★s.
+                        // An F1 Grand Prix gets a ★ to subscribe to the whole event
+                        // (all its sessions) — but only while a session is still to
+                        // come; a wholly-finished GP can't be notified about, so it
+                        // shows the bare title. A single-league team sport
+                        // (MLB/NHL/NBA/NFL) gets a ★ for its whole sport: its league
+                        // is 1:1 with the sport, so this is the same scope/key as the
+                        // sport tab's ★ (and its schedule no longer carries a league
+                        // ★). Everything else (esports, soccer, motorsport leagues)
+                        // keeps the bare title — its schedule carries the league ★s.
+                        let trad_single = event_sport
+                            .filter(|sp| sp.traditional() && !sp.has_sub_leagues());
                         let title_head = if f1_sr.is_some() && event_has_upcoming(&s) {
                             view! {
                                 <div class="event-title-head">
                                     <SubscribeStar kind="event" value=title.clone() />
+                                    <h1 class="detail-title">{title.clone()}</h1>
+                                </div>
+                            }
+                            .into_any()
+                        } else if let Some(sp) = trad_single {
+                            view! {
+                                <div class="event-title-head">
+                                    <SubscribeStar kind="sport" value=sp.slug().to_string() />
                                     <h1 class="detail-title">{title.clone()}</h1>
                                 </div>
                             }
@@ -1585,7 +1612,7 @@ fn detail_view(d: MatchDetail) -> impl IntoView {
     // The meta line is split so the date+time can swap to the venue-local time on
     // click (blue), like the schedule rows. Lead = event name; the middle is the
     // clickable when; trail = best-of + status.
-    let event_name = full_event_name(&m.league, &m.serie_name);
+    let event_name = full_event_name(&m.league, &m.series_name);
     let when_local = [m.date_label.clone(), m.clock_label.clone()]
         .into_iter()
         .filter(|s| !s.is_empty())
@@ -1631,10 +1658,10 @@ fn detail_view(d: MatchDetail) -> impl IntoView {
     // placeholder score, so a score alone isn't enough).
     let played = matches!(m.status, MatchStatus::Live | MatchStatus::Finished) && has_score;
     let (win_a, win_b) = (m.team_a.winner, m.team_b.winner);
-    let sep = versus_sep(m.game);
+    let sep = versus_sep(m.sport);
     // F1 (and any single-entity sport) has no opponent: the title is the one
     // session label, with no "vs"/"at" separator and no empty second team.
-    let is_solo = m.game.single_entity();
+    let is_solo = m.sport.single_entity();
     let (team_a, team_b) = (m.team_a.label, m.team_b.label);
     let (name_a, name_b) = (m.team_a.name, m.team_b.name);
     let (logo_a, logo_b) = (m.team_a.logo, m.team_b.logo);
@@ -1645,7 +1672,7 @@ fn detail_view(d: MatchDetail) -> impl IntoView {
     // only once Web Push is available (read reactively, so it appears after the key
     // resolves). Captured here before the title view consumes the names.
     let star_upcoming = matches!(m.status, MatchStatus::Upcoming);
-    let (star_id, star_game, star_league) = (m.id, m.game, m.league.clone());
+    let (star_id, star_game, star_league) = (m.id, m.sport, m.league.clone());
     let (star_a, star_b) = (name_a.clone(), name_b.clone());
     let vapid_ctx = use_context::<RwSignal<Option<String>>>();
     let match_star = move || {
@@ -1654,7 +1681,7 @@ fn detail_view(d: MatchDetail) -> impl IntoView {
             view! {
                 <StarButton
                     id=star_id
-                    game=star_game
+                    sport=star_game
                     league=star_league.clone()
                     team_a=star_a.clone()
                     team_b=star_b.clone()
@@ -1769,9 +1796,9 @@ fn detail_view(d: MatchDetail) -> impl IntoView {
             {(!venue_line.is_empty())
                 .then(|| view! { <div class="detail-venue">{venue_line}</div> })}
             <StreamsList streams=streams />
-            // MLB series between the two teams. Each game row reveals on its own
+            // MLB series between the two teams. Each sport row reveals on its own
             // (shared with the schedule); the record line waits until every played
-            // game is revealed, so it never leaks the leader ahead of the scores.
+            // sport is revealed, so it never leaks the leader ahead of the scores.
             {(!series.games.is_empty())
                 .then(|| {
                     // Series games are MLB; key by uid like the per-match set.
@@ -1783,7 +1810,7 @@ fn detail_view(d: MatchDetail) -> impl IntoView {
                                 && g.score_a.is_some()
                                 && g.score_b.is_some()
                         })
-                        .map(|g| crate::types::match_uid(Game::Mlb, g.match_id))
+                        .map(|g| crate::types::match_uid(Sport::Mlb, g.match_id))
                         .collect();
                     let global = use_context::<ShowScores>().map(|s| s.0);
                     let revealed = use_context::<RevealedMatches>().map(|r| r.0);
@@ -1877,7 +1904,7 @@ fn StreamsList(streams: Vec<StreamView>) -> impl IntoView {
             };
             let tags = if s.name.is_empty() { stream_tags(&s) } else { s.tag.clone() };
             let mut cls = String::from("stream");
-            // Highlight an esports official broadcast (not the per-game MLB flag).
+            // Highlight an esports official broadcast (not the per-sport MLB flag).
             if s.official && s.name.is_empty() {
                 cls.push_str(" official");
             }
@@ -1989,7 +2016,7 @@ fn SeriesRow(game: SeriesGame) -> impl IntoView {
     // This game's own reveal (global toggle OR this game individually revealed),
     // shared with the schedule via the per-match set keyed on its uid. Series
     // games are always MLB.
-    let muid = crate::types::match_uid(Game::Mlb, match_id);
+    let muid = crate::types::match_uid(Sport::Mlb, match_id);
     let global = use_context::<ShowScores>().map(|s| s.0);
     let revealed = use_context::<RevealedMatches>().map(|r| r.0);
     let reveal = {
@@ -2283,7 +2310,7 @@ fn SportToggle() -> impl IntoView {
         // Start each mode from its default window (the forward cap differs).
         earlier.set(0);
         later.set(0);
-        // The game/sport tabs share the `games` set, so clear it (and the esports
+        // The sport/sport tabs share the `games` set, so clear it (and the esports
         // event chips) on a mode switch — a stale "cs2"/"mlb" slug would otherwise
         // filter out everything in the other mode.
         games.update(HashSet::clear);
@@ -2314,9 +2341,9 @@ fn SportToggle() -> impl IntoView {
     }
 }
 
-/// ★ toggle to subscribe to a whole game (`kind="game"`, value "cs2"/"lol") or
-/// event (`kind="league"`, value = league name). Used inside a game filter tab
-/// and in event headers. Hidden unless push is on.
+/// ★ toggle to subscribe to a whole sport (`kind="sport"`, value "cs2"/"lol") or
+/// a league/competition (`kind="league"`, value = league name). Used inside a
+/// sport filter tab and in league/event headers. Hidden unless push is on.
 #[component]
 fn SubscribeStar(kind: &'static str, value: String) -> impl IntoView {
     let subscribed = use_context::<Subscribed>().expect("subscribed context").0;
@@ -2360,7 +2387,7 @@ fn SubscribeStar(kind: &'static str, value: String) -> impl IntoView {
     }
 }
 
-/// Manage what you're notified about: your game/event/team subscriptions, plus
+/// Manage what you're notified about: your sport/event/team subscriptions, plus
 /// individually-starred upcoming matches. Matches that have already started or
 /// finished are left out (their reminders can no longer fire).
 #[component]
@@ -2428,7 +2455,7 @@ fn NotificationsPage() -> impl IntoView {
             </div>
             <p class="notif-intro">
                 "Everything you'll be reminded about. Subscriptions cover every "
-                "upcoming match for a game, event, or team."
+                "upcoming match for a sport, competition, event, or team."
             </p>
             {move || {
                 let mut keys: Vec<String> = subscribed.get().into_iter().collect();
@@ -2476,7 +2503,7 @@ fn NotificationsPage() -> impl IntoView {
                 none.then(|| {
                     view! {
                         <p class="empty">
-                            "Nothing yet. Subscribe to a game, event, or team from its page "
+                            "Nothing yet. Subscribe to a sport, competition, event, or team from its page "
                             "(the ★), or star an upcoming match to be reminded."
                         </p>
                     }
@@ -2497,12 +2524,18 @@ fn SubRow(key: String) -> impl IntoView {
         .map_or_else(|| (String::new(), key.clone()), |(k, v)| (k.to_string(), v.to_string()));
     // Label + optional link to the subscribed thing's own page.
     let (tag, label, link): (&str, String, Option<String>) = match kind.as_str() {
-        "game" => (
-            "game",
-            Game::from_filter(&value).map_or_else(|| value.clone(), |g| g.label().to_string()),
+        "sport" => (
+            "sport",
+            Sport::from_filter(&value).map_or_else(|| value.clone(), |g| g.label().to_string()),
             None,
         ),
         "team" => ("team", value.clone(), Some(format!("/team/{}", enc_segment(&value)))),
+        // A whole competition (MLB, F1, World Cup, LCK) — tagged with its best-fit
+        // noun (league / tournament / series), distinct from a single event/edition
+        // below; both link to the /event/ page for the name.
+        "league" => {
+            (competition_kind(&value), value.clone(), Some(format!("/event/{}", enc_segment(&value))))
+        }
         _ => ("event", value.clone(), Some(format!("/event/{}", enc_segment(&value)))),
     };
 
@@ -2546,27 +2579,27 @@ fn StarredRow(m: MatchView) -> impl IntoView {
     let subscribed = use_context::<Subscribed>().expect("subscribed context").0;
     let vapid = use_context::<RwSignal<Option<String>>>().expect("vapid context");
     let id = m.id;
-    let game = m.game;
+    let sport = m.sport;
     let uid = m.uid();
     // F1 (single-entity) has no opponent: show the GP and session (e.g.
     // "Austrian Grand Prix · Race") instead of a "Race at " matchup.
-    let line = if m.game.single_entity() {
-        if m.serie_name.is_empty() {
+    let line = if m.sport.single_entity() {
+        if m.series_name.is_empty() {
             m.team_a.label.clone()
         } else {
-            format!("{} · {}", m.serie_name, m.team_a.label)
+            format!("{} · {}", m.series_name, m.team_a.label)
         }
     } else {
-        format!("{} {} {}", m.team_a.label, versus_sep(m.game), m.team_b.label)
+        format!("{} {} {}", m.team_a.label, versus_sep(m.sport), m.team_b.label)
     };
     // The scopes that also cover this match — so removing it actually stops the
     // notification (opt out) rather than just dropping a redundant star.
     let keys = [
-        format!("game|{}", m.game.slug()),
+        format!("sport|{}", m.sport.slug()),
         format!("league|{}", m.league),
         format!("team|{}", m.team_a.name),
         format!("team|{}", m.team_b.name),
-        format!("event|{}", full_event_name(&m.league, &m.serie_name)),
+        format!("event|{}", full_event_name(&m.league, &m.series_name)),
     ];
     let remove = {
         let uid = uid.clone();
@@ -2584,11 +2617,11 @@ fn StarredRow(m: MatchView) -> impl IntoView {
             {
                 save_starred(&starred.get_untracked());
                 save_excluded(&excluded.get_untracked());
-                sync_match_reminder(id, game, false, covered, vapid.get_untracked());
+                sync_match_reminder(id, sport, false, covered, vapid.get_untracked());
             }
             #[cfg(not(feature = "hydrate"))]
             {
-                let _ = (covered, vapid, game, id);
+                let _ = (covered, vapid, sport, id);
             }
         }
     };
@@ -2668,7 +2701,7 @@ fn write_cookie(name: &str, value: &str) {
 /// inputs. Shared by SSR (request URL + `Cookie` header) and hydrate (location +
 /// `document.cookie`) so both render the same mode — no first-paint flash and no
 /// hydration mismatch. Precedence: an explicit `?mode` wins (a shared link); else
-/// infer from a known game slug in `?g` (e.g. `?g=nhl` ⇒ sports); else the saved
+/// infer from a known sport slug in `?g` (e.g. `?g=nhl` ⇒ sports); else the saved
 /// `mode` cookie ("sports"/"esports"), defaulting to esports.
 #[cfg(any(feature = "ssr", feature = "hydrate"))]
 fn resolve_sport_mode(
@@ -2680,7 +2713,7 @@ fn resolve_sport_mode(
         return m == "sports";
     }
     if let Some(v) = g_param.filter(|v| !v.is_empty()) {
-        let known: Vec<Game> = v.split(',').filter_map(Game::from_filter).collect();
+        let known: Vec<Sport> = v.split(',').filter_map(Sport::from_filter).collect();
         if !known.is_empty() {
             return known.iter().any(|g| g.traditional());
         }
@@ -2766,7 +2799,7 @@ fn initial_vapid() -> Option<String> {
     None
 }
 
-/// The game/league filter sets (`?g=`/`?e=`, comma-separated, percent-encoded) for
+/// The sport/league filter sets (`?g=`/`?e=`, comma-separated, percent-encoded) for
 /// this render — read from the request on the server and the location on hydrate,
 /// so the schedule is already filtered on the first paint instead of flashing the
 /// full schedule until the client applies the filter. Only the URL is read here
@@ -2922,7 +2955,7 @@ fn load_range() -> Option<(String, String)> {
     (!s.is_empty() && !e.is_empty()).then(|| (s.to_string(), e.to_string()))
 }
 
-/// Persist the subscribed set and (un)register the game/event subscription.
+/// Persist the subscribed set and (un)register the sport/event subscription.
 #[cfg(feature = "hydrate")]
 fn subscribe_scope(kind: String, value: String, subscribing: bool, keys: Vec<String>, vapid: Option<String>) {
     save_subs(&keys);
@@ -3017,7 +3050,7 @@ fn setup_autorefresh(resource: Resource<Result<ScheduleView, ServerFnError>>) {
 
 #[component]
 fn HomePage() -> impl IntoView {
-    // Game/event filters are multi-select and applied client-side (the server
+    // Sport/event filters are multi-select and applied client-side (the server
     // always returns all games), so the data is fetched once regardless. Shared
     // via context + persisted so they survive navigating away and back.
     let games = use_context::<Games>().expect("games context").0;
@@ -3119,15 +3152,15 @@ fn schedule_needs_window(s: &ScheduleView) -> bool {
         // horizon like the homepage; F1 (single-entity) shows its whole GP.
         .any(|m| {
             matches!(
-                m.game,
-                Game::Mlb | Game::Nhl | Game::Nba | Game::Nfl | Game::Soccer
+                m.sport,
+                Sport::Mlb | Sport::Nhl | Sport::Nba | Sport::Nfl | Sport::Soccer
             )
         })
 }
 
 /// `(season, round)` for an F1 event's schedule, recovered from a session id
 /// (`season * 100000 + round * 100 + session`, see `f1.rs`). `None` for non-F1
-/// — including the other motorsport series (WRC/WEC), which share the game but
+/// — including the other motorsport series (WRC/WEC), which share the sport but
 /// use a different id scheme and the league name to distinguish themselves.
 fn f1_season_round(s: &ScheduleView) -> Option<(i64, i64)> {
     let id = s
@@ -3135,7 +3168,7 @@ fn f1_season_round(s: &ScheduleView) -> Option<(i64, i64)> {
         .iter()
         .flat_map(|d| &d.leagues)
         .flat_map(|lg| &lg.matches)
-        .find(|m| m.game == Game::Motorsport && m.league == "F1")?
+        .find(|m| m.sport == Sport::Motorsport && m.league == "F1")?
         .id;
     Some((id / 100_000, (id / 100) % 1000))
 }
@@ -3198,17 +3231,17 @@ fn schedule_is_traditional(s: &ScheduleView) -> bool {
         .iter()
         .flat_map(|d| &d.leagues)
         .flat_map(|lg| &lg.matches)
-        .any(|m| m.game.traditional())
+        .any(|m| m.sport.traditional())
 }
 
 /// The separator between the two teams of a match. Traditional sports list the
 /// away team "at" the home team (team_a is away, team_b home — see `mlb.rs`);
 /// esports use "vs".
-const fn versus_sep(game: Game) -> &'static str {
-    match game {
+const fn versus_sep(sport: Sport) -> &'static str {
+    match sport {
         // The American team sports read "away at home"; soccer (its World Cup
         // games are at neutral venues, with no home side) and esports read "vs".
-        Game::Mlb | Game::Nhl | Game::Nba | Game::Nfl => "at",
+        Sport::Mlb | Sport::Nhl | Sport::Nba | Sport::Nfl => "at",
         _ => "vs",
     }
 }
@@ -3551,7 +3584,7 @@ fn DayPage() -> impl IntoView {
 
 /// A row of filter tabs: the esports games (CS2/LoL) when `traditional_row` is
 /// false, or the traditional sports (MLB/NHL/.../F1) when true. Each tab carries
-/// a subscribe ★ for the whole game and clicks to (de)select it; the row hides
+/// a subscribe ★ for the whole sport and clicks to (de)select it; the row hides
 /// itself in the other top-level mode. The `games`/`leagues` filter sets are
 /// shared across both rows, so a selection narrows the schedule.
 #[component]
@@ -3562,7 +3595,7 @@ fn FilterTabs(
 ) -> impl IntoView {
     let traditional = use_context::<SportMode>().expect("sport mode context").0;
     // Filters are multi-select and additive: no selection means "all". Click a
-    // game to include it; click again to drop it.
+    // sport to include it; click again to drop it.
     let toggle = move |value: &'static str| {
         games.update(|g| {
             if !g.remove(value) {
@@ -3572,7 +3605,7 @@ fn FilterTabs(
         #[cfg(feature = "hydrate")]
         save_str_set(keys::GAMES, &games.get_untracked());
     };
-    // A game filter tab with an embedded ★ that subscribes to the whole game.
+    // A sport filter tab with an embedded ★ that subscribes to the whole sport.
     // The label clicks to filter; the ★ clicks to (un)subscribe.
     let with_star = move |label: &'static str, value: &'static str| {
         view! {
@@ -3580,11 +3613,11 @@ fn FilterTabs(
                 <button class="tab-label" on:click=move |_| toggle(value)>
                     {label}
                 </button>
-                <SubscribeStar kind="game" value=value.to_string() />
+                <SubscribeStar kind="sport" value=value.to_string() />
             </span>
         }
     };
-    // A "clear" appears once any game/event filter is active and resets them all.
+    // A "clear" appears once any sport/event filter is active and resets them all.
     let any_active = move || games.with(|g| !g.is_empty()) || leagues.with(|l| !l.is_empty());
     let clear = move |_| {
         games.update(HashSet::clear);
@@ -3597,7 +3630,7 @@ fn FilterTabs(
     };
     // This row's games, in canonical order; the row hides when the active mode
     // isn't this row's (the two rows are exact inverses).
-    let tabs = Game::ALL
+    let tabs = Sport::ALL
         .iter()
         .filter(|g| g.traditional() == traditional_row)
         .map(|g| with_star(g.label(), g.slug()))
@@ -3769,8 +3802,8 @@ fn ScheduleSection(
                                 .flat_map(|d| &d.leagues)
                                 .flat_map(|lg| &lg.matches)
                                 .any(|m| {
-                                    (games_set.is_empty() || games_set.contains(m.game.slug()))
-                                        && m.game.has_sub_leagues()
+                                    (games_set.is_empty() || games_set.contains(m.sport.slug()))
+                                        && m.sport.has_sub_leagues()
                                 });
                             let show_chips = if trad {
                                 !available.is_empty() && (available.len() > 1 || has_sub)
@@ -3858,7 +3891,7 @@ fn TraditionalStandings(league: Memo<String>) -> impl IntoView {
     }
 }
 
-/// Distinct league names among groups whose game passes the filter (empty set =
+/// Distinct league names among groups whose sport passes the filter (empty set =
 /// all games), in first-appearance order. Drives the event chip list, so the
 /// chips reflect the selected games.
 fn leagues_for_games(s: &ScheduleView, games: &HashSet<String>) -> Vec<String> {
@@ -3866,7 +3899,7 @@ fn leagues_for_games(s: &ScheduleView, games: &HashSet<String>) -> Vec<String> {
     for day in &s.days {
         for lg in &day.leagues {
             let game_ok = games.is_empty()
-                || lg.matches.first().is_some_and(|m| games.contains(m.game.slug()));
+                || lg.matches.first().is_some_and(|m| games.contains(m.sport.slug()));
             if game_ok && !out.iter().any(|l| l == &lg.league) {
                 out.push(lg.league.clone());
             }
@@ -3888,7 +3921,7 @@ fn filter_schedule(
     for day in &mut s.days {
         day.leagues.retain(|lg| {
             let game_ok = games.is_empty()
-                || lg.matches.first().is_some_and(|m| games.contains(m.game.slug()));
+                || lg.matches.first().is_some_and(|m| games.contains(m.sport.slug()));
             let league_ok = leagues.is_empty() || leagues.contains(&lg.league);
             game_ok && league_ok
         });
@@ -3940,11 +3973,11 @@ fn UpNextBar(day: DayGroup) -> impl IntoView {
         .into_iter()
         .take(CAP)
         .map(|m| {
-            let muid = crate::types::match_uid(m.game, m.id);
-            let sep = versus_sep(m.game);
+            let muid = crate::types::match_uid(m.sport, m.id);
+            let sep = versus_sep(m.sport);
             // F1 (single-entity) has no opponent: show just the session label, with
             // no "at"/"vs" separator and no empty second team.
-            let teams = if m.game.single_entity() {
+            let teams = if m.sport.single_entity() {
                 view! {
                     <span class="upnext-team upnext-solo">{m.team_a.label}</span>
                 }
@@ -4129,15 +4162,26 @@ fn render_schedule(
                     // Title the group with the full event name (league + edition,
                     // e.g. "IEM Katowice"); the subscribe key stays the short
                     // league name, while the full name keys the event link.
-                    let serie = lg.serie_name.clone();
+                    let series = lg.series_name.clone();
+                    // A single-league traditional sport (MLB/NHL/NBA/NFL) is 1:1 with
+                    // its sport, so its sport tab's ★ already covers every match — a
+                    // league ★ here would be a duplicate (same notifications, same
+                    // scope). Esports and the multi-league sports (soccer, motorsport)
+                    // keep it: there the league is a real sub-set of the sport.
+                    let dup_league_star = lg
+                        .matches
+                        .first()
+                        .is_some_and(|m| m.sport.traditional() && !m.sport.has_sub_leagues());
                     let head = (!event_mode).then(move || {
-                        let display = full_event_name(&league_name, &serie);
+                        let display = full_event_name(&league_name, &series);
                         // The full edition name keys its event page, so distinct
                         // editions get distinct URLs.
                         let event_href = format!("/event/{}", enc_segment(&display));
                         view! {
                             <div class="league-head">
-                                <SubscribeStar kind="league" value=league_name.clone() />
+                                {(!dup_league_star).then(|| {
+                                    view! { <SubscribeStar kind="league" value=league_name.clone() /> }
+                                })}
                                 <h3 class="league-title">
                                     <A href=event_href>{display}</A>
                                 </h3>
@@ -4340,12 +4384,12 @@ fn MatchRow(m: MatchView, show_bo: bool, push: bool) -> impl IntoView {
     let has = sa.is_some() && sb.is_some();
     let win_a = m.team_a.winner;
     let win_b = m.team_b.winner;
-    let sep = versus_sep(m.game);
+    let sep = versus_sep(m.sport);
     let bo = if show_bo { m.best_of } else { String::new() };
 
     // Scores are spoilers: reveal only when the global toggle is on or this
     // match was individually revealed (by clicking its "Final" badge).
-    let muid = crate::types::match_uid(m.game, m.id);
+    let muid = crate::types::match_uid(m.sport, m.id);
     let global = use_context::<ShowScores>().map(|s| s.0);
     let revealed = use_context::<RevealedMatches>().map(|r| r.0);
     let reveal = {
@@ -4410,7 +4454,7 @@ fn MatchRow(m: MatchView, show_bo: bool, push: bool) -> impl IntoView {
 
     // F1 (and any single-entity sport) has no opponent: the one label is the
     // session (e.g. "Race"), spanning the team columns with no "vs"/score middle.
-    let inner = if m.game.single_entity() {
+    let inner = if m.sport.single_entity() {
         view! {
             {time_view}
             <span class="row-team row-solo">{team_cell(m.team_a.label, m.team_a.abbrev)}</span>
@@ -4468,7 +4512,7 @@ fn MatchRow(m: MatchView, show_bo: bool, push: bool) -> impl IntoView {
             view! {
                 <StarButton
                     id=m.id
-                    game=m.game
+                    sport=m.sport
                     league=m.league.clone()
                     team_a=m.team_a.name.clone()
                     team_b=m.team_b.name.clone()
@@ -4488,16 +4532,16 @@ fn MatchRow(m: MatchView, show_bo: bool, push: bool) -> impl IntoView {
 }
 
 #[component]
-fn StarButton(id: i64, game: Game, league: String, team_a: String, team_b: String) -> impl IntoView {
+fn StarButton(id: i64, sport: Sport, league: String, team_a: String, team_b: String) -> impl IntoView {
     let starred = use_context::<RwSignal<HashSet<String>>>().expect("starred context");
     let subscribed = use_context::<Subscribed>().expect("subscribed context").0;
     let excluded = use_context::<Excluded>().expect("excluded context").0;
     let vapid = use_context::<RwSignal<Option<String>>>().expect("vapid context");
     // The match's uid keys the star/exclude sets (ids aren't unique across games).
-    let uid = crate::types::match_uid(game, id);
-    // The scopes that auto-cover this match (its game, this event, or either team).
+    let uid = crate::types::match_uid(sport, id);
+    // The scopes that auto-cover this match (its sport, this event, or either team).
     let keys = [
-        format!("game|{}", game.slug()),
+        format!("sport|{}", sport.slug()),
         format!("league|{league}"),
         format!("team|{team_a}"),
         format!("team|{team_b}"),
@@ -4545,11 +4589,11 @@ fn StarButton(id: i64, game: Game, league: String, team_a: String, team_b: Strin
         {
             save_starred(&starred.get_untracked());
             save_excluded(&excluded.get_untracked());
-            sync_match_reminder(id, game, want_on, covered, vapid.get_untracked());
+            sync_match_reminder(id, sport, want_on, covered, vapid.get_untracked());
         }
         #[cfg(not(feature = "hydrate"))]
         {
-            let _ = (covered, want_on, vapid, game);
+            let _ = (covered, want_on, vapid, sport);
         }
     };
 
@@ -4581,7 +4625,7 @@ fn reflect_str(obj: &wasm_bindgen::JsValue, key: &str) -> Option<String> {
         .as_string()
 }
 
-// Starred / excluded / revealed are sets of match uids ("{game}-{id}"), persisted
+// Starred / excluded / revealed are sets of match uids ("{sport}-{id}"), persisted
 // as comma-separated strings via the shared string-set helpers below.
 #[cfg(feature = "hydrate")]
 fn save_starred(uids: &HashSet<String>) {
@@ -4672,13 +4716,13 @@ fn load_sections() -> HashSet<String> {
 #[cfg(feature = "hydrate")]
 fn sync_match_reminder(
     match_id: i64,
-    game: Game,
+    sport: Sport,
     want_on: bool,
     covered: bool,
     vapid: Option<String>,
 ) {
     let Some(vapid) = vapid else { return };
-    let game = game.slug().to_string();
+    let sport = sport.slug().to_string();
     leptos::task::spawn_local(async move {
         let sub = match pte_subscribe(&vapid).await {
             Ok(s) => s,
@@ -4701,7 +4745,7 @@ fn sync_match_reminder(
             let _ = crate::server::add_reminder(crate::types::ReminderReq {
                 sub: push,
                 match_id,
-                game,
+                sport,
             })
             .await;
         } else if covered {
@@ -4709,12 +4753,12 @@ fn sync_match_reminder(
             let _ = crate::server::exclude_reminder(crate::types::ReminderReq {
                 sub: push,
                 match_id,
-                game,
+                sport,
             })
             .await;
         } else {
             // Plain un-star: drop the reminder row entirely.
-            let _ = crate::server::remove_reminder(endpoint, match_id, game).await;
+            let _ = crate::server::remove_reminder(endpoint, match_id, sport).await;
         }
     });
 }
@@ -4737,14 +4781,14 @@ fn clear_all_notifications(vapid: Option<String>) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::{BracketMatch, DayGroup, Game, LeagueGroup, TeamView};
+    use crate::types::{BracketMatch, DayGroup, Sport, LeagueGroup, TeamView};
 
     fn mv(league: &str) -> MatchView {
         MatchView {
             id: 1,
-            game: Game::Lol,
+            sport: Sport::Lol,
             league: league.into(),
-            serie_name: String::new(),
+            series_name: String::new(),
             tier: "S".into(),
             status: MatchStatus::Upcoming,
             clock_label: String::new(),
@@ -4786,7 +4830,7 @@ mod tests {
                     .into_iter()
                     .map(|l| LeagueGroup {
                         league: l.into(),
-                        serie_name: String::new(),
+                        series_name: String::new(),
                         event_url: String::new(),
                         bo: None,
                         matches: vec![mv(l)],
@@ -5067,7 +5111,7 @@ mod tests {
     fn leagues_for_games_first_appearance_order() {
         let s = sched(vec![vec!["LCK", "LEC"], vec!["LCK", "LPL"]]);
         assert_eq!(leagues_for_games(&s, &HashSet::new()), vec!["LCK", "LEC", "LPL"]);
-        // `mv` matches are LoL, so the cs2 game filter hides them all.
+        // `mv` matches are LoL, so the cs2 sport filter hides them all.
         assert!(leagues_for_games(&s, &names(&["cs2"])).is_empty());
         assert_eq!(leagues_for_games(&s, &names(&["lol"])), vec!["LCK", "LEC", "LPL"]);
     }
@@ -5090,7 +5134,7 @@ mod tests {
     #[test]
     fn filter_schedule_games_and_events_are_anded() {
         let s = sched(vec![vec!["LCK", "LEC"]]);
-        // LoL game keeps both; cs2 drops everything (mv matches are LoL).
+        // LoL sport keeps both; cs2 drops everything (mv matches are LoL).
         assert_eq!(filter_schedule(s.clone(), &names(&["lol"]), &HashSet::new()).days.len(), 1);
         assert!(filter_schedule(s.clone(), &names(&["cs2"]), &HashSet::new()).days.is_empty());
         // lol AND only the LCK event → one group.
@@ -5105,7 +5149,7 @@ mod tests {
         // An explicit ?mode wins outright.
         assert!(resolve_sport_mode(Some("sports"), None, None));
         assert!(!resolve_sport_mode(Some("esports"), None, Some("sports")));
-        // Else infer from a known game slug in ?g.
+        // Else infer from a known sport slug in ?g.
         assert!(resolve_sport_mode(None, Some("nhl"), None)); // traditional
         assert!(!resolve_sport_mode(None, Some("cs2"), Some("sports"))); // esports slug overrides cookie
         assert!(resolve_sport_mode(None, Some("cs2,mlb"), None)); // any traditional ⇒ sports

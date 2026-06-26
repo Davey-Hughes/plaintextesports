@@ -6,24 +6,24 @@ use crate::types::{
     ScheduleView, SiteInfo, SubscribeReq,
 };
 #[cfg(feature = "ssr")]
-use crate::types::Game;
+use crate::types::Sport;
 use leptos::prelude::*;
 
-/// Homepage schedule. `game` is "all"/"cs2"/"lol"; `tz` is an IANA name (empty
+/// Homepage schedule. `sport` is "all"/"cs2"/"lol"; `tz` is an IANA name (empty
 /// = server default); `hour24` selects 24h vs 12h time formatting.
 #[server(GetSchedule, "/api")]
 pub async fn get_schedule(
-    game: String,
+    sport: String,
     tz: String,
     hour24: bool,
 ) -> Result<ScheduleView, ServerFnError> {
     #[cfg(feature = "ssr")]
     {
-        Ok(crate::cache::homepage_view(&game, &tz, hour24))
+        Ok(crate::cache::homepage_view(&sport, &tz, hour24))
     }
     #[cfg(not(feature = "ssr"))]
     {
-        let _ = (game, tz, hour24);
+        let _ = (sport, tz, hour24);
         Ok(ScheduleView::default())
     }
 }
@@ -34,17 +34,17 @@ pub async fn get_schedule(
 pub async fn get_range(
     start: String,
     end: String,
-    game: String,
+    sport: String,
     tz: String,
     hour24: bool,
 ) -> Result<ScheduleView, ServerFnError> {
     #[cfg(feature = "ssr")]
     {
-        Ok(crate::cache::range_view(&start, &end, &game, &tz, hour24))
+        Ok(crate::cache::range_view(&start, &end, &sport, &tz, hour24))
     }
     #[cfg(not(feature = "ssr"))]
     {
-        let _ = (start, end, game, tz, hour24);
+        let _ = (start, end, sport, tz, hour24);
         Ok(ScheduleView::default())
     }
 }
@@ -53,17 +53,17 @@ pub async fn get_range(
 #[server(GetDay, "/api")]
 pub async fn get_day(
     date: String,
-    game: String,
+    sport: String,
     tz: String,
     hour24: bool,
 ) -> Result<ScheduleView, ServerFnError> {
     #[cfg(feature = "ssr")]
     {
-        Ok(crate::cache::day_view(&date, &game, &tz, hour24))
+        Ok(crate::cache::day_view(&date, &sport, &tz, hour24))
     }
     #[cfg(not(feature = "ssr"))]
     {
-        let _ = (date, game, tz, hour24);
+        let _ = (date, sport, tz, hour24);
         Ok(ScheduleView::default())
     }
 }
@@ -77,17 +77,17 @@ pub async fn get_match_detail(
 ) -> Result<MatchDetail, ServerFnError> {
     #[cfg(feature = "ssr")]
     {
-        // `uid` is "{game}-{id}" — ids aren't unique across games.
-        let Some((game, id)) = crate::types::parse_match_uid(&uid) else {
+        // `uid` is "{sport}-{id}" — ids aren't unique across games.
+        let Some((sport, id)) = crate::types::parse_match_uid(&uid) else {
             return Ok(MatchDetail::default());
         };
         let Some((match_view, streams, tournament_id, league)) =
-            crate::cache::match_basics(id, game, &tz, hour24)
+            crate::cache::match_basics(id, sport, &tz, hour24)
         else {
             return Ok(MatchDetail::default());
         };
         let mut event = match tournament_id {
-            Some(tid) => crate::cache::event_info(tid, match_view.game).await,
+            Some(tid) => crate::cache::event_info(tid, match_view.sport).await,
             None => EventInfo::default(),
         };
         event.event = league;
@@ -96,14 +96,14 @@ pub async fn get_match_detail(
         // shows the series between them (fetched on demand, request-time, TTL-
         // cached so it doesn't hammer the MLB API).
         let stages = crate::cache::team_standings_for_match(
-            match_view.game,
+            match_view.sport,
             &match_view.league,
             &match_view.team_a.label,
             &match_view.team_a.name,
             &match_view.team_b.label,
             &match_view.team_b.name,
         );
-        let series = if match_view.game == Game::Mlb {
+        let series = if match_view.sport == Sport::Mlb {
             crate::cache::mlb_series(id, &tz, hour24).await.unwrap_or_default()
         } else {
             crate::types::Series::default()
@@ -310,7 +310,7 @@ pub async fn add_reminder(req: ReminderReq) -> Result<(), ServerFnError> {
         }
         // Derive time/title/body/url from the snapshot so a client can't forge an
         // arbitrary notification (it only supplies its push subscription + a match id).
-        let seed = crate::cache::reminder_seed_for_match(req.match_id, &req.game, cfg.reminder_lead_ms)
+        let seed = crate::cache::reminder_seed_for_match(req.match_id, &req.sport, cfg.reminder_lead_ms)
             .ok_or_else(|| ServerFnError::new("match not found or already started"))?;
         let conn = crate::store::shared(&cfg.db_path)
             .map_err(|e| ServerFnError::new(format!("db: {e}")))?;
@@ -325,7 +325,7 @@ pub async fn add_reminder(req: ReminderReq) -> Result<(), ServerFnError> {
     }
 }
 
-/// Subscribe to a whole game ("game"/"cs2"|"lol") or event ("league"/<name>).
+/// Subscribe to a whole sport ("sport"/"cs2"|"lol") or event ("league"/<name>).
 #[server(AddSubscription, "/api")]
 pub async fn add_subscription(req: SubscribeReq) -> Result<(), ServerFnError> {
     #[cfg(feature = "ssr")]
@@ -355,7 +355,7 @@ pub async fn add_subscription(req: SubscribeReq) -> Result<(), ServerFnError> {
     }
 }
 
-/// Unsubscribe from a game/event (also drops its pending reminders).
+/// Unsubscribe from a sport/event (also drops its pending reminders).
 #[server(RemoveSubscription, "/api")]
 pub async fn remove_subscription(
     endpoint: String,
@@ -388,7 +388,7 @@ pub async fn remove_subscription(
 pub async fn remove_reminder(
     endpoint: String,
     match_id: i64,
-    game: String,
+    sport: String,
 ) -> Result<(), ServerFnError> {
     #[cfg(feature = "ssr")]
     {
@@ -398,18 +398,18 @@ pub async fn remove_reminder(
         }
         let conn = crate::store::shared(&cfg.db_path)
             .map_err(|e| ServerFnError::new(format!("db: {e}")))?;
-        crate::store::remove_reminder(&conn, &endpoint, match_id, &game)
+        crate::store::remove_reminder(&conn, &endpoint, match_id, &sport)
             .map_err(|e| ServerFnError::new(format!("db: {e}")))?;
         Ok(())
     }
     #[cfg(not(feature = "ssr"))]
     {
-        let _ = (endpoint, match_id, game);
+        let _ = (endpoint, match_id, sport);
         Ok(())
     }
 }
 
-/// Opt a single match out of a covering game/event/team subscription (a
+/// Opt a single match out of a covering sport/event/team subscription (a
 /// no-notify tombstone) without unsubscribing from the whole scope.
 #[server(ExcludeReminder, "/api")]
 pub async fn exclude_reminder(req: ReminderReq) -> Result<(), ServerFnError> {
@@ -419,7 +419,7 @@ pub async fn exclude_reminder(req: ReminderReq) -> Result<(), ServerFnError> {
         if !cfg.push_enabled() || cfg.db_path.is_empty() {
             return Err(ServerFnError::new("reminders are not available"));
         }
-        let seed = crate::cache::reminder_seed_for_match(req.match_id, &req.game, cfg.reminder_lead_ms)
+        let seed = crate::cache::reminder_seed_for_match(req.match_id, &req.sport, cfg.reminder_lead_ms)
             .ok_or_else(|| ServerFnError::new("match not found or already started"))?;
         let conn = crate::store::shared(&cfg.db_path)
             .map_err(|e| ServerFnError::new(format!("db: {e}")))?;

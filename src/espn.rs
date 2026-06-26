@@ -8,7 +8,7 @@
 //! toggle (like esports); the start time still shows in the viewer's zone.
 
 use crate::pandascore::{NormTeam, NormalizedMatch};
-use crate::types::{EventInfo, Game, MatchStatus, StandingRow};
+use crate::types::{EventInfo, Sport, MatchStatus, StandingRow};
 use chrono::{DateTime, Datelike, NaiveDate, NaiveDateTime, Utc};
 use serde::Deserialize;
 
@@ -17,10 +17,10 @@ const CORE: &str = "https://site.api.espn.com/apis/v2/sports";
 
 /// One ESPN-backed league (NFL or NBA) and the bits that differ between them.
 pub struct EspnLeague {
-    pub game: Game,
+    pub sport: Sport,
     pub name: &'static str,
     /// ESPN URL path parts, e.g. ("football", "nfl").
-    sport: &'static str,
+    espn_sport: &'static str,
     league: &'static str,
     /// The standings stat shown in the last table column (its `displayValue`).
     last_stat: &'static str,
@@ -30,15 +30,15 @@ pub struct EspnLeague {
     /// Base id for the conference standings tables (id = base + conference index).
     standings_base: i64,
     /// Whether this competition recurs as dated editions rather than one ongoing
-    /// season — the World Cup, whose serie carries the year so 2026 and 2030 are
-    /// distinct events. The seasonal leagues (NFL/NBA/PL) leave their serie empty.
+    /// season — the World Cup, whose series carries the year so 2026 and 2030 are
+    /// distinct events. The seasonal leagues (NFL/NBA/PL) leave their series empty.
     dated_event: bool,
 }
 
 pub const NFL: EspnLeague = EspnLeague {
-    game: Game::Nfl,
+    sport: Sport::Nfl,
     name: "NFL",
-    sport: "football",
+    espn_sport: "football",
     league: "nfl",
     last_stat: "winPercent",
     rank_stat: "wins",
@@ -47,9 +47,9 @@ pub const NFL: EspnLeague = EspnLeague {
 };
 
 pub const NBA: EspnLeague = EspnLeague {
-    game: Game::Nba,
+    sport: Sport::Nba,
     name: "NBA",
-    sport: "basketball",
+    espn_sport: "basketball",
     league: "nba",
     last_stat: "gamesBehind",
     rank_stat: "wins",
@@ -58,9 +58,9 @@ pub const NBA: EspnLeague = EspnLeague {
 };
 
 pub const EPL: EspnLeague = EspnLeague {
-    game: Game::Soccer,
+    sport: Sport::Soccer,
     name: "Premier League",
-    sport: "soccer",
+    espn_sport: "soccer",
     league: "eng.1",
     // Soccer ranks by points; the table shows W-D-L (draws ride the ties slot).
     last_stat: "points",
@@ -70,9 +70,9 @@ pub const EPL: EspnLeague = EspnLeague {
 };
 
 pub const WORLD_CUP: EspnLeague = EspnLeague {
-    game: Game::Soccer,
+    sport: Sport::Soccer,
     name: "World Cup",
-    sport: "soccer",
+    espn_sport: "soccer",
     league: "fifa.world",
     last_stat: "points",
     rank_stat: "points",
@@ -93,10 +93,10 @@ pub fn european_season(now: DateTime<Utc>) -> i32 {
 /// ESPN's season year for a league at `now`. NFL labels a season by its start
 /// year (Sept–Feb); NBA by its end year (Oct–June).
 #[must_use]
-pub fn season_year(game: Game, now: DateTime<Utc>) -> i32 {
+pub fn season_year(sport: Sport, now: DateTime<Utc>) -> i32 {
     let (y, m) = (now.year(), now.month());
-    match game {
-        Game::Nfl => {
+    match sport {
+        Sport::Nfl => {
             if m >= 9 {
                 y
             } else {
@@ -303,7 +303,7 @@ fn to_match(e: Event, lg: &EspnLeague) -> Option<NormalizedMatch> {
     // ESPN exposes no venue IANA tz, so these carry no venue-time toggle.
     let mut m = NormalizedMatch::team_sport(
         id,
-        lg.game,
+        lg.sport,
         lg.name,
         begin_at,
         status_of(&e.status.r#type.state, &e.status.r#type.name),
@@ -328,10 +328,10 @@ fn to_match(e: Event, lg: &EspnLeague) -> Option<NormalizedMatch> {
     // venue-time toggle works — notably for the World Cup's US/Canada/Mexico hosts.
     m.venue_tz = venue_tz(&comp.venue.address.city, &comp.venue.address.country)
         .map(str::to_string);
-    // A dated tournament (the World Cup) carries its year as the serie, so each
-    // edition is a distinct event; the seasonal leagues keep an empty serie.
+    // A dated tournament (the World Cup) carries its year as the series, so each
+    // edition is a distinct event; the seasonal leagues keep an empty series.
     if lg.dated_event {
-        m.serie_name = begin_at.year().to_string();
+        m.series_name = begin_at.year().to_string();
     }
     Some(m)
 }
@@ -346,7 +346,7 @@ pub async fn fetch_schedule(
 ) -> Result<Vec<NormalizedMatch>, reqwest::Error> {
     let url = format!(
         "{SITE}/{}/{}/scoreboard?dates={}-{}&limit=500",
-        lg.sport,
+        lg.espn_sport,
         lg.league,
         start.format("%Y%m%d"),
         end.format("%Y%m%d"),
@@ -468,7 +468,7 @@ fn conferences_from(resp: StandingsResp, lg: &EspnLeague) -> Vec<EventInfo> {
                 event: lg.name.to_string(),
                 tournament_id: lg.standings_base + i as i64,
                 stage: conf_label(&conf.name, &conf.abbreviation),
-                game: lg.game,
+                sport: lg.sport,
                 standings: rows,
                 rounds: Vec::new(),
                 swiss: Vec::new(),
@@ -487,8 +487,8 @@ pub async fn fetch_standings(
     season: Option<i32>,
 ) -> Result<Vec<EventInfo>, reqwest::Error> {
     let url = match season {
-        Some(s) => format!("{CORE}/{}/{}/standings?season={s}", lg.sport, lg.league),
-        None => format!("{CORE}/{}/{}/standings", lg.sport, lg.league),
+        Some(s) => format!("{CORE}/{}/{}/standings?season={s}", lg.espn_sport, lg.league),
+        None => format!("{CORE}/{}/{}/standings", lg.espn_sport, lg.league),
     };
     let resp: StandingsResp = client.get(&url).send().await?.error_for_status()?.json().await?;
     Ok(conferences_from(resp, lg))
@@ -514,7 +514,7 @@ mod tests {
         let games: Vec<NormalizedMatch> =
             resp.events.into_iter().filter_map(|e| to_match(e, &NBA)).collect();
         assert_eq!(games.len(), 2);
-        assert_eq!(games[0].game, Game::Nba);
+        assert_eq!(games[0].sport, Sport::Nba);
         // Away at home: team_a is the away side.
         assert_eq!(games[0].team_a.label, "Grizzlies");
         assert_eq!(games[0].team_b.name, "Orlando Magic");
@@ -549,10 +549,10 @@ mod tests {
     #[test]
     fn nfl_and_nba_use_different_season_conventions() {
         let jun_2026 = "2026-06-24T00:00:00Z".parse::<DateTime<Utc>>().unwrap();
-        assert_eq!(season_year(Game::Nfl, jun_2026), 2025);
-        assert_eq!(season_year(Game::Nba, jun_2026), 2026);
+        assert_eq!(season_year(Sport::Nfl, jun_2026), 2025);
+        assert_eq!(season_year(Sport::Nba, jun_2026), 2026);
         let nov_2026 = "2026-11-15T00:00:00Z".parse::<DateTime<Utc>>().unwrap();
-        assert_eq!(season_year(Game::Nfl, nov_2026), 2026);
-        assert_eq!(season_year(Game::Nba, nov_2026), 2027);
+        assert_eq!(season_year(Sport::Nfl, nov_2026), 2026);
+        assert_eq!(season_year(Sport::Nba, nov_2026), 2027);
     }
 }
