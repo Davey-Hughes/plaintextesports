@@ -532,16 +532,6 @@ fn SiteFooter() -> impl IntoView {
                 <span>
                     {move || {
                         if traditional.get() {
-                            "baseball + hockey + basketball + football + soccer + motorsport schedules"
-                        } else {
-                            "tier-1 cs2 + lol schedules"
-                        }
-                    }}
-                </span>
-                <span class="sep">" · "</span>
-                <span>
-                    {move || {
-                        if traditional.get() {
                             "data via MLB Stats API, NHL, ESPN & Jolpica"
                         } else {
                             "data via PandaScore"
