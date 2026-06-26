@@ -2108,6 +2108,23 @@ a.sw-link {
   white-space: nowrap;
 }
 
+// Long names (e.g. WEC crews "A · B · C") truncate; on hover the name expands to
+// its full width and overlays the columns to its right (the points) with the page
+// background so it's readable. Scoped to the single-name tables (WRC/WEC + F1
+// constructors), not the F1 drivers table which has an extra constructor column.
+@media (hover: hover) {
+  .f1-standings-con .f1-standing-name:hover {
+    overflow: visible;
+    width: max-content;
+    max-width: 24rem;
+    justify-self: start;
+    position: relative;
+    z-index: 2;
+    background: var(--bg);
+    padding-right: 0.35rem;
+  }
+}
+
 .f1-standing-con {
   color: var(--muted);
   overflow: hidden;
