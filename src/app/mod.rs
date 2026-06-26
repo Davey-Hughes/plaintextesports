@@ -1242,6 +1242,17 @@ fn EventPage() -> impl IntoView {
                                     </p>
                                 }
                             });
+                        // A motorsport series' official live-stream link (no
+                        // per-event broadcast data exists, so it's per-series).
+                        let watch = motorsport_watch(&motorsport_league(&s)).map(|(name, url)| {
+                            view! {
+                                <p class="event-link event-watch">
+                                    <a href=url target="_blank" rel="noreferrer">
+                                        {format!("watch · {name} ↗")}
+                                    </a>
+                                </p>
+                            }
+                        });
                         // Each event match's (day, time), so the bracket can date its
                         // rounds and show per-match times from the same data.
                         let mut times: std::collections::HashMap<i64, (String, String)> =
@@ -1354,6 +1365,7 @@ fn EventPage() -> impl IntoView {
                                 <A href="/">"← schedule"</A>
                                 {title_head}
                                 {link}
+                                {watch}
                                 {nav}
                                 {f1_nav}
                                 <div id="sched" class="spy">
@@ -3083,6 +3095,29 @@ fn motor_series(s: &ScheduleView) -> String {
         .map(|lg| lg.league.clone())
         .find(|l| matches!(l.as_str(), "WRC" | "WEC"))
         .unwrap_or_default()
+}
+
+/// The motorsport series ("F1"/"WRC"/"WEC") an event page is for, else "".
+fn motorsport_league(s: &ScheduleView) -> String {
+    s.days
+        .iter()
+        .flat_map(|d| &d.leagues)
+        .map(|lg| lg.league.clone())
+        .find(|l| matches!(l.as_str(), "F1" | "WRC" | "WEC"))
+        .unwrap_or_default()
+}
+
+/// The official live-streaming service for a motorsport series — `(name, url)` —
+/// shown as a "watch" link on its event page. There's no per-event broadcast data
+/// anywhere, so these are the stable per-series services (WEC's is free on
+/// YouTube; F1 TV / Rally.TV are paid, linked for convenience). `None` otherwise.
+fn motorsport_watch(league: &str) -> Option<(&'static str, &'static str)> {
+    Some(match league {
+        "F1" => ("F1 TV", "https://f1tv.formula1.com/"),
+        "WRC" => ("Rally.TV", "https://www.rally.tv/en"),
+        "WEC" => ("FIA WEC on YouTube", "https://www.youtube.com/@FIAWEC/streams"),
+        _ => return None,
+    })
 }
 
 /// Whether an event still has something to be notified about — any upcoming or
