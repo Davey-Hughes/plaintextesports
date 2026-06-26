@@ -139,7 +139,7 @@ pub fn spawn_sender() {
         leptos::logging::log!("Web Push sender started");
 
         loop {
-            // Expand game/event subscriptions into per-match reminders first.
+            // Expand sport/event subscriptions into per-match reminders first.
             expand_subscriptions(&conn);
 
             let now = Utc::now().timestamp_millis();
@@ -184,7 +184,7 @@ pub fn spawn_sender() {
     });
 }
 
-/// Turn each game/event subscription into per-match reminders (insert-if-absent
+/// Turn each sport/event subscription into per-match reminders (insert-if-absent
 /// so already-sent reminders aren't re-armed).
 fn expand_subscriptions(conn: &rusqlite::Connection) {
     let subs = match store::list_subscriptions(conn) {
@@ -205,7 +205,7 @@ fn expand_subscriptions(conn: &rusqlite::Connection) {
                 title: seed.title,
                 body: seed.body,
                 url: seed.url,
-                game: seed.game,
+                sport: seed.sport,
                 league: seed.league,
                 team_a: seed.team_a,
                 team_b: seed.team_b,
@@ -259,7 +259,7 @@ mod tests {
             title: "T1 vs GEN".into(),
             body: "LCK · starts soon".into(),
             url: "https://example.com/".into(),
-            game: "lol".into(),
+            sport: "lol".into(),
             league: "LCK".into(),
             team_a: "T1".into(),
             team_b: "Gen.G".into(),

@@ -2,12 +2,12 @@
 //!
 //! The in-memory snapshot stays the hot path for serving requests; this layer
 //! only persists across restarts. It's touched at boot (load) and after each
-//! poll (upsert + prune). Matches are keyed by `(id, game)` and upserted, so a
+//! poll (upsert + prune). Matches are keyed by `(id, sport)` and upserted, so a
 //! match that finishes and drops out of the API's window is retained until it
 //! ages past the retention cutoff.
 
 use crate::pandascore::{NormTeam, NormalizedMatch};
-use crate::types::{Game, MatchStatus};
+use crate::types::{Sport, MatchStatus};
 use chrono::{DateTime, Utc};
 use once_cell::sync::OnceCell;
 use rusqlite::{params, Connection};
@@ -43,9 +43,9 @@ pub fn open(path: &str) -> rusqlite::Result<Connection> {
     conn.pragma_update(None, "busy_timeout", 5000)?;
     // `meta` first, so the migration flag below is readable.
     conn.execute("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)", [])?;
-    // One-time: the reminders primary key gained `game` (a match id isn't unique
+    // One-time: the reminders primary key gained `sport` (a match id isn't unique
     // across games/sources). Drop the old single-id-keyed table once so the
-    // CREATE below rebuilds it with the (endpoint, match_id, game) key. Reminders
+    // CREATE below rebuilds it with the (endpoint, match_id, sport) key. Reminders
     // are transient (re-armed when starred), so dropping them is safe.
     if get_meta(&conn, "reminders_pk_v2").is_none() {
         conn.execute("DROP TABLE IF EXISTS reminders", [])?;
@@ -54,10 +54,10 @@ pub fn open(path: &str) -> rusqlite::Result<Connection> {
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS matches (
             id           INTEGER NOT NULL,
-            game         TEXT    NOT NULL,
+            sport        TEXT    NOT NULL,
             league       TEXT    NOT NULL,
             league_url   TEXT,
-            serie_name   TEXT,
+            series_name  TEXT,
             tier         TEXT    NOT NULL,
             begin_at_ms  INTEGER NOT NULL,
             status       TEXT    NOT NULL,
@@ -77,7 +77,7 @@ pub fn open(path: &str) -> rusqlite::Result<Connection> {
             team_b_logo  TEXT,
             stream_url   TEXT,
             tournament_id INTEGER,
-            PRIMARY KEY (id, game)
+            PRIMARY KEY (id, sport)
         );
         CREATE INDEX IF NOT EXISTS idx_matches_begin ON matches (begin_at_ms);
         CREATE TABLE IF NOT EXISTS meta (
@@ -98,7 +98,7 @@ pub fn open(path: &str) -> rusqlite::Result<Connection> {
             title        TEXT    NOT NULL,
             body         TEXT    NOT NULL,
             url          TEXT    NOT NULL,
-            game         TEXT    NOT NULL DEFAULT '',
+            sport        TEXT    NOT NULL DEFAULT '',
             league       TEXT    NOT NULL DEFAULT '',
             team_a       TEXT    NOT NULL DEFAULT '',
             team_b       TEXT    NOT NULL DEFAULT '',
@@ -110,8 +110,8 @@ pub fn open(path: &str) -> rusqlite::Result<Connection> {
             -- subscription: expansion's insert-if-absent leaves it, and the
             -- sender skips it, so the reminder never fires.
             excluded     INTEGER NOT NULL DEFAULT 0,
-            -- Keyed by (match_id, game): a match id isn't unique across games.
-            PRIMARY KEY (endpoint, match_id, game)
+            -- Keyed by (match_id, sport): a match id isn't unique across games.
+            PRIMARY KEY (endpoint, match_id, sport)
         );
         CREATE TABLE IF NOT EXISTS subscriptions (
             endpoint    TEXT    NOT NULL,
@@ -123,10 +123,18 @@ pub fn open(path: &str) -> rusqlite::Result<Connection> {
             PRIMARY KEY (endpoint, scope_kind, scope_value)
         );",
     )?;
-    // Migrate older DBs (ignored if the column already exists).
+    // Column renames game->sport and serie_name->series_name (the data model is
+    // `Sport`, and "series" is the English spelling). Upgrade existing DBs in
+    // place; each is a no-op (error ignored) on a DB already on the new names.
+    // Must precede the ADD COLUMN block so an old `serie_name` is renamed rather
+    // than left alongside a freshly-added `series_name`.
+    let _ = conn.execute("ALTER TABLE matches RENAME COLUMN game TO sport", []);
+    let _ = conn.execute("ALTER TABLE matches RENAME COLUMN serie_name TO series_name", []);
+    let _ = conn.execute("ALTER TABLE reminders RENAME COLUMN game TO sport", []);
+    // Add columns missing from older DBs (ignored if the column already exists).
     let _ = conn.execute("ALTER TABLE matches ADD COLUMN league_url TEXT", []);
     let _ = conn.execute("ALTER TABLE matches ADD COLUMN tournament_id INTEGER", []);
-    let _ = conn.execute("ALTER TABLE matches ADD COLUMN serie_name TEXT", []);
+    let _ = conn.execute("ALTER TABLE matches ADD COLUMN series_name TEXT", []);
     let _ = conn.execute("ALTER TABLE matches ADD COLUMN team_a_name TEXT", []);
     let _ = conn.execute("ALTER TABLE matches ADD COLUMN team_b_name TEXT", []);
     let _ = conn.execute("ALTER TABLE matches ADD COLUMN team_a_abbrev TEXT", []);
@@ -136,25 +144,25 @@ pub fn open(path: &str) -> rusqlite::Result<Connection> {
     let _ = conn.execute("ALTER TABLE matches ADD COLUMN venue_location TEXT", []);
     let _ = conn.execute("ALTER TABLE matches ADD COLUMN team_a_logo TEXT", []);
     let _ = conn.execute("ALTER TABLE matches ADD COLUMN team_b_logo TEXT", []);
-    let _ = conn.execute("ALTER TABLE reminders ADD COLUMN game TEXT NOT NULL DEFAULT ''", []);
+    let _ = conn.execute("ALTER TABLE reminders ADD COLUMN sport TEXT NOT NULL DEFAULT ''", []);
     let _ = conn.execute("ALTER TABLE reminders ADD COLUMN league TEXT NOT NULL DEFAULT ''", []);
     let _ = conn.execute("ALTER TABLE reminders ADD COLUMN team_a TEXT NOT NULL DEFAULT ''", []);
     let _ = conn.execute("ALTER TABLE reminders ADD COLUMN team_b TEXT NOT NULL DEFAULT ''", []);
     let _ = conn.execute("ALTER TABLE reminders ADD COLUMN event TEXT NOT NULL DEFAULT ''", []);
     let _ = conn.execute("ALTER TABLE reminders ADD COLUMN excluded INTEGER NOT NULL DEFAULT 0", []);
-    purge_unknown_games(&conn)?;
+    purge_unknown_sports(&conn)?;
     Ok(conn)
 }
 
-/// Delete match rows whose `game` slug isn't a current [`Game`] — orphans left
-/// behind when a game's slug is renamed (e.g. soccer's "soccer" → "football").
-/// Otherwise such rows load as the default game and surface on the wrong page.
+/// Delete match rows whose stored slug isn't a current [`Sport`] — orphans left
+/// behind when a sport's slug is renamed (e.g. soccer's "soccer" → "football").
+/// Otherwise such rows load as the default sport and surface on the wrong page.
 /// Cheap and idempotent, so it runs on every open.
-fn purge_unknown_games(conn: &Connection) -> rusqlite::Result<()> {
-    let slugs: Vec<&str> = Game::ALL.iter().map(|g| g.slug()).collect();
+fn purge_unknown_sports(conn: &Connection) -> rusqlite::Result<()> {
+    let slugs: Vec<&str> = Sport::ALL.iter().map(|g| g.slug()).collect();
     let placeholders = vec!["?"; slugs.len()].join(",");
     conn.execute(
-        &format!("DELETE FROM matches WHERE game NOT IN ({placeholders})"),
+        &format!("DELETE FROM matches WHERE sport NOT IN ({placeholders})"),
         rusqlite::params_from_iter(slugs),
     )?;
     Ok(())
@@ -169,21 +177,22 @@ fn team_name(row: &rusqlite::Row, name_col: &str, label_col: &str) -> rusqlite::
 }
 
 fn row_to_match(row: &rusqlite::Row) -> rusqlite::Result<Option<NormalizedMatch>> {
-    let game: String = row.get("game")?;
-    // Drop rows whose game slug no longer maps to a `Game` (e.g. a row written
-    // under a since-renamed slug). Defaulting an unknown game to Cs2 would
-    // mislabel it and surface it on the wrong page, so skip it instead.
-    let Some(game) = Game::from_filter(&game) else {
+    // The `sport` column holds the slug, not the enum.
+    let slug: String = row.get("sport")?;
+    // Drop rows whose slug no longer maps to a `Sport` (e.g. a row written under a
+    // since-renamed slug). Defaulting an unknown sport to Cs2 would mislabel it
+    // and surface it on the wrong page, so skip it instead.
+    let Some(sport) = Sport::from_filter(&slug) else {
         return Ok(None);
     };
     let begin_ms: i64 = row.get("begin_at_ms")?;
     let status: String = row.get("status")?;
     Ok(Some(NormalizedMatch {
         id: row.get("id")?,
-        game,
+        sport,
         league: row.get("league")?,
         league_url: row.get("league_url")?,
-        serie_name: row.get::<_, Option<String>>("serie_name")?.unwrap_or_default(),
+        series_name: row.get::<_, Option<String>>("series_name")?.unwrap_or_default(),
         tier: row.get("tier")?,
         begin_at: DateTime::from_timestamp_millis(begin_ms).unwrap_or_else(Utc::now),
         status: MatchStatus::from_db(&status),
@@ -216,7 +225,7 @@ fn row_to_match(row: &rusqlite::Row) -> rusqlite::Result<Option<NormalizedMatch>
 }
 
 /// Load all stored matches, ordered by start time. Rows with an unrecognized
-/// game slug are skipped (see [`row_to_match`]).
+/// sport slug are skipped (see [`row_to_match`]).
 pub fn load_all(conn: &Connection) -> rusqlite::Result<Vec<NormalizedMatch>> {
     let mut stmt = conn.prepare("SELECT * FROM matches ORDER BY begin_at_ms ASC")?;
     let rows = stmt.query_map([], row_to_match)?;
@@ -262,20 +271,20 @@ pub fn upsert_and_prune(
     {
         let mut up = tx.prepare(
             "INSERT INTO matches
-                (id, game, league, tier, begin_at_ms, status, best_of,
+                (id, sport, league, tier, begin_at_ms, status, best_of,
                  team_a_label, team_a_score, team_b_label, team_b_score, stream_url,
-                 league_url, tournament_id, serie_name, team_a_name, team_b_name, venue_tz,
+                 league_url, tournament_id, series_name, team_a_name, team_b_name, venue_tz,
                  venue_name, venue_location, team_a_logo, team_b_logo,
                  team_a_abbrev, team_b_abbrev)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24)
-             ON CONFLICT(id, game) DO UPDATE SET
+             ON CONFLICT(id, sport) DO UPDATE SET
                 league=excluded.league, tier=excluded.tier,
                 begin_at_ms=excluded.begin_at_ms, status=excluded.status,
                 best_of=excluded.best_of,
                 team_a_label=excluded.team_a_label, team_a_score=excluded.team_a_score,
                 team_b_label=excluded.team_b_label, team_b_score=excluded.team_b_score,
                 stream_url=excluded.stream_url, league_url=excluded.league_url,
-                tournament_id=excluded.tournament_id, serie_name=excluded.serie_name,
+                tournament_id=excluded.tournament_id, series_name=excluded.series_name,
                 team_a_name=excluded.team_a_name, team_b_name=excluded.team_b_name,
                 venue_tz=excluded.venue_tz, venue_name=excluded.venue_name,
                 venue_location=excluded.venue_location,
@@ -285,7 +294,7 @@ pub fn upsert_and_prune(
         for m in matches {
             up.execute(params![
                 m.id,
-                m.game.slug(),
+                m.sport.slug(),
                 m.league,
                 m.tier,
                 m.begin_at.timestamp_millis(),
@@ -298,7 +307,7 @@ pub fn upsert_and_prune(
                 m.stream_url,
                 m.league_url,
                 m.tournament_id,
-                m.serie_name,
+                m.series_name,
                 m.team_a.name,
                 m.team_b.name,
                 m.venue_tz,
@@ -357,8 +366,8 @@ pub struct Reminder {
     pub title: String,
     pub body: String,
     pub url: String,
-    /// Game/league/teams/event the match belongs to (for scope-based cleanup).
-    pub game: String,
+    /// Sport/league/teams/event the match belongs to (for scope-based cleanup).
+    pub sport: String,
     pub league: String,
     pub team_a: String,
     pub team_b: String,
@@ -367,7 +376,7 @@ pub struct Reminder {
 }
 
 const REMINDER_COLS: &str = "endpoint, p256dh, auth, match_id, notify_at_ms, title, body, url, \
-     game, league, team_a, team_b, event";
+     sport, league, team_a, team_b, event";
 
 fn reminder_params(r: &Reminder) -> [&dyn rusqlite::ToSql; 13] {
     [
@@ -379,7 +388,7 @@ fn reminder_params(r: &Reminder) -> [&dyn rusqlite::ToSql; 13] {
         &r.title,
         &r.body,
         &r.url,
-        &r.game,
+        &r.sport,
         &r.league,
         &r.team_a,
         &r.team_b,
@@ -394,10 +403,10 @@ pub fn add_reminder(conn: &Connection, r: &Reminder) -> rusqlite::Result<()> {
         &format!(
             "INSERT INTO reminders ({REMINDER_COLS}, sent, excluded)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, 0, 0)
-             ON CONFLICT(endpoint, match_id, game) DO UPDATE SET
+             ON CONFLICT(endpoint, match_id, sport) DO UPDATE SET
                 p256dh=excluded.p256dh, auth=excluded.auth,
                 notify_at_ms=excluded.notify_at_ms, title=excluded.title,
-                body=excluded.body, url=excluded.url, game=excluded.game,
+                body=excluded.body, url=excluded.url, sport=excluded.sport,
                 league=excluded.league, team_a=excluded.team_a,
                 team_b=excluded.team_b, event=excluded.event, sent=0, excluded=0"
         ),
@@ -414,21 +423,21 @@ pub fn exclude_reminder(conn: &Connection, r: &Reminder) -> rusqlite::Result<()>
         &format!(
             "INSERT INTO reminders ({REMINDER_COLS}, sent, excluded)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, 0, 1)
-             ON CONFLICT(endpoint, match_id, game) DO UPDATE SET excluded=1, sent=0"
+             ON CONFLICT(endpoint, match_id, sport) DO UPDATE SET excluded=1, sent=0"
         ),
         &reminder_params(r)[..],
     )?;
     Ok(())
 }
 
-/// Insert a reminder only if one doesn't exist (so re-expanding a game/event
+/// Insert a reminder only if one doesn't exist (so re-expanding a sport/event
 /// subscription never re-arms an already-sent reminder).
 pub fn add_reminder_if_absent(conn: &Connection, r: &Reminder) -> rusqlite::Result<()> {
     conn.execute(
         &format!(
             "INSERT INTO reminders ({REMINDER_COLS}, sent)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, 0)
-             ON CONFLICT(endpoint, match_id, game) DO NOTHING"
+             ON CONFLICT(endpoint, match_id, sport) DO NOTHING"
         ),
         &reminder_params(r)[..],
     )?;
@@ -439,11 +448,11 @@ pub fn remove_reminder(
     conn: &Connection,
     endpoint: &str,
     match_id: i64,
-    game: &str,
+    sport: &str,
 ) -> rusqlite::Result<()> {
     conn.execute(
-        "DELETE FROM reminders WHERE endpoint = ?1 AND match_id = ?2 AND game = ?3",
-        params![endpoint, match_id, game],
+        "DELETE FROM reminders WHERE endpoint = ?1 AND match_id = ?2 AND sport = ?3",
+        params![endpoint, match_id, sport],
     )?;
     Ok(())
 }
@@ -466,7 +475,7 @@ pub fn due_reminders(conn: &Connection, now_ms: i64) -> rusqlite::Result<Vec<Rem
             body: r.get(6)?,
             url: r.get(7)?,
             // Not needed for sending.
-            game: String::new(),
+            sport: String::new(),
             league: String::new(),
             team_a: String::new(),
             team_b: String::new(),
@@ -500,17 +509,17 @@ pub fn prune_reminders(conn: &Connection, cutoff_ms: i64) -> rusqlite::Result<()
     Ok(())
 }
 
-// ----- Game/event subscriptions --------------------------------------------
+// ----- Sport/event subscriptions --------------------------------------------
 
-/// A subscription to a whole game or event (expanded into reminders).
+/// A subscription to a whole sport or event (expanded into reminders).
 #[derive(Debug, Clone)]
 pub struct Subscription {
     pub endpoint: String,
     pub p256dh: String,
     pub auth: String,
-    /// "game" or "league".
+    /// "sport" or "league" (also "team"/"event").
     pub scope_kind: String,
-    /// "cs2"/"lol" for a game, else the league name.
+    /// "cs2"/"lol" for a sport, else the league name.
     pub scope_value: String,
     pub lead_ms: i64,
 }
@@ -557,7 +566,7 @@ pub fn list_subscriptions(conn: &Connection) -> rusqlite::Result<Vec<Subscriptio
 }
 
 /// On unsubscribe, drop unsent reminders this endpoint got from that scope. A
-/// team matches either side; game/league match their single column.
+/// team matches either side; sport/league match their single column.
 pub fn delete_unsent_reminders_by_scope(
     conn: &Connection,
     endpoint: &str,
@@ -565,7 +574,7 @@ pub fn delete_unsent_reminders_by_scope(
     value: &str,
 ) -> rusqlite::Result<()> {
     let where_scope = match kind {
-        "game" => "game=?2",
+        "sport" => "sport=?2",
         "team" => "(team_a=?2 OR team_b=?2)",
         "event" => "event=?2",
         _ => "league=?2",
@@ -595,10 +604,10 @@ mod tests {
     fn sample(id: i64, begin_at: DateTime<Utc>) -> NormalizedMatch {
         NormalizedMatch {
             id,
-            game: Game::Lol,
+            sport: Sport::Lol,
             league: "LCK".into(),
             league_url: None,
-            serie_name: String::new(),
+            series_name: String::new(),
             tier: "A".into(),
             begin_at,
             status: MatchStatus::Upcoming,
@@ -662,13 +671,13 @@ mod tests {
     }
 
     #[test]
-    fn purges_rows_under_a_renamed_game_slug() {
+    fn purges_rows_under_a_renamed_sport_slug() {
         let conn = open(":memory:").unwrap();
         // Simulate a row left behind under a since-renamed slug ("soccer" was
         // renamed to "football"), alongside a valid one. The legacy row would
-        // otherwise load as the default game and surface on the esports page.
+        // otherwise load as the default sport and surface on the esports page.
         conn.execute(
-            "INSERT INTO matches (id, game, league, tier, begin_at_ms, status,
+            "INSERT INTO matches (id, sport, league, tier, begin_at_ms, status,
                 team_a_label, team_b_label) VALUES
                 (1, 'soccer', 'World Cup', 'S', 100, 'upcoming', 'Brazil', 'France'),
                 (2, 'football', 'World Cup', 'S', 200, 'upcoming', 'Spain', 'Japan')",
@@ -679,15 +688,42 @@ mod tests {
         assert_eq!(load_all(&conn).unwrap().len(), 1);
 
         // Re-opening the same DB runs the purge, removing the orphan for good.
-        purge_unknown_games(&conn).unwrap();
+        purge_unknown_sports(&conn).unwrap();
         let rows = load_all(&conn).unwrap();
         assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].game, Game::Soccer);
+        assert_eq!(rows[0].sport, Sport::Soccer);
         assert_eq!(rows[0].id, 2);
         let remaining: i64 = conn
             .query_row("SELECT COUNT(*) FROM matches", [], |r| r.get(0))
             .unwrap();
         assert_eq!(remaining, 1, "the legacy 'soccer' row is deleted");
+    }
+
+    #[test]
+    fn rename_column_migration_preserves_data() {
+        // Mirrors the in-place upgrade `open()` applies to DBs written before the
+        // game->sport / serie_name->series_name rename. The `unwrap`s assert this
+        // SQLite build supports RENAME COLUMN and that the row's data survives.
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE matches (id INTEGER NOT NULL, game TEXT NOT NULL,
+                serie_name TEXT, PRIMARY KEY (id, game));",
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO matches (id, game, serie_name) VALUES (1, 'lol', 'Spring')",
+            [],
+        )
+        .unwrap();
+        conn.execute("ALTER TABLE matches RENAME COLUMN game TO sport", []).unwrap();
+        conn.execute("ALTER TABLE matches RENAME COLUMN serie_name TO series_name", []).unwrap();
+        let (sport, series): (String, String) = conn
+            .query_row("SELECT sport, series_name FROM matches WHERE id = 1", [], |r| {
+                Ok((r.get(0)?, r.get(1)?))
+            })
+            .unwrap();
+        assert_eq!(sport, "lol");
+        assert_eq!(series, "Spring");
     }
 
     fn reminder(match_id: i64) -> Reminder {
@@ -700,7 +736,7 @@ mod tests {
             title: "T1 vs GEN".into(),
             body: "LCK".into(),
             url: "u".into(),
-            game: "lol".into(),
+            sport: "lol".into(),
             league: "LCK".into(),
             team_a: "T1".into(),
             team_b: "Gen.G".into(),
@@ -711,16 +747,16 @@ mod tests {
     #[test]
     fn reminders_with_the_same_id_across_games_coexist() {
         let conn = open(":memory:").unwrap();
-        // Two different matches that happen to share a numeric id, one per game.
+        // Two different matches that happen to share a numeric id, one per sport.
         let mut a = reminder(42);
-        a.game = "cs2".into();
+        a.sport = "cs2".into();
         let mut b = reminder(42);
-        b.game = "mlb".into();
+        b.sport = "mlb".into();
         add_reminder(&conn, &a).unwrap();
         add_reminder(&conn, &b).unwrap();
-        // Both survive — the PK is (endpoint, match_id, game), not (endpoint, id).
+        // Both survive — the PK is (endpoint, match_id, sport), not (endpoint, id).
         assert_eq!(due_reminders(&conn, 1000).unwrap().len(), 2);
-        // Removing one game leaves the other.
+        // Removing one sport leaves the other.
         remove_reminder(&conn, &a.endpoint, 42, "cs2").unwrap();
         let due = due_reminders(&conn, 1000).unwrap();
         assert_eq!(due.len(), 1);

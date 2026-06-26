@@ -1,11 +1,11 @@
 //! NHL schedule + standings from the keyless NHL Web API (`api-web.nhle.com`),
 //! normalized into the same [`NormalizedMatch`] model as MLB and the esports
-//! feeds. Two teams per game (away at home), behind the esports/traditional
+//! feeds. Two teams per sport (away at home), behind the esports/traditional
 //! toggle. The schedule endpoint returns a week at a time, so a date-range fetch
 //! walks it a week at a time and de-dupes.
 
 use crate::pandascore::{NormTeam, NormalizedMatch};
-use crate::types::{EventInfo, Game, MatchStatus, StandingRow};
+use crate::types::{EventInfo, Sport, MatchStatus, StandingRow};
 use chrono::{DateTime, Duration, NaiveDate, Utc};
 use serde::Deserialize;
 use std::collections::HashSet;
@@ -102,7 +102,7 @@ fn status_of(game_state: &str, schedule_state: &str) -> MatchStatus {
     }
 }
 
-/// The non-regular-season label for a game type, e.g. "Playoffs" (empty for the
+/// the non-regular-season label for a game type, e.g. "Playoffs" (empty for the
 /// regular season, which is just "NHL").
 fn series_name(game_type: i64) -> String {
     match game_type {
@@ -116,7 +116,7 @@ fn to_match(g: RawGame) -> Option<NormalizedMatch> {
     let begin_at = DateTime::parse_from_rfc3339(&g.start_time_utc).ok()?.with_timezone(&Utc);
     let mut m = NormalizedMatch::team_sport(
         g.id,
-        Game::Nhl,
+        Sport::Nhl,
         "NHL",
         begin_at,
         status_of(&g.game_state, &g.schedule_state),
@@ -135,7 +135,7 @@ fn to_match(g: RawGame) -> Option<NormalizedMatch> {
     );
     // The non-regular-season round (e.g. "Playoffs"), and the arena's IANA tz for
     // the local-time-at-the-venue toggle.
-    m.serie_name = series_name(g.game_type);
+    m.series_name = series_name(g.game_type);
     m.venue_tz = Some(g.venue_timezone).filter(|s| !s.is_empty());
     // The arena name; the city is the home team's place (e.g. "Toronto").
     m.venue_name = g.venue.default;
@@ -146,9 +146,9 @@ fn to_match(g: RawGame) -> Option<NormalizedMatch> {
     Some(m)
 }
 
-/// Fetch every NHL game in the inclusive UTC-day range, normalized. The schedule
+/// Fetch every NHL sport in the inclusive UTC-day range, normalized. The schedule
 /// endpoint returns a week per call, so we step through the window a week at a
-/// time and de-dupe by game id. The first week's call propagates a network error
+/// time and de-dupe by sport id. The first week's call propagates a network error
 /// (so a real outage keeps the old data); later weeks are best-effort.
 pub async fn fetch_schedule(
     client: &reqwest::Client,
@@ -259,7 +259,7 @@ fn divisions_from(resp: StandingsResp) -> Vec<EventInfo> {
                     event: "NHL".to_string(),
                     tournament_id: id,
                     stage: name,
-                    game: Game::Nhl,
+                    sport: Sport::Nhl,
                     standings: rows,
                     rounds: Vec::new(),
                     swiss: Vec::new(),
@@ -300,7 +300,7 @@ mod tests {
         let games: Vec<NormalizedMatch> =
             resp.game_week.into_iter().flat_map(|d| d.games).filter_map(to_match).collect();
         assert_eq!(games.len(), 2);
-        assert_eq!(games[0].game, Game::Nhl);
+        assert_eq!(games[0].sport, Sport::Nhl);
         assert_eq!(games[0].team_a.label, "Canadiens");
         assert_eq!(games[0].team_b.name, "Toronto Maple Leafs");
         assert_eq!(games[0].status, MatchStatus::Upcoming);
@@ -327,6 +327,6 @@ mod tests {
         assert_eq!(central.standings[0].team, "Colorado Avalanche");
         assert_eq!(central.standings[0].gb, "121"); // points in the last column
         assert_eq!(central.standings[0].ties, 11); // OT losses
-        assert_eq!(central.game, Game::Nhl);
+        assert_eq!(central.sport, Sport::Nhl);
     }
 }

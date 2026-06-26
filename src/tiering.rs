@@ -1,7 +1,7 @@
 //! Decides whether a match is "tier 1" and should be shown.
 //!
 //! Precedence (highest first), matching the project plan:
-//!   1. ALLOWLIST  — force-include. Exact full-slug match on the league, serie,
+//!   1. ALLOWLIST  — force-include. Exact full-slug match on the league, series,
 //!      or tournament slug. Use this for events PandaScore mis-tiers or tags
 //!      late. Exact match (not substring) so it can't accidentally pull in
 //!      adjacent noise like "...-lck-challengers-...".
@@ -13,9 +13,9 @@
 //! `*_ALLOWLIST` / `*_DENYLIST` slices below — they are the single source of
 //! truth and are covered by the tests at the bottom of this file.
 
-use crate::types::Game;
+use crate::types::Sport;
 
-/// Exact league/serie/tournament slugs to always include, even if not S/A.
+/// Exact league/series/tournament slugs to always include, even if not S/A.
 /// Seed values are best-effort; verify against live PandaScore slugs and add
 /// here as needed. Leaving this empty is fine — the BASE tier filter already
 /// covers the major leagues.
@@ -49,33 +49,33 @@ const CS_DENYLIST: &[&str] = &[
 #[derive(Debug, Clone, Copy, Default)]
 pub struct TierInput<'a> {
     pub league_slug: Option<&'a str>,
-    pub serie_slug: Option<&'a str>,
+    pub series_slug: Option<&'a str>,
     pub tournament_slug: Option<&'a str>,
     /// PandaScore tournament tier, e.g. "s", "a", "b". Case-insensitive.
     pub tier: Option<&'a str>,
 }
 
-fn allowlist(game: Game) -> &'static [&'static str] {
-    match game {
-        Game::Lol => LOL_ALLOWLIST,
-        Game::Cs2 => CS_ALLOWLIST,
-        // Traditional sports aren't tier-filtered (every game/session is shown).
-        Game::Mlb | Game::Nhl | Game::Nba | Game::Nfl | Game::Soccer | Game::Motorsport => &[],
+fn allowlist(sport: Sport) -> &'static [&'static str] {
+    match sport {
+        Sport::Lol => LOL_ALLOWLIST,
+        Sport::Cs2 => CS_ALLOWLIST,
+        // Traditional sports aren't tier-filtered (every sport/session is shown).
+        Sport::Mlb | Sport::Nhl | Sport::Nba | Sport::Nfl | Sport::Soccer | Sport::Motorsport => &[],
     }
 }
 
-fn denylist(game: Game) -> &'static [&'static str] {
-    match game {
-        Game::Lol => LOL_DENYLIST,
-        Game::Cs2 => CS_DENYLIST,
-        Game::Mlb | Game::Nhl | Game::Nba | Game::Nfl | Game::Soccer | Game::Motorsport => &[],
+fn denylist(sport: Sport) -> &'static [&'static str] {
+    match sport {
+        Sport::Lol => LOL_DENYLIST,
+        Sport::Cs2 => CS_DENYLIST,
+        Sport::Mlb | Sport::Nhl | Sport::Nba | Sport::Nfl | Sport::Soccer | Sport::Motorsport => &[],
     }
 }
 
 /// Returns true when the match should be shown as tier 1.
 #[must_use]
-pub fn is_tier_one(game: Game, input: &TierInput) -> bool {
-    decide(allowlist(game), denylist(game), input)
+pub fn is_tier_one(sport: Sport, input: &TierInput) -> bool {
+    decide(allowlist(sport), denylist(sport), input)
 }
 
 /// Core decision, parameterized over the lists so it can be unit-tested with
@@ -83,7 +83,7 @@ pub fn is_tier_one(game: Game, input: &TierInput) -> bool {
 fn decide(allow: &[&str], deny: &[&str], input: &TierInput) -> bool {
     let slugs: [Option<String>; 3] = [
         input.league_slug.map(str::to_ascii_lowercase),
-        input.serie_slug.map(str::to_ascii_lowercase),
+        input.series_slug.map(str::to_ascii_lowercase),
         input.tournament_slug.map(str::to_ascii_lowercase),
     ];
     let present: Vec<&str> = slugs.iter().filter_map(|s| s.as_deref()).collect();
@@ -120,36 +120,36 @@ mod tests {
     #[test]
     fn base_keeps_s_and_a_tiers() {
         assert!(is_tier_one(
-            Game::Lol,
+            Sport::Lol,
             &league("league-of-legends-lck", Some("a"))
         ));
         assert!(is_tier_one(
-            Game::Cs2,
+            Sport::Cs2,
             &league("cs-go-blast-premier", Some("s"))
         ));
         // Case-insensitive tier.
         assert!(is_tier_one(
-            Game::Lol,
+            Sport::Lol,
             &league("league-of-legends-lec", Some("A"))
         ));
     }
 
     #[test]
     fn base_drops_low_and_missing_tiers() {
-        assert!(!is_tier_one(Game::Cs2, &league("cs-go-some-cup", Some("b"))));
-        assert!(!is_tier_one(Game::Lol, &league("league-of-legends-prm", None)));
+        assert!(!is_tier_one(Sport::Cs2, &league("cs-go-some-cup", Some("b"))));
+        assert!(!is_tier_one(Sport::Lol, &league("league-of-legends-prm", None)));
     }
 
     #[test]
     fn denylist_overrides_base() {
         // Challenger league tagged A is still noise.
         assert!(!is_tier_one(
-            Game::Lol,
+            Sport::Lol,
             &league("league-of-legends-lck-challengers", Some("a"))
         ));
         // Qualifier to a major, even tagged S, is excluded.
         assert!(!is_tier_one(
-            Game::Cs2,
+            Sport::Cs2,
             &league("cs-go-major-open-qualifier", Some("s"))
         ));
     }
@@ -187,6 +187,6 @@ mod tests {
             ..Default::default()
         };
         // Denylisted substring on the tournament slug excludes the match.
-        assert!(!is_tier_one(Game::Lol, &input));
+        assert!(!is_tier_one(Sport::Lol, &input));
     }
 }

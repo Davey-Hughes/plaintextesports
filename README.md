@@ -22,7 +22,7 @@ with an allowlist/denylist) are shown.
   result and the SQLite cache fills the rest in on the next poll. All of this
   stays far under the free tier's 1,000 req/hr limit.
 - Matches are also persisted to a small **SQLite** database (`DB_PATH`), keyed by
-  `(id, game)` and upserted each poll with a 2-day retention window. On restart
+  `(id, sport)` and upserted each poll with a 2-day retention window. On restart
   the app serves the last-known data instantly (no re-fetch burst), and a match
   that finishes and drops out of the API window is retained until it ages out.
 - Times are shown in the **viewer's own timezone** (auto-detected in the browser

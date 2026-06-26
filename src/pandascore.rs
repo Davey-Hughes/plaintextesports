@@ -1,13 +1,13 @@
 //! PandaScore REST client + normalization (server-only).
 //!
-//! Fetches upcoming/running/recent matches for each game, deserializes the
+//! Fetches upcoming/running/recent matches for each sport, deserializes the
 //! relevant fields, and normalizes them into [`NormalizedMatch`] after applying
 //! the tier-1 filter. CS2 lives under the `/csgo/` path prefix; LoL under
 //! `/lol/`. Docs: https://developers.pandascore.co
 
 use crate::tiering::{is_tier_one, TierInput};
 use crate::types::{
-    BracketMatch, BracketRound, Game, MatchStatus, StandingRow, StreamView, SwissBucket,
+    BracketMatch, BracketRound, Sport, MatchStatus, StandingRow, StreamView, SwissBucket,
     SwissMatch, SwissRound,
 };
 use chrono::{DateTime, Utc};
@@ -18,20 +18,20 @@ const BASE_URL: &str = "https://api.pandascore.co";
 
 type DynError = Box<dyn std::error::Error + Send + Sync>;
 
-/// Result of fetching one game's tier-1 matches.
+/// Result of fetching one sport's tier-1 matches.
 pub type FetchResult = Result<Vec<NormalizedMatch>, DynError>;
 
 /// A match after deserialization, normalization, and tier-1 filtering.
 #[derive(Debug, Clone)]
 pub struct NormalizedMatch {
     pub id: i64,
-    pub game: Game,
+    pub sport: Sport,
     pub league: String,
     /// Official league/event site from the API, if any (often absent).
     pub league_url: Option<String>,
-    /// The serie/edition name within the league (e.g. "Cologne Major"); empty
+    /// The series/edition name within the league (e.g. "Cologne Major"); empty
     /// when absent or the league already names the event. Persisted.
-    pub serie_name: String,
+    pub series_name: String,
     pub tier: String,
     pub begin_at: DateTime<Utc>,
     pub status: MatchStatus,
@@ -84,12 +84,12 @@ impl NormalizedMatch {
     /// A traditional-sport match with the fields common to every keyless feed
     /// defaulted (tier "S", no best-of/stream/tournament/series, no venue tz). The
     /// feeds (MLB/NHL/NBA/NFL/soccer/F1) build on this and set only the sport-
-    /// specific extras they have (`serie_name`, `venue_tz`, `streams`,
+    /// specific extras they have (`series_name`, `venue_tz`, `streams`,
     /// `mlb_series`) afterward. Single-entity sports (F1) pass an empty `team_b`.
     #[must_use]
     pub fn team_sport(
         id: i64,
-        game: Game,
+        sport: Sport,
         league: impl Into<String>,
         begin_at: DateTime<Utc>,
         status: MatchStatus,
@@ -98,10 +98,10 @@ impl NormalizedMatch {
     ) -> Self {
         Self {
             id,
-            game,
+            sport,
             league: league.into(),
             league_url: None,
-            serie_name: String::new(),
+            series_name: String::new(),
             tier: "S".to_string(),
             begin_at,
             status,
@@ -136,8 +136,9 @@ struct RawMatch {
     number_of_games: Option<i64>,
     #[serde(default)]
     league: Option<RawLeague>,
-    #[serde(default)]
-    serie: Option<RawSerie>,
+    // PandaScore's field is `serie` (singular); map it onto our `series`.
+    #[serde(rename = "serie", default)]
+    series: Option<RawSeries>,
     #[serde(default)]
     tournament: Option<RawTournament>,
     #[serde(default)]
@@ -159,14 +160,14 @@ struct RawLeague {
 }
 
 #[derive(Debug, Deserialize)]
-struct RawSerie {
+struct RawSeries {
     #[serde(default)]
     slug: Option<String>,
     /// The edition/location name (e.g. "Cologne Major"); empty for league
     /// seasons where the league name already names the event.
     #[serde(default)]
     name: Option<String>,
-    /// The full serie name including the year/split (e.g. "Cologne Major 2026",
+    /// The full series name including the year/split (e.g. "Cologne Major 2026",
     /// "Spring 2026", or just "2026"); preferred so each season is unique.
     #[serde(default)]
     full_name: Option<String>,
@@ -294,7 +295,7 @@ fn parse_time(raw: &RawMatch) -> Option<DateTime<Utc>> {
 
 /// Normalize a single raw match. Returns `None` when essential fields (time,
 /// league) are missing.
-fn normalize(game: Game, raw: &RawMatch) -> Option<NormalizedMatch> {
+fn normalize(sport: Sport, raw: &RawMatch) -> Option<NormalizedMatch> {
     let begin_at = parse_time(raw)?;
     let league = raw.league.as_ref().and_then(|l| l.name.clone())?;
     let league_url = raw
@@ -302,12 +303,12 @@ fn normalize(game: Game, raw: &RawMatch) -> Option<NormalizedMatch> {
         .as_ref()
         .and_then(|l| l.url.clone())
         .filter(|u| !u.trim().is_empty());
-    // The full serie name incl. the year/split (e.g. "Cologne Major 2026",
+    // The full series name incl. the year/split (e.g. "Cologne Major 2026",
     // "Spring 2026", "2026") so each season is uniquely named; falls back to the
     // bare edition name. Dropped when empty or identical to the league, so
-    // combining league + serie never doubles up.
-    let serie_name = raw
-        .serie
+    // combining league + series never doubles up.
+    let series_name = raw
+        .series
         .as_ref()
         .and_then(|s| {
             s.full_name
@@ -344,10 +345,10 @@ fn normalize(game: Game, raw: &RawMatch) -> Option<NormalizedMatch> {
 
     Some(NormalizedMatch {
         id: raw.id,
-        game,
+        sport,
         league,
         league_url,
-        serie_name,
+        series_name,
         tier,
         begin_at,
         status: map_status(raw.status.as_deref()),
@@ -382,35 +383,35 @@ fn normalize(game: Game, raw: &RawMatch) -> Option<NormalizedMatch> {
 fn tier_input(raw: &RawMatch) -> TierInput<'_> {
     TierInput {
         league_slug: raw.league.as_ref().and_then(|l| l.slug.as_deref()),
-        serie_slug: raw.serie.as_ref().and_then(|s| s.slug.as_deref()),
+        series_slug: raw.series.as_ref().and_then(|s| s.slug.as_deref()),
         tournament_slug: raw.tournament.as_ref().and_then(|t| t.slug.as_deref()),
         tier: raw.tournament.as_ref().and_then(|t| t.tier.as_deref()),
     }
 }
 
 /// Deserialize a PandaScore matches array, normalize, and keep only tier-1.
-pub fn parse_and_filter(game: Game, json: &str) -> Result<Vec<NormalizedMatch>, serde_json::Error> {
+pub fn parse_and_filter(sport: Sport, json: &str) -> Result<Vec<NormalizedMatch>, serde_json::Error> {
     let raw: Vec<RawMatch> = serde_json::from_str(json)?;
     Ok(raw
         .iter()
-        .filter(|m| is_tier_one(game, &tier_input(m)))
-        .filter_map(|m| normalize(game, m))
+        .filter(|m| is_tier_one(sport, &tier_input(m)))
+        .filter_map(|m| normalize(sport, m))
         .collect())
 }
 
 // ----- HTTP ----------------------------------------------------------------
 
-const fn game_path(game: Game) -> &'static str {
-    match game {
-        Game::Cs2 => "csgo",
-        Game::Lol => "lol",
+const fn game_path(sport: Sport) -> &'static str {
+    match sport {
+        Sport::Cs2 => "csgo",
+        Sport::Lol => "lol",
         // Traditional sports aren't PandaScore games; never fetched here.
-        Game::Mlb => "mlb",
-        Game::Nhl => "nhl",
-        Game::Nba => "nba",
-        Game::Nfl => "nfl",
-        Game::Soccer => "soccer",
-        Game::Motorsport => "motorsport",
+        Sport::Mlb => "mlb",
+        Sport::Nhl => "nhl",
+        Sport::Nba => "nba",
+        Sport::Nfl => "nfl",
+        Sport::Soccer => "soccer",
+        Sport::Motorsport => "motorsport",
     }
 }
 
@@ -448,13 +449,13 @@ async fn get_text<Q: serde::Serialize + ?Sized>(
 async fn get_segment(
     client: &reqwest::Client,
     token: &str,
-    game: Game,
+    sport: Sport,
     segment: &str,
     query: &[(&str, &str)],
 ) -> Result<Vec<NormalizedMatch>, DynError> {
-    let url = format!("{BASE_URL}/{}/matches/{segment}", game_path(game));
+    let url = format!("{BASE_URL}/{}/matches/{segment}", game_path(sport));
     let (body, _) = get_text(client, token, &url, query).await?;
-    Ok(parse_and_filter(game, &body)?)
+    Ok(parse_and_filter(sport, &body)?)
 }
 
 /// Matches per page (PandaScore's maximum).
@@ -468,10 +469,10 @@ const DEEP_MAX_PAGES: u32 = 30;
 async fn get_upcoming_page(
     client: &reqwest::Client,
     token: &str,
-    game: Game,
+    sport: Sport,
     page: u32,
 ) -> Result<Vec<RawMatch>, DynError> {
-    let url = format!("{BASE_URL}/{}/matches/upcoming", game_path(game));
+    let url = format!("{BASE_URL}/{}/matches/upcoming", game_path(sport));
     let page = page.to_string();
     let (body, _) = get_text(
         client,
@@ -487,7 +488,7 @@ async fn get_upcoming_page(
     Ok(serde_json::from_str(&body)?)
 }
 
-/// Fetch tier-1 matches for one game.
+/// Fetch tier-1 matches for one sport.
 ///
 /// The `upcoming` feed is paginated by start time. When `deep`, it pages until
 /// it passes `window_end` (or a page cap) so a tier-1 event is found even behind
@@ -499,7 +500,7 @@ async fn get_upcoming_page(
 pub async fn fetch_game(
     client: &reqwest::Client,
     token: &str,
-    game: Game,
+    sport: Sport,
     window_end: DateTime<Utc>,
     deep: bool,
 ) -> FetchResult {
@@ -510,15 +511,15 @@ pub async fn fetch_game(
     let max_pages = if deep { DEEP_MAX_PAGES } else { 1 };
     let mut page = 1u32;
     loop {
-        let raw = match get_upcoming_page(client, token, game, page).await {
+        let raw = match get_upcoming_page(client, token, sport, page).await {
             Ok(r) => r,
             Err(e) => {
                 if page == 1 {
-                    return Err(e); // core feed failed → whole game fetch fails
+                    return Err(e); // core feed failed → whole sport fetch fails
                 }
                 leptos::logging::log!(
                     "pandascore {}/upcoming page {page} failed ({e}); using partial result",
-                    game.slug()
+                    sport.slug()
                 );
                 break;
             }
@@ -529,8 +530,8 @@ pub async fn fetch_game(
         let latest = raw.iter().filter_map(parse_time).max();
         for m in raw
             .iter()
-            .filter(|m| is_tier_one(game, &tier_input(m)))
-            .filter_map(|m| normalize(game, m))
+            .filter(|m| is_tier_one(sport, &tier_input(m)))
+            .filter_map(|m| normalize(sport, m))
         {
             by_id.insert(m.id, m);
         }
@@ -545,7 +546,7 @@ pub async fn fetch_game(
             if deep {
                 leptos::logging::log!(
                     "pandascore {}/upcoming hit {max_pages}-page cap; window may be truncated",
-                    game.slug()
+                    sport.slug()
                 );
             }
             break;
@@ -560,14 +561,14 @@ pub async fn fetch_game(
         } else {
             &[("per_page", "50")]
         };
-        match get_segment(client, token, game, segment, query).await {
+        match get_segment(client, token, sport, segment, query).await {
             Ok(matches) => {
                 for m in matches {
                     by_id.insert(m.id, m);
                 }
             }
             Err(e) => {
-                leptos::logging::log!("pandascore {}/{segment} unavailable: {e}", game.slug());
+                leptos::logging::log!("pandascore {}/{segment} unavailable: {e}", sport.slug());
             }
         }
     }
@@ -597,7 +598,7 @@ fn begin_at_range(from: DateTime<Utc>, to: DateTime<Utc>) -> String {
 pub async fn fetch_past_range_all(
     client: &reqwest::Client,
     token: &str,
-    game: Game,
+    sport: Sport,
     from: DateTime<Utc>,
     to: DateTime<Utc>,
 ) -> Result<(Vec<NormalizedMatch>, Option<u64>), DynError> {
@@ -606,7 +607,7 @@ pub async fn fetch_past_range_all(
     let mut rate = None;
     let mut page = 1u32;
     loop {
-        let r = fetch_past_range(client, token, game, from, to, page, PER_PAGE).await?;
+        let r = fetch_past_range(client, token, sport, from, to, page, PER_PAGE).await?;
         rate = r.rate_remaining.or(rate);
         out.extend(r.matches);
         if r.reached_end || page >= 20 {
@@ -622,13 +623,13 @@ pub async fn fetch_past_range_all(
 pub async fn fetch_past_range(
     client: &reqwest::Client,
     token: &str,
-    game: Game,
+    sport: Sport,
     from: DateTime<Utc>,
     to: DateTime<Utc>,
     page: u32,
     per_page: u32,
 ) -> Result<RangeFetch, DynError> {
-    let url = format!("{BASE_URL}/{}/matches/past", game_path(game));
+    let url = format!("{BASE_URL}/{}/matches/past", game_path(sport));
     let range = begin_at_range(from, to);
     let page_s = page.to_string();
     let per_page_s = per_page.to_string();
@@ -643,8 +644,8 @@ pub async fn fetch_past_range(
     let reached_end = raw.len() < per_page as usize;
     let matches = raw
         .iter()
-        .filter(|m| is_tier_one(game, &tier_input(m)))
-        .filter_map(|m| normalize(game, m))
+        .filter(|m| is_tier_one(sport, &tier_input(m)))
+        .filter_map(|m| normalize(sport, m))
         .collect();
     Ok(RangeFetch {
         matches,
@@ -1164,7 +1165,7 @@ mod tests {
 
     #[test]
     fn deserializes_and_normalizes_sample() {
-        let matches = parse_and_filter(Game::Lol, SAMPLE).expect("valid sample json");
+        let matches = parse_and_filter(Sport::Lol, SAMPLE).expect("valid sample json");
         // The sample has one tier-A LCK match and one denylisted challenger
         // match; only the LCK one survives the filter.
         assert_eq!(matches.len(), 1);
@@ -1193,7 +1194,7 @@ mod tests {
 
     #[test]
     fn handles_empty_array() {
-        let matches = parse_and_filter(Game::Cs2, "[]").expect("empty array");
+        let matches = parse_and_filter(Sport::Cs2, "[]").expect("empty array");
         assert!(matches.is_empty());
     }
 
@@ -1234,7 +1235,7 @@ mod tests {
         let when = "2026-06-24T18:00:00Z".parse::<DateTime<Utc>>().unwrap();
         let m = NormalizedMatch::team_sport(
             7,
-            Game::Nhl,
+            Sport::Nhl,
             "NHL",
             when,
             MatchStatus::Finished,
@@ -1242,14 +1243,14 @@ mod tests {
             t("Canadiens"),
         );
         assert_eq!(m.id, 7);
-        assert_eq!(m.game, Game::Nhl);
+        assert_eq!(m.sport, Sport::Nhl);
         assert_eq!(m.league, "NHL");
         assert_eq!(m.tier, "S");
         assert_eq!(m.team_a.label, "Bruins");
         assert_eq!(m.team_b.label, "Canadiens");
         // Everything a keyless team feed doesn't supply is defaulted off.
         assert!(m.league_url.is_none());
-        assert!(m.serie_name.is_empty());
+        assert!(m.series_name.is_empty());
         assert!(m.best_of.is_none());
         assert!(m.stream_url.is_none());
         assert!(m.tournament_id.is_none());
@@ -1300,7 +1301,7 @@ mod tests {
           {"id":3,"status":"not_started","begin_at":"2026-07-01T10:00:00Z",
            "tournament":{"slug":"x","tier":"a"}}
         ]"#;
-        let ms = parse_and_filter(Game::Lol, json).expect("valid json");
+        let ms = parse_and_filter(Sport::Lol, json).expect("valid json");
         // id1 kept via scheduled_at fallback; id2 dropped (no time); id3 dropped (no league).
         assert_eq!(ms.len(), 1);
         assert_eq!(ms[0].id, 1);

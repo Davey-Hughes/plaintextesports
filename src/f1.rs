@@ -1,12 +1,12 @@
 //! Formula 1 schedule from the free, keyless Jolpica API (the Ergast successor,
 //! `api.jolpi.ca`). A Grand Prix weekend is a set of sessions (practice /
 //! qualifying / sprint / race); we emit one [`NormalizedMatch`] per session,
-//! grouped under the Grand Prix as the event (`league = "F1"`, `serie = the GP
+//! grouped under the Grand Prix as the event (`league = "F1"`, `series = the GP
 //! name`). F1 is single-entity — a session has no opposing team — so the row's
 //! one label is the session name (e.g. "Race"); results live on the event page.
 
 use crate::pandascore::{NormTeam, NormalizedMatch};
-use crate::types::{F1Result, F1ResultRow, F1StandingRow, F1Standings, Game, MatchStatus};
+use crate::types::{F1Result, F1ResultRow, F1StandingRow, F1Standings, Sport, MatchStatus};
 use chrono::{DateTime, Duration, NaiveDate, Utc};
 use serde::Deserialize;
 
@@ -221,7 +221,7 @@ fn to_matches(r: &RawRace, now: DateTime<Utc>) -> Vec<NormalizedMatch> {
             let mut m = NormalizedMatch::team_sport(
                 // Stable, collision-free id from (season, round, session order).
                 season * 100_000 + round * 100 + s.ord,
-                Game::Motorsport,
+                Sport::Motorsport,
                 "F1",
                 begin_at,
                 status,
@@ -242,7 +242,7 @@ fn to_matches(r: &RawRace, now: DateTime<Utc>) -> Vec<NormalizedMatch> {
             // The Grand Prix is the event, qualified by season so each year's
             // edition is distinct (e.g. "Austrian Grand Prix 2026") — the same GP
             // recurs annually and must not collide across seasons.
-            m.serie_name = format!("{} {season}", r.race_name);
+            m.series_name = format!("{} {season}", r.race_name);
             m.venue_tz = venue_tz.clone();
             m.venue_name = r.circuit.circuit_name.clone();
             m.venue_location = r.circuit.location.label();
@@ -697,9 +697,9 @@ mod tests {
             resp.data.race_table.races.iter().flat_map(|r| to_matches(r, now)).collect();
         // FP1, FP2, FP3, Qualifying, Race — no sprint sessions this weekend.
         assert_eq!(ms.len(), 5);
-        assert!(ms.iter().all(|m| m.game == Game::Motorsport && m.league == "F1"));
-        // The serie is the GP qualified by season, so editions don't collide.
-        assert!(ms.iter().all(|m| m.serie_name == "Austrian Grand Prix 2026"));
+        assert!(ms.iter().all(|m| m.sport == Sport::Motorsport && m.league == "F1"));
+        // The series is the GP qualified by season, so editions don't collide.
+        assert!(ms.iter().all(|m| m.series_name == "Austrian Grand Prix 2026"));
         let labels: Vec<&str> = ms.iter().map(|m| m.team_a.label.as_str()).collect();
         assert_eq!(labels, ["Practice 1", "Practice 2", "Practice 3", "Qualifying", "Race"]);
         // Every session is in the future relative to `now`, so all upcoming.

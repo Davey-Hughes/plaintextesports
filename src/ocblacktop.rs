@@ -1,6 +1,6 @@
 //! WRC + WEC schedules and championship standings from the Orange Cat Blacktop
 //! API (`api.ocblacktop.com`, `x-api-key` header). Both series live under
-//! [`Game::Motorsport`] (distinguished by `league` — "WRC"/"WEC", the series
+//! [`Sport::Motorsport`] (distinguished by `league` — "WRC"/"WEC", the series
 //! chips), alongside F1. Single-entity like F1: a row's one label is the rally /
 //! race meeting; there's no opponent.
 //!
@@ -10,7 +10,7 @@
 //! in one request, which carries both the calendar and (via status) results.
 
 use crate::pandascore::{NormTeam, NormalizedMatch};
-use crate::types::{Game, MatchStatus, MotorStandingRow, MotorStandingTable, MotorStandings};
+use crate::types::{Sport, MatchStatus, MotorStandingRow, MotorStandingTable, MotorStandings};
 use chrono::{DateTime, Datelike, Duration, NaiveDate, Utc};
 use serde::Deserialize;
 
@@ -20,7 +20,7 @@ const USER_AGENT: &str =
 const API_KEY_HEADER: &str = "x-api-key";
 
 // Distinct high id ranges per series so WRC/WEC/F1 ids never collide (they now
-// share Game::Motorsport, and match identity is (game, id)). F1's are season-
+// share Sport::Motorsport, and match identity is (sport, id)). F1's are season-
 // derived and stay below ~1e9; these sit far above.
 const WRC_ID_BASE: i64 = 10_000_000_000;
 const WEC_ID_BASE: i64 = 20_000_000_000;
@@ -115,7 +115,7 @@ fn motorsport_match(
 ) -> NormalizedMatch {
     let mut m = NormalizedMatch::team_sport(
         id,
-        Game::Motorsport,
+        Sport::Motorsport,
         league,
         begin_at,
         status,
@@ -124,7 +124,7 @@ fn motorsport_match(
     );
     // Qualify the event by season so each year's edition is distinct (the same
     // rally/race recurs annually), exactly like F1's "{GP} {year}".
-    m.serie_name = format!("{name} {season}");
+    m.series_name = format!("{name} {season}");
     m.venue_name = loc.name.clone();
     m.venue_location = loc.label();
     m.team_a_logo = flag(&loc.country.two_code);
@@ -394,10 +394,10 @@ mod tests {
         let ms: Vec<NormalizedMatch> = resp.data.iter().filter_map(|r| rally_to_match(r, now)).collect();
         assert_eq!(ms.len(), 2);
         let mc = &ms[0];
-        assert_eq!(mc.game, Game::Motorsport);
+        assert_eq!(mc.sport, Sport::Motorsport);
         assert_eq!(mc.league, "WRC");
         assert_eq!(mc.team_a.label, "Rallye Monte-Carlo");
-        assert_eq!(mc.serie_name, "Rallye Monte-Carlo 2026");
+        assert_eq!(mc.series_name, "Rallye Monte-Carlo 2026");
         assert_eq!(mc.status, MatchStatus::Upcoming);
         assert_eq!(mc.team_a_logo, "https://flagcdn.com/mc.svg");
         // The completed Paraguay rally is in the past → Finished, distinct id.
@@ -425,7 +425,7 @@ mod tests {
         let lm = &ms[0];
         assert_eq!(lm.league, "WEC");
         assert_eq!(lm.team_a.label, "24 Hours of Le Mans");
-        assert_eq!(lm.serie_name, "24 Hours of Le Mans 2025");
+        assert_eq!(lm.series_name, "24 Hours of Le Mans 2025");
         // Anchored at the race session (14:00 on the 14th), not a practice.
         assert_eq!(lm.begin_at.to_rfc3339(), "2025-06-14T14:00:00+00:00");
         assert_eq!(lm.status, MatchStatus::Finished);

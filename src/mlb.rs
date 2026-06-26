@@ -3,7 +3,7 @@
 //! feeds so it flows through the existing schedule UI unchanged.
 
 use crate::pandascore::{NormTeam, NormalizedMatch};
-use crate::types::{EventInfo, Game, MatchStatus, StandingRow, StreamView};
+use crate::types::{EventInfo, Sport, MatchStatus, StandingRow, StreamView};
 use chrono::{DateTime, NaiveDate, Utc};
 use serde::Deserialize;
 use std::collections::HashSet;
@@ -309,7 +309,7 @@ fn to_match(g: RawGame) -> Option<NormalizedMatch> {
     let begin_at = DateTime::parse_from_rfc3339(&g.game_date).ok()?.with_timezone(&Utc);
     let mut m = NormalizedMatch::team_sport(
         g.game_pk,
-        Game::Mlb,
+        Sport::Mlb,
         "MLB",
         begin_at,
         status_of(&g.status),
@@ -328,8 +328,8 @@ fn to_match(g: RawGame) -> Option<NormalizedMatch> {
     );
     // A regular-season game is just "MLB"; the postseason/all-star names its
     // round. Strip a redundant leading "MLB " (the API's All-Star series is
-    // "MLB All-Star Game") so the league+serie heading doesn't read "MLB MLB …".
-    m.serie_name = if g.series.eq_ignore_ascii_case("Regular Season") {
+    // "MLB All-Star Game") so the league+series heading doesn't read "MLB MLB …".
+    m.series_name = if g.series.eq_ignore_ascii_case("Regular Season") {
         String::new()
     } else {
         g.series.strip_prefix("MLB ").unwrap_or(&g.series).to_string()
@@ -652,7 +652,7 @@ fn divisions_from(resp: StandingsResp) -> Vec<EventInfo> {
                     event: "MLB".to_string(),
                     tournament_id: rec.division.id,
                     stage: name.to_string(),
-                    game: Game::Mlb,
+                    sport: Sport::Mlb,
                     standings: rows,
                     rounds: Vec::new(),
                     swiss: Vec::new(),
@@ -697,7 +697,7 @@ mod tests {
         let games: Vec<NormalizedMatch> =
             resp.dates.into_iter().flat_map(|d| d.games).filter_map(to_match).collect();
         assert_eq!(games.len(), 2);
-        assert_eq!(games[0].game, Game::Mlb);
+        assert_eq!(games[0].sport, Sport::Mlb);
         assert_eq!(games[0].team_a.label, "Rangers");
         assert_eq!(games[0].team_b.label, "Marlins");
         assert_eq!(games[0].status, MatchStatus::Upcoming);
