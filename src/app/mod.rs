@@ -256,9 +256,18 @@ pub fn App() -> impl IntoView {
                     <Routes fallback=|| view! { <p class="empty">"Page not found."</p> }>
                         <Route path=StaticSegment("") view=HomePage />
                         <Route path=(StaticSegment("day"), ParamSegment("date")) view=DayPage />
-                        <Route path=(StaticSegment("match"), ParamSegment("uid")) view=MatchDetailPage />
-                        <Route path=(StaticSegment("event"), ParamSegment("league")) view=EventPage />
-                        <Route path=(StaticSegment("team"), ParamSegment("name")) view=TeamPage />
+                        <Route
+                            path=(StaticSegment("match"), ParamSegment("sport"), ParamSegment("id"))
+                            view=MatchDetailPage
+                        />
+                        <Route
+                            path=(StaticSegment("event"), ParamSegment("sport"), ParamSegment("league"))
+                            view=EventPage
+                        />
+                        <Route
+                            path=(StaticSegment("team"), ParamSegment("sport"), ParamSegment("name"))
+                            view=TeamPage
+                        />
                         <Route path=StaticSegment("notifications") view=NotificationsPage />
                         <Route path=StaticSegment("about") view=AboutPage />
                     </Routes>
@@ -660,17 +669,25 @@ fn AboutPage() -> impl IntoView {
 
 #[derive(Params, PartialEq, Clone)]
 struct DetailParams {
-    /// The match uid, `"{sport}-{id}"` (see [`crate::types::match_uid`]).
-    uid: String,
+    /// The sport slug segment, e.g. `"mlb"` (see [`crate::types::match_path`]).
+    sport: String,
+    /// The source match id segment; joined with `sport` into a `match_uid`.
+    id: String,
 }
 
 #[derive(Params, PartialEq, Clone)]
 struct EventParams {
+    /// The sport slug segment, e.g. `"cs2"` — scopes the event but the lookup is
+    /// still keyed by `league` name alone.
+    sport: String,
     league: String,
 }
 
 #[derive(Params, PartialEq, Clone)]
 struct TeamParams {
+    /// The sport slug segment, e.g. `"mlb"` — scopes the team but the lookup is
+    /// still keyed by `name` alone.
+    sport: String,
     name: String,
 }
 
@@ -707,13 +724,25 @@ fn dec_segment(s: &str) -> String {
     String::from_utf8_lossy(&out).into_owned()
 }
 
+/// The team page path, `"/team/{slug}/{name}"`. The sport segment scopes the
+/// URL; the page lookup is still keyed by `name` alone.
+fn team_path(sport: Sport, name: &str) -> String {
+    format!("/team/{}/{}", sport.slug(), enc_segment(name))
+}
+
+/// The event page path, `"/event/{slug}/{name}"`. Sport-scoped, name-keyed.
+fn event_path(sport: Sport, name: &str) -> String {
+    format!("/event/{}/{}", sport.slug(), enc_segment(name))
+}
+
 /// A team name rendered as a link to its team page — or plain text when the
-/// opponent isn't a real team yet (TBD / empty name). `name` keys the page.
-fn team_link(label: String, name: String) -> AnyView {
+/// opponent isn't a real team yet (TBD / empty name). `name` keys the page;
+/// `sport` scopes the URL (see [`team_path`]).
+fn team_link(sport: Sport, label: String, name: String) -> AnyView {
     if name.is_empty() || name == "TBD" {
         label.into_any()
     } else {
-        view! { <A href=format!("/team/{}", enc_segment(&name))>{label}</A> }.into_any()
+        view! { <A href=team_path(sport, &name)>{label}</A> }.into_any()
     }
 }
 
@@ -1352,7 +1381,11 @@ fn EventPage() -> impl IntoView {
                         let title_head = if f1_sr.is_some() && event_has_upcoming(&s) {
                             view! {
                                 <div class="event-title-head">
-                                    <SubscribeStar kind="event" value=title.clone() />
+                                    <SubscribeStar
+                                        kind="event"
+                                        sport=event_sport.unwrap_or_default()
+                                        value=title.clone()
+                                    />
                                     <h1 class="detail-title">{title.clone()}</h1>
                                 </div>
                             }
@@ -1360,7 +1393,7 @@ fn EventPage() -> impl IntoView {
                         } else if let Some(sp) = trad_single {
                             view! {
                                 <div class="event-title-head">
-                                    <SubscribeStar kind="sport" value=sp.slug().to_string() />
+                                    <SubscribeStar kind="sport" sport=sp value=sp.slug().to_string() />
                                     <h1 class="detail-title">{title.clone()}</h1>
                                 </div>
                             }
@@ -1524,6 +1557,16 @@ fn TeamPage() -> impl IntoView {
                     Some(Ok(mut s)) => {
                         // The team's vector logo (NHL/MLB), from any of its matches.
                         let logo = team_logo_in_schedule(&s, &name);
+                        // The team's sport (it plays one), read from any of its
+                        // matches — scopes both its page URL and its subscribe key.
+                        let team_sport = s
+                            .days
+                            .iter()
+                            .flat_map(|d| &d.leagues)
+                            .flat_map(|lg| &lg.matches)
+                            .map(|m| m.sport)
+                            .next()
+                            .unwrap_or_default();
                         // Traditional-sport teams cap their forward horizon and show
                         // the earlier/later expanders, like the event page.
                         let windowed = schedule_needs_window(&s);
@@ -1543,7 +1586,7 @@ fn TeamPage() -> impl IntoView {
                             <article class="detail">
                                 <A href="/">"← schedule"</A>
                                 <div class="team-head">
-                                    <SubscribeStar kind="team" value=name.clone() />
+                                    <SubscribeStar kind="team" sport=team_sport value=name.clone() />
                                     {team_logo(&logo, "team-logo-lg")}
                                     <h1 class="detail-title">{name.clone()}</h1>
                                 </div>
@@ -1572,7 +1615,15 @@ fn TeamPage() -> impl IntoView {
 #[component]
 fn MatchDetailPage() -> impl IntoView {
     let params = use_params::<DetailParams>();
-    let uid = move || params.get().ok().map(|p| p.uid).unwrap_or_default();
+    // The route splits the uid into `/match/{sport}/{id}`; rejoin into the
+    // internal `"{sport}-{id}"` key the server (and reveal sets) expect.
+    let uid = move || {
+        params
+            .get()
+            .ok()
+            .map(|p| format!("{}-{}", p.sport, p.id))
+            .unwrap_or_default()
+    };
     let hour24 = use_context::<RwSignal<bool>>().expect("hour24 context");
     let tz = use_context::<RwSignal<String>>().expect("tz context");
     let detail = Resource::new(
@@ -1662,6 +1713,7 @@ fn detail_view(d: MatchDetail) -> impl IntoView {
     // F1 (and any single-entity sport) has no opponent: the title is the one
     // session label, with no "vs"/"at" separator and no empty second team.
     let is_solo = m.sport.single_entity();
+    let sport = m.sport;
     let (team_a, team_b) = (m.team_a.label, m.team_b.label);
     let (name_a, name_b) = (m.team_a.name, m.team_b.name);
     let (logo_a, logo_b) = (m.team_a.logo, m.team_b.logo);
@@ -1729,7 +1781,7 @@ fn detail_view(d: MatchDetail) -> impl IntoView {
                             class:loser=move || reveal.get() && win_b
                         >
                             {team_logo(&logo_a, "team-logo-lg")}
-                            {team_link(team_a, name_a)}
+                            {team_link(sport, team_a, name_a)}
                         </span>
                         <span class="detail-score">
                             {move || {
@@ -1745,7 +1797,7 @@ fn detail_view(d: MatchDetail) -> impl IntoView {
                             class:winner=move || reveal.get() && win_b
                             class:loser=move || reveal.get() && win_a
                         >
-                            {team_link(team_b, name_b)}
+                            {team_link(sport, team_b, name_b)}
                             {team_logo(&logo_b, "team-logo-lg")}
                         </span>
                     }
@@ -1756,10 +1808,7 @@ fn detail_view(d: MatchDetail) -> impl IntoView {
             <div class="detail-meta">
                 <span class="detail-meta-line">
                     <span class="detail-event">
-                        <A href=format!(
-                            "/event/{}",
-                            enc_segment(&event_name),
-                        )>{event_name.clone()}</A>
+                        <A href=event_path(sport, &event_name)>{event_name.clone()}</A>
                         " · "
                     </span>
                     {if has_venue {
@@ -2101,7 +2150,10 @@ fn SeriesRow(game: SeriesGame) -> impl IntoView {
     let body = if current {
         view! { <span class="row-body">{inner}</span> }.into_any()
     } else {
-        view! { <a class="row-body" href=format!("/match/{muid}")>{inner}</a> }.into_any()
+        view! {
+            <a class="row-body" href=crate::types::match_path(Sport::Mlb, match_id)>{inner}</a>
+        }
+        .into_any()
     };
     let mut row_cls = format!("row {status_class}");
     if current {
@@ -2341,14 +2393,46 @@ fn SportToggle() -> impl IntoView {
     }
 }
 
+/// The persisted subscription key for a scope. A whole-sport sub keys by slug
+/// alone (`sport|cs2`); a team/league/event sub is sport-scoped
+/// (`team|mlb|Detroit Tigers`) so the notifications page can rebuild its
+/// (now sport-scoped) page link. The bare `value` is still what's sent to — and
+/// matched by — the server; the sport only enriches the client-side key.
+fn sub_key(kind: &str, sport: Sport, value: &str) -> String {
+    if kind == "sport" {
+        format!("sport|{value}")
+    } else {
+        format!("{kind}|{}|{value}", sport.slug())
+    }
+}
+
+/// Inverse of [`sub_key`]: split a persisted subscription key into its kind, the
+/// sport it's scoped to (if any — a `sport|<slug>` key resolves to that sport),
+/// and the bare `value` (the name) the server matches on. Drives the
+/// notifications page's label + (sport-scoped) page link.
+fn parse_sub_key(key: &str) -> (String, Option<Sport>, String) {
+    let mut parts = key.splitn(3, '|');
+    let kind = parts.next().unwrap_or_default().to_string();
+    let a = parts.next().unwrap_or_default().to_string();
+    match (kind.as_str(), parts.next()) {
+        // `sport|<slug>` — the value is the slug itself; no extra name.
+        ("sport", _) => (kind, Sport::from_filter(&a), a),
+        // `<kind>|<slug>|<name>` — name keys the page, slug scopes its URL.
+        (_, Some(name)) => (kind, Sport::from_filter(&a), name.to_string()),
+        // Defensive: a sport-less non-sport key — show the label, but no link.
+        (_, None) => (kind, None, a),
+    }
+}
+
 /// ★ toggle to subscribe to a whole sport (`kind="sport"`, value "cs2"/"lol") or
-/// a league/competition (`kind="league"`, value = league name). Used inside a
-/// sport filter tab and in league/event headers. Hidden unless push is on.
+/// a league/competition (`kind="league"`, value = league name). `sport` scopes
+/// the persisted key (see [`sub_key`]). Used inside a sport filter tab and in
+/// league/event headers. Hidden unless push is on.
 #[component]
-fn SubscribeStar(kind: &'static str, value: String) -> impl IntoView {
+fn SubscribeStar(kind: &'static str, sport: Sport, value: String) -> impl IntoView {
     let subscribed = use_context::<Subscribed>().expect("subscribed context").0;
     let vapid = use_context::<RwSignal<Option<String>>>().expect("vapid context");
-    let key = format!("{kind}|{value}");
+    let key = sub_key(kind, sport, &value);
     let key_active = key.clone();
     let is_on = Memo::new(move |_| subscribed.with(|s| s.contains(&key_active)));
     let hidden = move || vapid.with(|v| v.is_none());
@@ -2519,24 +2603,24 @@ fn NotificationsPage() -> impl IntoView {
 fn SubRow(key: String) -> impl IntoView {
     let subscribed = use_context::<Subscribed>().expect("subscribed context").0;
     let vapid = use_context::<RwSignal<Option<String>>>().expect("vapid context");
-    let (kind, value) = key
-        .split_once('|')
-        .map_or_else(|| (String::new(), key.clone()), |(k, v)| (k.to_string(), v.to_string()));
-    // Label + optional link to the subscribed thing's own page.
+    // Keys are `sport|<slug>` or `<kind>|<slug>|<name>` (team/league/event are
+    // sport-scoped, see `sub_key`, so their page link can be rebuilt here).
+    let (kind, sport, value) = parse_sub_key(&key);
+    // Label + optional link to the subscribed thing's own (sport-scoped) page.
     let (tag, label, link): (&str, String, Option<String>) = match kind.as_str() {
         "sport" => (
             "sport",
-            Sport::from_filter(&value).map_or_else(|| value.clone(), |g| g.label().to_string()),
+            sport.map_or_else(|| value.clone(), |g| g.label().to_string()),
             None,
         ),
-        "team" => ("team", value.clone(), Some(format!("/team/{}", enc_segment(&value)))),
+        "team" => ("team", value.clone(), sport.map(|sp| team_path(sp, &value))),
         // A whole competition (MLB, F1, World Cup, LCK) — tagged with its best-fit
         // noun (league / tournament / series), distinct from a single event/edition
         // below; both link to the /event/ page for the name.
         "league" => {
-            (competition_kind(&value), value.clone(), Some(format!("/event/{}", enc_segment(&value))))
+            (competition_kind(&value), value.clone(), sport.map(|sp| event_path(sp, &value)))
         }
-        _ => ("event", value.clone(), Some(format!("/event/{}", enc_segment(&value)))),
+        _ => ("event", value.clone(), sport.map(|sp| event_path(sp, &value))),
     };
 
     let key_for_click = key.clone();
@@ -2595,11 +2679,11 @@ fn StarredRow(m: MatchView) -> impl IntoView {
     // The scopes that also cover this match — so removing it actually stops the
     // notification (opt out) rather than just dropping a redundant star.
     let keys = [
-        format!("sport|{}", m.sport.slug()),
-        format!("league|{}", m.league),
-        format!("team|{}", m.team_a.name),
-        format!("team|{}", m.team_b.name),
-        format!("event|{}", full_event_name(&m.league, &m.series_name)),
+        sub_key("sport", m.sport, m.sport.slug()),
+        sub_key("league", m.sport, &m.league),
+        sub_key("team", m.sport, &m.team_a.name),
+        sub_key("team", m.sport, &m.team_b.name),
+        sub_key("event", m.sport, &full_event_name(&m.league, &m.series_name)),
     ];
     let remove = {
         let uid = uid.clone();
@@ -2628,7 +2712,7 @@ fn StarredRow(m: MatchView) -> impl IntoView {
 
     view! {
         <li class="notif-item">
-            <A href=format!("/match/{uid}")>
+            <A href=crate::types::match_path(sport, id)>
                 <span class="notif-time">{m.clock_label}</span>
                 <span class="notif-label">{line}</span>
             </A>
@@ -3607,13 +3691,13 @@ fn FilterTabs(
     };
     // A sport filter tab with an embedded ★ that subscribes to the whole sport.
     // The label clicks to filter; the ★ clicks to (un)subscribe.
-    let with_star = move |label: &'static str, value: &'static str| {
+    let with_star = move |sport: Sport, label: &'static str, value: &'static str| {
         view! {
             <span class="tab tab-with-star" class:active=move || games.with(|g| g.contains(value))>
                 <button class="tab-label" on:click=move |_| toggle(value)>
                     {label}
                 </button>
-                <SubscribeStar kind="sport" value=value.to_string() />
+                <SubscribeStar kind="sport" sport=sport value=value.to_string() />
             </span>
         }
     };
@@ -3633,7 +3717,7 @@ fn FilterTabs(
     let tabs = Sport::ALL
         .iter()
         .filter(|g| g.traditional() == traditional_row)
-        .map(|g| with_star(g.label(), g.slug()))
+        .map(|g| with_star(*g, g.label(), g.slug()))
         .collect_view();
     let hidden = move || traditional.get() != traditional_row;
     view! {
@@ -3648,16 +3732,19 @@ fn FilterTabs(
 }
 
 #[component]
-fn LeagueChips(leagues: Vec<String>, selected: RwSignal<HashSet<String>>) -> impl IntoView {
+fn LeagueChips(
+    leagues: Vec<(String, Sport)>,
+    selected: RwSignal<HashSet<String>>,
+) -> impl IntoView {
     // Multi-select: no active chip means all events. Click a chip's label to
     // include its league in the filter; click again to drop it. The embedded ★
     // subscribes to the whole chip via the `league` scope. For a single-edition
     // league like MLB that's the same match set as its "MLB" event, so the chip
-    // ★ and the home league-header ★ share one key (`league|MLB`) and stay in
-    // lock-step; for F1/WEC it spans every round, distinct from one GP's event.
+    // ★ and the home league-header ★ share one key (`league|mlb|MLB`) and stay
+    // in lock-step; for F1/WEC it spans every round, distinct from one GP's event.
     let chips = leagues
         .into_iter()
-        .map(|name| {
+        .map(|(name, sport)| {
             let lc = league_color_class(&name);
             let sel_name = name.clone();
             let click_name = name.clone();
@@ -3680,7 +3767,7 @@ fn LeagueChips(leagues: Vec<String>, selected: RwSignal<HashSet<String>>) -> imp
                     >
                         {name}
                     </button>
-                    <SubscribeStar kind="league" value=sub_value />
+                    <SubscribeStar kind="league" sport=sport value=sub_value />
                 </span>
             }
         })
@@ -3712,7 +3799,8 @@ fn ScheduleSection(
         let (league, season) = if !traditional.get() {
             (String::new(), None)
         } else if let Some(Ok(s)) = resource.get() {
-            let available = leagues_for_games(&s, &games.get());
+            let available: Vec<String> =
+                leagues_for_games(&s, &games.get()).into_iter().map(|(l, _)| l).collect();
             let selected = leagues.get();
             let effective: Vec<String> = if selected.is_empty() {
                 available
@@ -3894,14 +3982,14 @@ fn TraditionalStandings(league: Memo<String>) -> impl IntoView {
 /// Distinct league names among groups whose sport passes the filter (empty set =
 /// all games), in first-appearance order. Drives the event chip list, so the
 /// chips reflect the selected games.
-fn leagues_for_games(s: &ScheduleView, games: &HashSet<String>) -> Vec<String> {
-    let mut out: Vec<String> = Vec::new();
+fn leagues_for_games(s: &ScheduleView, games: &HashSet<String>) -> Vec<(String, Sport)> {
+    let mut out: Vec<(String, Sport)> = Vec::new();
     for day in &s.days {
         for lg in &day.leagues {
-            let game_ok = games.is_empty()
-                || lg.matches.first().is_some_and(|m| games.contains(m.sport.slug()));
-            if game_ok && !out.iter().any(|l| l == &lg.league) {
-                out.push(lg.league.clone());
+            let Some(sport) = lg.matches.first().map(|m| m.sport) else { continue };
+            let game_ok = games.is_empty() || games.contains(sport.slug());
+            if game_ok && !out.iter().any(|(l, _)| l == &lg.league) {
+                out.push((lg.league.clone(), sport));
             }
         }
     }
@@ -3974,6 +4062,7 @@ fn UpNextBar(day: DayGroup) -> impl IntoView {
         .take(CAP)
         .map(|m| {
             let muid = crate::types::match_uid(m.sport, m.id);
+            let mpath = crate::types::match_path(m.sport, m.id);
             let sep = versus_sep(m.sport);
             // F1 (single-entity) has no opponent: show just the session label, with
             // no "at"/"vs" separator and no empty second team.
@@ -3996,7 +4085,7 @@ fn UpNextBar(day: DayGroup) -> impl IntoView {
             view! {
                 <a
                     class="upnext-match"
-                    href=format!("/match/{muid}")
+                    href=mpath
                     on:click={
                         let muid = muid.clone();
                         move |e: leptos::ev::MouseEvent| {
@@ -4159,6 +4248,9 @@ fn render_schedule(
                     // event title no longer repeats it.
                     let show_bo = true;
                     let league_name = lg.league.clone();
+                    // The group's sport (a league is single-sport) scopes the event
+                    // URL and the subscribe key. Read from any of its matches.
+                    let sport = lg.matches.first().map(|m| m.sport).unwrap_or_default();
                     // Title the group with the full event name (league + edition,
                     // e.g. "IEM Katowice"); the subscribe key stays the short
                     // league name, while the full name keys the event link.
@@ -4167,14 +4259,14 @@ fn render_schedule(
                         let display = full_event_name(&league_name, &series);
                         // The full edition name keys its event page, so distinct
                         // editions get distinct URLs.
-                        let event_href = format!("/event/{}", enc_segment(&display));
+                        let event_href = event_path(sport, &display);
                         // The ★ subscribes to the whole competition (`league|<name>`).
                         // For a single-edition league like MLB/NHL/NBA/NFL this is the
                         // same match set — and the same key — as its filter chip's ★,
                         // so the two stay in lock-step; for F1/WEC it spans every round.
                         view! {
                             <div class="league-head">
-                                <SubscribeStar kind="league" value=league_name.clone() />
+                                <SubscribeStar kind="league" sport=sport value=league_name.clone() />
                                 <h3 class="league-title">
                                     <A href=event_href>{display}</A>
                                 </h3>
@@ -4385,7 +4477,8 @@ fn MatchRow(m: MatchView, show_bo: bool, push: bool) -> impl IntoView {
     let muid = crate::types::match_uid(m.sport, m.id);
     // Most rows link to their own /match page; a collapsed WRC "Day N" row instead
     // points at that day on the event page (where its stages are listed).
-    let row_href = m.row_href.clone().unwrap_or_else(|| format!("/match/{muid}"));
+    let row_href =
+        m.row_href.clone().unwrap_or_else(|| crate::types::match_path(m.sport, m.id));
     let global = use_context::<ShowScores>().map(|s| s.0);
     let revealed = use_context::<RevealedMatches>().map(|r| r.0);
     let reveal = {
@@ -4537,10 +4630,10 @@ fn StarButton(id: i64, sport: Sport, league: String, team_a: String, team_b: Str
     let uid = crate::types::match_uid(sport, id);
     // The scopes that auto-cover this match (its sport, this event, or either team).
     let keys = [
-        format!("sport|{}", sport.slug()),
-        format!("league|{league}"),
-        format!("team|{team_a}"),
-        format!("team|{team_b}"),
+        sub_key("sport", sport, sport.slug()),
+        sub_key("league", sport, &league),
+        sub_key("team", sport, &team_a),
+        sub_key("team", sport, &team_b),
     ];
     let keys_click = keys.clone();
     // The ★ lights up if this match is starred individually *or* a subscription
@@ -5107,10 +5200,43 @@ mod tests {
     #[test]
     fn leagues_for_games_first_appearance_order() {
         let s = sched(vec![vec!["LCK", "LEC"], vec!["LCK", "LPL"]]);
-        assert_eq!(leagues_for_games(&s, &HashSet::new()), vec!["LCK", "LEC", "LPL"]);
+        let names_of = |games: &HashSet<String>| -> Vec<String> {
+            leagues_for_games(&s, games).into_iter().map(|(l, _)| l).collect()
+        };
+        assert_eq!(names_of(&HashSet::new()), vec!["LCK", "LEC", "LPL"]);
         // `mv` matches are LoL, so the cs2 sport filter hides them all.
-        assert!(leagues_for_games(&s, &names(&["cs2"])).is_empty());
-        assert_eq!(leagues_for_games(&s, &names(&["lol"])), vec!["LCK", "LEC", "LPL"]);
+        assert!(names_of(&names(&["cs2"])).is_empty());
+        assert_eq!(names_of(&names(&["lol"])), vec!["LCK", "LEC", "LPL"]);
+        // Each chip carries its match's sport, for the sport-scoped subscribe key.
+        assert!(leagues_for_games(&s, &HashSet::new()).iter().all(|(_, sp)| *sp == Sport::Lol));
+    }
+
+    #[test]
+    fn sub_key_round_trips_through_parse_sub_key() {
+        // A whole-sport sub keys by slug alone; parsing resolves the sport back.
+        let k = sub_key("sport", Sport::Cs2, "cs2");
+        assert_eq!(k, "sport|cs2");
+        assert_eq!(parse_sub_key(&k), ("sport".to_string(), Some(Sport::Cs2), "cs2".to_string()));
+
+        // team/league/event fold the sport in but keep the bare name as the value
+        // (what the server matches on), so the notifications page can rebuild the
+        // sport-scoped page link without changing the server-side scope format.
+        for (kind, value) in [("team", "Detroit Tigers"), ("league", "MLB"), ("event", "World Cup")]
+        {
+            let k = sub_key(kind, Sport::Mlb, value);
+            assert_eq!(k, format!("{kind}|mlb|{value}"));
+            assert_eq!(
+                parse_sub_key(&k),
+                (kind.to_string(), Some(Sport::Mlb), value.to_string())
+            );
+        }
+
+        // A name that itself contains '|' survives (splitn(3) keeps the tail whole).
+        let k = sub_key("event", Sport::Cs2, "A|B Invitational");
+        assert_eq!(
+            parse_sub_key(&k),
+            ("event".to_string(), Some(Sport::Cs2), "A|B Invitational".to_string())
+        );
     }
 
     #[test]

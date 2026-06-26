@@ -324,6 +324,14 @@ pub fn parse_match_uid(uid: &str) -> Option<(Sport, i64)> {
     Some((Sport::from_filter(slug)?, id.parse().ok()?))
 }
 
+/// The detail-page path for a match, `"/match/{slug}/{id}"` (e.g.
+/// `"/match/mlb/824255"`). The route scopes the sport into its own segment; the
+/// internal cross-page key is still the `-`-joined [`match_uid`].
+#[must_use]
+pub fn match_path(sport: Sport, id: i64) -> String {
+    format!("/match/{}/{}", sport.slug(), id)
+}
+
 /// The display name for an event: the league plus its series/edition, e.g.
 /// ("IEM", "Cologne Major") -> "IEM Cologne Major". An empty series returns the
 /// league alone (league seasons already name themselves). Also the key for the
@@ -931,6 +939,17 @@ mod tests {
         assert_eq!(parse_match_uid("1494586"), None); // no separator
         assert_eq!(parse_match_uid("bogus-1"), None); // unknown sport
         assert_eq!(parse_match_uid("cs2-abc"), None); // non-numeric id
+    }
+
+    #[test]
+    fn match_path_scopes_sport_and_id_into_segments() {
+        assert_eq!(match_path(Sport::Mlb, 824255), "/match/mlb/824255");
+        assert_eq!(match_path(Sport::Cs2, 1494586), "/match/cs2/1494586");
+        // The path segments are exactly the uid split on its single '-'.
+        for &g in Sport::ALL {
+            let (slug, id) = parse_match_uid(&match_uid(g, 7)).unwrap();
+            assert_eq!(match_path(g, 7), format!("/match/{}/{}", slug.slug(), id));
+        }
     }
 
     #[test]
