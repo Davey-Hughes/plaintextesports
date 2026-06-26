@@ -707,7 +707,11 @@ pub struct MotorStandings {
 /// One championship table within a series' standings.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MotorStandingTable {
-    /// e.g. "Drivers", "Manufacturers", or "Hypercar · Drivers" for WEC classes.
+    /// The class these tables belong to (WEC: "Hypercar"/"LMGT3"); empty for WRC.
+    /// Tables sharing a `group` render together; a new group starts a new row.
+    #[serde(default)]
+    pub group: String,
+    /// e.g. "Drivers", "Teams", "Manufacturers".
     pub title: String,
     pub rows: Vec<MotorStandingRow>,
 }

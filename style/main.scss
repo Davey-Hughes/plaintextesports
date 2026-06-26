@@ -2060,6 +2060,21 @@ a.sw-link {
   margin: 0 0 0.4rem;
 }
 
+// WRC/WEC standings group by class (WEC: Hypercar / LMGT3). Each group's tables
+// flex-wrap among themselves (`.f1-standings-tables`), and the groups stack, so a
+// class never shares a line with another — a new class always starts a new row.
+.motor-standings-group + .motor-standings-group {
+  margin-top: 1.3rem;
+}
+
+.motor-standings-class {
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  color: var(--fg);
+  margin: 0;
+}
+
 // Same shared-grid trick as .f1-order: rows are display:contents so the columns
 // line up. Drivers: pos, driver, constructor (flexes), points (right). The
 // constructors table drops the constructor column.

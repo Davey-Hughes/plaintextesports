@@ -6,7 +6,7 @@ use crate::server::{
 };
 use crate::types::{
     full_event_name, DayGroup, EventInfo, F1Result, F1Standings, Game, MatchDetail, MatchStatus,
-    MatchView, MotorStandings, ScheduleView, Series, SeriesGame, StreamView,
+    MatchView, MotorStandingTable, MotorStandings, ScheduleView, Series, SeriesGame, StreamView,
 };
 use leptos::prelude::*;
 use std::collections::HashSet;
@@ -1058,32 +1058,53 @@ fn MotorStandingsView(standings: MotorStandings, league: String) -> impl IntoVie
     // revealed, so revealing doesn't shift the page.
     let body = move || {
         let show = revealed.get();
-        tables
-            .get_value()
+        // Group the tables by class (WEC: Hypercar / LMGT3; WRC: one empty group)
+        // so each class is its own flex row — a class's tables wrap among
+        // themselves, but a different class always starts on a new line.
+        let mut groups: Vec<(String, Vec<MotorStandingTable>)> = Vec::new();
+        for t in tables.get_value() {
+            match groups.last_mut() {
+                Some((g, v)) if *g == t.group => v.push(t),
+                _ => groups.push((t.group.clone(), vec![t])),
+            }
+        }
+        groups
             .into_iter()
-            .map(|t| {
-                let rows = t
-                    .rows
+            .map(|(group, group_tables)| {
+                let class_tables = group_tables
                     .into_iter()
-                    .map(|r| {
-                        let (name, pts, flag) = if show {
-                            (r.name, r.points, r.flag)
-                        } else {
-                            (String::new(), String::new(), String::new())
-                        };
+                    .map(|t| {
+                        let rows = t
+                            .rows
+                            .into_iter()
+                            .map(|r| {
+                                let (name, pts, flag) = if show {
+                                    (r.name, r.points, r.flag)
+                                } else {
+                                    (String::new(), String::new(), String::new())
+                                };
+                                view! {
+                                    <li class="f1-standing-row f1-standing-row-con">
+                                        <span class="f1-pos">{r.pos}</span>
+                                        <span class="f1-standing-name">{team_logo(&flag, "f1-flag")}{name}</span>
+                                        <span class="f1-standing-pts">{pts}</span>
+                                    </li>
+                                }
+                            })
+                            .collect_view();
                         view! {
-                            <li class="f1-standing-row f1-standing-row-con">
-                                <span class="f1-pos">{r.pos}</span>
-                                <span class="f1-standing-name">{team_logo(&flag, "f1-flag")}{name}</span>
-                                <span class="f1-standing-pts">{pts}</span>
-                            </li>
+                            <div class="f1-standings-table">
+                                <h3 class="f1-standings-sub">{t.title}</h3>
+                                <ol class="f1-standings f1-standings-con">{rows}</ol>
+                            </div>
                         }
                     })
                     .collect_view();
                 view! {
-                    <div class="f1-standings-table">
-                        <h3 class="f1-standings-sub">{t.title}</h3>
-                        <ol class="f1-standings f1-standings-con">{rows}</ol>
+                    <div class="motor-standings-group">
+                        {(!group.is_empty())
+                            .then(|| view! { <h3 class="motor-standings-class">{group}</h3> })}
+                        <div class="f1-standings-tables">{class_tables}</div>
                     </div>
                 }
             })
@@ -1099,7 +1120,7 @@ fn MotorStandingsView(standings: MotorStandings, league: String) -> impl IntoVie
                     }}
                 </span>
             </button>
-            <div class="f1-standings-tables">{body}</div>
+            <div class="motor-standings">{body}</div>
         </section>
     }
 }
