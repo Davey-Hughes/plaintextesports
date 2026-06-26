@@ -16,6 +16,12 @@ struct FileConfig {
     pandascore_token: Option<String>,
     /// Orange Cat Blacktop API key (WRC + WEC). `x-api-key` header.
     ocblacktop_token: Option<String>,
+    /// WRC/WEC calendar poll interval (s) — slow, the free tier is 250 req/day.
+    ocblacktop_poll_secs: Option<u64>,
+    /// WRC/WEC standings poll interval (s) — slower still (they change post-round).
+    ocblacktop_standings_poll_secs: Option<u64>,
+    /// Hard per-UTC-day cap on Orange Cat Blacktop requests (free tier is 250).
+    ocblacktop_daily_cap: Option<u64>,
     demo: Option<bool>,
     display_tz: Option<String>,
     upcoming_days: Option<i64>,
@@ -60,6 +66,12 @@ impl FileConfig {
         };
         put("PANDASCORE_TOKEN", self.pandascore_token.clone());
         put("OCBLACKTOP_TOKEN", self.ocblacktop_token.clone());
+        put("OCBLACKTOP_POLL_SECS", self.ocblacktop_poll_secs.map(|n| n.to_string()));
+        put(
+            "OCBLACKTOP_STANDINGS_POLL_SECS",
+            self.ocblacktop_standings_poll_secs.map(|n| n.to_string()),
+        );
+        put("OCBLACKTOP_DAILY_CAP", self.ocblacktop_daily_cap.map(|n| n.to_string()));
         put("DEMO", self.demo.map(|b| b.to_string()));
         put("DISPLAY_TZ", self.display_tz.clone());
         put("UPCOMING_DAYS", self.upcoming_days.map(|n| n.to_string()));
@@ -89,6 +101,13 @@ pub struct Config {
     /// => those series are skipped. Polled conservatively (schedule-first), so the
     /// daily quota comfortably covers two episodic series.
     pub ocblacktop_token: Option<String>,
+    /// WRC/WEC calendar poll interval (slow — quota-limited source).
+    pub ocblacktop_poll: Duration,
+    /// WRC/WEC standings poll interval (slower; they only change post-round).
+    pub ocblacktop_standings_poll: Duration,
+    /// Hard per-UTC-day cap on Orange Cat Blacktop requests (a backstop under the
+    /// free tier's 250/day; the poll intervals normally keep usage well below it).
+    pub ocblacktop_daily_cap: u64,
     /// Timezone for formatting times and grouping by day.
     pub tz: Tz,
     /// Poll interval when nothing is live or about to start. Schedules change
@@ -214,6 +233,12 @@ impl Config {
         let ocblacktop_token = get("OCBLACKTOP_TOKEN")
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty());
+        // Conservative defaults: calendar every 30 min, standings every 2 h; with
+        // ~6 requests per full refresh that's well under the 250/day free tier.
+        let ocblacktop_poll = Duration::from_secs(secs("OCBLACKTOP_POLL_SECS", 1800, 300));
+        let ocblacktop_standings_poll =
+            Duration::from_secs(secs("OCBLACKTOP_STANDINGS_POLL_SECS", 7200, 600));
+        let ocblacktop_daily_cap = secs("OCBLACKTOP_DAILY_CAP", 240, 0);
 
         let tz = get("DISPLAY_TZ")
             .and_then(|s| s.parse::<Tz>().ok())
@@ -269,6 +294,9 @@ impl Config {
         Self {
             token,
             ocblacktop_token,
+            ocblacktop_poll,
+            ocblacktop_standings_poll,
+            ocblacktop_daily_cap,
             tz,
             idle_poll,
             active_poll,
@@ -307,6 +335,9 @@ mod tests {
         let c = cfg(&[]);
         assert!(c.token.is_none());
         assert!(c.ocblacktop_token.is_none());
+        assert_eq!(c.ocblacktop_poll.as_secs(), 1800);
+        assert_eq!(c.ocblacktop_standings_poll.as_secs(), 7200);
+        assert_eq!(c.ocblacktop_daily_cap, 240);
         assert_eq!(c.tz, chrono_tz::America::Los_Angeles);
         assert_eq!(c.idle_poll.as_secs(), 1200);
         assert_eq!(c.active_poll.as_secs(), 60);

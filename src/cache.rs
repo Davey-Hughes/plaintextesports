@@ -75,6 +75,24 @@ static NBA_STANDINGS: Lazy<RwLock<Vec<EventInfo>>> = Lazy::new(|| RwLock::new(Ve
 static NFL_STANDINGS: Lazy<RwLock<Vec<EventInfo>>> = Lazy::new(|| RwLock::new(Vec::new()));
 static SOCCER_STANDINGS: Lazy<RwLock<HashMap<String, Vec<EventInfo>>>> =
     Lazy::new(|| RwLock::new(HashMap::new()));
+// WRC/WEC championship standings (Orange Cat Blacktop), refreshed by the poller
+// and served from here — never fetched per request, to respect the daily quota.
+static WRC_STANDINGS: Lazy<RwLock<crate::types::MotorStandings>> =
+    Lazy::new(|| RwLock::new(crate::types::MotorStandings::default()));
+static WEC_STANDINGS: Lazy<RwLock<crate::types::MotorStandings>> =
+    Lazy::new(|| RwLock::new(crate::types::MotorStandings::default()));
+
+/// The WRC or WEC championship standings (empty until first fetched), by series
+/// league name. Any other name yields empty tables.
+#[must_use]
+pub fn motor_standings(league: &str) -> crate::types::MotorStandings {
+    let store = match league {
+        "WRC" => &WRC_STANDINGS,
+        "WEC" => &WEC_STANDINGS,
+        _ => return crate::types::MotorStandings::default(),
+    };
+    store.read().unwrap_or_else(PoisonError::into_inner).clone()
+}
 
 /// Snapshot a standings store.
 fn read_tables(store: &RwLock<Vec<EventInfo>>) -> Vec<EventInfo> {
@@ -450,6 +468,15 @@ pub fn spawn_poller() {
         let mut last_deep: Option<DateTime<Utc>> = None;
         // Last-seen API budget, used to throttle low-priority past work.
         let mut rate_remaining: Option<u64> = None;
+        // Orange Cat Blacktop (WRC/WEC): the last fetched calendars, merged into
+        // the Motorsport feed every cycle but refreshed only on their own slow
+        // gates, under a hard per-UTC-day request cap (free tier is 250/day).
+        let mut last_wrc: Vec<NormalizedMatch> = Vec::new();
+        let mut last_wec: Vec<NormalizedMatch> = Vec::new();
+        let mut ocb_events_at: Option<DateTime<Utc>> = None;
+        let mut ocb_standings_at: Option<DateTime<Utc>> = None;
+        let mut ocb_day: Option<NaiveDate> = None;
+        let mut ocb_used: u64 = 0;
         loop {
             let now = Utc::now();
             let active = {
@@ -521,6 +548,68 @@ pub fn spawn_poller() {
                 (Ok(a), Err(_)) | (Err(_), Ok(a)) => Ok(a),
                 (Err(e), Err(_)) => Err(e.into()),
             };
+            // Orange Cat Blacktop (WRC + WEC) — fetched on their own slow gates,
+            // never every cycle, under a hard per-UTC-day cap (free tier 250/day).
+            // Results stay cached in last_wrc/last_wec and merge into the
+            // Motorsport feed below; only the network fetch is throttled.
+            if let Some(key) = cfg.ocblacktop_token.as_deref() {
+                if ocb_day != Some(now.date_naive()) {
+                    ocb_day = Some(now.date_naive());
+                    ocb_used = 0;
+                }
+                let cap = cfg.ocblacktop_daily_cap;
+                let events_iv = Duration::seconds(cfg.ocblacktop_poll.as_secs() as i64);
+                let standings_iv = Duration::seconds(cfg.ocblacktop_standings_poll.as_secs() as i64);
+                // Calendars: 2 requests (WRC rallies + WEC events).
+                if ocb_events_at.is_none_or(|t| now - t >= events_iv) && ocb_used + 2 <= cap {
+                    let year = now.year();
+                    let (wrc, wec) = tokio::join!(
+                        crate::ocblacktop::fetch_wrc(&client, key, year),
+                        crate::ocblacktop::fetch_wec(&client, key, year),
+                    );
+                    ocb_used += 2;
+                    ocb_events_at = Some(now);
+                    match wrc {
+                        Ok(v) => last_wrc = v,
+                        Err(e) => leptos::logging::log!("WRC fetch failed: {e}"),
+                    }
+                    match wec {
+                        Ok(v) => last_wec = v,
+                        Err(e) => leptos::logging::log!("WEC fetch failed: {e}"),
+                    }
+                }
+                // Standings: 4 requests (WRC drivers/co-drivers/manufacturers + WEC).
+                if ocb_standings_at.is_none_or(|t| now - t >= standings_iv) && ocb_used + 4 <= cap {
+                    let (wrc_s, wec_s) = tokio::join!(
+                        crate::ocblacktop::fetch_wrc_standings(&client, key),
+                        crate::ocblacktop::fetch_wec_standings(&client, key),
+                    );
+                    ocb_used += 4;
+                    ocb_standings_at = Some(now);
+                    if !wrc_s.tables.is_empty() {
+                        *WRC_STANDINGS.write().unwrap_or_else(PoisonError::into_inner) = wrc_s;
+                    }
+                    if !wec_s.tables.is_empty() {
+                        *WEC_STANDINGS.write().unwrap_or_else(PoisonError::into_inner) = wec_s;
+                    }
+                }
+            }
+            // Merge F1 (keyless, every cycle) with the cached WRC/WEC calendars into
+            // one Motorsport feed — the same trick soccer uses for its two
+            // competitions. WRC/WEC stay visible even if this cycle's F1 fetch failed.
+            let motorsport_res: FetchResult = match f1_raw {
+                Ok(mut v) => {
+                    v.extend(last_wrc.iter().cloned());
+                    v.extend(last_wec.iter().cloned());
+                    Ok(v)
+                }
+                Err(e) if last_wrc.is_empty() && last_wec.is_empty() => Err(e.into()),
+                Err(_) => {
+                    let mut v = last_wrc.clone();
+                    v.extend(last_wec.iter().cloned());
+                    Ok(v)
+                }
+            };
             // The keyless feeds return a reqwest error; lift each to the shared
             // FetchResult (the first tuple pins the type, so `into` is inferred).
             apply_poll(
@@ -532,7 +621,7 @@ pub fn spawn_poller() {
                     (Game::Nba, nba_raw.map_err(Into::into)),
                     (Game::Nfl, nfl_raw.map_err(Into::into)),
                     (Game::Soccer, soccer_res),
-                    (Game::Motorsport, f1_raw.map_err(Into::into)),
+                    (Game::Motorsport, motorsport_res),
                 ],
                 store.as_mut(),
                 cfg.archive_cutoff(now).timestamp_millis(),
