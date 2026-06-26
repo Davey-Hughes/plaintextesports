@@ -4390,6 +4390,9 @@ fn MatchRow(m: MatchView, show_bo: bool, push: bool) -> impl IntoView {
     // Scores are spoilers: reveal only when the global toggle is on or this
     // match was individually revealed (by clicking its "Final" badge).
     let muid = crate::types::match_uid(m.sport, m.id);
+    // Most rows link to their own /match page; a collapsed WRC "Day N" row instead
+    // points at that day on the event page (where its stages are listed).
+    let row_href = m.row_href.clone().unwrap_or_else(|| format!("/match/{muid}"));
     let global = use_context::<ShowScores>().map(|s| s.0);
     let revealed = use_context::<RevealedMatches>().map(|r| r.0);
     let reveal = {
@@ -4496,7 +4499,7 @@ fn MatchRow(m: MatchView, show_bo: bool, push: bool) -> impl IntoView {
     // children participate in the row grid alongside the ★ button. The score
     // reveal inside (`reveal-meta`) prevents this navigation when clicked.
     let body = view! {
-        <a class="row-body" href=format!("/match/{muid}")>
+        <a class="row-body" href=row_href>
             {inner}
         </a>
     };
@@ -4816,6 +4819,7 @@ mod tests {
             stream_url: None,
             event_url: String::new(),
             begin_at_ms: 0,
+            row_href: None,
         }
     }
 

@@ -1239,6 +1239,7 @@ fn to_view(m: &NormalizedMatch, tz: &Tz, now: DateTime<Utc>, hour24: bool) -> Ma
         stream_url: m.stream_url.clone(),
         event_url: resolved_event_url(m.sport, &m.league, m.begin_at, m.league_url.as_deref()),
         begin_at_ms: m.begin_at.timestamp_millis(),
+        row_href: None,
     }
 }
 
@@ -1433,7 +1434,12 @@ fn collapse_wrc_days(views: Vec<MatchView>, tz: &Tz, snap: &Snapshot) -> Vec<Mat
             .get(series.as_str())
             .and_then(|days| days.iter().position(|d| *d == day))
             .map_or(1, |i| i + 1);
-        rep.team_a.label = if power_days.contains(&(series.clone(), day)) {
+        // Clicking the collapsed leg jumps to that day on the rally's event page,
+        // where its stages are listed individually — the schedule can't show them
+        // itself without undoing the per-day condensing the day grouping relies on.
+        let event = full_event_name(&rep.league, &series);
+        rep.row_href = Some(format!("/event/{}#day-{}", pct_encode(&event), day));
+        rep.team_a.label = if power_days.contains(&(series, day)) {
             format!("Day {ordinal} · Power Stage")
         } else {
             format!("Day {ordinal}")
@@ -2957,6 +2963,7 @@ mod tests {
             stream_url: None,
             event_url: String::new(),
             begin_at_ms: at_ms,
+            row_href: None,
         };
         let views = vec![
             mk(ms(1), "LCK", "Bo3"),
@@ -3015,6 +3022,7 @@ mod tests {
             stream_url: None,
             event_url: String::new(),
             begin_at_ms: at_ms,
+            row_href: None,
         };
         // Interleaved by time: LoL, CS2, LoL, CS2.
         let views = vec![
@@ -3055,6 +3063,7 @@ mod tests {
             stream_url: None,
             event_url: String::new(),
             begin_at_ms: at_ms,
+            row_href: None,
         };
         let views = vec![
             mk(ms(1), "Cologne Major"),
