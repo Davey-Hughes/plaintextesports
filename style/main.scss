@@ -766,6 +766,86 @@ a {
   transform: translateX(-4px);
 }
 
+// A wholly-finished league group has no ★. Its header keeps a blank slot the
+// width of the ★ so the title stays aligned with the starred groups. The slot is
+// a real `.sub-star` <button> (identical box to the actual ★, so the width — and
+// thus the title position — matches across browsers), just made invisible.
+.league-head .league-head-spacer {
+  visibility: hidden;
+}
+
+// Each maximal run of consecutive finished/live rows is wrapped in a `.bar-run`,
+// which draws the side indicator ONCE as a single continuous bar spanning the
+// whole run (replacing the per-row `.row-bar` segments). One element → one paint,
+// so it can't misalign or show overlap seams between segments at fractional zoom
+// (a Chrome/Firefox subpixel artifact). A bar-less run (upcoming rows) keeps its
+// per-row ☆/placeholder.
+.bar-run {
+  display: flex;
+  flex-direction: column;
+}
+
+.bar-run.run-final,
+.bar-run.run-live {
+  position: relative;
+
+  // The single run bar replaces the per-row segments — but only hide them with
+  // `visibility` (not `display:none`), so the per-row bar still occupies its grid
+  // cell in the row's leading column. Removing it from layout would let `.row-body`
+  // reflow into that column and shift the time left, under the bar.
+  .row-bar {
+    visibility: hidden;
+  }
+
+  &::before {
+    content: "";
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    // = the `.row-bar` centre, measured from the run's left edge (= the group's
+    // content-left): row padding-left (0.3rem) + half the 0.9em star column
+    // (0.45·14px) − 7.5px. Same font context (14px) as the rows, so it lines up.
+    left: calc(0.3rem + 0.45em - 7.5px);
+    width: 2px;
+    transform: translateX(-50%);
+  }
+}
+
+.bar-run.run-final::before {
+  background: var(--muted);
+}
+
+.bar-run.run-live::before {
+  background: var(--accent);
+}
+
+// A wholly-over group (every row finished, edition done → no header ★) draws a
+// single grey rail spanning the header AND all the rows, so the completed event
+// reads as one continuous line from its title down rather than a blank header
+// above a rows-only bar. One element (this `::before` on the whole `.league`), so
+// it can't seam where the header meets the rows; the per-run bar is subsumed.
+.league.league-over {
+  position: relative;
+
+  &::before {
+    content: "";
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    // = the `.row-bar` centre, but measured from the `.league` padding-box (which
+    // starts at the border's inner edge): + the league's own 0.6rem padding-left.
+    left: calc(0.9rem + 0.45em - 7.5px);
+    width: 2px;
+    transform: translateX(-50%);
+    background: var(--muted);
+  }
+
+  // The whole-group rail replaces the per-run bar (same colour, same column).
+  .bar-run.run-final::before {
+    content: none;
+  }
+}
+
 // The ★ to subscribe to a whole event (F1 GP page), sat beside its title.
 .event-title-head {
   display: flex;

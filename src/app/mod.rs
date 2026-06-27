@@ -1271,6 +1271,18 @@ fn EventPage() -> impl IntoView {
                             .map(|m| m.sport)
                             .next()
                             .or_else(|| stage_list.first().map(|e| e.sport));
+                        // The event's (short league, series) from any of its groups,
+                        // read before windowing. A non-empty series marks a specific
+                        // edition (an F1 GP, an esports split) — subscribed to on its
+                        // own; an empty series is a whole league/season, subscribed
+                        // to via the league scope. Decides the header ★ below.
+                        let (event_league, event_series) = s
+                            .days
+                            .iter()
+                            .flat_map(|d| &d.leagues)
+                            .next()
+                            .map(|lg| (lg.league.clone(), lg.series_name.clone()))
+                            .unwrap_or_else(|| (title.clone(), String::new()));
                         // The event's external (Liquipedia/official) link, pulled
                         // from any of its league groups.
                         let url = s
@@ -1367,29 +1379,25 @@ fn EventPage() -> impl IntoView {
                         let f1_sr = f1_season_round(&s);
                         // The series ("WRC"/"WEC") if this is one — for its standings.
                         let motor_league = motor_series(&s);
-                        // An F1 Grand Prix gets a ★ to subscribe to the whole event
-                        // (all its sessions) — but only while a session is still to
-                        // come; a wholly-finished GP can't be notified about, so it
-                        // shows the bare title. A single-league team sport
-                        // (MLB/NHL/NBA/NFL) gets a ★ for its whole sport: its league
-                        // is 1:1 with the sport, so this is the same scope/key as the
-                        // sport tab's ★ (and its schedule no longer carries a league
-                        // ★). Everything else (esports, soccer, motorsport leagues)
-                        // keeps the bare title — its schedule carries the league ★s.
+                        // An event page carries a header ★ only while it still has an
+                        // upcoming session — a reminder can't fire on a finished or
+                        // live one (same rule as the per-match ★). A wholly-finished
+                        // or only-live event shows the bare title. When the ★ does
+                        // show, it's scoped to what the page is about: a single-league
+                        // team sport (MLB/NHL/NBA/NFL) subscribes to the whole sport —
+                        // its league is 1:1 with the sport, the same scope/key as the
+                        // sport tab's ★ (its schedule drops the per-day league ★). A
+                        // specific edition (an F1 GP, a WEC/WRC round, an esports split
+                        // — anything with a series) subscribes to just that edition. A
+                        // whole league/season (no series) uses the league scope, in
+                        // lock-step with the home page's league ★. The schedule's
+                        // per-day league ★s are suppressed on the event page, so this
+                        // one stands in for them.
+                        let star_sport = event_sport.unwrap_or_default();
                         let trad_single = event_sport
                             .filter(|sp| sp.traditional() && !sp.has_sub_leagues());
-                        let title_head = if f1_sr.is_some() && event_has_upcoming(&s) {
-                            view! {
-                                <div class="event-title-head">
-                                    <SubscribeStar
-                                        kind="event"
-                                        sport=event_sport.unwrap_or_default()
-                                        value=title.clone()
-                                    />
-                                    <h1 class="detail-title">{title.clone()}</h1>
-                                </div>
-                            }
-                            .into_any()
+                        let title_head = if !event_has_upcoming(&s) {
+                            view! { <h1 class="detail-title">{title.clone()}</h1> }.into_any()
                         } else if let Some(sp) = trad_single {
                             view! {
                                 <div class="event-title-head">
@@ -1398,8 +1406,22 @@ fn EventPage() -> impl IntoView {
                                 </div>
                             }
                             .into_any()
+                        } else if event_series.is_empty() {
+                            view! {
+                                <div class="event-title-head">
+                                    <SubscribeStar kind="league" sport=star_sport value=event_league.clone() />
+                                    <h1 class="detail-title">{title.clone()}</h1>
+                                </div>
+                            }
+                            .into_any()
                         } else {
-                            view! { <h1 class="detail-title">{title.clone()}</h1> }.into_any()
+                            view! {
+                                <div class="event-title-head">
+                                    <SubscribeStar kind="event" sport=star_sport value=title.clone() />
+                                    <h1 class="detail-title">{title.clone()}</h1>
+                                </div>
+                            }
+                            .into_any()
                         };
                         // F1 GP pages get their own jump-to nav (schedule + each
                         // session that has results + standings), built from the
@@ -3296,15 +3318,17 @@ fn motorsport_watch(league: &str) -> &'static [(&'static str, &'static str)] {
     }
 }
 
-/// Whether an event still has something to be notified about — any upcoming or
-/// in-progress session. A fully-finished event (e.g. a past Grand Prix) returns
-/// false, so its "notify me" ★ can be hidden: a reminder there could never fire.
+/// Whether an event still has an upcoming (not-yet-started) session — the only
+/// thing a "notify me" ★ can fire on. A wholly-finished event (a past Grand Prix)
+/// or one whose only unfinished sessions are already live returns false, so its
+/// header ★ is hidden: a reminder there could never fire. Mirrors the per-match
+/// star rule (a past/live/finished match can't be reminded about).
 fn event_has_upcoming(s: &ScheduleView) -> bool {
     s.days
         .iter()
         .flat_map(|d| &d.leagues)
         .flat_map(|lg| &lg.matches)
-        .any(|m| matches!(m.status, MatchStatus::Upcoming | MatchStatus::Live))
+        .any(|m| matches!(m.status, MatchStatus::Upcoming))
 }
 
 /// Whether a loaded schedule is a traditional sport (any match is, e.g. MLB) —
@@ -4228,6 +4252,22 @@ fn render_schedule(
         })
         .flatten();
 
+    // A league head's ★ tracks the whole EVENT EDITION (an F1 GP weekend, an IEM
+    // tournament — keyed by sport + league + series), not a single day of it. So
+    // a day whose own sessions are all finished still shows the ★ while a later
+    // day of the same edition is upcoming (Friday practice is done but Sunday's
+    // race isn't). Collect every edition with an upcoming match anywhere in the
+    // loaded window; a head whose edition is absent is wholly over → grey bar.
+    let editions_with_upcoming: HashSet<(Sport, String, String)> = days
+        .iter()
+        .flat_map(|d| &d.leagues)
+        .filter(|lg| lg.matches.iter().any(|m| matches!(m.status, MatchStatus::Upcoming)))
+        .map(|lg| {
+            let sp = lg.matches.first().map(|m| m.sport).unwrap_or_default();
+            (sp, lg.league.clone(), lg.series_name.clone())
+        })
+        .collect();
+
     let day_sections = days
         .into_iter()
         .enumerate()
@@ -4236,14 +4276,6 @@ fn render_schedule(
                 .leagues
                 .into_iter()
                 .map(|lg| {
-                    // On the event page the page title already names the event, so we
-                    // drop the per-day league header, the colour-coded bar, and show
-                    // the best-of per row instead.
-                    let league_class = if event_mode {
-                        "league league-plain".to_string()
-                    } else {
-                        format!("league {}", league_color_class(&lg.league))
-                    };
                     // The best-of always shows per row (right of each match); the
                     // event title no longer repeats it.
                     let show_bo = true;
@@ -4255,6 +4287,33 @@ fn render_schedule(
                     // e.g. "IEM Katowice"); the subscribe key stays the short
                     // league name, while the full name keys the event link.
                     let series = lg.series_name.clone();
+                    // The ★ shows while the EDITION (not just this day) still has an
+                    // upcoming session to be reminded about; a wholly-finished edition
+                    // shows the grey bar. Keyed the same way as the edition set above.
+                    let lg_has_upcoming = editions_with_upcoming.contains(&(
+                        sport,
+                        lg.league.clone(),
+                        lg.series_name.clone(),
+                    ));
+                    // A "wholly over" group: every row finished AND the edition has no
+                    // upcoming session (so the header carries no ★). It gets one
+                    // continuous grey rail spanning the header *and* the rows (see
+                    // `.league-over`), instead of a blank header above the rows' bar.
+                    let lg_over = !lg_has_upcoming
+                        && !lg.matches.is_empty()
+                        && lg.matches.iter().all(|m| matches!(m.status, MatchStatus::Finished));
+                    // On the event page the page title already names the event, so we
+                    // drop the per-day league header, the colour-coded bar, and show
+                    // the best-of per row instead.
+                    let league_class = if event_mode {
+                        "league league-plain".to_string()
+                    } else {
+                        let mut c = format!("league {}", league_color_class(&lg.league));
+                        if lg_over {
+                            c.push_str(" league-over");
+                        }
+                        c
+                    };
                     let head = (!event_mode).then(move || {
                         let display = full_event_name(&league_name, &series);
                         // The full edition name keys its event page, so distinct
@@ -4264,19 +4323,84 @@ fn render_schedule(
                         // For a single-edition league like MLB/NHL/NBA/NFL this is the
                         // same match set — and the same key — as its filter chip's ★,
                         // so the two stay in lock-step; for F1/WEC it spans every round.
+                        // When the edition is wholly over the ★ is suppressed and the
+                        // header just keeps a blank slot the width of the ★ (a
+                        // transparent ☆), so the title stays aligned with the starred
+                        // groups without drawing anything. The slot is only reserved
+                        // when push is on (the ★ is hidden entirely otherwise).
+                        let star = if lg_has_upcoming {
+                            view! {
+                                <SubscribeStar kind="league" sport=sport value=league_name.clone() />
+                            }
+                            .into_any()
+                        } else if push {
+                            // Invisible stand-in with the IDENTICAL box to a real ★
+                            // (same <button class="sub-star">), so the title lines up
+                            // exactly as in starred groups on every browser. A plain
+                            // <span> ☆ renders in a different font/width than the
+                            // <button> ☆ (notably on Firefox), which nudged the title
+                            // off the time column below.
+                            view! {
+                                <button
+                                    class="sub-star league-head-spacer"
+                                    aria-hidden="true"
+                                    tabindex="-1"
+                                >
+                                    "☆"
+                                </button>
+                            }
+                            .into_any()
+                        } else {
+                            ().into_any()
+                        };
                         view! {
                             <div class="league-head">
-                                <SubscribeStar kind="league" sport=sport value=league_name.clone() />
+                                {star}
                                 <h3 class="league-title">
                                     <A href=event_href>{display}</A>
                                 </h3>
                             </div>
                         }
                     });
-                    let rows = lg
-                        .matches
+                    // Group consecutive rows by their side-bar kind so each run of
+                    // finished (grey) or live (accent) rows draws ONE continuous bar
+                    // (on the wrapping `.bar-run`) instead of per-row `.row-bar`
+                    // segments — segments could misalign or show overlap seams at
+                    // fractional zoom (Chrome/Firefox). Upcoming/other rows form a
+                    // bar-less run (their ☆/placeholder stays per-row).
+                    #[derive(PartialEq, Clone, Copy)]
+                    enum BarKind {
+                        Final,
+                        Live,
+                        None,
+                    }
+                    let bar_kind = |s: MatchStatus| match s {
+                        MatchStatus::Finished => BarKind::Final,
+                        MatchStatus::Live => BarKind::Live,
+                        _ => BarKind::None,
+                    };
+                    let mut runs: Vec<(BarKind, Vec<_>)> = Vec::new();
+                    for m in lg.matches {
+                        let k = bar_kind(m.status);
+                        match runs.last_mut() {
+                            Some((rk, ms)) if *rk == k => ms.push(m),
+                            _ => runs.push((k, vec![m])),
+                        }
+                    }
+                    let rows = runs
                         .into_iter()
-                        .map(|m| view! { <MatchRow m=m show_bo=show_bo push=push /> })
+                        .map(|(k, ms)| {
+                            let inner = ms
+                                .into_iter()
+                                .map(|m| view! { <MatchRow m=m show_bo=show_bo push=push /> })
+                                .collect_view();
+                            let cls = match k {
+                                BarKind::Final => "bar-run run-final",
+                                BarKind::Live => "bar-run run-live",
+                                BarKind::None => "bar-run",
+                            };
+                            view! { <div class=cls>{inner}</div> }
+                        })
                         .collect_view();
                     view! {
                         <div class=league_class>
