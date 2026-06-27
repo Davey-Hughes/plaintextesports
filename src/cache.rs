@@ -1123,7 +1123,14 @@ fn time_label(local: DateTime<Tz>, hour24: bool) -> String {
         12 => (12, "PM"),
         _ => (h24 - 12, "PM"),
     };
-    format!("{h12}:{:02} {ampm}", local.minute())
+    let min = local.minute();
+    // Left-pad single-hour times with a figure space (U+2007 — a digit-width space
+    // that HTML won't collapse) so e.g. " 4:10 PM" lines up under "12:00 PM".
+    if h12 < 10 {
+        format!("\u{2007}{h12}:{min:02} {ampm}")
+    } else {
+        format!("{h12}:{min:02} {ampm}")
+    }
 }
 
 fn day_label(local: DateTime<Tz>) -> String {
@@ -1747,26 +1754,37 @@ pub fn team_view(team: &str, tz_name: &str, hour24: bool) -> ScheduleView {
     }
 }
 
-/// The given match ids that are still upcoming, as views sorted by start time.
-/// Backs the notifications page — started/finished/canceled matches are dropped
-/// so the list only shows reminders that can still fire.
+/// The starred match uids resolved for the notifications page: the still-upcoming
+/// ones as views (sorted by start), plus the uids the snapshot knows are no longer
+/// upcoming (started/finished/canceled) so the client can silently drop them. A
+/// uid not in the snapshot is left alone (it may be outside the loaded window).
 #[must_use]
-pub fn upcoming_matches_by_uids(uids: &[String], tz_name: &str, hour24: bool) -> Vec<MatchView> {
+pub fn notifications_view(
+    uids: &[String],
+    tz_name: &str,
+    hour24: bool,
+) -> crate::types::NotificationsView {
     let cfg = config();
     let tz = resolve_tz(tz_name, cfg.tz);
     let now = Utc::now();
     let wanted: std::collections::HashSet<&str> = uids.iter().map(String::as_str).collect();
     let snap = SNAPSHOT.read().unwrap_or_else(PoisonError::into_inner);
-    let mut out: Vec<MatchView> = snap
-        .matches
-        .iter()
+    let mut upcoming = Vec::new();
+    let mut stale = Vec::new();
+    for m in snap.matches.iter() {
         // Starred matches are keyed by their uid (id isn't unique across games).
-        .filter(|m| wanted.contains(crate::types::match_uid(m.sport, m.id).as_str()))
-        .filter(|m| m.status == MatchStatus::Upcoming && m.begin_at > now)
-        .map(|m| to_view(m, &tz, now, hour24))
-        .collect();
-    out.sort_by_key(|v| v.begin_at_ms);
-    out
+        let uid = crate::types::match_uid(m.sport, m.id);
+        if !wanted.contains(uid.as_str()) {
+            continue;
+        }
+        if m.status == MatchStatus::Upcoming && m.begin_at > now {
+            upcoming.push(to_view(m, &tz, now, hour24));
+        } else {
+            stale.push(uid);
+        }
+    }
+    upcoming.sort_by_key(|v| v.begin_at_ms);
+    crate::types::NotificationsView { upcoming, stale }
 }
 
 // ----- Sport/event subscription expansion -----------------------------------
@@ -1783,6 +1801,9 @@ pub struct ReminderSeed {
     /// Full event name (league + edition), so an event subscription's reminders
     /// can be cleaned up by event on unsubscribe.
     pub event: String,
+    /// Lead time (ms before start) this reminder fires at; part of its key so a
+    /// match can carry several timers.
+    pub lead_ms: i64,
     pub notify_at_ms: i64,
     pub title: String,
     pub body: String,
@@ -1800,6 +1821,7 @@ impl ReminderSeed {
             p256dh: sub.p256dh,
             auth: sub.auth,
             match_id: self.match_id,
+            lead_ms: self.lead_ms,
             notify_at_ms: self.notify_at_ms,
             title: self.title,
             body: self.body,
@@ -1825,6 +1847,7 @@ fn reminder_seed(m: &NormalizedMatch, lead_ms: i64, tz: &Tz) -> ReminderSeed {
         team_a: m.team_a.name.clone(),
         team_b: m.team_b.name.clone(),
         event: full_event_name(&m.league, &m.series_name),
+        lead_ms,
         notify_at_ms: m.begin_at.timestamp_millis() - lead_ms,
         // The American team sports read "away at home"; soccer (neutral-venue
         // World Cup games) and esports read "vs".
@@ -1865,24 +1888,24 @@ pub fn scope_reminder_seeds(kind: &str, value: &str, lead_ms: i64) -> Vec<Remind
         .collect()
 }
 
-/// A reminder seed for a single upcoming match by id — `None` if it's unknown,
-/// already started, or canceled. Lets the server (not the client) decide the
-/// notification's time/title/body/url for a starred match.
+/// Reminder seeds for a single upcoming starred match by id — one per lead
+/// offset, or empty if the match is unknown, already started, or canceled. Lets
+/// the server (not the client) decide each notification's time/title/body/url.
 #[must_use]
-pub fn reminder_seed_for_match(match_id: i64, sport: &str, lead_ms: i64) -> Option<ReminderSeed> {
+pub fn reminder_seeds_for_match(match_id: i64, sport: &str, leads: &[i64]) -> Vec<ReminderSeed> {
     let cfg = config();
     let now = Utc::now();
     let snap = SNAPSHOT.read().unwrap_or_else(PoisonError::into_inner);
-    snap.matches
-        .iter()
-        // Match on (id, sport); an empty sport (older client) falls back to id-only.
-        .find(|m| {
-            m.id == match_id
-                && (sport.is_empty() || m.sport.slug() == sport)
-                && m.status != MatchStatus::Canceled
-                && m.begin_at > now
-        })
-        .map(|m| reminder_seed(m, lead_ms, &cfg.tz))
+    // Match on (id, sport); an empty sport (older client) falls back to id-only.
+    let Some(m) = snap.matches.iter().find(|m| {
+        m.id == match_id
+            && (sport.is_empty() || m.sport.slug() == sport)
+            && m.status != MatchStatus::Canceled
+            && m.begin_at > now
+    }) else {
+        return Vec::new();
+    };
+    leads.iter().map(|&lead| reminder_seed(m, lead, &cfg.tz)).collect()
 }
 
 // ----- Match detail + event standings/bracket ------------------------------
@@ -2865,7 +2888,8 @@ mod tests {
     fn time_label_24h_and_12h() {
         let t = |h, mi| Tz::UTC.with_ymd_and_hms(2026, 6, 21, h, mi, 0).unwrap();
         assert_eq!(time_label(t(18, 30), true), "18:30");
-        assert_eq!(time_label(t(18, 30), false), "6:30 PM");
+        // Single-hour 12h times are left-padded with a figure space (U+2007).
+        assert_eq!(time_label(t(18, 30), false), "\u{2007}6:30 PM");
         assert_eq!(time_label(t(0, 5), true), "00:05");
         assert_eq!(time_label(t(0, 5), false), "12:05 AM");
         assert_eq!(time_label(t(12, 0), false), "12:00 PM");
@@ -3236,6 +3260,7 @@ mod tests {
             team_a: "Boston Bruins".into(),
             team_b: "Montreal Canadiens".into(),
             event: "NHL".into(),
+            lead_ms: 900_000,
             notify_at_ms: 1000,
             title: "Bruins at Canadiens".into(),
             body: "NHL · 7:00 PM".into(),
@@ -3288,7 +3313,7 @@ mod tests {
         m.sport = Sport::Mlb;
         m.venue_tz = Some("America/New_York".into());
         let view = to_view(&m, &la, when, false);
-        assert_eq!(view.clock_label, "4:10 PM"); // viewer tz (PDT)
+        assert_eq!(view.clock_label, "\u{2007}4:10 PM"); // viewer tz (PDT), padded
         assert!(view.venue_label.ends_with("7:10 PM EDT"), "{}", view.venue_label);
         assert!(view.venue_label.contains("Jun 24"), "{}", view.venue_label);
 

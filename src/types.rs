@@ -447,6 +447,12 @@ pub struct ReminderReq {
     /// unique across games) and keys the reminder by `(match_id, game)`.
     #[serde(default)]
     pub sport: String,
+    /// Effective lead offsets (ms before start), resolved client-side: the match's
+    /// own override else the global timer list. One reminder is armed per offset.
+    /// Empty (old client / serde default) ⇒ the server applies the config single
+    /// lead, preserving the prior single-reminder behaviour.
+    #[serde(default)]
+    pub leads: Vec<i64>,
 }
 
 /// Subscribe/unsubscribe to a whole sport or event.
@@ -457,6 +463,19 @@ pub struct SubscribeReq {
     pub kind: String,
     /// "cs2"/"lol" for a sport, else the league name.
     pub value: String,
+    /// Effective lead offsets (ms) for this scope: its override else the global
+    /// list. Empty ⇒ the server falls back to the config single lead.
+    #[serde(default)]
+    pub leads: Vec<i64>,
+}
+
+/// The notifications page's starred-match data: the still-upcoming ones to show,
+/// plus the uids the server knows are finished/started so the client can silently
+/// drop them (so a finished match neither shows nor lingers in the export).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NotificationsView {
+    pub upcoming: Vec<MatchView>,
+    pub stale: Vec<String>,
 }
 
 /// One broadcast/stream for a match. Esports entries (from PandaScore

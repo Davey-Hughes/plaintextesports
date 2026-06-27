@@ -2,8 +2,8 @@
 //! on the client the `#[server]` macro replaces them with a network call.
 
 use crate::types::{
-    EventInfo, F1Result, F1Standings, MatchDetail, MatchView, MotorStandings, ReminderReq,
-    ScheduleView, SiteInfo, SubscribeReq,
+    EventInfo, F1Result, F1Standings, MatchDetail, MotorStandings, ReminderReq, ScheduleView,
+    SiteInfo, SubscribeReq,
 };
 #[cfg(feature = "ssr")]
 use crate::types::Sport;
@@ -166,15 +166,15 @@ pub async fn get_notifications(
     uids: Vec<String>,
     tz: String,
     hour24: bool,
-) -> Result<Vec<MatchView>, ServerFnError> {
+) -> Result<crate::types::NotificationsView, ServerFnError> {
     #[cfg(feature = "ssr")]
     {
-        Ok(crate::cache::upcoming_matches_by_uids(&uids, &tz, hour24))
+        Ok(crate::cache::notifications_view(&uids, &tz, hour24))
     }
     #[cfg(not(feature = "ssr"))]
     {
         let _ = (uids, tz, hour24);
-        Ok(Vec::new())
+        Ok(crate::types::NotificationsView::default())
     }
 }
 
@@ -316,7 +316,9 @@ pub async fn get_vapid_key() -> Result<Option<String>, ServerFnError> {
     }
 }
 
-/// Store a reminder for a starred match (a Web Push notification before start).
+/// Store reminders for a starred match — one per lead offset in `req.leads`
+/// (its override else the global timer list, resolved client-side). An empty
+/// list falls back to the config's single lead, preserving the prior behaviour.
 #[server(AddReminder, "/api")]
 pub async fn add_reminder(req: ReminderReq) -> Result<(), ServerFnError> {
     #[cfg(feature = "ssr")]
@@ -325,20 +327,42 @@ pub async fn add_reminder(req: ReminderReq) -> Result<(), ServerFnError> {
         if !cfg.push_enabled() || cfg.db_path.is_empty() {
             return Err(ServerFnError::new("reminders are not available"));
         }
-        // Derive time/title/body/url from the snapshot so a client can't forge an
-        // arbitrary notification (it only supplies its push subscription + a match id).
-        let seed = crate::cache::reminder_seed_for_match(req.match_id, &req.sport, cfg.reminder_lead_ms)
-            .ok_or_else(|| ServerFnError::new("match not found or already started"))?;
+        let leads = resolve_leads(req.leads, cfg.reminder_lead_ms);
+        // Derive each timer's time/title/body/url from the snapshot so a client
+        // can't forge a notification (it only supplies its subscription + match
+        // id + the lead offsets).
+        let seeds = crate::cache::reminder_seeds_for_match(req.match_id, &req.sport, &leads);
+        if seeds.is_empty() {
+            return Err(ServerFnError::new("match not found or already started"));
+        }
+        let reminders: Vec<_> = seeds.into_iter().map(|s| s.into_reminder(req.sub.clone())).collect();
         let conn = crate::store::shared(&cfg.db_path)
             .map_err(|e| ServerFnError::new(format!("db: {e}")))?;
-        let r = seed.into_reminder(req.sub);
-        crate::store::add_reminder(&conn, &r).map_err(|e| ServerFnError::new(format!("db: {e}")))?;
+        crate::store::set_match_reminders(&conn, &reminders)
+            .map_err(|e| ServerFnError::new(format!("db: {e}")))?;
         Ok(())
     }
     #[cfg(not(feature = "ssr"))]
     {
         let _ = req;
         Ok(())
+    }
+}
+
+/// Sanitize a client-supplied lead-offset list: keep `0..=1 week`, sort, dedup,
+/// cap at 10 (mirrors the client) so a forged request can't write 10k rows. An
+/// empty result falls back to the config's single lead.
+#[cfg(feature = "ssr")]
+fn resolve_leads(leads: Vec<i64>, fallback_ms: i64) -> Vec<i64> {
+    const WEEK_MS: i64 = 7 * 24 * 60 * 60 * 1000;
+    let mut v: Vec<i64> = leads.into_iter().filter(|&ms| (0..=WEEK_MS).contains(&ms)).collect();
+    v.sort_unstable();
+    v.dedup();
+    v.truncate(10);
+    if v.is_empty() {
+        vec![fallback_ms]
+    } else {
+        v
     }
 }
 
@@ -353,13 +377,17 @@ pub async fn add_subscription(req: SubscribeReq) -> Result<(), ServerFnError> {
         }
         let conn = crate::store::shared(&cfg.db_path)
             .map_err(|e| ServerFnError::new(format!("db: {e}")))?;
+        let lead_list = resolve_leads(req.leads, cfg.reminder_lead_ms);
         let s = crate::store::Subscription {
             endpoint: req.sub.endpoint,
             p256dh: req.sub.p256dh,
             auth: req.sub.auth,
             scope_kind: req.kind,
             scope_value: req.value,
-            lead_ms: cfg.reminder_lead_ms,
+            // Keep a single legacy value too (the smallest offset is the closest
+            // to start, a sensible single fallback for any old reader).
+            lead_ms: lead_list.first().copied().unwrap_or(cfg.reminder_lead_ms),
+            lead_list,
         };
         crate::store::add_subscription(&conn, &s)
             .map_err(|e| ServerFnError::new(format!("db: {e}")))?;
@@ -436,12 +464,11 @@ pub async fn exclude_reminder(req: ReminderReq) -> Result<(), ServerFnError> {
         if !cfg.push_enabled() || cfg.db_path.is_empty() {
             return Err(ServerFnError::new("reminders are not available"));
         }
-        let seed = crate::cache::reminder_seed_for_match(req.match_id, &req.sport, cfg.reminder_lead_ms)
-            .ok_or_else(|| ServerFnError::new("match not found or already started"))?;
+        // An opt-out needs no derived fields — just tombstone the match so every
+        // covering subscription's timers skip it.
         let conn = crate::store::shared(&cfg.db_path)
             .map_err(|e| ServerFnError::new(format!("db: {e}")))?;
-        let r = seed.into_reminder(req.sub);
-        crate::store::exclude_reminder(&conn, &r)
+        crate::store::exclude_match(&conn, &req.sub.endpoint, req.match_id, &req.sport)
             .map_err(|e| ServerFnError::new(format!("db: {e}")))?;
         Ok(())
     }

@@ -10,7 +10,7 @@ use crate::types::{
     SeriesGame, StreamView,
 };
 use leptos::prelude::*;
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use leptos_meta::{provide_meta_context, HashedStylesheet, MetaTags, Title};
 use leptos_router::{
     components::{Route, Router, Routes, A},
@@ -47,6 +47,10 @@ mod keys {
     pub const GAMES: &str = "games";
     pub const LEAGUES: &str = "leagues";
     pub const ICONS: &str = "icons";
+    /// Global reminder timers — comma-separated lead offsets in ms.
+    pub const TIMERS: &str = "timers";
+    /// Per-entry timer overrides — one `key\tms,ms,…` line per entry.
+    pub const OVERRIDES: &str = "overrides";
 }
 
 #[must_use]
@@ -61,6 +65,10 @@ pub fn shell(options: LeptosOptions) -> impl IntoView {
                 // The VAPID public key (when Web Push is configured) so the client
                 // can render the subscribe ★s on the first paint without a fetch.
                 {initial_vapid().map(|k| view! { <meta name="pte-vapid" content=k /> })}
+                // The config's default reminder lead (ms), so the client seeds the
+                // global timers from it without a round-trip.
+                <meta name="pte-lead-ms" content=initial_lead_ms().to_string() />
+
                 // Emits <link rel="stylesheet"> with the content-hashed CSS name
                 // (reads hash.txt via LeptosOptions). Must live here in the server
                 // shell since LeptosOptions isn't available in the App body.
@@ -130,6 +138,18 @@ struct Subscribed(RwSignal<HashSet<String>>);
 #[derive(Clone, Copy)]
 struct Excluded(RwSignal<HashSet<String>>);
 
+/// The global reminder timers: lead offsets (ms before start) applied to every
+/// subscription / starred match that hasn't set its own. Seeded from the config
+/// default (15m) until the saved list loads.
+#[derive(Clone, Copy)]
+struct GlobalTimers(RwSignal<Vec<i64>>);
+
+/// Per-entry timer overrides, keyed by a subscription's `sub_key` or a starred
+/// match's uid. An entry present here ignores the global timers and uses its own
+/// list instead.
+#[derive(Clone, Copy)]
+struct Overrides(RwSignal<BTreeMap<String, Vec<i64>>>);
+
 /// Calendar-selected date range (start, end ISO dates); `None` = default view.
 #[derive(Clone, Copy)]
 struct DateRange(RwSignal<Option<(String, String)>>);
@@ -186,6 +206,10 @@ pub fn App() -> impl IntoView {
     let revealed = RwSignal::new(HashSet::<String>::new());
     let sections = RwSignal::new(HashSet::<String>::new());
     let subscribed = RwSignal::new(HashSet::<String>::new());
+    // Reminder timers: the global list (seeded from the config default until the
+    // saved one loads) and per-entry overrides.
+    let global_timers = RwSignal::new(vec![initial_lead_ms()]);
+    let overrides = RwSignal::new(BTreeMap::<String, Vec<i64>>::new());
     // History views: a calendar-selected range, and the "earlier days" expansion.
     let range = RwSignal::new(None::<(String, String)>);
     let earlier = RwSignal::new(0i64);
@@ -212,6 +236,8 @@ pub fn App() -> impl IntoView {
     provide_context(RevealedMatches(revealed));
     provide_context(RevealedSections(sections));
     provide_context(Subscribed(subscribed));
+    provide_context(GlobalTimers(global_timers));
+    provide_context(Overrides(overrides));
     provide_context(DateRange(range));
     provide_context(EarlierDays(earlier));
     provide_context(LaterDays(later));
@@ -237,6 +263,10 @@ pub fn App() -> impl IntoView {
             starred.set(load_starred());
             excluded.set(load_excluded());
             subscribed.set(load_subs());
+            if let Some(t) = load_timers() {
+                global_timers.set(t);
+            }
+            overrides.set(load_overrides());
             revealed.set(load_revealed());
             sections.set(load_sections());
             range.set(load_range());
@@ -489,6 +519,9 @@ fn SiteHeader() -> impl IntoView {
             <RefreshButton />
             <SportToggle />
             <CalendarPicker />
+            // The notifications link sits with the schedule controls, just right of
+            // the calendar.
+            <ClockLink />
             <ScoresToggle />
         </div>
     }
@@ -514,7 +547,10 @@ fn RefreshButton() -> impl IntoView {
             view! {
                 <button class="refresh-btn" title=title on:click=bump>
                     <span class="refresh-icon">"\u{21bb}"</span>
-                    {format!("updated {label}")}
+                    // The "updated" prefix is dropped on mobile (just the icon +
+                    // time) so the schedule controls + clock stay on one row.
+                    <span class="refresh-pre">"updated "</span>
+                    {label}
                 </button>
             }
         })
@@ -578,24 +614,12 @@ fn BrandSlot() -> impl IntoView {
 fn SiteFooter() -> impl IntoView {
     let site = Resource::new(|| (), |()| async { get_site().await });
     let traditional = use_context::<SportMode>().expect("sport mode context").0;
-    // The notifications page is only useful once push is available (you have
-    // something to manage), so the link follows the same gate as the ★s.
-    let vapid = use_context::<RwSignal<Option<String>>>().expect("vapid context");
     view! {
         <footer class="footer" id="site-footer">
-            // Line 1: navigation + what/where the data is.
+            // Line 1: navigation + what/where the data is. (The notifications page
+            // is reachable from the header clock icon.)
             <div class="footer-line">
                 <A href="/about">"about"</A>
-                {move || {
-                    vapid
-                        .with(|v| v.is_some())
-                        .then(|| {
-                            view! {
-                                <span class="sep">" · "</span>
-                                <A href="/notifications">"notifications"</A>
-                            }
-                        })
-                }}
                 <span class="sep">" · "</span>
                 <span>
                     {move || {
@@ -2398,6 +2422,23 @@ fn apply_theme(theme: &str) {
     }
 }
 
+/// Header link to the notifications page — a clock icon (the 24h/12h toggle that
+/// used to live here now lives on that page, so the clock reads as "time + alerts
+/// settings"). Always shown: the page is useful even without push (it hosts the
+/// time-format toggle).
+#[component]
+fn ClockLink() -> impl IntoView {
+    view! {
+        <A href="/notifications" attr:class="toggle clock-link" attr:title="Notifications & time settings" attr:aria-label="Notifications">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <circle cx="12" cy="12" r="9"></circle>
+                <polyline points="12 7 12 12 15.5 14"></polyline>
+            </svg>
+        </A>
+    }
+}
+
+/// The 24h/12h time-format toggle. Lives on the notifications page (time-themed).
 #[component]
 fn HourToggle() -> impl IntoView {
     let hour24 = use_context::<RwSignal<bool>>().expect("hour24 context");
@@ -2482,6 +2523,191 @@ fn SportToggle() -> impl IntoView {
     }
 }
 
+// ----- Reminder timers (lead offsets) --------------------------------------
+
+/// One week in ms — the ceiling for a reminder lead offset.
+const WEEK_MS: i64 = 7 * 24 * 60 * 60 * 1000;
+
+/// At most this many timers per list (global or per-entry override).
+const MAX_TIMERS: usize = 10;
+
+/// The preset lead offsets (ms) shown as chips, smallest → largest (0 = at start).
+const TIMER_PRESETS: [i64; 12] = [
+    0,
+    5 * 60_000,
+    15 * 60_000,
+    30 * 60_000,
+    60 * 60_000,
+    3 * 60 * 60_000,
+    6 * 60 * 60_000,
+    12 * 60 * 60_000,
+    24 * 60 * 60_000,
+    2 * 24 * 60 * 60_000,
+    3 * 24 * 60 * 60_000,
+    7 * 24 * 60 * 60_000,
+];
+
+/// A compact label for a lead offset: "at start", "15m", "3h", "2d", "1w" —
+/// the largest whole unit that divides it, else minutes.
+fn fmt_lead(ms: i64) -> String {
+    if ms <= 0 {
+        return "at start".to_string();
+    }
+    let mins = ms / 60_000;
+    const WK: i64 = 7 * 24 * 60;
+    const DAY: i64 = 24 * 60;
+    const HR: i64 = 60;
+    if mins % WK == 0 {
+        format!("{}w", mins / WK)
+    } else if mins % DAY == 0 {
+        format!("{}d", mins / DAY)
+    } else if mins % HR == 0 {
+        format!("{}h", mins / HR)
+    } else {
+        format!("{mins}m")
+    }
+}
+
+/// Normalize a timer list: keep `0..=1 week`, sort, dedup, cap at [`MAX_TIMERS`].
+fn norm_leads(mut v: Vec<i64>) -> Vec<i64> {
+    v.retain(|&ms| (0..=WEEK_MS).contains(&ms));
+    v.sort_unstable();
+    v.dedup();
+    v.truncate(MAX_TIMERS);
+    v
+}
+
+/// Parse a comma-separated ms list (the localStorage `timers` value / override).
+#[cfg_attr(not(feature = "hydrate"), allow(dead_code))]
+fn parse_lead_list(s: &str) -> Vec<i64> {
+    norm_leads(s.split(',').filter_map(|p| p.trim().parse::<i64>().ok()).collect())
+}
+
+/// Serialize a timer list as comma-separated ms (for localStorage).
+#[cfg_attr(not(feature = "hydrate"), allow(dead_code))]
+fn join_lead_list(v: &[i64]) -> String {
+    v.iter().map(i64::to_string).collect::<Vec<_>>().join(",")
+}
+
+/// The effective timers for an entry: its override if set, else the global list.
+/// (Client-only: resolved when arming a reminder/subscription.)
+#[cfg_attr(not(feature = "hydrate"), allow(dead_code))]
+fn effective_leads(key: &str, overrides: &BTreeMap<String, Vec<i64>>, global: &[i64]) -> Vec<i64> {
+    overrides.get(key).cloned().unwrap_or_else(|| global.to_vec())
+}
+
+/// Split a match uid (`"{slug}-{id}"`, see [`crate::types::match_uid`]) back into
+/// its sport + id. Slugs carry no hyphen and the id is the trailing number.
+#[cfg_attr(not(feature = "hydrate"), allow(dead_code))]
+fn parse_uid(uid: &str) -> Option<(Sport, i64)> {
+    let (slug, id) = uid.rsplit_once('-')?;
+    Some((Sport::from_filter(slug)?, id.parse().ok()?))
+}
+
+// ----- Notifications export / import ----------------------------------------
+
+/// A portable snapshot of every client-side notification setting, for transfer
+/// between devices via a single copyable string.
+#[derive(Default, PartialEq, Eq, Debug)]
+struct NotifBackup {
+    subs: Vec<String>,
+    starred: Vec<String>,
+    excluded: Vec<String>,
+    timers: Vec<i64>,
+    overrides: Vec<(String, Vec<i64>)>,
+}
+
+/// Lead offsets are always whole minutes (every preset + custom unit is a
+/// minute-multiple), so the export stores minutes — far shorter than the ms used
+/// internally. These convert between the two for the wire format.
+fn join_lead_min(v: &[i64]) -> String {
+    v.iter().map(|ms| (ms / 60_000).to_string()).collect::<Vec<_>>().join(",")
+}
+fn parse_lead_min(s: &str) -> Vec<i64> {
+    norm_leads(s.split(',').filter_map(|p| p.trim().parse::<i64>().ok()).map(|m| m * 60_000).collect())
+}
+
+/// DEFLATE a byte slice (best compression). Empty on failure (the caller only
+/// uses the result when it's actually shorter than the uncompressed form).
+fn deflate(data: &[u8]) -> Vec<u8> {
+    use flate2::write::DeflateEncoder;
+    use flate2::Compression;
+    use std::io::Write;
+    let mut e = DeflateEncoder::new(Vec::new(), Compression::best());
+    if e.write_all(data).is_err() {
+        return Vec::new();
+    }
+    e.finish().unwrap_or_default()
+}
+fn inflate(data: &[u8]) -> Option<Vec<u8>> {
+    use flate2::read::DeflateDecoder;
+    use std::io::Read;
+    let mut out = Vec::new();
+    DeflateDecoder::new(data).read_to_end(&mut out).ok()?;
+    Some(out)
+}
+
+/// Encode a backup as a single copyable string. The body is a tab/newline-
+/// delimited text (entry keys never contain a tab or newline, so the framing is
+/// unambiguous); it's base64url'd as `pte1:`, or DEFLATE'd first as `pte1z:` when
+/// that comes out shorter — so tiny payloads stay tiny and large ones compress.
+fn encode_backup(b: &NotifBackup) -> String {
+    use base64::Engine;
+    let row = |tag: &str, items: &[String]| {
+        let mut s = String::from(tag);
+        for it in items {
+            s.push('\t');
+            s.push_str(it);
+        }
+        s
+    };
+    let mut lines = vec![row("S", &b.subs), row("R", &b.starred), row("X", &b.excluded)];
+    lines.push(format!("T\t{}", join_lead_min(&b.timers)));
+    for (k, v) in &b.overrides {
+        lines.push(format!("O\t{k}\t{}", join_lead_min(v)));
+    }
+    let body = lines.join("\n");
+    let b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD;
+    let plain = format!("pte1:{}", b64.encode(body.as_bytes()));
+    let zipped = format!("pte1z:{}", b64.encode(deflate(body.as_bytes())));
+    if zipped.len() < plain.len() {
+        zipped
+    } else {
+        plain
+    }
+}
+
+/// Inverse of [`encode_backup`]; `None` if the prefix/encoding is invalid.
+fn decode_backup(s: &str) -> Option<NotifBackup> {
+    use base64::Engine;
+    let b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD;
+    let s = s.trim();
+    let body = if let Some(rest) = s.strip_prefix("pte1z:") {
+        String::from_utf8(inflate(&b64.decode(rest).ok()?)?).ok()?
+    } else if let Some(rest) = s.strip_prefix("pte1:") {
+        String::from_utf8(b64.decode(rest).ok()?).ok()?
+    } else {
+        return None;
+    };
+    let mut b = NotifBackup::default();
+    for line in body.split('\n') {
+        let mut f = line.split('\t');
+        match f.next() {
+            Some("S") => b.subs = f.filter(|p| !p.is_empty()).map(str::to_string).collect(),
+            Some("R") => b.starred = f.filter(|p| !p.is_empty()).map(str::to_string).collect(),
+            Some("X") => b.excluded = f.filter(|p| !p.is_empty()).map(str::to_string).collect(),
+            Some("T") => b.timers = parse_lead_min(f.next().unwrap_or_default()),
+            Some("O") => {
+                if let Some(key) = f.next().filter(|k| !k.is_empty()) {
+                    b.overrides.push((key.to_string(), parse_lead_min(f.next().unwrap_or_default())));
+                }
+            }
+            _ => {}
+        }
+    }
+    Some(b)
+}
+
 /// The persisted subscription key for a scope. A whole-sport sub keys by slug
 /// alone (`sport|cs2`); a team/league/event sub is sport-scoped
 /// (`team|mlb|Detroit Tigers`) so the notifications page can rebuild its
@@ -2521,6 +2747,8 @@ fn parse_sub_key(key: &str) -> (String, Option<Sport>, String) {
 fn SubscribeStar(kind: &'static str, sport: Sport, value: String) -> impl IntoView {
     let subscribed = use_context::<Subscribed>().expect("subscribed context").0;
     let vapid = use_context::<RwSignal<Option<String>>>().expect("vapid context");
+    let global = use_context::<GlobalTimers>().expect("global timers context").0;
+    let overrides = use_context::<Overrides>().expect("overrides context").0;
     let key = sub_key(kind, sport, &value);
     let key_active = key.clone();
     let is_on = Memo::new(move |_| subscribed.with(|s| s.contains(&key_active)));
@@ -2538,11 +2766,12 @@ fn SubscribeStar(kind: &'static str, sport: Sport, value: String) -> impl IntoVi
         #[cfg(feature = "hydrate")]
         {
             let keys: Vec<String> = subscribed.with_untracked(|s| s.iter().cloned().collect());
-            subscribe_scope(kind.to_string(), value.clone(), !now_on, keys, vapid.get_untracked());
+            let leads = effective_leads(&key, &overrides.get_untracked(), &global.get_untracked());
+            subscribe_scope(kind.to_string(), value.clone(), !now_on, keys, vapid.get_untracked(), leads);
         }
         #[cfg(not(feature = "hydrate"))]
         {
-            let _ = (now_on, &value, vapid);
+            let _ = (now_on, &value, vapid, global, overrides);
         }
     };
 
@@ -2557,6 +2786,233 @@ fn SubscribeStar(kind: &'static str, sport: Sport, value: String) -> impl IntoVi
         >
             {move || if is_on.get() { "★" } else { "☆" }}
         </button>
+    }
+}
+
+/// A reusable timer-list editor: toggle preset chips or add an arbitrary offset
+/// (number + unit), with a live summary. Calls `on_change` with the new
+/// normalized list on every edit. Drives the global timers and per-entry overrides.
+#[component]
+fn TimerPicker(
+    #[prop(into)] current: Signal<Vec<i64>>,
+    on_change: Callback<Vec<i64>>,
+) -> impl IntoView {
+    // Custom-offset inputs: a number and a unit (ms multiplier).
+    let num = RwSignal::new(String::new());
+    let unit = RwSignal::new(60_000_i64); // minutes by default
+
+    // The add panel is hidden until "+" is pressed; picking a time closes it again.
+    let adding = RwSignal::new(false);
+
+    let remove_lead = move |ms: i64| {
+        let mut v = current.get_untracked();
+        v.retain(|&x| x != ms);
+        on_change.run(norm_leads(v));
+    };
+    // Add one offset, then collapse the selection (so a pick is one-and-done).
+    let add_lead = move |ms: i64| {
+        if (0..=WEEK_MS).contains(&ms) {
+            let mut v = current.get_untracked();
+            if !v.contains(&ms) && v.len() < MAX_TIMERS {
+                v.push(ms);
+                on_change.run(norm_leads(v));
+            }
+        }
+        adding.set(false);
+    };
+    let add_custom = move |_| {
+        let Ok(n) = num.get_untracked().trim().parse::<i64>() else {
+            return;
+        };
+        num.set(String::new());
+        add_lead(n.max(0).saturating_mul(unit.get_untracked()));
+    };
+
+    view! {
+        <div class="timer-picker">
+            <div class="timer-row">
+                // Active timers — each a box you click to remove.
+                {move || {
+                    let mut v = current.get();
+                    v.sort_unstable();
+                    v.into_iter()
+                        .map(|ms| {
+                            view! {
+                                <button
+                                    class="chip timer-chip on"
+                                    title="Remove this reminder time"
+                                    on:click=move |_| remove_lead(ms)
+                                >
+                                    {fmt_lead(ms)}
+                                    <span class="timer-x" aria-hidden="true">"×"</span>
+                                </button>
+                            }
+                        })
+                        .collect_view()
+                }}
+                <button
+                    class="chip timer-add-toggle"
+                    class:on=move || adding.get()
+                    title="Add a reminder time"
+                    aria-label="Add a reminder time"
+                    on:click=move |_| adding.update(|a| *a = !*a)
+                >
+                    "+"
+                </button>
+            </div>
+            {move || {
+                adding
+                    .get()
+                    .then(|| {
+                        view! {
+                            // Pick a preset, or set a custom amount — either closes the panel.
+                            <div class="timer-add-panel">
+                                {move || {
+                                    let cur = current.get();
+                                    TIMER_PRESETS
+                                        .iter()
+                                        .copied()
+                                        .filter(|ms| !cur.contains(ms))
+                                        .map(|ms| {
+                                            view! {
+                                                <button
+                                                    class="chip timer-chip"
+                                                    on:click=move |_| add_lead(ms)
+                                                >
+                                                    {fmt_lead(ms)}
+                                                </button>
+                                            }
+                                        })
+                                        .collect_view()
+                                }}
+                                <span class="timer-custom-label">"or"</span>
+                                <input
+                                    class="timer-num"
+                                    type="number"
+                                    min="0"
+                                    placeholder="2"
+                                    prop:value=move || num.get()
+                                    on:input=move |ev| num.set(event_target_value(&ev))
+                                    on:keydown=move |ev| {
+                                        if ev.key() == "Enter" {
+                                            add_custom(());
+                                        }
+                                    }
+                                />
+                                <select
+                                    class="timer-unit"
+                                    on:change=move |ev| {
+                                        if let Ok(v) = event_target_value(&ev).parse::<i64>() {
+                                            unit.set(v);
+                                        }
+                                    }
+                                >
+                                    <option value="60000">"min"</option>
+                                    <option value="3600000">"hr"</option>
+                                    <option value="86400000">"days"</option>
+                                    <option value="604800000">"wk"</option>
+                                </select>
+                                <button class="chip timer-add" on:click=move |_| add_custom(())>
+                                    "add"
+                                </button>
+                            </div>
+                        }
+                    })
+            }}
+        </div>
+    }
+}
+
+/// A per-entry timer control, shown inline on a subscription/match row. While the
+/// entry follows the global timers it's just a small "custom" link (no boxes — the
+/// global list isn't repeated on every row). Clicking it forks an override seeded
+/// from the current global timers, revealing the same boxes + "+" picker plus a
+/// "↺ global" reset. `rearm` re-applies the resulting list server-side.
+#[component]
+fn EntryTimers(entry_key: String, rearm: Callback<Vec<i64>>) -> impl IntoView {
+    let global = use_context::<GlobalTimers>().expect("global timers context").0;
+    let overrides = use_context::<Overrides>().expect("overrides context").0;
+    let vapid = use_context::<RwSignal<Option<String>>>().expect("vapid context");
+    // Nothing to schedule when push is off.
+    let hidden = move || vapid.with(|v| v.is_none());
+
+    let k_has = entry_key.clone();
+    let has_override = Memo::new(move |_| overrides.with(|o| o.contains_key(&k_has)));
+    let k_cur = entry_key.clone();
+    let current = Signal::derive(move || {
+        overrides.with(|o| o.get(&k_cur).cloned()).unwrap_or_else(|| global.get())
+    });
+
+    let k_set = entry_key.clone();
+    let on_change = Callback::new(move |leads: Vec<i64>| {
+        // Removing the last custom timer reverts the entry to the global timers
+        // (rather than leaving it with no reminders at all).
+        let revert = leads.is_empty();
+        overrides.update(|o| {
+            if revert {
+                o.remove(&k_set);
+            } else {
+                o.insert(k_set.clone(), leads.clone());
+            }
+        });
+        #[cfg(feature = "hydrate")]
+        save_overrides(&overrides.get_untracked());
+        rearm.run(if revert { global.get_untracked() } else { leads });
+    });
+
+    // Start customizing: fork an override from the current global timers. A
+    // Callback (Copy) so the reactive block can re-render it freely.
+    let k_start = entry_key.clone();
+    let start_custom = Callback::new(move |()| {
+        let g = global.get_untracked();
+        overrides.update(|o| {
+            o.insert(k_start.clone(), g.clone());
+        });
+        #[cfg(feature = "hydrate")]
+        save_overrides(&overrides.get_untracked());
+        rearm.run(g);
+    });
+
+    let k_reset = entry_key;
+    let reset = Callback::new(move |()| {
+        overrides.update(|o| {
+            o.remove(&k_reset);
+        });
+        #[cfg(feature = "hydrate")]
+        save_overrides(&overrides.get_untracked());
+        rearm.run(global.get_untracked());
+    });
+
+    view! {
+        <div class="entry-timers" class:event-hidden=hidden>
+            {move || {
+                if has_override.get() {
+                    view! {
+                        <span class="entry-timers-label on">"custom"</span>
+                        <TimerPicker current=current on_change=on_change />
+                        <button
+                            class="linkish entry-timers-reset"
+                            title="Follow the global timers instead"
+                            on:click=move |_| reset.run(())
+                        >
+                            "↺ global"
+                        </button>
+                    }
+                        .into_any()
+                } else {
+                    view! {
+                        <button
+                            class="linkish entry-timers-custom"
+                            title="Set timers just for this — overriding the global timers"
+                            on:click=move |_| start_custom.run(())
+                        >
+                            "custom"
+                        </button>
+                    }
+                        .into_any()
+                }
+            }}
+        </div>
     }
 }
 
@@ -2582,12 +3038,36 @@ fn NotificationsPage() -> impl IntoView {
         },
         |(uids, z, h)| async move {
             if uids.is_empty() {
-                Ok(Vec::new())
+                Ok(crate::types::NotificationsView::default())
             } else {
                 get_notifications(uids, z, h).await
             }
         },
     );
+
+    // Silently drop starred matches the server reports as finished/started, so
+    // they neither show below nor linger in the export string.
+    Effect::new(move |_| {
+        if let Some(Ok(view)) = starred_matches.get() {
+            if !view.stale.is_empty() {
+                let stale: HashSet<String> = view.stale.into_iter().collect();
+                let mut changed = false;
+                starred.update(|s| {
+                    let before = s.len();
+                    s.retain(|u| !stale.contains(u));
+                    changed = s.len() != before;
+                });
+                if changed {
+                    #[cfg(feature = "hydrate")]
+                    save_starred(&starred.get_untracked());
+                }
+            }
+        }
+    });
+
+    let global = use_context::<GlobalTimers>().expect("global timers context").0;
+    let overrides = use_context::<Overrides>().expect("overrides context").0;
+    let push_on = move || vapid.with(|v| v.is_some());
 
     // Anything to clear? (subscriptions or stars; exclusions alone aren't shown).
     let has_any =
@@ -2596,12 +3076,14 @@ fn NotificationsPage() -> impl IntoView {
         subscribed.set(HashSet::new());
         starred.set(HashSet::new());
         excluded.set(HashSet::new());
+        overrides.set(BTreeMap::new());
         #[cfg(feature = "hydrate")]
         {
             let empty: Vec<String> = Vec::new();
             save_subs(&empty);
             save_starred(&HashSet::new());
             save_excluded(&HashSet::new());
+            save_overrides(&BTreeMap::new());
             clear_all_notifications(vapid.get_untracked());
         }
         #[cfg(not(feature = "hydrate"))]
@@ -2609,6 +3091,133 @@ fn NotificationsPage() -> impl IntoView {
             let _ = vapid;
         }
     };
+
+    // Editing the global timers re-arms every entry that has no override of its
+    // own, so the change takes effect on the server immediately.
+    let on_global_change = Callback::new(move |next: Vec<i64>| {
+        global.set(next.clone());
+        #[cfg(feature = "hydrate")]
+        {
+            save_timers(&next);
+            let ov = overrides.get_untracked();
+            let subs_re: Vec<(String, String, Vec<i64>)> = subscribed
+                .get_untracked()
+                .iter()
+                .filter(|k| !ov.contains_key(*k))
+                .map(|k| {
+                    let (kind, _s, value) = parse_sub_key(k);
+                    (kind, value, next.clone())
+                })
+                .collect();
+            let stars_re: Vec<(i64, String, Vec<i64>)> = starred
+                .get_untracked()
+                .iter()
+                .filter(|u| !ov.contains_key(*u))
+                .filter_map(|u| parse_uid(u).map(|(sp, id)| (id, sp.slug().to_string(), next.clone())))
+                .collect();
+            sync_entries(false, subs_re, stars_re, Vec::new(), vapid.get_untracked());
+        }
+        #[cfg(not(feature = "hydrate"))]
+        let _ = (overrides, subscribed, starred, vapid);
+    });
+
+    // The single export string for the whole notification set.
+    let export_str = Memo::new(move |_| {
+        let mut subs: Vec<String> = subscribed.get().into_iter().collect();
+        subs.sort();
+        let mut star: Vec<String> = starred.get().into_iter().collect();
+        star.sort();
+        let mut excl: Vec<String> = excluded.get().into_iter().collect();
+        excl.sort();
+        let ov: Vec<(String, Vec<i64>)> = overrides.get().into_iter().collect();
+        encode_backup(&NotifBackup {
+            subs,
+            starred: star,
+            excluded: excl,
+            timers: global.get(),
+            overrides: ov,
+        })
+    });
+    let import_text = RwSignal::new(String::new());
+    let import_status = RwSignal::new(String::new());
+    let copy_hint = RwSignal::new(String::new());
+
+    let copy_export = move |_| {
+        #[cfg(feature = "hydrate")]
+        {
+            let s = export_str.get_untracked();
+            if let Some(clip) = web_sys::window().map(|w| w.navigator().clipboard()) {
+                let _ = clip.write_text(&s);
+                copy_hint.set("Copied to clipboard ✓".to_string());
+            }
+        }
+        #[cfg(not(feature = "hydrate"))]
+        let _ = copy_hint;
+    };
+
+    // Import: "override" replaces the whole set (and clears the server first);
+    // "add" unions the new entries onto the existing ones (existing overrides win,
+    // global timers are left as this device's own).
+    let do_import = Callback::new(move |replace: bool| {
+        let Some(b) = decode_backup(&import_text.get_untracked()) else {
+            import_status.set("That doesn't look like a valid code.".to_string());
+            return;
+        };
+        if replace {
+            subscribed.set(b.subs.iter().cloned().collect());
+            starred.set(b.starred.iter().cloned().collect());
+            excluded.set(b.excluded.iter().cloned().collect());
+            global.set(b.timers.clone());
+            overrides.set(b.overrides.iter().cloned().collect());
+        } else {
+            subscribed.update(|s| s.extend(b.subs.iter().cloned()));
+            starred.update(|s| s.extend(b.starred.iter().cloned()));
+            excluded.update(|s| s.extend(b.excluded.iter().cloned()));
+            overrides.update(|o| {
+                for (k, v) in &b.overrides {
+                    o.entry(k.clone()).or_insert_with(|| v.clone());
+                }
+            });
+        }
+        #[cfg(feature = "hydrate")]
+        {
+            save_subs(&subscribed.get_untracked().into_iter().collect::<Vec<_>>());
+            save_starred(&starred.get_untracked());
+            save_excluded(&excluded.get_untracked());
+            save_timers(&global.get_untracked());
+            save_overrides(&overrides.get_untracked());
+            // Re-arm the imported entries with their effective leads (merged state).
+            let ov = overrides.get_untracked();
+            let g = global.get_untracked();
+            let subs_re: Vec<_> = b
+                .subs
+                .iter()
+                .map(|k| {
+                    let (kind, _s, value) = parse_sub_key(k);
+                    (kind, value, effective_leads(k, &ov, &g))
+                })
+                .collect();
+            let stars_re: Vec<_> = b
+                .starred
+                .iter()
+                .filter_map(|u| {
+                    parse_uid(u).map(|(sp, id)| (id, sp.slug().to_string(), effective_leads(u, &ov, &g)))
+                })
+                .collect();
+            let excl_re: Vec<_> = b
+                .excluded
+                .iter()
+                .filter_map(|u| parse_uid(u).map(|(sp, id)| (id, sp.slug().to_string())))
+                .collect();
+            sync_entries(replace, subs_re, stars_re, excl_re, vapid.get_untracked());
+        }
+        import_status.set(format!(
+            "Imported {} subscription(s) and {} match(es).",
+            b.subs.len(),
+            b.starred.len()
+        ));
+        import_text.set(String::new());
+    });
 
     view! {
         <article class="detail">
@@ -2626,61 +3235,126 @@ fn NotificationsPage() -> impl IntoView {
                         })
                 }}
             </div>
-            <p class="notif-intro">
-                "Everything you'll be reminded about. Subscriptions cover every "
-                "upcoming match for a sport, competition, event, or team."
-            </p>
+
             {move || {
-                let mut keys: Vec<String> = subscribed.get().into_iter().collect();
-                keys.sort();
-                (!keys.is_empty())
-                    .then(|| {
-                        view! {
-                            <section class="notif-section">
-                                <h2 class="notif-head">"Subscriptions"</h2>
-                                <ul class="notif-list">
-                                    {keys
-                                        .into_iter()
-                                        .map(|k| view! { <SubRow key=k /> })
-                                        .collect_view()}
-                                </ul>
-                            </section>
-                        }
-                    })
-            }}
-            <Suspense>
-                {move || {
-                    starred_matches
-                        .get()
-                        .map(|res| {
-                            let ms = res.unwrap_or_default();
-                            (!ms.is_empty())
-                                .then(|| {
-                                    view! {
-                                        <section class="notif-section">
-                                            <h2 class="notif-head">"Starred matches"</h2>
-                                            <ul class="notif-list">
-                                                {ms
-                                                    .into_iter()
-                                                    .map(|m| view! { <StarredRow m=m /> })
-                                                    .collect_view()}
-                                            </ul>
-                                        </section>
-                                    }
-                                })
-                        })
-                }}
-            </Suspense>
-            {move || {
-                let none = subscribed.with(HashSet::is_empty) && starred.with(HashSet::is_empty);
-                none.then(|| {
-                    view! {
+                if !push_on() {
+                    return view! {
                         <p class="empty">
-                            "Nothing yet. Subscribe to a sport, competition, event, or team from its page "
-                            "(the ★), or star an upcoming match to be reminded."
+                            "Push notifications aren't enabled on this site, so there's nothing else to manage here."
                         </p>
                     }
-                })
+                        .into_any();
+                }
+                view! {
+                    <p class="notif-intro">
+                        "Everything you'll be reminded about. Subscriptions cover every "
+                        "upcoming match for a sport, competition, event, or team."
+                    </p>
+                    // Global timers + the override explainer; the divider sits
+                    // under the explanatory text, above the picker.
+                    <section class="notif-section notif-timers-section">
+                        <h2 class="notif-head">"Notification timers"</h2>
+                        <p class="notif-note">
+                            "The global reminder times for every subscription and starred match. "
+                            "Any one of them can override these with its own "
+                            <strong>"custom"</strong>
+                            " timer."
+                        </p>
+                        <hr class="notif-divider" />
+                        <TimerPicker
+                            current=Signal::derive(move || global.get())
+                            on_change=on_global_change
+                        />
+                    </section>
+
+                    // Subscriptions + individually-starred matches in one list (a
+                    // starred match carries a "match" tag, like a subscription's kind).
+                    <section class="notif-section">
+                        <ul class="notif-list">
+                            {move || {
+                                let mut keys: Vec<String> = subscribed.get().into_iter().collect();
+                                keys.sort();
+                                keys.into_iter().map(|k| view! { <SubRow key=k /> }).collect_view()
+                            }}
+                            // Transition (not Suspense) so re-fetching on a 12h/24h
+                            // switch keeps the current rows visible instead of
+                            // blanking the list (which made the page flash).
+                            <Transition>
+                                {move || {
+                                    starred_matches
+                                        .get()
+                                        .map(|res| {
+                                            res.unwrap_or_default()
+                                                .upcoming
+                                                .into_iter()
+                                                .map(|m| view! { <StarredRow m=m /> })
+                                                .collect_view()
+                                        })
+                                }}
+                            </Transition>
+                        </ul>
+                    </section>
+                    {move || {
+                        let none = subscribed.with(HashSet::is_empty)
+                            && starred.with(HashSet::is_empty);
+                        none.then(|| {
+                            view! {
+                                <p class="empty">
+                                    "Nothing yet. Subscribe to a sport, competition, event, or team "
+                                    "from its page (the ★), or star an upcoming match to be reminded."
+                                </p>
+                            }
+                        })
+                    }}
+
+                    // Export / import — transfer the whole set between devices.
+                    <section class="notif-section notif-io">
+                        <h2 class="notif-head">"Transfer to another device"</h2>
+                        <p class="notif-note">
+                            "Your notifications live in this browser. Click the code to copy it, "
+                            "then import it on another device to carry them over."
+                        </p>
+                        // Click to copy. The code is truncated to one line; hovering
+                        // reveals the whole thing in a popover.
+                        <div
+                            class="notif-io-copy"
+                            role="button"
+                            tabindex="0"
+                            title="Click to copy"
+                            on:click=copy_export
+                        >
+                            <span class="notif-io-code">{move || export_str.get()}</span>
+                            <span class="notif-io-pop">{move || export_str.get()}</span>
+                        </div>
+                        // Always present (a reserved line) so the hint appearing
+                        // after a copy doesn't shift the layout.
+                        <div class="notif-io-copy-status">{move || copy_hint.get()}</div>
+                        <p class="notif-note">
+                            "Or paste a code here, then "
+                            <strong>"add"</strong>
+                            " it to your current set or "
+                            <strong>"override"</strong>
+                            " to replace everything."
+                        </p>
+                        <input
+                            class="notif-io-input"
+                            type="text"
+                            placeholder="paste a code…"
+                            prop:value=move || import_text.get()
+                            on:input=move |ev| import_text.set(event_target_value(&ev))
+                        />
+                        <div class="notif-io-actions">
+                            <button class="chip" on:click=move |_| do_import.run(false)>
+                                "add"
+                            </button>
+                            <button class="chip" on:click=move |_| do_import.run(true)>
+                                "override"
+                            </button>
+                            <span class="notif-io-status">{move || import_status.get()}</span>
+                        </div>
+                    </section>
+                }
+                    .into_any()
             }}
         </article>
     }
@@ -2692,9 +3366,28 @@ fn NotificationsPage() -> impl IntoView {
 fn SubRow(key: String) -> impl IntoView {
     let subscribed = use_context::<Subscribed>().expect("subscribed context").0;
     let vapid = use_context::<RwSignal<Option<String>>>().expect("vapid context");
+    let overrides = use_context::<Overrides>().expect("overrides context").0;
     // Keys are `sport|<slug>` or `<kind>|<slug>|<name>` (team/league/event are
     // sport-scoped, see `sub_key`, so their page link can be rebuilt here).
     let (kind, sport, value) = parse_sub_key(&key);
+    // Re-arm this scope with the given lead list (its override or the global one),
+    // called by its per-entry timer control.
+    let rearm = {
+        let kind = kind.clone();
+        let value = value.clone();
+        Callback::new(move |leads: Vec<i64>| {
+            #[cfg(feature = "hydrate")]
+            {
+                let keys: Vec<String> = subscribed.with_untracked(|s| s.iter().cloned().collect());
+                subscribe_scope(kind.clone(), value.clone(), true, keys, vapid.get_untracked(), leads);
+            }
+            #[cfg(not(feature = "hydrate"))]
+            {
+                let _ = (&kind, &value, vapid, leads);
+            }
+        })
+    };
+    let entry_key = key.clone();
     // Label + optional link to the subscribed thing's own (sport-scoped) page.
     let (tag, label, link): (&str, String, Option<String>) = match kind.as_str() {
         "sport" => (
@@ -2719,12 +3412,17 @@ fn SubRow(key: String) -> impl IntoView {
         });
         #[cfg(feature = "hydrate")]
         {
+            // Drop any per-entry override for this scope too.
+            overrides.update(|o| {
+                o.remove(&key_for_click);
+            });
+            save_overrides(&overrides.get_untracked());
             let keys: Vec<String> = subscribed.with_untracked(|s| s.iter().cloned().collect());
-            subscribe_scope(kind.clone(), value.clone(), false, keys, vapid.get_untracked());
+            subscribe_scope(kind.clone(), value.clone(), false, keys, vapid.get_untracked(), Vec::new());
         }
         #[cfg(not(feature = "hydrate"))]
         {
-            let _ = (&kind, &value, vapid);
+            let _ = (&kind, &value, vapid, overrides, &key_for_click);
         }
     };
 
@@ -2735,11 +3433,14 @@ fn SubRow(key: String) -> impl IntoView {
 
     view! {
         <li class="notif-item">
-            <span class="notif-kind">{tag}</span>
-            <span class="notif-label">{label_view}</span>
-            <button class="notif-remove" on:click=remove aria-label="Remove subscription">
-                "×"
-            </button>
+            <div class="notif-row">
+                <span class="notif-kind">{tag}</span>
+                <span class="notif-label">{label_view}</span>
+                <EntryTimers entry_key=entry_key rearm=rearm />
+                <button class="notif-remove" on:click=remove aria-label="Remove subscription">
+                    "×"
+                </button>
+            </div>
         </li>
     }
 }
@@ -2751,9 +3452,20 @@ fn StarredRow(m: MatchView) -> impl IntoView {
     let excluded = use_context::<Excluded>().expect("excluded context").0;
     let subscribed = use_context::<Subscribed>().expect("subscribed context").0;
     let vapid = use_context::<RwSignal<Option<String>>>().expect("vapid context");
+    let overrides = use_context::<Overrides>().expect("overrides context").0;
     let id = m.id;
     let sport = m.sport;
     let uid = m.uid();
+    // Re-arm this match with the given lead list, called by its timer control.
+    let rearm = Callback::new(move |leads: Vec<i64>| {
+        #[cfg(feature = "hydrate")]
+        sync_match_reminder(id, sport, true, false, vapid.get_untracked(), leads);
+        #[cfg(not(feature = "hydrate"))]
+        {
+            let _ = (id, sport, vapid, leads);
+        }
+    });
+    let entry_key = uid.clone();
     // F1 (single-entity) has no opponent: show the GP and session (e.g.
     // "Austrian Grand Prix · Race") instead of a "Race at " matchup.
     let line = if m.sport.single_entity() {
@@ -2788,26 +3500,35 @@ fn StarredRow(m: MatchView) -> impl IntoView {
             }
             #[cfg(feature = "hydrate")]
             {
+                // Drop any per-entry override for this match too.
+                overrides.update(|o| {
+                    o.remove(&uid);
+                });
+                save_overrides(&overrides.get_untracked());
                 save_starred(&starred.get_untracked());
                 save_excluded(&excluded.get_untracked());
-                sync_match_reminder(id, sport, false, covered, vapid.get_untracked());
+                sync_match_reminder(id, sport, false, covered, vapid.get_untracked(), Vec::new());
             }
             #[cfg(not(feature = "hydrate"))]
             {
-                let _ = (covered, vapid, sport, id);
+                let _ = (covered, vapid, sport, id, overrides);
             }
         }
     };
 
     view! {
         <li class="notif-item">
-            <A href=crate::types::match_path(sport, id)>
-                <span class="notif-time">{m.clock_label}</span>
-                <span class="notif-label">{line}</span>
-            </A>
-            <button class="notif-remove" on:click=remove aria-label="Remove reminder">
-                "×"
-            </button>
+            <div class="notif-row">
+                <span class="notif-kind">"match"</span>
+                <A href=crate::types::match_path(sport, id)>
+                    <span class="notif-time">{m.clock_label}</span>
+                    <span class="notif-label">{line}</span>
+                </A>
+                <EntryTimers entry_key=entry_key rearm=rearm />
+                <button class="notif-remove" on:click=remove aria-label="Remove reminder">
+                    "×"
+                </button>
+            </div>
         </li>
     }
 }
@@ -2972,6 +3693,31 @@ fn initial_vapid() -> Option<String> {
     None
 }
 
+/// The config's default reminder lead (ms) for this render — read from the server
+/// env during SSR (and embedded in the shell `<meta name="pte-lead-ms">`), and
+/// from that meta on hydrate. Seeds the global timers so they start at the
+/// configured default (15m) with no round-trip. Falls back to 15m.
+#[cfg(feature = "ssr")]
+fn initial_lead_ms() -> i64 {
+    crate::config::Config::from_env().reminder_lead_ms
+}
+
+#[cfg(feature = "hydrate")]
+fn initial_lead_ms() -> i64 {
+    web_sys::window()
+        .and_then(|w| w.document())
+        .and_then(|d| d.query_selector("meta[name=\"pte-lead-ms\"]").ok().flatten())
+        .and_then(|el| el.get_attribute("content"))
+        .and_then(|s| s.parse::<i64>().ok())
+        .filter(|&ms| (0..=WEEK_MS).contains(&ms))
+        .unwrap_or(900_000)
+}
+
+#[cfg(not(any(feature = "ssr", feature = "hydrate")))]
+fn initial_lead_ms() -> i64 {
+    900_000
+}
+
 /// The sport/league filter sets (`?g=`/`?e=`, comma-separated, percent-encoded) for
 /// this render — read from the request on the server and the location on hydrate,
 /// so the schedule is already filtered on the first paint instead of flashing the
@@ -3055,6 +3801,122 @@ fn load_subs() -> HashSet<String> {
     out
 }
 
+#[cfg(feature = "hydrate")]
+fn save_timers(timers: &[i64]) {
+    if let Some(win) = web_sys::window() {
+        if let Ok(Some(storage)) = win.local_storage() {
+            let _ = storage.set_item(keys::TIMERS, &join_lead_list(timers));
+        }
+    }
+}
+
+/// The saved global timers — `None` if the key was never written (use the config
+/// default), `Some([])` if the user explicitly cleared them all.
+#[cfg(feature = "hydrate")]
+fn load_timers() -> Option<Vec<i64>> {
+    let storage = web_sys::window()?.local_storage().ok().flatten()?;
+    let v = storage.get_item(keys::TIMERS).ok().flatten()?;
+    Some(parse_lead_list(&v))
+}
+
+#[cfg(feature = "hydrate")]
+fn save_overrides(ov: &BTreeMap<String, Vec<i64>>) {
+    if let Some(win) = web_sys::window() {
+        if let Ok(Some(storage)) = win.local_storage() {
+            let body = ov
+                .iter()
+                .map(|(k, v)| format!("{k}\t{}", join_lead_list(v)))
+                .collect::<Vec<_>>()
+                .join("\n");
+            let _ = storage.set_item(keys::OVERRIDES, &body);
+        }
+    }
+}
+
+#[cfg(feature = "hydrate")]
+fn load_overrides() -> BTreeMap<String, Vec<i64>> {
+    let mut out = BTreeMap::new();
+    if let Some(win) = web_sys::window() {
+        if let Ok(Some(storage)) = win.local_storage() {
+            if let Ok(Some(v)) = storage.get_item(keys::OVERRIDES) {
+                for line in v.split('\n').filter(|l| !l.is_empty()) {
+                    if let Some((k, list)) = line.split_once('\t') {
+                        out.insert(k.to_string(), parse_lead_list(list));
+                    }
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Re-arm a batch of entries server-side under a single push handshake:
+/// optionally clear everything first (import "override"), then (re)subscribe each
+/// scope, (re)arm each starred match, and re-apply each opt-out — all with the
+/// caller's already-resolved lead lists. Backs global-timer edits and import.
+#[cfg(feature = "hydrate")]
+fn sync_entries(
+    clear_first: bool,
+    subs: Vec<(String, String, Vec<i64>)>,
+    stars: Vec<(i64, String, Vec<i64>)>,
+    excludes: Vec<(i64, String)>,
+    vapid: Option<String>,
+) {
+    let Some(vapid) = vapid else { return };
+    if !clear_first && subs.is_empty() && stars.is_empty() && excludes.is_empty() {
+        return;
+    }
+    leptos::task::spawn_local(async move {
+        let sub = match pte_subscribe(&vapid).await {
+            Ok(s) => s,
+            Err(_) => return,
+        };
+        let (Some(endpoint), Some(p256dh), Some(auth)) = (
+            reflect_str(&sub, "endpoint"),
+            reflect_str(&sub, "p256dh"),
+            reflect_str(&sub, "auth"),
+        ) else {
+            return;
+        };
+        let push = || crate::types::PushSub {
+            endpoint: endpoint.clone(),
+            p256dh: p256dh.clone(),
+            auth: auth.clone(),
+        };
+        // Clear before re-arming (same task, so it's ordered) for a clean replace.
+        if clear_first {
+            let _ = crate::server::clear_notifications(endpoint.clone()).await;
+        }
+        for (kind, value, leads) in subs {
+            let _ = crate::server::add_subscription(crate::types::SubscribeReq {
+                sub: push(),
+                kind,
+                value,
+                leads,
+            })
+            .await;
+        }
+        for (match_id, sport, leads) in stars {
+            let _ = crate::server::add_reminder(crate::types::ReminderReq {
+                sub: push(),
+                match_id,
+                sport,
+                leads,
+            })
+            .await;
+        }
+        for (match_id, sport) in excludes {
+            let _ = crate::server::exclude_reminder(crate::types::ReminderReq {
+                sub: push(),
+                match_id,
+                sport,
+                leads: Vec::new(),
+            })
+            .await;
+        }
+    });
+}
+
 /// `YYYY-MM-DD` for today plus `offset_days` (browser-local date).
 #[cfg(feature = "hydrate")]
 fn iso_from_today(offset_days: i64) -> String {
@@ -3128,9 +3990,17 @@ fn load_range() -> Option<(String, String)> {
     (!s.is_empty() && !e.is_empty()).then(|| (s.to_string(), e.to_string()))
 }
 
-/// Persist the subscribed set and (un)register the sport/event subscription.
+/// Persist the subscribed set and (un)register the sport/event subscription with
+/// its effective lead offsets (its override else the global list).
 #[cfg(feature = "hydrate")]
-fn subscribe_scope(kind: String, value: String, subscribing: bool, keys: Vec<String>, vapid: Option<String>) {
+fn subscribe_scope(
+    kind: String,
+    value: String,
+    subscribing: bool,
+    keys: Vec<String>,
+    vapid: Option<String>,
+    leads: Vec<i64>,
+) {
     save_subs(&keys);
     let Some(vapid) = vapid else { return };
     leptos::task::spawn_local(async move {
@@ -3154,6 +4024,7 @@ fn subscribe_scope(kind: String, value: String, subscribing: bool, keys: Vec<Str
                 },
                 kind,
                 value,
+                leads,
             })
             .await;
         } else {
@@ -4817,6 +5688,8 @@ fn StarButton(id: i64, sport: Sport, league: String, team_a: String, team_b: Str
     let subscribed = use_context::<Subscribed>().expect("subscribed context").0;
     let excluded = use_context::<Excluded>().expect("excluded context").0;
     let vapid = use_context::<RwSignal<Option<String>>>().expect("vapid context");
+    let global = use_context::<GlobalTimers>().expect("global timers context").0;
+    let overrides = use_context::<Overrides>().expect("overrides context").0;
     // The match's uid keys the star/exclude sets (ids aren't unique across games).
     let uid = crate::types::match_uid(sport, id);
     // The scopes that auto-cover this match (its sport, this event, or either team).
@@ -4869,11 +5742,12 @@ fn StarButton(id: i64, sport: Sport, league: String, team_a: String, team_b: Str
         {
             save_starred(&starred.get_untracked());
             save_excluded(&excluded.get_untracked());
-            sync_match_reminder(id, sport, want_on, covered, vapid.get_untracked());
+            let leads = effective_leads(&uid, &overrides.get_untracked(), &global.get_untracked());
+            sync_match_reminder(id, sport, want_on, covered, vapid.get_untracked(), leads);
         }
         #[cfg(not(feature = "hydrate"))]
         {
-            let _ = (covered, want_on, vapid, sport);
+            let _ = (covered, want_on, vapid, sport, global, overrides);
         }
     };
 
@@ -5000,6 +5874,7 @@ fn sync_match_reminder(
     want_on: bool,
     covered: bool,
     vapid: Option<String>,
+    leads: Vec<i64>,
 ) {
     let Some(vapid) = vapid else { return };
     let sport = sport.slug().to_string();
@@ -5021,11 +5896,12 @@ fn sync_match_reminder(
             auth,
         };
         if want_on {
-            // Arm it (and clear any exclusion tombstone server-side).
+            // Arm one reminder per lead offset (and clear any opt-out server-side).
             let _ = crate::server::add_reminder(crate::types::ReminderReq {
                 sub: push,
                 match_id,
                 sport,
+                leads,
             })
             .await;
         } else if covered {
@@ -5034,10 +5910,11 @@ fn sync_match_reminder(
                 sub: push,
                 match_id,
                 sport,
+                leads: Vec::new(),
             })
             .await;
         } else {
-            // Plain un-star: drop the reminder row entirely.
+            // Plain un-star: drop every reminder row for the match.
             let _ = crate::server::remove_reminder(endpoint, match_id, sport).await;
         }
     });
@@ -5062,6 +5939,77 @@ fn clear_all_notifications(vapid: Option<String>) {
 mod tests {
     use super::*;
     use crate::types::{BracketMatch, DayGroup, Sport, LeagueGroup, TeamView};
+
+    #[test]
+    fn fmt_lead_picks_the_largest_whole_unit() {
+        assert_eq!(fmt_lead(0), "at start");
+        assert_eq!(fmt_lead(5 * 60_000), "5m");
+        assert_eq!(fmt_lead(90 * 60_000), "90m"); // not a whole hour
+        assert_eq!(fmt_lead(60 * 60_000), "1h");
+        assert_eq!(fmt_lead(24 * 60 * 60_000), "1d");
+        assert_eq!(fmt_lead(7 * 24 * 60 * 60_000), "1w");
+    }
+
+    #[test]
+    fn norm_leads_clamps_sorts_dedups_and_caps() {
+        // Out-of-range dropped, duplicates removed, sorted ascending.
+        let v = norm_leads(vec![900_000, -5, 900_000, WEEK_MS + 1, 0, 60_000]);
+        assert_eq!(v, vec![0, 60_000, 900_000]);
+        // Capped at MAX_TIMERS.
+        let many: Vec<i64> = (1..=20).map(|n| n * 60_000).collect();
+        assert_eq!(norm_leads(many).len(), MAX_TIMERS);
+    }
+
+    #[test]
+    fn lead_list_round_trips() {
+        let v = vec![0, 900_000, 86_400_000];
+        assert_eq!(parse_lead_list(&join_lead_list(&v)), v);
+        // Empty / junk parses to nothing.
+        assert!(parse_lead_list("").is_empty());
+        assert!(parse_lead_list("x,,y").is_empty());
+    }
+
+    #[test]
+    fn effective_leads_prefers_the_override() {
+        let mut ov = BTreeMap::new();
+        ov.insert("sport|cs2".to_string(), vec![60_000]);
+        assert_eq!(effective_leads("sport|cs2", &ov, &[900_000]), vec![60_000]);
+        // No override ⇒ the global list.
+        assert_eq!(effective_leads("sport|lol", &ov, &[900_000]), vec![900_000]);
+    }
+
+    #[test]
+    fn parse_uid_inverts_match_uid() {
+        let uid = crate::types::match_uid(Sport::Lol, 12345);
+        assert_eq!(parse_uid(&uid), Some((Sport::Lol, 12345)));
+        // Motorsport (F1/WRC/WEC) still splits on the trailing id.
+        let uid = crate::types::match_uid(Sport::Motorsport, 7);
+        assert_eq!(parse_uid(&uid), Some((Sport::Motorsport, 7)));
+        assert_eq!(parse_uid("not-a-real-uid"), None);
+    }
+
+    #[test]
+    fn backup_round_trips_through_the_export_string() {
+        let mut overrides = vec![
+            ("sport|cs2".to_string(), vec![60_000, 900_000]),
+            ("lol-99".to_string(), vec![0]),
+        ];
+        overrides.sort();
+        let b = NotifBackup {
+            subs: vec!["sport|cs2".to_string(), "team|mlb|Detroit Tigers".to_string()],
+            starred: vec!["lol-99".to_string()],
+            excluded: vec!["mlb-7".to_string()],
+            timers: vec![900_000, 86_400_000],
+            overrides,
+        };
+        let decoded = decode_backup(&encode_backup(&b)).expect("decodes");
+        assert_eq!(decoded, b);
+        // Tab/space-bearing keys (team names) survive the framing.
+        assert!(decoded.subs.contains(&"team|mlb|Detroit Tigers".to_string()));
+        // A bad prefix is rejected.
+        assert!(decode_backup("nope").is_none());
+        assert!(decode_backup("pte1:!!!notbase64").is_none());
+    }
 
     fn mv(league: &str) -> MatchView {
         MatchView {

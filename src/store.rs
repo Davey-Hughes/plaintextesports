@@ -11,8 +11,12 @@ use crate::types::{Sport, MatchStatus};
 use chrono::{DateTime, Utc};
 use once_cell::sync::OnceCell;
 use rusqlite::{params, Connection};
+use std::collections::HashSet;
 use std::path::Path;
 use std::sync::{Mutex, PoisonError};
+
+/// One week in ms — the ceiling for a reminder lead offset.
+const WEEK_MS: i64 = 7 * 24 * 60 * 60 * 1000;
 
 const FETCHED_AT_KEY: &str = "fetched_at_ms";
 
@@ -94,6 +98,11 @@ pub fn open(path: &str) -> rusqlite::Result<Connection> {
             p256dh       TEXT    NOT NULL,
             auth         TEXT    NOT NULL,
             match_id     INTEGER NOT NULL,
+            -- Lead time (ms before start) this reminder fires at. Part of the key
+            -- so a match can carry several timers (e.g. 1d / 1h / 15m before), one
+            -- row each. Keyed on lead_ms (not notify_at_ms) so a rescheduled match
+            -- updates the same timer row instead of spawning a duplicate.
+            lead_ms      INTEGER NOT NULL DEFAULT 900000,
             notify_at_ms INTEGER NOT NULL,
             title        TEXT    NOT NULL,
             body         TEXT    NOT NULL,
@@ -106,11 +115,17 @@ pub fn open(path: &str) -> rusqlite::Result<Connection> {
             -- an event subscription's reminders can be cleaned up on unsub.
             event        TEXT    NOT NULL DEFAULT '',
             sent         INTEGER NOT NULL DEFAULT 0,
-            -- A tombstone row (excluded=1) opts this match out of a covering
-            -- subscription: expansion's insert-if-absent leaves it, and the
-            -- sender skips it, so the reminder never fires.
-            excluded     INTEGER NOT NULL DEFAULT 0,
-            -- Keyed by (match_id, sport): a match id isn't unique across games.
+            -- Keyed by (match_id, sport, lead_ms): an id isn't unique across games,
+            -- and a match holds one row per lead time.
+            PRIMARY KEY (endpoint, match_id, sport, lead_ms)
+        );
+        -- A per-match opt-out of a covering subscription (replaces the old
+        -- excluded=1 tombstone row): a single row blocks every timer for the
+        -- match. Expansion skips matches listed here; an explicit star clears it.
+        CREATE TABLE IF NOT EXISTS exclusions (
+            endpoint  TEXT    NOT NULL,
+            match_id  INTEGER NOT NULL,
+            sport     TEXT    NOT NULL DEFAULT '',
             PRIMARY KEY (endpoint, match_id, sport)
         );
         CREATE TABLE IF NOT EXISTS subscriptions (
@@ -119,7 +134,10 @@ pub fn open(path: &str) -> rusqlite::Result<Connection> {
             auth        TEXT    NOT NULL,
             scope_kind  TEXT    NOT NULL,
             scope_value TEXT    NOT NULL,
+            -- Legacy single lead, kept for back-compat; lead_list is authoritative.
             lead_ms     INTEGER NOT NULL,
+            -- Comma-separated lead offsets (ms) this scope arms; '' ⇒ [lead_ms].
+            lead_list   TEXT    NOT NULL DEFAULT '',
             PRIMARY KEY (endpoint, scope_kind, scope_value)
         );",
     )?;
@@ -149,9 +167,63 @@ pub fn open(path: &str) -> rusqlite::Result<Connection> {
     let _ = conn.execute("ALTER TABLE reminders ADD COLUMN team_a TEXT NOT NULL DEFAULT ''", []);
     let _ = conn.execute("ALTER TABLE reminders ADD COLUMN team_b TEXT NOT NULL DEFAULT ''", []);
     let _ = conn.execute("ALTER TABLE reminders ADD COLUMN event TEXT NOT NULL DEFAULT ''", []);
-    let _ = conn.execute("ALTER TABLE reminders ADD COLUMN excluded INTEGER NOT NULL DEFAULT 0", []);
+    // Existing subscriptions predate the per-scope timer list.
+    let _ = conn.execute("ALTER TABLE subscriptions ADD COLUMN lead_list TEXT NOT NULL DEFAULT ''", []);
+
+    // One-time: the reminders PK gained `lead_ms` so a match can hold several
+    // timers (one row per lead time). SQLite can't alter a PK in place and
+    // `CREATE TABLE IF NOT EXISTS` won't reshape an existing table, so recreate
+    // it — copying live rows (the legacy single timer ⇒ the 15m default lead) and
+    // moving old excluded=1 tombstones into the new `exclusions` table. Gated on a
+    // meta flag and the presence of the now-dropped `excluded` column, so it runs
+    // exactly once and is a no-op on a fresh (already-v3) DB.
+    if get_meta(&conn, "reminders_pk_v3").is_none() {
+        if reminders_has_excluded_column(&conn) {
+            conn.execute_batch(
+                "DROP TABLE IF EXISTS reminders_v3_new;
+                 CREATE TABLE reminders_v3_new (
+                    endpoint     TEXT    NOT NULL,
+                    p256dh       TEXT    NOT NULL,
+                    auth         TEXT    NOT NULL,
+                    match_id     INTEGER NOT NULL,
+                    lead_ms      INTEGER NOT NULL DEFAULT 900000,
+                    notify_at_ms INTEGER NOT NULL,
+                    title        TEXT    NOT NULL,
+                    body         TEXT    NOT NULL,
+                    url          TEXT    NOT NULL,
+                    sport        TEXT    NOT NULL DEFAULT '',
+                    league       TEXT    NOT NULL DEFAULT '',
+                    team_a       TEXT    NOT NULL DEFAULT '',
+                    team_b       TEXT    NOT NULL DEFAULT '',
+                    event        TEXT    NOT NULL DEFAULT '',
+                    sent         INTEGER NOT NULL DEFAULT 0,
+                    PRIMARY KEY (endpoint, match_id, sport, lead_ms)
+                 );
+                 INSERT OR IGNORE INTO reminders_v3_new
+                    (endpoint, p256dh, auth, match_id, lead_ms, notify_at_ms,
+                     title, body, url, sport, league, team_a, team_b, event, sent)
+                 SELECT endpoint, p256dh, auth, match_id, 900000, notify_at_ms,
+                     title, body, url, sport, league, team_a, team_b, event, sent
+                 FROM reminders WHERE excluded = 0;
+                 INSERT OR IGNORE INTO exclusions (endpoint, match_id, sport)
+                 SELECT endpoint, match_id, sport FROM reminders WHERE excluded = 1;
+                 DROP TABLE reminders;
+                 ALTER TABLE reminders_v3_new RENAME TO reminders;",
+            )?;
+        }
+        set_meta(&conn, "reminders_pk_v3", "1")?;
+    }
+
     purge_unknown_sports(&conn)?;
     Ok(conn)
+}
+
+/// Whether the `reminders` table still has the pre-v3 `excluded` column (i.e. it
+/// predates the multi-timer PK and needs the recreate migration).
+fn reminders_has_excluded_column(conn: &Connection) -> bool {
+    conn.prepare("SELECT 1 FROM pragma_table_info('reminders') WHERE name = 'excluded'")
+        .and_then(|mut s| s.exists([]))
+        .unwrap_or(false)
 }
 
 /// Delete match rows whose stored slug isn't a current [`Sport`] — orphans left
@@ -374,13 +446,15 @@ pub fn set_event_link(
     Ok(())
 }
 
-/// A stored Web Push reminder.
+/// A stored Web Push reminder (one timer for one match).
 #[derive(Debug, Clone)]
 pub struct Reminder {
     pub endpoint: String,
     pub p256dh: String,
     pub auth: String,
     pub match_id: i64,
+    /// Lead time (ms before start) this reminder fires at; part of the key.
+    pub lead_ms: i64,
     pub notify_at_ms: i64,
     pub title: String,
     pub body: String,
@@ -394,15 +468,16 @@ pub struct Reminder {
     pub event: String,
 }
 
-const REMINDER_COLS: &str = "endpoint, p256dh, auth, match_id, notify_at_ms, title, body, url, \
-     sport, league, team_a, team_b, event";
+const REMINDER_COLS: &str = "endpoint, p256dh, auth, match_id, lead_ms, notify_at_ms, title, \
+     body, url, sport, league, team_a, team_b, event";
 
-fn reminder_params(r: &Reminder) -> [&dyn rusqlite::ToSql; 13] {
+fn reminder_params(r: &Reminder) -> [&dyn rusqlite::ToSql; 14] {
     [
         &r.endpoint,
         &r.p256dh,
         &r.auth,
         &r.match_id,
+        &r.lead_ms,
         &r.notify_at_ms,
         &r.title,
         &r.body,
@@ -415,52 +490,115 @@ fn reminder_params(r: &Reminder) -> [&dyn rusqlite::ToSql; 13] {
     ]
 }
 
-/// Add or update a reminder (re-arms `sent`, and clears any exclusion tombstone).
-/// Used for an explicit star, or to re-include a match opted out of a scope.
+/// `INSERT … ON CONFLICT … DO UPDATE` upsert for a single timer row (matched by
+/// the full `(endpoint, match_id, sport, lead_ms)` key), re-arming `sent`.
+fn reminder_upsert_sql() -> String {
+    format!(
+        "INSERT INTO reminders ({REMINDER_COLS}, sent)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, 0)
+         ON CONFLICT(endpoint, match_id, sport, lead_ms) DO UPDATE SET
+            p256dh=excluded.p256dh, auth=excluded.auth,
+            notify_at_ms=excluded.notify_at_ms, title=excluded.title,
+            body=excluded.body, url=excluded.url,
+            league=excluded.league, team_a=excluded.team_a,
+            team_b=excluded.team_b, event=excluded.event, sent=0"
+    )
+}
+
+/// Insert a timer row only if one doesn't already exist for that key.
+fn reminder_insert_if_absent_sql() -> String {
+    format!(
+        "INSERT INTO reminders ({REMINDER_COLS}, sent)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, 0)
+         ON CONFLICT(endpoint, match_id, sport, lead_ms) DO NOTHING"
+    )
+}
+
+/// Arm or re-arm a single timer row, clearing any opt-out for its match. Used to
+/// re-include a match opted out of a scope (and by the store tests);
+/// [`set_match_reminders`] is the multi-timer entry point for an explicit star.
 pub fn add_reminder(conn: &Connection, r: &Reminder) -> rusqlite::Result<()> {
-    conn.execute(
-        &format!(
-            "INSERT INTO reminders ({REMINDER_COLS}, sent, excluded)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, 0, 0)
-             ON CONFLICT(endpoint, match_id, sport) DO UPDATE SET
-                p256dh=excluded.p256dh, auth=excluded.auth,
-                notify_at_ms=excluded.notify_at_ms, title=excluded.title,
-                body=excluded.body, url=excluded.url, sport=excluded.sport,
-                league=excluded.league, team_a=excluded.team_a,
-                team_b=excluded.team_b, event=excluded.event, sent=0, excluded=0"
-        ),
-        &reminder_params(r)[..],
-    )?;
+    conn.execute(&reminder_upsert_sql(), &reminder_params(r)[..])?;
+    clear_exclusion(conn, &r.endpoint, r.match_id, &r.sport)?;
     Ok(())
 }
 
-/// Tombstone a match so a covering subscription won't notify about it: an
-/// `excluded=1` row that expansion's insert-if-absent leaves untouched and the
-/// sender skips. Re-include it by [`add_reminder`] (which clears the flag).
-pub fn exclude_reminder(conn: &Connection, r: &Reminder) -> rusqlite::Result<()> {
-    conn.execute(
-        &format!(
-            "INSERT INTO reminders ({REMINDER_COLS}, sent, excluded)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, 0, 1)
-             ON CONFLICT(endpoint, match_id, sport) DO UPDATE SET excluded=1, sent=0"
-        ),
-        &reminder_params(r)[..],
+/// Replace every timer for one starred match with exactly `reminders` (all
+/// sharing endpoint/match/sport, one per lead offset). Clears any opt-out and
+/// drops stale *unsent* rows first, so changing a match's timer set leaves no
+/// orphans and never re-fires a timer that already went out. Atomic; a no-op on
+/// an empty slice.
+pub fn set_match_reminders(conn: &Connection, reminders: &[Reminder]) -> rusqlite::Result<()> {
+    let Some(first) = reminders.first() else {
+        return Ok(());
+    };
+    let tx = conn.unchecked_transaction()?;
+    tx.execute(
+        "DELETE FROM exclusions WHERE endpoint=?1 AND match_id=?2 AND sport=?3",
+        params![first.endpoint, first.match_id, first.sport],
     )?;
-    Ok(())
+    tx.execute(
+        "DELETE FROM reminders WHERE endpoint=?1 AND match_id=?2 AND sport=?3 AND sent=0",
+        params![first.endpoint, first.match_id, first.sport],
+    )?;
+    // Insert-if-absent so an already-sent timer for one of these offsets stays
+    // sent (the stale unsent ones were just cleared, so this re-arms the rest).
+    let sql = reminder_insert_if_absent_sql();
+    for r in reminders {
+        tx.execute(&sql, &reminder_params(r)[..])?;
+    }
+    tx.commit()
 }
 
-/// Insert a reminder only if one doesn't exist (so re-expanding a sport/event
+/// Insert a timer row only if one doesn't exist (so re-expanding a sport/event
 /// subscription never re-arms an already-sent reminder).
 pub fn add_reminder_if_absent(conn: &Connection, r: &Reminder) -> rusqlite::Result<()> {
+    conn.execute(&reminder_insert_if_absent_sql(), &reminder_params(r)[..])?;
+    Ok(())
+}
+
+/// Opt a match out of all covering subscriptions: a single row blocks every timer
+/// for `(endpoint, match_id, sport)`. Also drops its unsent reminder rows so the
+/// opt-out takes effect immediately.
+pub fn exclude_match(
+    conn: &Connection,
+    endpoint: &str,
+    match_id: i64,
+    sport: &str,
+) -> rusqlite::Result<()> {
     conn.execute(
-        &format!(
-            "INSERT INTO reminders ({REMINDER_COLS}, sent)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, 0)
-             ON CONFLICT(endpoint, match_id, sport) DO NOTHING"
-        ),
-        &reminder_params(r)[..],
+        "INSERT OR IGNORE INTO exclusions (endpoint, match_id, sport) VALUES (?1, ?2, ?3)",
+        params![endpoint, match_id, sport],
+    )?;
+    conn.execute(
+        "DELETE FROM reminders WHERE endpoint=?1 AND match_id=?2 AND sport=?3 AND sent=0",
+        params![endpoint, match_id, sport],
     )?;
     Ok(())
+}
+
+/// Clear a match's opt-out (an explicit star wins over a prior opt-out).
+pub fn clear_exclusion(
+    conn: &Connection,
+    endpoint: &str,
+    match_id: i64,
+    sport: &str,
+) -> rusqlite::Result<()> {
+    conn.execute(
+        "DELETE FROM exclusions WHERE endpoint=?1 AND match_id=?2 AND sport=?3",
+        params![endpoint, match_id, sport],
+    )?;
+    Ok(())
+}
+
+/// Every opt-out as `(endpoint, match_id, sport)` — the expansion loop loads this
+/// once per tick to skip re-arming opted-out matches.
+pub fn list_exclusions(conn: &Connection) -> rusqlite::Result<HashSet<(String, i64, String)>> {
+    let mut stmt = conn.prepare("SELECT endpoint, match_id, sport FROM exclusions")?;
+    let rows = stmt.query_map([], |r| {
+        Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?, r.get::<_, String>(2)?))
+    })?;
+    rows.collect()
 }
 
 pub fn remove_reminder(
@@ -476,12 +614,13 @@ pub fn remove_reminder(
     Ok(())
 }
 
-/// Unsent reminders whose notify time has arrived.
+/// Unsent reminders whose notify time has arrived. Carries `sport` + `lead_ms` so
+/// the sender can mark the exact timer row sent (a match has several).
 pub fn due_reminders(conn: &Connection, now_ms: i64) -> rusqlite::Result<Vec<Reminder>> {
     let mut stmt = conn.prepare(
-        "SELECT endpoint, p256dh, auth, match_id, notify_at_ms, title, body, url
+        "SELECT endpoint, p256dh, auth, match_id, lead_ms, notify_at_ms, title, body, url, sport
          FROM reminders
-         WHERE sent = 0 AND excluded = 0 AND notify_at_ms <= ?1 ORDER BY notify_at_ms",
+         WHERE sent = 0 AND notify_at_ms <= ?1 ORDER BY notify_at_ms",
     )?;
     let rows = stmt.query_map([now_ms], |r| {
         Ok(Reminder {
@@ -489,12 +628,13 @@ pub fn due_reminders(conn: &Connection, now_ms: i64) -> rusqlite::Result<Vec<Rem
             p256dh: r.get(1)?,
             auth: r.get(2)?,
             match_id: r.get(3)?,
-            notify_at_ms: r.get(4)?,
-            title: r.get(5)?,
-            body: r.get(6)?,
-            url: r.get(7)?,
+            lead_ms: r.get(4)?,
+            notify_at_ms: r.get(5)?,
+            title: r.get(6)?,
+            body: r.get(7)?,
+            url: r.get(8)?,
+            sport: r.get(9)?,
             // Not needed for sending.
-            sport: String::new(),
             league: String::new(),
             team_a: String::new(),
             team_b: String::new(),
@@ -504,18 +644,30 @@ pub fn due_reminders(conn: &Connection, now_ms: i64) -> rusqlite::Result<Vec<Rem
     rows.collect()
 }
 
-pub fn mark_reminder_sent(conn: &Connection, endpoint: &str, match_id: i64) -> rusqlite::Result<()> {
+/// Mark exactly one timer row sent (keyed by the full PK, so delivering one
+/// timer never silences a match's other timers — or the same id under another
+/// sport).
+pub fn mark_reminder_sent(
+    conn: &Connection,
+    endpoint: &str,
+    match_id: i64,
+    sport: &str,
+    lead_ms: i64,
+) -> rusqlite::Result<()> {
     conn.execute(
-        "UPDATE reminders SET sent = 1 WHERE endpoint = ?1 AND match_id = ?2",
-        params![endpoint, match_id],
+        "UPDATE reminders SET sent = 1
+         WHERE endpoint = ?1 AND match_id = ?2 AND sport = ?3 AND lead_ms = ?4",
+        params![endpoint, match_id, sport, lead_ms],
     )?;
     Ok(())
 }
 
-/// Remove all reminders and subscriptions for a dead endpoint (404/410 push).
+/// Remove all reminders, subscriptions, and opt-outs for a dead endpoint
+/// (404/410 push).
 pub fn delete_endpoint(conn: &Connection, endpoint: &str) -> rusqlite::Result<()> {
     conn.execute("DELETE FROM reminders WHERE endpoint = ?1", params![endpoint])?;
     conn.execute("DELETE FROM subscriptions WHERE endpoint = ?1", params![endpoint])?;
+    conn.execute("DELETE FROM exclusions WHERE endpoint = ?1", params![endpoint])?;
     Ok(())
 }
 
@@ -540,16 +692,83 @@ pub struct Subscription {
     pub scope_kind: String,
     /// "cs2"/"lol" for a sport, else the league name.
     pub scope_value: String,
+    /// Legacy single lead, kept for back-compat reads.
     pub lead_ms: i64,
+    /// The lead offsets (ms) this scope arms — one reminder per offset, per match.
+    pub lead_list: Vec<i64>,
+}
+
+/// Serialize a lead-offset list for the `lead_list` column.
+fn join_lead_list(v: &[i64]) -> String {
+    v.iter().map(i64::to_string).collect::<Vec<_>>().join(",")
+}
+
+/// Parse a `lead_list` column, clamping to `0..=1 week`, sorting + deduping. An
+/// empty/blank column (rows written by the pre-list code) falls back to
+/// `[fallback]` (the legacy single `lead_ms`).
+fn parse_lead_list(s: &str, fallback: i64) -> Vec<i64> {
+    let mut v: Vec<i64> = s
+        .split(',')
+        .filter_map(|p| p.trim().parse::<i64>().ok())
+        .filter(|&ms| (0..=WEEK_MS).contains(&ms))
+        .collect();
+    v.sort_unstable();
+    v.dedup();
+    if v.is_empty() {
+        vec![fallback]
+    } else {
+        v
+    }
+}
+
+/// The reminders-table WHERE clause matching a subscription scope (`?2` = value).
+fn scope_where(kind: &str) -> &'static str {
+    match kind {
+        "sport" => "sport=?2",
+        "team" => "(team_a=?2 OR team_b=?2)",
+        "event" => "event=?2",
+        _ => "league=?2",
+    }
 }
 
 pub fn add_subscription(conn: &Connection, s: &Subscription) -> rusqlite::Result<()> {
+    let lead_list = join_lead_list(&s.lead_list);
     conn.execute(
-        "INSERT INTO subscriptions (endpoint, p256dh, auth, scope_kind, scope_value, lead_ms)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+        "INSERT INTO subscriptions
+            (endpoint, p256dh, auth, scope_kind, scope_value, lead_ms, lead_list)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
          ON CONFLICT(endpoint, scope_kind, scope_value) DO UPDATE SET
-            p256dh=excluded.p256dh, auth=excluded.auth, lead_ms=excluded.lead_ms",
-        params![s.endpoint, s.p256dh, s.auth, s.scope_kind, s.scope_value, s.lead_ms],
+            p256dh=excluded.p256dh, auth=excluded.auth,
+            lead_ms=excluded.lead_ms, lead_list=excluded.lead_list",
+        params![s.endpoint, s.p256dh, s.auth, s.scope_kind, s.scope_value, s.lead_ms, lead_list],
+    )?;
+    // If the timer set shrank, drop this scope's unsent reminders for offsets no
+    // longer wanted, so a removed (e.g. global) timer stops firing immediately;
+    // newly-added offsets are armed by the next expansion tick.
+    prune_scope_leads(conn, &s.endpoint, &s.scope_kind, &s.scope_value, &s.lead_list)?;
+    Ok(())
+}
+
+/// Drop a scope's unsent reminders whose `lead_ms` is no longer in `leads`.
+fn prune_scope_leads(
+    conn: &Connection,
+    endpoint: &str,
+    kind: &str,
+    value: &str,
+    leads: &[i64],
+) -> rusqlite::Result<()> {
+    if leads.is_empty() {
+        return Ok(());
+    }
+    // `leads` are i64s, so inlining them is injection-safe.
+    let keep = join_lead_list(leads);
+    let where_scope = scope_where(kind);
+    conn.execute(
+        &format!(
+            "DELETE FROM reminders
+             WHERE endpoint=?1 AND {where_scope} AND sent=0 AND lead_ms NOT IN ({keep})"
+        ),
+        params![endpoint, value],
     )?;
     Ok(())
 }
@@ -569,16 +788,20 @@ pub fn remove_subscription(
 
 pub fn list_subscriptions(conn: &Connection) -> rusqlite::Result<Vec<Subscription>> {
     let mut stmt = conn.prepare(
-        "SELECT endpoint, p256dh, auth, scope_kind, scope_value, lead_ms FROM subscriptions",
+        "SELECT endpoint, p256dh, auth, scope_kind, scope_value, lead_ms, lead_list
+         FROM subscriptions",
     )?;
     let rows = stmt.query_map([], |r| {
+        let lead_ms: i64 = r.get(5)?;
+        let lead_list: String = r.get(6)?;
         Ok(Subscription {
             endpoint: r.get(0)?,
             p256dh: r.get(1)?,
             auth: r.get(2)?,
             scope_kind: r.get(3)?,
             scope_value: r.get(4)?,
-            lead_ms: r.get(5)?,
+            lead_ms,
+            lead_list: parse_lead_list(&lead_list, lead_ms),
         })
     })?;
     rows.collect()
@@ -592,12 +815,7 @@ pub fn delete_unsent_reminders_by_scope(
     kind: &str,
     value: &str,
 ) -> rusqlite::Result<()> {
-    let where_scope = match kind {
-        "sport" => "sport=?2",
-        "team" => "(team_a=?2 OR team_b=?2)",
-        "event" => "event=?2",
-        _ => "league=?2",
-    };
+    let where_scope = scope_where(kind);
     conn.execute(
         &format!("DELETE FROM reminders WHERE endpoint=?1 AND sent=0 AND {where_scope}"),
         params![endpoint, value],
@@ -605,14 +823,15 @@ pub fn delete_unsent_reminders_by_scope(
     Ok(())
 }
 
-/// Remove everything an endpoint is signed up for — all subscriptions and all
-/// (unsent) reminders, including exclusion tombstones. Backs "clear all".
+/// Remove everything an endpoint is signed up for — all subscriptions, all
+/// (unsent) reminders, and all opt-outs. Backs "clear all".
 pub fn clear_endpoint(conn: &Connection, endpoint: &str) -> rusqlite::Result<()> {
     conn.execute("DELETE FROM subscriptions WHERE endpoint = ?1", params![endpoint])?;
     conn.execute(
         "DELETE FROM reminders WHERE endpoint = ?1 AND sent = 0",
         params![endpoint],
     )?;
+    conn.execute("DELETE FROM exclusions WHERE endpoint = ?1", params![endpoint])?;
     Ok(())
 }
 
@@ -786,6 +1005,7 @@ mod tests {
             p256dh: "p".into(),
             auth: "a".into(),
             match_id,
+            lead_ms: 900_000,
             notify_at_ms: 100,
             title: "T1 vs GEN".into(),
             body: "LCK".into(),
@@ -818,23 +1038,61 @@ mod tests {
     }
 
     #[test]
-    fn exclusion_tombstone_blocks_a_covered_match() {
+    fn exclusion_blocks_a_covered_match_until_re_armed() {
         let conn = open(":memory:").unwrap();
         let r = reminder(1);
         // A subscription expansion arms it → it's due.
         add_reminder_if_absent(&conn, &r).unwrap();
         assert_eq!(due_reminders(&conn, 1000).unwrap().len(), 1);
 
-        // Opt this one match out → not due, and re-expansion can't re-arm it
-        // (insert-if-absent leaves the tombstone).
-        exclude_reminder(&conn, &r).unwrap();
+        // Opt this one match out → the opt-out drops its row, and the expansion
+        // loop is expected to skip it (see `list_exclusions`), so it stays gone.
+        exclude_match(&conn, &r.endpoint, r.match_id, &r.sport).unwrap();
         assert_eq!(due_reminders(&conn, 1000).unwrap().len(), 0);
-        add_reminder_if_absent(&conn, &r).unwrap();
-        assert_eq!(due_reminders(&conn, 1000).unwrap().len(), 0);
+        assert!(list_exclusions(&conn).unwrap().contains(&(r.endpoint.clone(), r.match_id, r.sport.clone())));
 
-        // Re-include it (explicit arm) → due again.
+        // Re-include it (explicit arm) → opt-out cleared and it's due again.
         add_reminder(&conn, &r).unwrap();
         assert_eq!(due_reminders(&conn, 1000).unwrap().len(), 1);
+        assert!(list_exclusions(&conn).unwrap().is_empty());
+    }
+
+    #[test]
+    fn set_match_reminders_replaces_the_timer_set() {
+        let conn = open(":memory:").unwrap();
+        // Three timers for one match (1d / 1h / 15m before a start at t=0).
+        let mut rs = Vec::new();
+        for &lead in &[86_400_000_i64, 3_600_000, 900_000] {
+            let mut r = reminder(7);
+            r.lead_ms = lead;
+            r.notify_at_ms = -lead; // begin_at = 0
+            rs.push(r);
+        }
+        set_match_reminders(&conn, &rs).unwrap();
+        assert_eq!(due_reminders(&conn, 1000).unwrap().len(), 3);
+
+        // Re-set with a smaller set → the dropped timer's unsent row is removed.
+        set_match_reminders(&conn, &rs[..1]).unwrap();
+        let due = due_reminders(&conn, 1000).unwrap();
+        assert_eq!(due.len(), 1);
+        assert_eq!(due[0].lead_ms, 86_400_000);
+    }
+
+    #[test]
+    fn mark_one_timer_sent_leaves_the_others_due() {
+        let conn = open(":memory:").unwrap();
+        let mut a = reminder(9);
+        a.lead_ms = 3_600_000;
+        let mut b = reminder(9);
+        b.lead_ms = 900_000;
+        add_reminder(&conn, &a).unwrap();
+        add_reminder(&conn, &b).unwrap();
+        assert_eq!(due_reminders(&conn, 1000).unwrap().len(), 2);
+        // Marking the 1h timer sent must not silence the 15m timer for the match.
+        mark_reminder_sent(&conn, &a.endpoint, a.match_id, &a.sport, a.lead_ms).unwrap();
+        let due = due_reminders(&conn, 1000).unwrap();
+        assert_eq!(due.len(), 1);
+        assert_eq!(due[0].lead_ms, 900_000);
     }
 
     #[test]
@@ -874,6 +1132,7 @@ mod tests {
                 scope_kind: "team".into(),
                 scope_value: "T1".into(),
                 lead_ms: 0,
+                lead_list: vec![0],
             },
         )
         .unwrap();

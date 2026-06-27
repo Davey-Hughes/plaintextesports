@@ -2,6 +2,9 @@
 
 :root,
 :root[data-theme="dark"] {
+  // Render native controls (number spinners, selects, scrollbars) dark so they
+  // match the theme instead of showing bright white default chrome.
+  color-scheme: dark;
   --bg: #0d0d0d;
   --fg: #d4d4d4;
   --muted: #777;
@@ -27,6 +30,7 @@
 }
 
 :root[data-theme="light"] {
+  color-scheme: light;
   --bg: #fafafa;
   --fg: #1a1a1a;
   --muted: #767676;
@@ -262,6 +266,19 @@ a {
   .toggle.icons-toggle:hover,
   .toggle.scores-toggle:hover {
     color: var(--muted);
+  }
+}
+
+// The notifications link in the prefs group. It keeps the base `.toggle` box
+// (same padding/border/font as the text toggles) and renders the clock inline, so
+// its line box — and thus its height — matches the neighbouring toggles exactly.
+.clock-link {
+  color: var(--muted);
+
+  svg {
+    width: 13px;
+    height: 13px;
+    vertical-align: -2px;
   }
 }
 
@@ -532,14 +549,14 @@ a {
   display: inline-flex;
 }
 
-// Icon toggle: center the outline SVG and keep it square-ish.
+// Icon toggle: keep the base `.toggle` box and render the outline SVG inline, so
+// its line box — and height — match the neighbouring text toggles and the clock
+// link (see `.clock-link`).
 .cal-toggle {
-  display: inline-flex;
-  align-items: center;
-  padding: 0.2rem 0.4rem;
-
   svg {
-    display: block;
+    width: 13px;
+    height: 13px;
+    vertical-align: -2px;
   }
 }
 
@@ -1445,11 +1462,18 @@ a {
 }
 
 .notif-item {
+  padding: 0.4rem 0.1rem;
+  border-bottom: 1px solid var(--border);
+}
+
+// One row: tag/name (or the starred-match link), the inline per-entry timers,
+// then the × remove. The name flexes to fill, pushing timers + × to the right;
+// the row wraps (timers drop below) only when it must — chiefly on mobile.
+.notif-row {
   display: flex;
   align-items: center;
-  gap: 0.6rem;
-  padding: 0.3rem 0.1rem;
-  border-bottom: 1px solid var(--border);
+  flex-wrap: wrap;
+  gap: 0.4rem 0.6rem;
 
   // A starred-match row is one link spanning the time + teams.
   > a {
@@ -1457,7 +1481,8 @@ a {
     gap: 0.6rem;
     color: inherit;
     text-decoration: none;
-    flex: 1;
+    flex: 1 1 auto;
+    min-width: 0;
 
     &:hover {
       text-decoration: underline;
@@ -1499,6 +1524,299 @@ a {
   &:hover {
     color: var(--exit);
   }
+}
+
+// An explanatory note within the notifications page (timers / transfer help).
+.notif-note {
+  color: var(--muted);
+  font-size: 12px;
+  margin: 0.2rem 0 0.6rem;
+
+  strong {
+    color: var(--fg);
+    font-weight: 600;
+  }
+}
+
+// A subtle divider under the notification-timers explanation, above the picker.
+// Sits close under the note; the section below tightens the gap down to the list.
+.notif-divider {
+  border: none;
+  border-top: 1px solid var(--border);
+  margin: 0.35rem 0 0.8rem;
+}
+
+// Pull the subscription list a little closer to the global timer row, and keep
+// the divider snug under the explanatory note.
+.notif-timers-section {
+  margin-bottom: 0.9rem;
+
+  .notif-note {
+    margin-bottom: 0.3rem;
+  }
+}
+
+// ----- Timer picker (global + per-entry override) ---------------------------
+// Resting state: just the active timers as boxes plus a "+". The add palette
+// (presets + custom) floats as an overlay once "+" is pressed.
+.timer-picker {
+  position: relative; // anchor for the floating add panel
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  margin: 0.3rem 0 0.2rem;
+}
+
+.timer-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.timer-chip {
+  font-variant-numeric: tabular-nums;
+
+  // A selected timer (filled) shows a trailing × to signal it's removable.
+  &.on {
+    color: var(--bg);
+    background: var(--fg);
+    border-color: var(--fg);
+  }
+
+  .timer-x {
+    margin-left: 0.3rem;
+    opacity: 0.7;
+  }
+}
+
+// The "+" reveal control; reuses the chip box (so it's the same height as the
+// timer chips), fills in when the add panel is open.
+.timer-add-toggle {
+  font-weight: 700;
+
+  &.on {
+    color: var(--bg);
+    background: var(--fg);
+    border-color: var(--fg);
+  }
+}
+
+// The add palette floats below the "+" as a popover, so opening it never pushes
+// the surrounding rows down. `width: max-content` (capped by max-width) keeps it
+// the same wide, horizontal tray whether it's anchored to the full-width global
+// picker or a narrow inline per-entry one (whose box would otherwise squash it
+// into a tall single column).
+.timer-add-panel {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  z-index: 30;
+  margin-top: 0.3rem;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.35rem;
+  width: max-content;
+  max-width: min(24rem, 92vw);
+  padding: 0.45rem 0.55rem;
+  background: var(--card-bg);
+  border: 1px solid var(--border);
+  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.35);
+
+  .timer-custom-label {
+    color: var(--muted);
+    font-size: 12px;
+    margin-left: 0.2rem;
+  }
+}
+
+// On an inline per-entry picker (right-aligned in its row), right-anchor the tray
+// so the wide panel extends leftward instead of running off the right edge.
+.entry-timers .timer-add-panel {
+  left: auto;
+  right: 0;
+}
+
+.timer-num {
+  width: 3.4rem;
+  background: none;
+  border: 1px solid var(--border);
+  color: var(--fg);
+  font: inherit;
+  font-size: 12px;
+  padding: 0.15rem 0.35rem;
+
+  // Mute the native up/down spinners a touch so they don't draw the eye (the
+  // `color-scheme` above already keeps them dark instead of bright white).
+  &::-webkit-inner-spin-button,
+  &::-webkit-outer-spin-button {
+    opacity: 0.5;
+  }
+
+  &:hover::-webkit-inner-spin-button,
+  &:focus::-webkit-inner-spin-button {
+    opacity: 0.85;
+  }
+}
+
+.timer-unit {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  color: var(--fg);
+  font: inherit;
+  font-size: 12px;
+  padding: 0.15rem 0.25rem;
+  cursor: pointer;
+}
+
+// ----- Per-entry timer control ----------------------------------------------
+// Sits inline on a subscription/match row. While following the global timers it's
+// just the small "custom" affordance below; once overridden it shows the same
+// boxes-and-"+" picker with a "custom" tag and a "↺ global" reset.
+.entry-timers {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.3rem 0.4rem;
+  font-size: 12px;
+  // Reserve the timer-chip height even in the resting "custom" state, so forking
+  // a custom timer (pill → boxes) doesn't change the row's height.
+  min-height: 1.7rem;
+
+  // Inline here, the picker is just its single chip row — drop the standalone
+  // margin so the boxes are no taller than the resting pill (no row-height jump).
+  .timer-picker {
+    margin: 0;
+  }
+}
+
+// Resting state: a subtle dashed pill the user clicks to fork custom timers.
+.entry-timers-custom {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--muted);
+  border: 1px dashed var(--border);
+  border-radius: 2px;
+  padding: 0.05rem 0.4rem;
+
+  &:hover {
+    color: var(--fg);
+    border-color: var(--fg);
+    text-decoration: none;
+  }
+}
+
+// The "custom" tag shown once an override is set (reads as active).
+.entry-timers-label {
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  font-size: 10px;
+  color: var(--fg);
+}
+
+.entry-timers-reset {
+  font-size: 12px;
+}
+
+// ----- Notifications export / import ----------------------------------------
+// The export code: one line, truncated with an ellipsis; a click copies it, and
+// hovering reveals the whole code in a popover. Left-aligned so the start of the
+// code stays put when it expands on hover (centring would re-flow the line as the
+// ellipsis gives way to the full text).
+.notif-io-copy {
+  position: relative;
+  box-sizing: border-box;
+  width: 100%;
+  border: 1px solid var(--border);
+  background: var(--card-bg);
+  padding: 0.4rem 0.6rem;
+  margin-bottom: 0.4rem;
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+
+  // White outline on hover/focus to signal it's interactive. (Border colour only
+  // — no width change — so it never shifts the text; the left-aligned code below
+  // is what actually keeps the first line still as it expands.)
+  &:hover,
+  &:focus-within {
+    border-color: var(--fg);
+  }
+
+  .notif-io-code {
+    display: block;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  // The full code, shown on hover/focus. It overlays the box from the same top
+  // edge and grows downward, wrapping the full code in place — no shift of the
+  // already-visible line, no duplicate below. Its border is white to match the
+  // box's hover outline (the popover covers the box's own border).
+  .notif-io-pop {
+    display: none;
+    position: absolute;
+    left: -1px;
+    right: -1px;
+    top: -1px;
+    z-index: 40;
+    padding: 0.4rem 0.6rem;
+    background: var(--card-bg);
+    border: 1px solid var(--fg);
+    box-shadow: 0 6px 16px rgba(0, 0, 0, 0.35);
+    text-align: left;
+    white-space: normal;
+    word-break: break-all;
+  }
+
+  &:hover .notif-io-pop,
+  &:focus .notif-io-pop,
+  &:focus-within .notif-io-pop {
+    display: block;
+  }
+}
+
+// A reserved line under the copy box; the "Copied" hint fades in here without
+// nudging the layout.
+.notif-io-copy-status {
+  min-height: 1.1rem;
+  margin-bottom: 0.4rem;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+// The paste field: a single line, left-aligned to match the code box above.
+.notif-io-input {
+  box-sizing: border-box;
+  width: 100%;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  color: var(--fg);
+  font: inherit;
+  font-size: 12px;
+  text-align: left;
+  padding: 0.4rem 0.6rem;
+  margin-bottom: 0.4rem;
+
+  &:focus {
+    outline: none;
+    border-color: var(--fg);
+  }
+}
+
+.notif-io-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin: 0.4rem 0 0.8rem;
+}
+
+.notif-io-status {
+  color: var(--muted);
+  font-size: 12px;
 }
 
 .detail-score {
@@ -2635,6 +2953,12 @@ a.bk-team-link {
   // controls after it stay to the right.
   .refresh-btn {
     margin-right: auto;
+  }
+
+  // Drop the "updated" word (keep the icon + time) so the schedule controls plus
+  // the clock fit on one row down to 320px.
+  .refresh-pre {
+    display: none;
   }
 
   // Compact rows/columns are too narrow for full team + constructor names, so

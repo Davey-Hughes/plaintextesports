@@ -2250,11 +2250,13 @@ name = "plaintextesports"
 version = "0.1.0"
 dependencies = [
  "axum",
+ "base64",
  "base64ct",
  "chrono",
  "chrono-tz",
  "console_error_panic_hook",
  "dotenvy",
+ "flate2",
  "futures",
  "getrandom 0.2.17",
  "http",
