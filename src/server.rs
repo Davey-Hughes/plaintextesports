@@ -108,6 +108,22 @@ pub async fn get_match_detail(
         } else {
             crate::types::Series::default()
         };
+        // For a finished F1 session, that session's finishing order — reusing the
+        // GP's TTL-cached results (so the event page and every session page of a
+        // weekend share one fetch) and narrowing to this session by its label.
+        // `None` for upcoming sessions or ones the source doesn't classify.
+        let f1_result = if match_view.sport == Sport::Motorsport
+            && match_view.league == "F1"
+            && matches!(match_view.status, crate::types::MatchStatus::Finished)
+        {
+            let (season, round) = (id / 100_000, (id / 100) % 1000);
+            crate::cache::f1_results(season, round)
+                .await
+                .into_iter()
+                .find(|r| r.session == match_view.team_a.label)
+        } else {
+            None
+        };
         Ok(MatchDetail {
             found: true,
             match_view: Some(match_view),
@@ -115,6 +131,7 @@ pub async fn get_match_detail(
             event,
             stages,
             series,
+            f1_result,
         })
     }
     #[cfg(not(feature = "ssr"))]
