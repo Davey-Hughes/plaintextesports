@@ -6,8 +6,8 @@ use crate::server::{
 };
 use crate::types::{
     competition_kind, full_event_name, DayGroup, EventInfo, F1Result, F1Standings, Sport,
-    MatchDetail, MatchStatus, MatchView, MotorStandingTable, MotorStandings, ScheduleView, Series,
-    SeriesGame, StreamView,
+    MatchDetail, MatchStatus, MatchView, MotorResult, MotorStandingTable, MotorStandings,
+    ScheduleView, Series, SeriesGame, StreamView,
 };
 use leptos::prelude::*;
 use std::collections::{BTreeMap, HashSet};
@@ -1102,6 +1102,64 @@ fn F1Results(results: Vec<F1Result>, season: i64, round: i64) -> impl IntoView {
     }
 }
 
+/// A finished WRC stage/rally or MotoGP session classification on the match page —
+/// the ocblacktop counterpart of [`F1Results`], reusing the same row layout and
+/// spoiler reveal. `reveal_key` keeps each match page's reveal state distinct.
+#[component]
+fn MotorResultView(result: MotorResult, reveal_key: String) -> impl IntoView {
+    let MotorResult { title, rows } = result;
+    let (revealed, toggle) = section_reveal(reveal_key);
+    let count = rows.len();
+    let rows = StoredValue::new(rows);
+    // Always render every row so revealing doesn't shift the page; the position
+    // column (a row number) stays, and the names / team / time blank until shown.
+    let order = move || {
+        let show = revealed.get();
+        rows.get_value()
+            .into_iter()
+            .map(|row| {
+                let (name, codriver, team, time, flag) = if show {
+                    (row.name, row.codriver, row.team, row.time, row.flag)
+                } else {
+                    (String::new(), String::new(), String::new(), String::new(), String::new())
+                };
+                view! {
+                    <li class="f1-row">
+                        <span class="f1-pos">{row.pos}</span>
+                        <span class="f1-driver">
+                            {team_logo(&flag, "f1-flag")}{name}
+                            {(!codriver.is_empty())
+                                .then(|| view! { <span class="motor-codriver">{codriver}</span> })}
+                        </span>
+                        <span class="f1-con">{team}</span>
+                        <span class="f1-detail">{time}</span>
+                    </li>
+                }
+            })
+            .collect_view()
+    };
+    view! {
+        <section class="detail-section">
+            <h2 class="section-title f1-results-title">"Results"</h2>
+            <div class="f1-session">
+                <button class="f1-session-head" on:click=toggle>
+                    <span class="f1-session-name">{title}</span>
+                    <span class="f1-session-toggle">
+                        {move || {
+                            if revealed.get() {
+                                "hide results".to_string()
+                            } else {
+                                format!("show results ({count})")
+                            }
+                        }}
+                    </span>
+                </button>
+                <ol class="f1-order">{order}</ol>
+            </div>
+        </section>
+    }
+}
+
 /// The drivers' and constructors' championship standings as of a GP's round,
 /// shown on the F1 event page. Spoiler-gated as one block (it encodes results).
 #[component]
@@ -1315,8 +1373,8 @@ fn EventPage() -> impl IntoView {
             }
         },
     );
-    // WRC/WEC event pages show the series' current championship standings (from
-    // the ocblacktop poller cache); empty for F1 / non-motorsport events.
+    // WRC/WEC/MotoGP event pages show the series' current championship standings
+    // (from the ocblacktop poller cache); empty for F1 / non-motorsport events.
     let motor_standings = Resource::new(
         move || schedule.get().and_then(Result::ok).map(|s| motor_series(&s)).unwrap_or_default(),
         |lg| async move {
@@ -1774,9 +1832,12 @@ fn detail_view(d: MatchDetail) -> impl IntoView {
         stages,
         series,
         f1_result,
+        motor_result,
         ..
     } = d;
     let m = match_view.expect("found implies match_view");
+    // Per-page reveal key for a motorsport (WRC/MotoGP) result section.
+    let motor_reveal_key = format!("motorres:{}", m.id);
     // For an F1 session page, derive (season, round) from the id encoding
     // (season*100_000 + round*100 + session_ord) so the results section shares
     // the GP event page's per-session reveal key.
@@ -1980,6 +2041,12 @@ fn detail_view(d: MatchDetail) -> impl IntoView {
                     view! {
                         <F1Results results=vec![r] season=f1_season round=f1_round />
                     }
+                })}
+            // WRC stage/rally or MotoGP session: this row's classification,
+            // spoiler-gated. Absent for upcoming sessions and non-ocblacktop rows.
+            {motor_result
+                .map(|r| {
+                    view! { <MotorResultView result=r reveal_key=motor_reveal_key.clone() /> }
                 })}
             // MLB series between the two teams. Each sport row reveals on its own
             // (shared with the schedule); the record line waits until every played
@@ -4308,24 +4375,24 @@ fn f1_season_round(s: &ScheduleView) -> Option<(i64, i64)> {
     Some((id / 100_000, (id / 100) % 1000))
 }
 
-/// The motorsport series ("WRC"/"WEC") an event page is for, else "". F1 is
-/// excluded — it has its own results+standings path keyed on session ids.
+/// The motorsport series ("WRC"/"WEC"/"MotoGP") an event page is for, else "". F1
+/// is excluded — it has its own results+standings path keyed on session ids.
 fn motor_series(s: &ScheduleView) -> String {
     s.days
         .iter()
         .flat_map(|d| &d.leagues)
         .map(|lg| lg.league.clone())
-        .find(|l| matches!(l.as_str(), "WRC" | "WEC"))
+        .find(|l| matches!(l.as_str(), "WRC" | "WEC" | "MotoGP"))
         .unwrap_or_default()
 }
 
-/// The motorsport series ("F1"/"WRC"/"WEC") an event page is for, else "".
+/// The motorsport series ("F1"/"WRC"/"WEC"/"MotoGP") an event page is for, else "".
 fn motorsport_league(s: &ScheduleView) -> String {
     s.days
         .iter()
         .flat_map(|d| &d.leagues)
         .map(|lg| lg.league.clone())
-        .find(|l| matches!(l.as_str(), "F1" | "WRC" | "WEC"))
+        .find(|l| matches!(l.as_str(), "F1" | "WRC" | "WEC" | "MotoGP"))
         .unwrap_or_default()
 }
 
@@ -4343,6 +4410,7 @@ fn motorsport_watch(league: &str) -> &'static [(&'static str, &'static str)] {
         ],
         "WRC" => &[("Rally.TV", "https://www.rally.tv/en")],
         "WEC" => &[("FIA WEC on YouTube", "https://www.youtube.com/@FIAWEC/streams")],
+        "MotoGP" => &[("MotoGP VideoPass", "https://videopass.motogp.com/")],
         _ => &[],
     }
 }
@@ -4878,21 +4946,21 @@ fn ScheduleSection(
         }
     });
     // The team sports show their division/group tables; the motorsport series
-    // (F1/WRC/WEC) have no such tables — they get championship standings instead
-    // (handled below), so they're excluded here.
+    // (F1/WRC/WEC/MotoGP) have no such tables — they get championship standings
+    // instead (handled below), so they're excluded here.
     let trad_standings_league = Memo::new(move |_| {
         let l = single_league.get();
-        if matches!(l.as_str(), "F1" | "WRC" | "WEC") {
+        if matches!(l.as_str(), "F1" | "WRC" | "WEC" | "MotoGP") {
             String::new()
         } else {
             l
         }
     });
-    // WRC/WEC (the non-F1 motorsport series) — their championship tables from the
-    // ocblacktop poller cache, when the filters narrow to one of them.
+    // WRC/WEC/MotoGP (the non-F1 motorsport series) — their championship tables
+    // from the ocblacktop poller cache, when the filters narrow to one of them.
     let motor_home_league = Memo::new(move |_| {
         let l = single_league.get();
-        if matches!(l.as_str(), "WRC" | "WEC") { l } else { String::new() }
+        if matches!(l.as_str(), "WRC" | "WEC" | "MotoGP") { l } else { String::new() }
     });
     let motor_home_standings = Resource::new(
         move || motor_home_league.get(),
@@ -5045,6 +5113,16 @@ fn leagues_for_games(s: &ScheduleView, games: &HashSet<String>) -> Vec<(String, 
                 out.push((lg.league.clone(), sport));
             }
         }
+    }
+    // Tidy the motorsport series chips into a deliberate order (F1 · MotoGP · WEC ·
+    // WRC) within the slots they already occupy, leaving every other chip in its
+    // first-appearance position.
+    let motor_slots: Vec<usize> =
+        out.iter().enumerate().filter(|(_, (_, sp))| *sp == Sport::Motorsport).map(|(i, _)| i).collect();
+    let mut motor: Vec<(String, Sport)> = motor_slots.iter().map(|&i| out[i].clone()).collect();
+    motor.sort_by_key(|(l, _)| crate::types::motorsport_league_rank(l));
+    for (&slot, val) in motor_slots.iter().zip(motor) {
+        out[slot] = val;
     }
     out
 }
@@ -6460,6 +6538,43 @@ mod tests {
         assert_eq!(names_of(&names(&["lol"])), vec!["LCK", "LEC", "LPL"]);
         // Each chip carries its match's sport, for the sport-scoped subscribe key.
         assert!(leagues_for_games(&s, &HashSet::new()).iter().all(|(_, sp)| *sp == Sport::Lol));
+    }
+
+    #[test]
+    fn leagues_for_games_tidies_motorsport_order() {
+        // A motorsport league group whose chip carries Sport::Motorsport.
+        let motor = |name: &str| {
+            let mut m = mv(name);
+            m.sport = Sport::Motorsport;
+            LeagueGroup {
+                league: name.into(),
+                series_name: String::new(),
+                event_url: String::new(),
+                bo: None,
+                matches: vec![m],
+            }
+        };
+        let lol = |name: &str| LeagueGroup {
+            league: name.into(),
+            series_name: String::new(),
+            event_url: String::new(),
+            bo: None,
+            matches: vec![mv(name)],
+        };
+        // The series appear in an arbitrary feed order (WRC, F1, WEC, MotoGP).
+        let s = ScheduleView {
+            days: vec![DayGroup {
+                day_key: "d0".into(),
+                day_label: "D0".into(),
+                leagues: vec![lol("LEC"), motor("WRC"), motor("F1"), motor("WEC"), motor("MotoGP")],
+            }],
+            ..Default::default()
+        };
+        let names: Vec<String> =
+            leagues_for_games(&s, &HashSet::new()).into_iter().map(|(l, _)| l).collect();
+        // The non-motorsport chip keeps its leading slot; the motorsport chips are
+        // tidied into F1 · MotoGP · WEC · WRC within their existing positions.
+        assert_eq!(names, vec!["LEC", "F1", "MotoGP", "WEC", "WRC"]);
     }
 
     #[test]

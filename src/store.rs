@@ -315,6 +315,8 @@ fn row_to_match(row: &rusqlite::Row) -> rusqlite::Result<Option<NormalizedMatch>
         streams: Vec::new(),
         // Series refs aren't persisted (MLB, in-memory); repopulated on next poll.
         mlb_series: None,
+        // Motorsport result refs (WRC/MotoGP) are in-memory only too.
+        motor_result_ref: None,
     }))
 }
 
@@ -943,6 +945,7 @@ mod tests {
             team_b_logo: String::new(),
             streams: Vec::new(),
             mlb_series: None,
+            motor_result_ref: None,
         }
     }
 

@@ -235,9 +235,13 @@ impl Config {
             .filter(|s| !s.is_empty());
         // Conservative defaults: calendar every 30 min, standings every 2 h; with
         // ~6 requests per full refresh that's well under the 250/day free tier.
-        let ocblacktop_poll = Duration::from_secs(secs("OCBLACKTOP_POLL_SECS", 1800, 300));
+        // Conservative defaults sized for the free tier's 250 req/day across WRC +
+        // WEC + MotoGP: a calendar refresh is up to 4 requests, a standings refresh
+        // 6, so 60 min / 3 h works out to ~96 + ~48 = ~144/day — under the cap, with
+        // headroom for the active rally's stage detail and on-demand result fetches.
+        let ocblacktop_poll = Duration::from_secs(secs("OCBLACKTOP_POLL_SECS", 3600, 300));
         let ocblacktop_standings_poll =
-            Duration::from_secs(secs("OCBLACKTOP_STANDINGS_POLL_SECS", 7200, 600));
+            Duration::from_secs(secs("OCBLACKTOP_STANDINGS_POLL_SECS", 10800, 600));
         let ocblacktop_daily_cap = secs("OCBLACKTOP_DAILY_CAP", 240, 0);
 
         let tz = get("DISPLAY_TZ")
@@ -335,8 +339,8 @@ mod tests {
         let c = cfg(&[]);
         assert!(c.token.is_none());
         assert!(c.ocblacktop_token.is_none());
-        assert_eq!(c.ocblacktop_poll.as_secs(), 1800);
-        assert_eq!(c.ocblacktop_standings_poll.as_secs(), 7200);
+        assert_eq!(c.ocblacktop_poll.as_secs(), 3600);
+        assert_eq!(c.ocblacktop_standings_poll.as_secs(), 10800);
         assert_eq!(c.ocblacktop_daily_cap, 240);
         assert_eq!(c.tz, chrono_tz::America::Los_Angeles);
         assert_eq!(c.idle_poll.as_secs(), 1200);

@@ -63,6 +63,11 @@ pub struct NormalizedMatch {
     /// `None` for esports (and unpersisted — repopulated each poll). See
     /// [`crate::types::MlbSeriesRef`].
     pub mlb_series: Option<crate::types::MlbSeriesRef>,
+    /// Motorsport-only (WRC/MotoGP): how the detail page fetches this row's
+    /// classification (rally overall / stage times / MotoGP session order).
+    /// `None` for everything else (and unpersisted — repopulated each poll, like
+    /// `mlb_series`). See [`crate::types::MotorResultRef`].
+    pub motor_result_ref: Option<crate::types::MotorResultRef>,
 }
 
 #[derive(Debug, Clone)]
@@ -117,6 +122,7 @@ impl NormalizedMatch {
             team_b_logo: String::new(),
             streams: Vec::new(),
             mlb_series: None,
+            motor_result_ref: None,
         }
     }
 }
@@ -377,6 +383,8 @@ fn normalize(sport: Sport, raw: &RawMatch) -> Option<NormalizedMatch> {
         streams: streams(&raw.streams_list),
         // Series are an MLB concept; esports matches have none.
         mlb_series: None,
+        // Motorsport result refs are a WRC/MotoGP concept.
+        motor_result_ref: None,
     })
 }
 

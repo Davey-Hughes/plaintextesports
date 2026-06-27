@@ -81,14 +81,17 @@ static WRC_STANDINGS: Lazy<RwLock<crate::types::MotorStandings>> =
     Lazy::new(|| RwLock::new(crate::types::MotorStandings::default()));
 static WEC_STANDINGS: Lazy<RwLock<crate::types::MotorStandings>> =
     Lazy::new(|| RwLock::new(crate::types::MotorStandings::default()));
+static MOTOGP_STANDINGS: Lazy<RwLock<crate::types::MotorStandings>> =
+    Lazy::new(|| RwLock::new(crate::types::MotorStandings::default()));
 
-/// The WRC or WEC championship standings (empty until first fetched), by series
-/// league name. Any other name yields empty tables.
+/// The WRC, WEC, or MotoGP championship standings (empty until first fetched), by
+/// series league name. Any other name yields empty tables.
 #[must_use]
 pub fn motor_standings(league: &str) -> crate::types::MotorStandings {
     let store = match league {
         "WRC" => &WRC_STANDINGS,
         "WEC" => &WEC_STANDINGS,
+        "MotoGP" => &MOTOGP_STANDINGS,
         _ => return crate::types::MotorStandings::default(),
     };
     store.read().unwrap_or_else(PoisonError::into_inner).clone()
@@ -217,6 +220,25 @@ struct CachedF1Results {
 /// Re-fetch a Grand Prix's results at most this often.
 const F1_RESULTS_TTL_MIN: i64 = 10;
 
+/// On-demand WRC/MotoGP results (a rally's overall classification, a stage's
+/// times, a MotoGP session order), keyed by the result ref. Fetched when a match
+/// page is viewed and — unlike the poller's calendar/standings fetches — billed
+/// outside the daily-cap accounting; a non-empty (finished, immutable) result is
+/// therefore kept indefinitely so the season's handful of distinct classifications
+/// each cost one request total. An empty result (not yet posted) re-checks once
+/// the short TTL lapses.
+static MOTOR_RESULTS: Lazy<RwLock<HashMap<String, CachedMotorResult>>> =
+    Lazy::new(|| RwLock::new(HashMap::new()));
+
+struct CachedMotorResult {
+    rows: Vec<crate::types::MotorResultRow>,
+    fetched_at: DateTime<Utc>,
+}
+
+/// Re-check an as-yet-empty motorsport result at most this often (a non-empty one
+/// is immutable and kept until restart).
+const MOTOR_RESULT_TTL_MIN: i64 = 15;
+
 /// On-demand F1 championship standings, keyed by the (season, round) of the GP
 /// whose page asked for them.
 static F1_STANDINGS: Lazy<RwLock<HashMap<(i64, i64), CachedF1Standings>>> =
@@ -332,6 +354,34 @@ pub async fn f1_results(season: i64, round: i64) -> Vec<crate::types::F1Result> 
         CachedF1Results { results: results.clone(), fetched_at: Utc::now() },
     );
     results
+}
+
+/// A motorsport classification (WRC stage/overall, MotoGP session) for the match
+/// page, fetched on demand from Orange Cat Blacktop and cached. Empty when no
+/// token is set or the source returns nothing.
+pub async fn motor_result(r: &crate::types::MotorResultRef) -> Vec<crate::types::MotorResultRow> {
+    let cache_key = format!("{}|{}|{}", r.series, r.event_id, r.session_id);
+    {
+        let cache = MOTOR_RESULTS.read().unwrap_or_else(PoisonError::into_inner);
+        if let Some(c) = cache.get(&cache_key) {
+            // A non-empty (finished) result never changes — keep it indefinitely;
+            // an empty one re-checks after the TTL in case it's now posted.
+            if !c.rows.is_empty()
+                || Utc::now() - c.fetched_at < Duration::minutes(MOTOR_RESULT_TTL_MIN)
+            {
+                return c.rows.clone();
+            }
+        }
+    }
+    let Some(token) = config().ocblacktop_token.as_deref() else {
+        return Vec::new();
+    };
+    let rows = crate::ocblacktop::fetch_motor_result(&HTTP, token, r).await;
+    MOTOR_RESULTS.write().unwrap_or_else(PoisonError::into_inner).insert(
+        cache_key,
+        CachedMotorResult { rows: rows.clone(), fetched_at: Utc::now() },
+    );
+    rows
 }
 
 /// The F1 championship standings as of a Grand Prix's round, fetched on demand
@@ -473,6 +523,7 @@ pub fn spawn_poller() {
         // gates, under a hard per-UTC-day request cap (free tier is 250/day).
         let mut last_wrc: Vec<NormalizedMatch> = Vec::new();
         let mut last_wec: Vec<NormalizedMatch> = Vec::new();
+        let mut last_motogp: Vec<NormalizedMatch> = Vec::new();
         let mut ocb_events_at: Option<DateTime<Utc>> = None;
         let mut ocb_standings_at: Option<DateTime<Utc>> = None;
         let mut ocb_day: Option<NaiveDate> = None;
@@ -548,10 +599,12 @@ pub fn spawn_poller() {
                 (Ok(a), Err(_)) | (Err(_), Ok(a)) => Ok(a),
                 (Err(e), Err(_)) => Err(e.into()),
             };
-            // Orange Cat Blacktop (WRC + WEC) — fetched on their own slow gates,
-            // never every cycle, under a hard per-UTC-day cap (free tier 250/day).
-            // Results stay cached in last_wrc/last_wec and merge into the
-            // Motorsport feed below; only the network fetch is throttled.
+            // Orange Cat Blacktop (WRC + WEC + MotoGP) — fetched on their own slow
+            // gates, never every cycle, under a hard per-UTC-day cap (free tier
+            // 250/day). Results stay cached in last_wrc/last_wec/last_motogp and
+            // merge into the Motorsport feed below; only the network fetch is
+            // throttled. (Per-result classifications are fetched on demand by the
+            // detail page and cached separately — see `motor_result`.)
             if let Some(key) = cfg.ocblacktop_token.as_deref() {
                 if ocb_day != Some(now.date_naive()) {
                     ocb_day = Some(now.date_naive());
@@ -560,15 +613,16 @@ pub fn spawn_poller() {
                 let cap = cfg.ocblacktop_daily_cap;
                 let events_iv = Duration::seconds(cfg.ocblacktop_poll.as_secs() as i64);
                 let standings_iv = Duration::seconds(cfg.ocblacktop_standings_poll.as_secs() as i64);
-                // Calendars: up to 3 requests — WEC events (1) plus WRC, which is
-                // the rallies calendar (1) and, when a rally is live or imminent,
-                // its per-stage timetable (1 more). Reserve 3; bill the exact count
-                // WRC reports back so the daily quota stays accurate off-week too.
-                if ocb_events_at.is_none_or(|t| now - t >= events_iv) && ocb_used + 3 <= cap {
+                // Calendars: up to 4 requests — WEC events (1), MotoGP events (1),
+                // plus WRC, which is the rallies calendar (1) and, when a rally is
+                // live or imminent, its per-stage timetable (1 more). Reserve 4; bill
+                // the exact count WRC reports back so the quota stays accurate.
+                if ocb_events_at.is_none_or(|t| now - t >= events_iv) && ocb_used + 4 <= cap {
                     let year = now.year();
-                    let (wrc, wec) = tokio::join!(
+                    let (wrc, wec, motogp) = tokio::join!(
                         crate::ocblacktop::fetch_wrc(&client, key, year, now),
                         crate::ocblacktop::fetch_wec(&client, key, year),
+                        crate::ocblacktop::fetch_motogp(&client, key, year),
                     );
                     ocb_events_at = Some(now);
                     match wrc {
@@ -588,14 +642,21 @@ pub fn spawn_poller() {
                         Ok(v) => last_wec = v,
                         Err(e) => leptos::logging::log!("WEC fetch failed: {e}"),
                     }
+                    ocb_used += 1; // MotoGP events
+                    match motogp {
+                        Ok(v) => last_motogp = v,
+                        Err(e) => leptos::logging::log!("MotoGP fetch failed: {e}"),
+                    }
                 }
-                // Standings: 4 requests (WRC drivers/co-drivers/manufacturers + WEC).
-                if ocb_standings_at.is_none_or(|t| now - t >= standings_iv) && ocb_used + 4 <= cap {
-                    let (wrc_s, wec_s) = tokio::join!(
+                // Standings: 6 requests (WRC drivers/co-drivers/manufacturers + WEC
+                // + MotoGP riders/teams).
+                if ocb_standings_at.is_none_or(|t| now - t >= standings_iv) && ocb_used + 6 <= cap {
+                    let (wrc_s, wec_s, motogp_s) = tokio::join!(
                         crate::ocblacktop::fetch_wrc_standings(&client, key),
                         crate::ocblacktop::fetch_wec_standings(&client, key),
+                        crate::ocblacktop::fetch_motogp_standings(&client, key),
                     );
-                    ocb_used += 4;
+                    ocb_used += 6;
                     ocb_standings_at = Some(now);
                     if !wrc_s.tables.is_empty() {
                         *WRC_STANDINGS.write().unwrap_or_else(PoisonError::into_inner) = wrc_s;
@@ -603,21 +664,31 @@ pub fn spawn_poller() {
                     if !wec_s.tables.is_empty() {
                         *WEC_STANDINGS.write().unwrap_or_else(PoisonError::into_inner) = wec_s;
                     }
+                    if !motogp_s.tables.is_empty() {
+                        *MOTOGP_STANDINGS.write().unwrap_or_else(PoisonError::into_inner) = motogp_s;
+                    }
                 }
             }
-            // Merge F1 (keyless, every cycle) with the cached WRC/WEC calendars into
-            // one Motorsport feed — the same trick soccer uses for its two
-            // competitions. WRC/WEC stay visible even if this cycle's F1 fetch failed.
+            // Merge F1 (keyless, every cycle) with the cached WRC/WEC/MotoGP
+            // calendars into one Motorsport feed — the same trick soccer uses for
+            // its two competitions. The cached series stay visible even if this
+            // cycle's F1 fetch failed.
             let motorsport_res: FetchResult = match f1_raw {
                 Ok(mut v) => {
                     v.extend(last_wrc.iter().cloned());
                     v.extend(last_wec.iter().cloned());
+                    v.extend(last_motogp.iter().cloned());
                     Ok(v)
                 }
-                Err(e) if last_wrc.is_empty() && last_wec.is_empty() => Err(e.into()),
+                Err(e)
+                    if last_wrc.is_empty() && last_wec.is_empty() && last_motogp.is_empty() =>
+                {
+                    Err(e.into())
+                }
                 Err(_) => {
                     let mut v = last_wrc.clone();
                     v.extend(last_wec.iter().cloned());
+                    v.extend(last_motogp.iter().cloned());
                     Ok(v)
                 }
             };
@@ -853,22 +924,31 @@ fn apply_poll(
         match crate::store::load_all(conn) {
             Ok(mut all) => {
                 all.sort_by_key(|m| m.begin_at);
-                // Streams/broadcasts and the MLB series ref aren't persisted to
-                // the DB, so the reload drops them; re-attach them from this
-                // poll's fresh fetch (keyed by match id) so the detail page still
-                // has them.
-                let mut live: HashMap<i64, (Vec<StreamView>, Option<crate::types::MlbSeriesRef>)> =
-                    fresh
-                        .into_iter()
-                        .filter(|m| !m.streams.is_empty() || m.mlb_series.is_some())
-                        .map(|m| (m.id, (m.streams, m.mlb_series)))
-                        .collect();
+                // Streams/broadcasts, the MLB series ref, and the motorsport
+                // result ref aren't persisted to the DB, so the reload drops them;
+                // re-attach them from this poll's fresh fetch (keyed by match id)
+                // so the detail page still has them.
+                type LiveExtras = (
+                    Vec<StreamView>,
+                    Option<crate::types::MlbSeriesRef>,
+                    Option<crate::types::MotorResultRef>,
+                );
+                let mut live: HashMap<i64, LiveExtras> = fresh
+                    .into_iter()
+                    .filter(|m| {
+                        !m.streams.is_empty()
+                            || m.mlb_series.is_some()
+                            || m.motor_result_ref.is_some()
+                    })
+                    .map(|m| (m.id, (m.streams, m.mlb_series, m.motor_result_ref)))
+                    .collect();
                 for m in &mut all {
-                    if let Some((s, series)) = live.remove(&m.id) {
+                    if let Some((s, series, motor)) = live.remove(&m.id) {
                         if !s.is_empty() {
                             m.streams = s;
                         }
                         m.mlb_series = series;
+                        m.motor_result_ref = motor;
                     }
                 }
                 let mut snap = SNAPSHOT.write().unwrap_or_else(PoisonError::into_inner);
@@ -1932,12 +2012,19 @@ pub fn reminder_seeds_for_match(match_id: i64, sport: &str, leads: &[i64], tz_na
 /// Basics for the match detail page: the formatted view, its streams, the
 /// tournament id, and league name. `None` when the match isn't in the window.
 #[must_use]
+#[allow(clippy::type_complexity)]
 pub fn match_basics(
     match_id: i64,
     sport: Sport,
     tz_name: &str,
     hour24: bool,
-) -> Option<(MatchView, Vec<StreamView>, Option<i64>, String)> {
+) -> Option<(
+    MatchView,
+    Vec<StreamView>,
+    Option<i64>,
+    String,
+    Option<crate::types::MotorResultRef>,
+)> {
     let cfg = config();
     let tz = resolve_tz(tz_name, cfg.tz);
     let now = Utc::now();
@@ -1949,6 +2036,7 @@ pub fn match_basics(
         m.streams.clone(),
         m.tournament_id,
         m.league.clone(),
+        m.motor_result_ref.clone(),
     ))
 }
 
@@ -2630,6 +2718,7 @@ fn demo_match(
             team_b_logo: String::new(),
         streams: demo_streams(),
         mlb_series: None,
+        motor_result_ref: None,
     }
 }
 
@@ -2870,6 +2959,7 @@ mod tests {
             team_b_logo: String::new(),
             streams: Vec::new(),
             mlb_series: None,
+            motor_result_ref: None,
         }
     }
 
