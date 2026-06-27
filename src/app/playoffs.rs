@@ -396,6 +396,7 @@ pub(crate) fn StandingsTable(
                     class="section-title section-toggle"
                     class:on=move || revealed.get()
                     title=move || if revealed.get() { "Hide the standings" } else { "Show the standings" }
+                    aria-expanded=move || if revealed.get() { "true" } else { "false" }
                     on:click=toggle
                 >
                     "Standings"
@@ -806,6 +807,7 @@ pub(crate) fn SwissBracket(
                         class="sw-col-head sw-round-toggle"
                         class:on=round_on
                         title="Reveal this round"
+                        aria-expanded=move || if round_on() { "true" } else { "false" }
                         on:click=move |_| do_op(BkOp::Round(r))
                     >
                         {head}
@@ -826,6 +828,7 @@ pub(crate) fn SwissBracket(
                     class="section-title section-toggle"
                     class:on=bracket_on
                     title="Reveal the bracket, round by round"
+                    aria-expanded=move || if bracket_on() { "true" } else { "false" }
                     on:click=move |_| do_op(BkOp::Cascade)
                 >
                     "Bracket"
@@ -977,6 +980,7 @@ pub(crate) fn Bracket(
                         class="bk-round-toggle"
                         class:on=round_on
                         title="Reveal this round"
+                        aria-expanded=move || if round_on() { "true" } else { "false" }
                         on:click=move |_| do_op(BkOp::Round(r))
                     >
                         {title}
@@ -1275,6 +1279,7 @@ pub(crate) fn Bracket(
                     class="section-title section-toggle"
                     class:on=bracket_on
                     title="Reveal the bracket, round by round"
+                    aria-expanded=move || if bracket_on() { "true" } else { "false" }
                     on:click=move |_| do_op(BkOp::Cascade)
                 >
                     "Bracket"
