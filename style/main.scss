@@ -176,37 +176,24 @@ a {
   flex: 1 0 auto;
 }
 
-// The brand shares the first line with the sticky toggle bar but is absolutely
-// placed (top: 0, matching the flush bar), so it scrolls away with the page while
-// the buttons stay pinned. pointer-events let clicks reach the buttons beneath.
-.header {
-  position: absolute;
-  top: 0;
-  left: 1rem;
-  right: 1rem;
-  z-index: 21;
+// The brand and the back-to-top arrow share the first slot of the sticky toggle
+// bar; `margin-right: auto` pushes the controls to the right. The slot reserves
+// its own space (no overlap at any width), and the bar's `align-items: center`
+// puts whichever is showing — brand text or arrow — on the controls' centre line.
+.brand-slot {
+  margin-right: auto;
   display: flex;
   align-items: center;
-  // Match the toggle bar's height (its buttons make it taller than the bare
-  // brand text) so `align-items: center` lines the brand up on the same
-  // horizontal centre as the controls on the right, rather than sitting higher.
-  min-height: 2.5rem;
-  padding: 0.5rem 0;
-  pointer-events: none;
+}
 
-  .brand {
-    pointer-events: auto;
-  }
-
-  .brand a {
-    color: var(--fg);
-    font-weight: 700;
-    letter-spacing: 0.02em;
-  }
+.brand a {
+  color: var(--fg);
+  font-weight: 700;
+  letter-spacing: 0.02em;
 }
 
 // The toggle bar sticks to the top of the viewport while scrolling. Its
-// background occludes content (and the brand) sliding underneath.
+// background occludes content sliding underneath.
 .toggles {
   position: sticky;
   top: 0;
@@ -306,14 +293,15 @@ a {
   pointer-events: none;
 }
 
-// "Back to top" arrow: takes the brand's spot once it scrolls away. Pushed left
-// so the rest of the bar stays right-aligned; hidden until the page is scrolled.
+// The brand ↔ back-to-top arrow swap within `.brand-slot`. At the top the brand
+// shows and the arrow is hidden; once scrolled they flip, so the arrow lands
+// exactly where the brand was.
 .scrolltop {
-  margin-right: auto;
   font-weight: 700;
   line-height: 1;
 }
 
+.brand-off,
 .scrolltop-off {
   display: none;
 }
@@ -2609,14 +2597,19 @@ a.bk-team-link {
 }
 
 // ===== Responsive: narrow / mobile viewports ================================
-// The toggle bar becomes two rows: the brand (still the absolute overlay) and the
-// display prefs (icons / 24h / theme) on top, then the schedule controls below.
-// The brand sits on the left of row one and the prefs on the right, so they share
-// the line without overlapping; the `.toggles-break` forces everything after the
-// prefs onto the second row.
+// The toggle bar becomes two rows: the brand and the display prefs (icons / 24h /
+// theme) on top, then the schedule controls below. The brand sits on the left of
+// row one and the prefs on the right (the brand slot's `margin-right: auto`); the
+// `.toggles-break` forces everything after the prefs onto the second row.
 @media (max-width: 600px) {
   .page {
     padding: 0 0.75rem 2.5rem;
+  }
+
+  // Shrink the brand a step on narrow screens so it keeps sharing row one with the
+  // prefs down to 320px, rather than overflowing and wrapping to its own line.
+  .brand a {
+    font-size: 12px;
   }
 
   // Tighten the space between the two rows (the break adds a row-gap on each side
@@ -2639,14 +2632,9 @@ a.bk-team-link {
   }
 
   // Left-align the refresh/"updated" label on the second row; the schedule
-  // controls after it stay to the right. (Drop the back-to-top arrow's own
-  // right-auto so the two don't fight when it appears on scroll.)
+  // controls after it stay to the right.
   .refresh-btn {
     margin-right: auto;
-  }
-
-  .scrolltop {
-    margin-right: 0;
   }
 
   // Compact rows/columns are too narrow for full team + constructor names, so
