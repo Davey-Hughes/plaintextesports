@@ -703,6 +703,37 @@ pub fn delete_endpoint(conn: &Connection, endpoint: &str) -> rusqlite::Result<()
     Ok(())
 }
 
+/// Move every row from a rotated push subscription to its replacement, updating
+/// the endpoint (the row key) plus the encryption keys. Backs the service
+/// worker's `pushsubscriptionchange` handler, so pending reminders survive the
+/// browser rotating the subscription rather than waiting for the next visit to
+/// re-arm. A no-op if old == new. `OR IGNORE` so a row that already exists under
+/// the new endpoint (e.g. a reconcile already ran) is left as-is — the stale old
+/// one is dropped below and would otherwise 410-prune anyway.
+pub fn migrate_endpoint(conn: &Connection, old: &str, new: &crate::types::PushSub) -> rusqlite::Result<()> {
+    if old == new.endpoint {
+        return Ok(());
+    }
+    let tx = conn.unchecked_transaction()?;
+    tx.execute(
+        "UPDATE OR IGNORE reminders SET endpoint=?1, p256dh=?2, auth=?3 WHERE endpoint=?4",
+        params![new.endpoint, new.p256dh, new.auth, old],
+    )?;
+    tx.execute(
+        "UPDATE OR IGNORE subscriptions SET endpoint=?1, p256dh=?2, auth=?3 WHERE endpoint=?4",
+        params![new.endpoint, new.p256dh, new.auth, old],
+    )?;
+    tx.execute(
+        "UPDATE OR IGNORE exclusions SET endpoint=?1 WHERE endpoint=?2",
+        params![new.endpoint, old],
+    )?;
+    // Drop anything the OR IGNORE skipped (a collision with an existing new-row).
+    tx.execute("DELETE FROM reminders WHERE endpoint=?1", params![old])?;
+    tx.execute("DELETE FROM subscriptions WHERE endpoint=?1", params![old])?;
+    tx.execute("DELETE FROM exclusions WHERE endpoint=?1", params![old])?;
+    tx.commit()
+}
+
 /// Drop reminders whose match started well in the past (`begin_at = notify_at +
 /// lead_ms < cutoff`). Keyed on the start, not the notify time, so a *sent*
 /// reminder for a still-upcoming match (a long lead that already fired) is
@@ -1319,6 +1350,55 @@ mod tests {
         // The subscriber's tz persists, so expansion bakes bodies in their zone.
         assert_eq!(subs[0].tz, "America/New_York");
         assert_eq!(subs[0].lead_list, vec![900_000, 3_600_000]);
+    }
+
+    #[test]
+    fn migrate_endpoint_moves_rows_to_the_new_subscription() {
+        let conn = open(":memory:").unwrap();
+        // A reminder + a subscription under the old endpoint.
+        add_reminder(&conn, &reminder(1)).unwrap();
+        add_subscription(
+            &conn,
+            &Subscription {
+                endpoint: "https://push.example/x".into(),
+                p256dh: "old-p".into(),
+                auth: "old-a".into(),
+                scope_kind: "league".into(),
+                scope_value: "LCK".into(),
+                lead_ms: 900_000,
+                lead_list: vec![900_000],
+                tz: "America/New_York".into(),
+            },
+        )
+        .unwrap();
+
+        let new = crate::types::PushSub {
+            endpoint: "https://push.example/NEW".into(),
+            p256dh: "new-p".into(),
+            auth: "new-a".into(),
+        };
+        migrate_endpoint(&conn, "https://push.example/x", &new).unwrap();
+
+        // Nothing left under the old endpoint…
+        let old_count: i64 = conn
+            .query_row(
+                "SELECT (SELECT COUNT(*) FROM reminders WHERE endpoint=?1)
+                      + (SELECT COUNT(*) FROM subscriptions WHERE endpoint=?1)",
+                params!["https://push.example/x"],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(old_count, 0);
+        // …and the rows now live under the new endpoint with its fresh keys.
+        let subs = list_subscriptions(&conn).unwrap();
+        assert_eq!(subs.len(), 1);
+        assert_eq!(subs[0].endpoint, "https://push.example/NEW");
+        assert_eq!(subs[0].p256dh, "new-p");
+        assert_eq!(subs[0].tz, "America/New_York"); // preserved across the move
+        let due = due_reminders(&conn, 1000).unwrap();
+        assert_eq!(due.len(), 1);
+        assert_eq!(due[0].endpoint, "https://push.example/NEW");
+        assert_eq!(due[0].p256dh, "new-p");
     }
 
     #[test]

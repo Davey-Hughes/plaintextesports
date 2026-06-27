@@ -97,6 +97,18 @@ pub fn shell(options: LeptosOptions) -> impl IntoView {
                       var j=sub.toJSON();
                       return {endpoint:j.endpoint,p256dh:j.keys.p256dh,auth:j.keys.auth};
                     };
+                    // Like pteSubscribe but never prompts or creates a subscription:
+                    // returns the EXISTING one (or null). Used to reconcile on load
+                    // without nagging users who haven't opted in.
+                    window.pteExistingSub=async function(){
+                      if(!('serviceWorker' in navigator)||!('PushManager' in window)) return null;
+                      if(Notification.permission!=='granted') return null;
+                      var reg=await navigator.serviceWorker.register('/sw.js');
+                      var sub=await reg.pushManager.getSubscription();
+                      if(!sub) return null;
+                      var j=sub.toJSON();
+                      return {endpoint:j.endpoint,p256dh:j.keys.p256dh,auth:j.keys.auth};
+                    };
                     "#
                 </script>
             </head>
@@ -273,6 +285,17 @@ pub fn App() -> impl IntoView {
             // `games`/`leagues` are initialised by `FilterUrlSync` (URL query, else
             // localStorage) since it needs the router context.
             setup_scrollspy();
+            // Reconcile the server's reminders for this browser with the just-loaded
+            // local state, so the DB never drifts from localStorage (no-op unless
+            // push is configured and already granted — it never prompts on load).
+            reconcile_notifications(
+                subscribed.get_untracked(),
+                starred.get_untracked(),
+                excluded.get_untracked(),
+                global_timers.get_untracked(),
+                overrides.get_untracked(),
+                vapid.get_untracked(),
+            );
         }
     });
 
@@ -3869,56 +3892,115 @@ fn sync_entries(
     // The viewer's zone, so the server bakes each body's start time locally.
     let tz = detect_tz().unwrap_or_default();
     leptos::task::spawn_local(async move {
+        // A user action, so it's fine to prompt + create a subscription.
         let sub = match pte_subscribe(&vapid).await {
             Ok(s) => s,
             Err(_) => return,
         };
-        let (Some(endpoint), Some(p256dh), Some(auth)) = (
-            reflect_str(&sub, "endpoint"),
-            reflect_str(&sub, "p256dh"),
-            reflect_str(&sub, "auth"),
-        ) else {
-            return;
+        let Some(push) = push_from_js(&sub) else { return };
+        arm_entries(push, clear_first, subs, stars, excludes, tz).await;
+    });
+}
+
+/// Arm exactly `subs`/`stars`/`excludes` for an already-resolved push
+/// subscription, optionally clearing this endpoint's server state first (a clean
+/// replace). Shared by the user-action sync (which prompts + subscribes) and the
+/// on-load reconcile (which uses the existing subscription only). Runs inside a
+/// caller's `spawn_local`. `clear_notifications` keeps already-sent reminders, so
+/// a replace never re-fires a delivered one.
+#[cfg(feature = "hydrate")]
+async fn arm_entries(
+    push: crate::types::PushSub,
+    clear_first: bool,
+    subs: Vec<(String, String, Vec<i64>)>,
+    stars: Vec<(i64, String, Vec<i64>)>,
+    excludes: Vec<(i64, String)>,
+    tz: String,
+) {
+    if clear_first {
+        let _ = crate::server::clear_notifications(push.endpoint.clone()).await;
+    }
+    for (kind, value, leads) in subs {
+        let _ = crate::server::add_subscription(crate::types::SubscribeReq {
+            sub: push.clone(),
+            kind,
+            value,
+            leads,
+            tz: tz.clone(),
+        })
+        .await;
+    }
+    for (match_id, sport, leads) in stars {
+        let _ = crate::server::add_reminder(crate::types::ReminderReq {
+            sub: push.clone(),
+            match_id,
+            sport,
+            leads,
+            tz: tz.clone(),
+        })
+        .await;
+    }
+    for (match_id, sport) in excludes {
+        let _ = crate::server::exclude_reminder(crate::types::ReminderReq {
+            sub: push.clone(),
+            match_id,
+            sport,
+            leads: Vec::new(),
+            tz: String::new(),
+        })
+        .await;
+    }
+}
+
+/// On load, bring the server's state for this browser's push endpoint into line
+/// with localStorage (the source of truth), so the two never drift — e.g. after
+/// the DB was cleared, or a star/timer was changed on another device. Uses the
+/// *existing* subscription only, so it never prompts a user who hasn't opted in;
+/// if there's none (no permission yet), it's a no-op. The replace is keyed by the
+/// endpoint and idempotent, and the arming gate means only still-ahead timers are
+/// re-armed (no retroactive burst).
+#[cfg(feature = "hydrate")]
+fn reconcile_notifications(
+    subscribed: HashSet<String>,
+    starred: HashSet<String>,
+    excluded: HashSet<String>,
+    global: Vec<i64>,
+    overrides: BTreeMap<String, Vec<i64>>,
+    vapid: Option<String>,
+) {
+    // Push must be configured for any of this to mean anything.
+    if vapid.is_none() {
+        return;
+    }
+    let tz = detect_tz().unwrap_or_default();
+    // Resolve each entry's effective leads (its override else the global list) —
+    // the same shape the import/global-edit paths arm with.
+    let subs_re: Vec<(String, String, Vec<i64>)> = subscribed
+        .iter()
+        .map(|k| {
+            let (kind, _s, value) = parse_sub_key(k);
+            (kind, value, effective_leads(k, &overrides, &global))
+        })
+        .collect();
+    let stars_re: Vec<(i64, String, Vec<i64>)> = starred
+        .iter()
+        .filter_map(|u| {
+            parse_uid(u).map(|(sp, id)| (id, sp.slug().to_string(), effective_leads(u, &overrides, &global)))
+        })
+        .collect();
+    let excl_re: Vec<(i64, String)> = excluded
+        .iter()
+        .filter_map(|u| parse_uid(u).map(|(sp, id)| (id, sp.slug().to_string())))
+        .collect();
+    leptos::task::spawn_local(async move {
+        let sub = match pte_existing_sub().await {
+            Ok(s) => s,
+            Err(_) => return,
         };
-        let push = || crate::types::PushSub {
-            endpoint: endpoint.clone(),
-            p256dh: p256dh.clone(),
-            auth: auth.clone(),
-        };
-        // Clear before re-arming (same task, so it's ordered) for a clean replace.
-        if clear_first {
-            let _ = crate::server::clear_notifications(endpoint.clone()).await;
-        }
-        for (kind, value, leads) in subs {
-            let _ = crate::server::add_subscription(crate::types::SubscribeReq {
-                sub: push(),
-                kind,
-                value,
-                leads,
-                tz: tz.clone(),
-            })
-            .await;
-        }
-        for (match_id, sport, leads) in stars {
-            let _ = crate::server::add_reminder(crate::types::ReminderReq {
-                sub: push(),
-                match_id,
-                sport,
-                leads,
-                tz: tz.clone(),
-            })
-            .await;
-        }
-        for (match_id, sport) in excludes {
-            let _ = crate::server::exclude_reminder(crate::types::ReminderReq {
-                sub: push(),
-                match_id,
-                sport,
-                leads: Vec::new(),
-                tz: String::new(),
-            })
-            .await;
-        }
+        // `null` (no permission / no subscription yet) ⇒ nothing to reconcile, and
+        // crucially no prompt.
+        let Some(push) = push_from_js(&sub) else { return };
+        arm_entries(push, true, subs_re, stars_re, excl_re, tz).await;
     });
 }
 
@@ -5779,6 +5861,11 @@ extern "C" {
     // subscribes, and returns `{ endpoint, p256dh, auth }`.
     #[wasm_bindgen(catch, js_name = pteSubscribe)]
     async fn pte_subscribe(vapid: &str) -> Result<wasm_bindgen::JsValue, wasm_bindgen::JsValue>;
+
+    // Like pteSubscribe but never prompts/creates: returns the existing
+    // subscription `{ endpoint, p256dh, auth }`, or `null` if there isn't one.
+    #[wasm_bindgen(catch, js_name = pteExistingSub)]
+    async fn pte_existing_sub() -> Result<wasm_bindgen::JsValue, wasm_bindgen::JsValue>;
 }
 
 #[cfg(feature = "hydrate")]
@@ -5786,6 +5873,18 @@ fn reflect_str(obj: &wasm_bindgen::JsValue, key: &str) -> Option<String> {
     js_sys::Reflect::get(obj, &wasm_bindgen::JsValue::from_str(key))
         .ok()?
         .as_string()
+}
+
+/// Build a [`PushSub`](crate::types::PushSub) from a `{ endpoint, p256dh, auth }`
+/// JS object (`pteSubscribe`/`pteExistingSub`'s return). `None` if any field is
+/// missing — e.g. `pteExistingSub` returned `null` (no permission/subscription).
+#[cfg(feature = "hydrate")]
+fn push_from_js(sub: &wasm_bindgen::JsValue) -> Option<crate::types::PushSub> {
+    Some(crate::types::PushSub {
+        endpoint: reflect_str(sub, "endpoint")?,
+        p256dh: reflect_str(sub, "p256dh")?,
+        auth: reflect_str(sub, "auth")?,
+    })
 }
 
 // Starred / excluded / revealed are sets of match uids ("{sport}-{id}"), persisted
