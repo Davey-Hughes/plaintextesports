@@ -469,15 +469,13 @@ fn FilterUrlSync() -> impl IntoView {
 
 #[component]
 fn SiteHeader() -> impl IntoView {
-    // The brand scrolls away with the page; the toggle bar is a sibling of the
-    // page so it can stick to the top while scrolling.
+    // The brand and the back-to-top arrow share the first slot of the sticky
+    // toggle bar: the brand shows at the top, and once scrolled it swaps to the ↑
+    // arrow in its place. The brand is a real bar item (it reserves its space), so
+    // nothing overlaps and the controls keep their place at any width.
     view! {
-        <header class="header">
-            <div class="brand">
-                <A href="/">"plaintextesports"</A>
-            </div>
-        </header>
         <div class="toggles">
+            <BrandSlot />
             // Display preferences (icons / 24h / theme), grouped so they can sit at
             // the right of the bar on desktop and share the brand's row on mobile.
             <div class="toggle-prefs">
@@ -488,9 +486,6 @@ fn SiteHeader() -> impl IntoView {
             // On narrow screens this forces the controls below onto a second row,
             // leaving the prefs up beside the brand.
             <span class="toggles-break" aria-hidden="true"></span>
-            // The back-to-top arrow takes the brand's spot once it scrolls away
-            // (hidden at the top), then the schedule controls.
-            <ScrollTopButton />
             <RefreshButton />
             <SportToggle />
             <CalendarPicker />
@@ -526,10 +521,12 @@ fn RefreshButton() -> impl IntoView {
     }
 }
 
-/// A "back to top" arrow that sits on the left of the sticky toggle bar — taking
-/// the place of the brand once it has scrolled away. Hidden at the top of the page.
+/// The brand and a "back to top" arrow sharing the first slot of the sticky
+/// toggle bar: the brand shows at the top of the page, then swaps to the ↑ arrow
+/// once scrolled (a click jumps back up). Kept as one component so a single scroll
+/// listener drives the swap; the arrow lands exactly where the brand was.
 #[component]
-fn ScrollTopButton() -> impl IntoView {
+fn BrandSlot() -> impl IntoView {
     let scrolled = RwSignal::new(false);
     Effect::new(move |_| {
         #[cfg(feature = "hydrate")]
@@ -560,15 +557,20 @@ fn ScrollTopButton() -> impl IntoView {
         }
     };
     view! {
-        <button
-            class="toggle scrolltop"
-            class:scrolltop-off=move || !scrolled.get()
-            title="Back to top"
-            aria-label="Back to top"
-            on:click=to_top
-        >
-            "↑"
-        </button>
+        <div class="brand-slot">
+            <div class="brand" class:brand-off=move || scrolled.get()>
+                <A href="/">"plaintextesports"</A>
+            </div>
+            <button
+                class="toggle scrolltop"
+                class:scrolltop-off=move || !scrolled.get()
+                title="Back to top"
+                aria-label="Back to top"
+                on:click=to_top
+            >
+                "↑"
+            </button>
+        </div>
     }
 }
 
