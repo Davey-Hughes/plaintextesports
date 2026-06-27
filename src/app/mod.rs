@@ -3866,6 +3866,8 @@ fn sync_entries(
     if !clear_first && subs.is_empty() && stars.is_empty() && excludes.is_empty() {
         return;
     }
+    // The viewer's zone, so the server bakes each body's start time locally.
+    let tz = detect_tz().unwrap_or_default();
     leptos::task::spawn_local(async move {
         let sub = match pte_subscribe(&vapid).await {
             Ok(s) => s,
@@ -3893,6 +3895,7 @@ fn sync_entries(
                 kind,
                 value,
                 leads,
+                tz: tz.clone(),
             })
             .await;
         }
@@ -3902,6 +3905,7 @@ fn sync_entries(
                 match_id,
                 sport,
                 leads,
+                tz: tz.clone(),
             })
             .await;
         }
@@ -3911,6 +3915,7 @@ fn sync_entries(
                 match_id,
                 sport,
                 leads: Vec::new(),
+                tz: String::new(),
             })
             .await;
         }
@@ -4003,6 +4008,9 @@ fn subscribe_scope(
 ) {
     save_subs(&keys);
     let Some(vapid) = vapid else { return };
+    // The viewer's zone, stored with the subscription so expansion bakes each
+    // match's reminder body in their local time.
+    let tz = detect_tz().unwrap_or_default();
     leptos::task::spawn_local(async move {
         let sub = match pte_subscribe(&vapid).await {
             Ok(s) => s,
@@ -4025,6 +4033,7 @@ fn subscribe_scope(
                 kind,
                 value,
                 leads,
+                tz,
             })
             .await;
         } else {
@@ -5878,6 +5887,8 @@ fn sync_match_reminder(
 ) {
     let Some(vapid) = vapid else { return };
     let sport = sport.slug().to_string();
+    // The viewer's zone, so the server bakes the body's start time locally.
+    let tz = detect_tz().unwrap_or_default();
     leptos::task::spawn_local(async move {
         let sub = match pte_subscribe(&vapid).await {
             Ok(s) => s,
@@ -5902,6 +5913,7 @@ fn sync_match_reminder(
                 match_id,
                 sport,
                 leads,
+                tz,
             })
             .await;
         } else if covered {
@@ -5911,6 +5923,7 @@ fn sync_match_reminder(
                 match_id,
                 sport,
                 leads: Vec::new(),
+                tz: String::new(),
             })
             .await;
         } else {

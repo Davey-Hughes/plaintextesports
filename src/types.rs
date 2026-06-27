@@ -453,6 +453,11 @@ pub struct ReminderReq {
     /// lead, preserving the prior single-reminder behaviour.
     #[serde(default)]
     pub leads: Vec<i64>,
+    /// The viewer's IANA timezone (e.g. "America/New_York"), so the server bakes
+    /// the notification body's start time in the viewer's zone rather than its own
+    /// configured display tz. Empty (old client / serde default) ⇒ the server tz.
+    #[serde(default)]
+    pub tz: String,
 }
 
 /// Subscribe/unsubscribe to a whole sport or event.
@@ -467,6 +472,11 @@ pub struct SubscribeReq {
     /// list. Empty ⇒ the server falls back to the config single lead.
     #[serde(default)]
     pub leads: Vec<i64>,
+    /// The viewer's IANA timezone, stored with the subscription so the poller's
+    /// expansion bakes each match's reminder body in the viewer's zone. Empty ⇒
+    /// the server's display tz.
+    #[serde(default)]
+    pub tz: String,
 }
 
 /// The notifications page's starred-match data: the still-upcoming ones to show,
