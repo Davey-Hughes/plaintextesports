@@ -783,6 +783,12 @@ pub struct MatchDetail {
     /// `#[serde(default)]` so older cached payloads still load.
     #[serde(default)]
     pub series: Series,
+    /// For an F1 session match page, that one session's full finishing order
+    /// (the same TTL-cached classification the GP event page shows, narrowed to
+    /// this session). `None` for non-F1 matches, upcoming sessions, and sessions
+    /// the source doesn't classify (e.g. Sprint Qualifying).
+    #[serde(default)]
+    pub f1_result: Option<F1Result>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]

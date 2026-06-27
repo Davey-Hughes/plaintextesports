@@ -1673,9 +1673,14 @@ fn detail_view(d: MatchDetail) -> impl IntoView {
         event,
         stages,
         series,
+        f1_result,
         ..
     } = d;
     let m = match_view.expect("found implies match_view");
+    // For an F1 session page, derive (season, round) from the id encoding
+    // (season*100_000 + round*100 + session_ord) so the results section shares
+    // the GP event page's per-session reveal key.
+    let (f1_season, f1_round) = (m.id / 100_000, (m.id / 100) % 1000);
     let status_label = match m.status {
         MatchStatus::Live => "LIVE",
         MatchStatus::Finished => "Final",
@@ -1867,6 +1872,15 @@ fn detail_view(d: MatchDetail) -> impl IntoView {
             {(!venue_line.is_empty())
                 .then(|| view! { <div class="detail-venue">{venue_line}</div> })}
             <StreamsList streams=streams />
+            // F1: this session's full finishing order, spoiler-gated per session
+            // (sharing its reveal key with the GP event page). Absent for
+            // upcoming sessions and non-F1 matches.
+            {f1_result
+                .map(|r| {
+                    view! {
+                        <F1Results results=vec![r] season=f1_season round=f1_round />
+                    }
+                })}
             // MLB series between the two teams. Each sport row reveals on its own
             // (shared with the schedule); the record line waits until every played
             // sport is revealed, so it never leaks the leader ahead of the scores.
