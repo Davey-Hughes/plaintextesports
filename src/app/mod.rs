@@ -573,7 +573,10 @@ fn RefreshButton() -> impl IntoView {
                 "Server schedule data from {label} — click to pull the latest from the server"
             );
             view! {
-                <button class="refresh-btn" title=title.clone() aria-label=title on:click=bump>
+                // The visible "updated HH:MM" text is the button's accessible name;
+                // the longer hint stays in `title` only (an aria-label that omits the
+                // visible text would trip WCAG 2.5.3, label-in-name).
+                <button class="refresh-btn" title=title on:click=bump>
                     <span class="refresh-icon">"\u{21bb}"</span>
                     // The "updated" prefix is dropped on mobile (just the icon +
                     // time) so the schedule controls + clock stay on one row.
@@ -2275,40 +2278,10 @@ fn SeriesRow(game: SeriesGame) -> impl IntoView {
 
     // This game's own reveal (global toggle OR this game individually revealed),
     // shared with the schedule via the per-match set keyed on its uid. Series
-    // games are always MLB.
+    // games are always MLB. A played game's badge is the reveal control.
     let muid = crate::types::match_uid(Sport::Mlb, match_id);
-    let global = use_context::<ShowScores>().map(|s| s.0);
-    let revealed = use_context::<RevealedMatches>().map(|r| r.0);
-    let reveal = {
-        let muid = muid.clone();
-        Memo::new(move |_| {
-            global.is_some_and(|g| g.get())
-                || revealed.is_some_and(|r| r.with(|set| set.contains(&muid)))
-        })
-    };
-    let toggle_reveal = reveal_toggler(revealed, muid.clone());
-    let score_noun = if matches!(status, MatchStatus::Live) { "live score" } else { "final score" };
-    let show_title = format!("Show the {score_noun}");
-    let hide_title = format!("Hide the {score_noun}");
-    let badge_cls = format!("row-badge {status_class}");
-    // A played game's badge is the reveal control; an unplayed game's is static.
-    let meta_view = if played {
-        view! {
-            <span class="row-meta">
-                <span
-                    class="reveal-meta"
-                    class:on=move || reveal.get()
-                    title=move || if reveal.get() { hide_title.clone() } else { show_title.clone() }
-                    on:click=toggle_reveal
-                >
-                    <span class=badge_cls>{badge}</span>
-                </span>
-            </span>
-        }
-        .into_any()
-    } else {
-        view! { <span class="row-meta"><span class=badge_cls>{badge}</span></span> }.into_any()
-    };
+    let (reveal, toggle_reveal) = row_reveal(&muid);
+    let meta_view = reveal_meta(reveal, toggle_reveal, status, &status_class, badge, None, played);
 
     // Each row leads with its date and start time on one line, both in the
     // viewer's tz so they always agree. When the venue tz is known it's clickable
@@ -2329,29 +2302,17 @@ fn SeriesRow(game: SeriesGame) -> impl IntoView {
     );
     let inner = view! {
         {when_view}
-        <span
-            class="row-team row-a"
-            class:winner=move || reveal.get() && win_a
-            class:loser=move || reveal.get() && win_b
-        >
-            {team_a}
-        </span>
-        <span class="row-mid" class:scored=move || reveal.get() && has>
-            {move || {
-                if reveal.get() && has {
-                    format!("{} \u{2013} {}", score_a.unwrap_or(0), score_b.unwrap_or(0))
-                } else {
-                    "at".to_string()
-                }
-            }}
-        </span>
-        <span
-            class="row-team row-b"
-            class:winner=move || reveal.get() && win_b
-            class:loser=move || reveal.get() && win_a
-        >
-            {team_b}
-        </span>
+        {versus_row(
+            reveal,
+            win_a,
+            win_b,
+            has,
+            view! { {team_a} }.into_any(),
+            view! { {team_b} }.into_any(),
+            score_a,
+            score_b,
+            "at".to_string(),
+        )}
         {meta_view}
     };
 
@@ -2370,14 +2331,9 @@ fn SeriesRow(game: SeriesGame) -> impl IntoView {
     if current {
         row_cls.push_str(" series-current");
     }
-    let lead = match status {
-        MatchStatus::Live => view! { <span class="row-bar live" aria-label="Live"></span> }.into_any(),
-        MatchStatus::Finished => view! { <span class="row-bar final" aria-label="Final"></span> }.into_any(),
-        _ => view! { <span class="row-lead-empty"></span> }.into_any(),
-    };
     view! {
         <div class=format!("{row_cls} has-star")>
-            {lead}
+            {status_bar(status)}
             {body}
         </div>
     }
@@ -5709,59 +5665,55 @@ fn venue_time_cell(
     .into_any()
 }
 
-#[component]
-fn MatchRow(m: MatchView, show_bo: bool, push: bool) -> impl IntoView {
-    let status_class = m.status.row_class();
-    let badge = m.status.badge();
+// ----- Shared schedule/series row pieces ------------------------------------
+// MatchRow and SeriesRow render the same kind of row (time · teams · score/meta ·
+// status bar) and shared all of the spoiler-reveal machinery below verbatim;
+// these helpers are the single definition both call, so the reveal logic lives in
+// one place.
 
-    let sa = m.team_a.score;
-    let sb = m.team_b.score;
-    let has = sa.is_some() && sb.is_some();
-    let win_a = m.team_a.winner;
-    let win_b = m.team_b.winner;
-    let sep = versus_sep(m.sport);
-    let bo = if show_bo { m.best_of } else { String::new() };
-
-    // Scores are spoilers: reveal only when the global toggle is on or this
-    // match was individually revealed (by clicking its "Final" badge).
-    let muid = crate::types::match_uid(m.sport, m.id);
-    // Most rows link to their own /match page; a collapsed WRC "Day N" row instead
-    // points at that day on the event page (where its stages are listed).
-    let row_href =
-        m.row_href.clone().unwrap_or_else(|| crate::types::match_path(m.sport, m.id));
+/// A row's spoiler-reveal state, keyed on the match uid: a memo that's true when
+/// the global toggle is on or this row was individually revealed, plus the click
+/// handler that toggles just this row.
+fn row_reveal(muid: &str) -> (Memo<bool>, impl Fn(leptos::ev::MouseEvent) + Clone) {
     let global = use_context::<ShowScores>().map(|s| s.0);
     let revealed = use_context::<RevealedMatches>().map(|r| r.0);
     let reveal = {
-        let muid = muid.clone();
+        let muid = muid.to_string();
         Memo::new(move |_| {
             global.is_some_and(|g| g.get())
                 || revealed.is_some_and(|r| r.with(|set| set.contains(&muid)))
         })
     };
+    let toggle = reveal_toggler(revealed, muid.to_string());
+    (reveal, toggle)
+}
 
-    // A match's score lives behind its status meta: click the whole "Final · Bo3"
-    // (or "LIVE") cluster to toggle just this row's score. (Plain meta for
-    // score-less rows, e.g. upcoming or a live match still at the 0-0 placeholder.)
-    let toggle_reveal = reveal_toggler(revealed, muid.clone());
-    let score_noun = if matches!(m.status, MatchStatus::Live) {
-        "live score"
-    } else {
-        "final score"
-    };
-    let show_title = format!("Show the {score_noun}");
-    let hide_title = format!("Hide the {score_noun}");
+/// A row's status/score meta cell. When `revealable` (the row has a score hidden
+/// behind the spoiler), the badge cluster is the clickable reveal control;
+/// otherwise it's static. `bo` is the optional best-of label beside the badge
+/// (matches only).
+fn reveal_meta(
+    reveal: Memo<bool>,
+    toggle: impl Fn(leptos::ev::MouseEvent) + 'static,
+    status: MatchStatus,
+    status_class: &str,
+    badge: &'static str,
+    bo: Option<String>,
+    revealable: bool,
+) -> AnyView {
+    let noun = if matches!(status, MatchStatus::Live) { "live score" } else { "final score" };
+    let show_title = format!("Show the {noun}");
+    let hide_title = format!("Hide the {noun}");
     let badge_cls = format!("row-badge {status_class}");
-    // Only render the bo when present, so the reveal underline doesn't extend
-    // past the badge into an empty cell on uniform events.
-    let bo_span = (!bo.is_empty()).then(|| view! { <span class="row-bo">{bo}</span> });
-    let meta_view = if has {
+    let bo_span = bo.filter(|s| !s.is_empty()).map(|b| view! { <span class="row-bo">{b}</span> });
+    if revealable {
         view! {
             <span class="row-meta">
                 <span
                     class="reveal-meta"
                     class:on=move || reveal.get()
                     title=move || if reveal.get() { hide_title.clone() } else { show_title.clone() }
-                    on:click=toggle_reveal
+                    on:click=toggle
                 >
                     <span class=badge_cls>{badge}</span>
                     {bo_span}
@@ -5777,7 +5729,90 @@ fn MatchRow(m: MatchView, show_bo: bool, push: bool) -> impl IntoView {
             </span>
         }
         .into_any()
-    };
+    }
+}
+
+/// The leading status bar of a row: the live/final side bar, or an empty
+/// placeholder so the column stays reserved (the layout never shifts).
+fn status_bar(status: MatchStatus) -> AnyView {
+    match status {
+        MatchStatus::Live => {
+            view! { <span class="row-bar live" aria-label="Live"></span> }.into_any()
+        }
+        MatchStatus::Finished => {
+            view! { <span class="row-bar final" aria-label="Final"></span> }.into_any()
+        }
+        _ => view! { <span class="row-lead-empty"></span> }.into_any(),
+    }
+}
+
+/// The "team A — score/sep — team B" middle of a two-sided row, with the reactive
+/// winner/loser/scored classes. `a`/`b` are the rendered team cells; `sep` is the
+/// unrevealed middle ("vs"/"at"/…).
+#[allow(clippy::too_many_arguments)]
+fn versus_row(
+    reveal: Memo<bool>,
+    win_a: bool,
+    win_b: bool,
+    has: bool,
+    a: AnyView,
+    b: AnyView,
+    score_a: Option<i64>,
+    score_b: Option<i64>,
+    sep: String,
+) -> impl IntoView {
+    view! {
+        <span
+            class="row-team row-a"
+            class:winner=move || reveal.get() && win_a
+            class:loser=move || reveal.get() && win_b
+        >
+            {a}
+        </span>
+        <span class="row-mid" class:scored=move || reveal.get() && has>
+            {move || {
+                if reveal.get() && has {
+                    format!("{} \u{2013} {}", score_a.unwrap_or(0), score_b.unwrap_or(0))
+                } else {
+                    sep.clone()
+                }
+            }}
+        </span>
+        <span
+            class="row-team row-b"
+            class:winner=move || reveal.get() && win_b
+            class:loser=move || reveal.get() && win_a
+        >
+            {b}
+        </span>
+    }
+}
+
+#[component]
+fn MatchRow(m: MatchView, show_bo: bool, push: bool) -> impl IntoView {
+    let status_class = m.status.row_class();
+    let badge = m.status.badge();
+
+    let sa = m.team_a.score;
+    let sb = m.team_b.score;
+    let has = sa.is_some() && sb.is_some();
+    let win_a = m.team_a.winner;
+    let win_b = m.team_b.winner;
+    let sep = versus_sep(m.sport);
+    let bo = if show_bo { m.best_of } else { String::new() };
+
+    // Scores are spoilers: reveal only when the global toggle is on or this
+    // match was individually revealed (by clicking its "Final · Bo3" cluster).
+    let muid = crate::types::match_uid(m.sport, m.id);
+    // Most rows link to their own /match page; a collapsed WRC "Day N" row instead
+    // points at that day on the event page (where its stages are listed).
+    let row_href =
+        m.row_href.clone().unwrap_or_else(|| crate::types::match_path(m.sport, m.id));
+    let (reveal, toggle_reveal) = row_reveal(&muid);
+    // The bo rides beside the badge (only when present, so the reveal underline
+    // doesn't extend into an empty cell on uniform events). Score-less rows
+    // (upcoming, or a live match still at the 0-0 placeholder) get a static meta.
+    let meta_view = reveal_meta(reveal, toggle_reveal, m.status, &status_class, badge, Some(bo), has);
 
     // The time can toggle to also show the local time at the venue (MLB stadiums
     // carry a timezone; esports don't, so there it stays a plain label). The
@@ -5803,29 +5838,17 @@ fn MatchRow(m: MatchView, show_bo: bool, push: bool) -> impl IntoView {
     } else {
         view! {
             {time_view}
-            <span
-                class="row-team row-a"
-                class:winner=move || reveal.get() && win_a
-                class:loser=move || reveal.get() && win_b
-            >
-                {team_cell(m.team_a.label, m.team_a.abbrev)}
-            </span>
-            <span class="row-mid" class:scored=move || reveal.get() && has>
-                {move || {
-                    if reveal.get() && has {
-                        format!("{} – {}", sa.unwrap_or(0), sb.unwrap_or(0))
-                    } else {
-                        sep.to_string()
-                    }
-                }}
-            </span>
-            <span
-                class="row-team row-b"
-                class:winner=move || reveal.get() && win_b
-                class:loser=move || reveal.get() && win_a
-            >
-                {team_cell(m.team_b.label, m.team_b.abbrev)}
-            </span>
+            {versus_row(
+                reveal,
+                win_a,
+                win_b,
+                has,
+                team_cell(m.team_a.label, m.team_a.abbrev),
+                team_cell(m.team_b.label, m.team_b.abbrev),
+                sa,
+                sb,
+                sep.to_string(),
+            )}
             {meta_view}
         }
         .into_any()
@@ -5843,23 +5866,20 @@ fn MatchRow(m: MatchView, show_bo: bool, push: bool) -> impl IntoView {
     // The leading column is always reserved, so the layout never shifts when push
     // support (the ★) resolves after hydration — `push` only controls whether the
     // reminder ★ is shown, not the grid. The column holds the ★ (upcoming, push
-    // enabled), the live/final side bar, or an empty placeholder.
+    // enabled), or the shared status bar (the live/final side bar or an empty
+    // placeholder).
     let lead = match m.status {
-        MatchStatus::Live => view! { <span class="row-bar live" aria-label="Live"></span> }.into_any(),
-        MatchStatus::Finished => view! { <span class="row-bar final" aria-label="Final"></span> }.into_any(),
-        MatchStatus::Upcoming if push => {
-            view! {
-                <StarButton
-                    id=m.id
-                    sport=m.sport
-                    league=m.league.clone()
-                    team_a=m.team_a.name.clone()
-                    team_b=m.team_b.name.clone()
-                />
-            }
-                .into_any()
+        MatchStatus::Upcoming if push => view! {
+            <StarButton
+                id=m.id
+                sport=m.sport
+                league=m.league.clone()
+                team_a=m.team_a.name.clone()
+                team_b=m.team_b.name.clone()
+            />
         }
-        _ => view! { <span class="row-lead-empty"></span> }.into_any(),
+        .into_any(),
+        _ => status_bar(m.status),
     };
     view! {
         <div class=format!("row has-star {status_class}") id=format!("m-{muid}")>
