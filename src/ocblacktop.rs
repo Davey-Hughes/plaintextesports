@@ -30,6 +30,7 @@ const API_KEY_HEADER: &str = "x-api-key";
 // derived and stay below ~1e9; these sit far above.
 const WRC_ID_BASE: i64 = 10_000_000_000;
 const WEC_ID_BASE: i64 = 20_000_000_000;
+const MOTOGP_ID_BASE: i64 = 30_000_000_000;
 
 /// A stable 0..1e9 hash of the API's UUID, so a rally/event keeps the same id
 /// across fetches (FNV-1a — deterministic, unlike `DefaultHasher`'s seeded form).
@@ -224,7 +225,7 @@ fn rally_to_match(r: &Rally, now: DateTime<Utc>) -> Option<NormalizedMatch> {
     // A rally runs to the end of dateEnd; default the window to the start day.
     let end = parse_date(&r.date_end).unwrap_or(begin) + Duration::days(1);
     let status = status_of(&r.status, begin, end, now);
-    Some(motorsport_match(
+    let mut m = motorsport_match(
         WRC_ID_BASE + stable_hash(&r.id),
         "WRC",
         &r.name,
@@ -233,7 +234,14 @@ fn rally_to_match(r: &Rally, now: DateTime<Utc>) -> Option<NormalizedMatch> {
         begin,
         status,
         &r.location,
-    ))
+    );
+    // The rally row links to the event's overall classification (empty session).
+    m.motor_result_ref = Some(crate::types::MotorResultRef {
+        series: "WRC".to_string(),
+        event_id: r.id.clone(),
+        session_id: String::new(),
+    });
+    Some(m)
 }
 
 // ----- WRC rally detail: /v1/wrc/rallies/{id} (the per-stage timetable) -------
@@ -310,6 +318,12 @@ fn rally_stage_matches(r: &Rally, detail: &RallyDetail, now: DateTime<Utc>) -> V
                 &r.location,
             );
             m.venue_tz = venue_tz.map(str::to_string);
+            // Each stage row links to that stage's own times.
+            m.motor_result_ref = Some(crate::types::MotorResultRef {
+                series: "WRC".to_string(),
+                event_id: r.id.clone(),
+                session_id: s.id.clone(),
+            });
             Some(m)
         })
         .collect()
@@ -401,6 +415,10 @@ struct Event {
 
 #[derive(Deserialize)]
 struct Session {
+    /// The session's UUID, used to fetch its results (MotoGP). Absent in older
+    /// WEC payloads, which don't fetch per-session results.
+    #[serde(default)]
+    id: String,
     #[serde(rename = "type", default)]
     kind: String,
     #[serde(default)]
@@ -427,47 +445,60 @@ fn session_label(s: &Session) -> String {
     .to_string()
 }
 
-/// Stable, collision-resistant id for a WEC row. The race — and the date-only
-/// placeholder that stands in for it before a schedule is published — take the
-/// event's base id, so the placeholder upserts straight into the race row once
-/// times appear (and old single-row caches migrate in place). Support sessions
-/// are keyed by name, stable across fetches.
-fn wec_match_id(event_id: &str, session: Option<&Session>) -> i64 {
+/// Stable, collision-resistant id for a session-based event row (WEC, MotoGP).
+/// The race — and the date-only placeholder that stands in for it before a
+/// schedule is published — take the event's base id, so the placeholder upserts
+/// straight into the race row once times appear (and old single-row caches
+/// migrate in place). Support sessions are keyed by name, stable across fetches.
+fn session_match_id(id_base: i64, event_id: &str, session: Option<&Session>) -> i64 {
     match session {
         Some(s) if !s.kind.eq_ignore_ascii_case("race") => {
-            WEC_ID_BASE + stable_hash(&format!("{event_id}|{}", s.name))
+            id_base + stable_hash(&format!("{event_id}|{}", s.name))
         }
-        _ => WEC_ID_BASE + stable_hash(event_id),
+        _ => id_base + stable_hash(event_id),
     }
 }
 
-/// How long after its start a session reads as live before flipping to finished,
-/// used only when the feed's own status is vague. Races run long (6–24 h);
-/// everything else is short.
-fn session_window(kind: &str) -> Duration {
-    if kind.eq_ignore_ascii_case("race") {
-        Duration::hours(8)
-    } else {
-        Duration::hours(2)
-    }
+/// Whether a session carries a meaningful classification worth a results link:
+/// the race, sprint, and qualifying do; free practice / warm-up don't.
+fn session_has_result(kind: &str) -> bool {
+    matches!(
+        kind.to_ascii_lowercase().as_str(),
+        "race" | "sprint" | "qualifying"
+    )
 }
 
-/// Every WEC session of an event as its own row (like an F1 weekend), each at its
-/// real UTC start with the venue-local time available. An event whose schedule
-/// isn't published yet has no timed sessions, so it yields a single date-only
-/// placeholder (anchored at noon UTC, no clock), keyed to the eventual race row.
-fn event_to_matches(e: &Event, now: DateTime<Utc>) -> Vec<NormalizedMatch> {
-    let venue_tz = wec_venue_tz(&e.location.country.two_code);
+/// Every session of a weekend as its own row (like an F1 weekend), each at its
+/// real UTC start with the venue-local time available — the shared shape behind
+/// both WEC and MotoGP. `race_window` is how long the race reads as live when the
+/// feed's status is vague (WEC enduros run hours; a MotoGP race ~1 h). When
+/// `with_results`, results-bearing sessions get a [`MotorResultRef`] so the detail
+/// page can fetch that session's finishing order. An event whose schedule isn't
+/// published yet yields a single date-only placeholder (noon UTC, no clock).
+#[allow(clippy::too_many_arguments)]
+fn sessions_to_matches(
+    e: &Event,
+    league: &str,
+    id_base: i64,
+    venue_tz: Option<&'static str>,
+    race_window: Duration,
+    with_results: bool,
+    now: DateTime<Utc>,
+) -> Vec<NormalizedMatch> {
     let mut out: Vec<NormalizedMatch> = e
         .schedule
         .iter()
         .filter_map(|s| {
             let begin = s.start_time.as_deref().and_then(parse_dt)?;
-            let end = begin + session_window(&s.kind);
-            let status = status_of(&s.status, begin, end, now);
+            let win = if s.kind.eq_ignore_ascii_case("race") {
+                race_window
+            } else {
+                Duration::hours(2)
+            };
+            let status = status_of(&s.status, begin, begin + win, now);
             let mut m = motorsport_match(
-                wec_match_id(&e.id, Some(s)),
-                "WEC",
+                session_match_id(id_base, &e.id, Some(s)),
+                league,
                 &session_label(s),
                 &e.name,
                 begin.year(),
@@ -477,6 +508,15 @@ fn event_to_matches(e: &Event, now: DateTime<Utc>) -> Vec<NormalizedMatch> {
             );
             // A real session start → offer the venue-local time (like F1/MLB).
             m.venue_tz = venue_tz.map(str::to_string);
+            // Link the detail page to this session's results, when the series
+            // exposes them and the session is one that's classified.
+            if with_results && !s.id.is_empty() && session_has_result(&s.kind) {
+                m.motor_result_ref = Some(crate::types::MotorResultRef {
+                    series: league.to_string(),
+                    event_id: e.id.clone(),
+                    session_id: s.id.clone(),
+                });
+            }
             Some(m)
         })
         .collect();
@@ -491,8 +531,8 @@ fn event_to_matches(e: &Event, now: DateTime<Utc>) -> Vec<NormalizedMatch> {
                 .unwrap_or(begin + Duration::hours(30));
             let status = status_of(&e.status, begin, end, now);
             out.push(motorsport_match(
-                wec_match_id(&e.id, None),
-                "WEC",
+                session_match_id(id_base, &e.id, None),
+                league,
                 "Race",
                 &e.name,
                 begin.year(),
@@ -503,6 +543,20 @@ fn event_to_matches(e: &Event, now: DateTime<Utc>) -> Vec<NormalizedMatch> {
         }
     }
     out
+}
+
+/// Every WEC session of an event as its own row (placeholders for unpublished
+/// rounds). WEC results aren't wired up, so no result links.
+fn event_to_matches(e: &Event, now: DateTime<Utc>) -> Vec<NormalizedMatch> {
+    sessions_to_matches(
+        e,
+        "WEC",
+        WEC_ID_BASE,
+        wec_venue_tz(&e.location.country.two_code),
+        Duration::hours(8),
+        false,
+        now,
+    )
 }
 
 /// The WEC season as one row per session (placeholders for unpublished rounds).
@@ -516,6 +570,72 @@ pub async fn fetch_wec(
     let resp: EventsResp = get(client, key, &url).await?;
     let now = Utc::now();
     Ok(resp.data.iter().flat_map(|e| event_to_matches(e, now)).collect())
+}
+
+// ----- MotoGP: /v1/moto-gp/events?year= -------------------------------------
+
+/// IANA timezone for a MotoGP round's venue, mirroring [`wec_venue_tz`]. The 2026
+/// calendar runs one zone per host country (Spain's four rounds are all mainland
+/// → Madrid; the US round is COTA/Austin → Central; Brazil is Goiânia → São
+/// Paulo; Indonesia's Mandalika sits in WITA), so the alpha-2 code fixes the
+/// zone. `None` for an unmapped country → no venue-local clock. Update with the
+/// calendar.
+fn motogp_venue_tz(country_code: &str) -> Option<&'static str> {
+    Some(match country_code.to_ascii_uppercase().as_str() {
+        "ES" => "Europe/Madrid",
+        "PT" => "Europe/Lisbon",
+        "QA" => "Asia/Qatar",
+        "MY" => "Asia/Kuala_Lumpur",
+        // Phillip Island, Victoria.
+        "AU" => "Australia/Melbourne",
+        // Mandalika is on Lombok (Central Indonesia Time, UTC+8).
+        "ID" => "Asia/Makassar",
+        "JP" | "JPN" => "Asia/Tokyo",
+        "AT" => "Europe/Vienna",
+        // San Marino observes CET; the Misano circuit is in Italy.
+        "SM" => "Europe/Rome",
+        "GB" => "Europe/London",
+        "DE" => "Europe/Berlin",
+        "NL" => "Europe/Amsterdam",
+        "CZ" => "Europe/Prague",
+        "HU" => "Europe/Budapest",
+        "IT" => "Europe/Rome",
+        "FR" => "Europe/Paris",
+        // Circuit of the Americas, Austin (US Central).
+        "US" => "America/Chicago",
+        "BR" => "America/Sao_Paulo",
+        "TH" => "Asia/Bangkok",
+        _ => return None,
+    })
+}
+
+/// Every MotoGP session of a Grand Prix as its own row (like F1/WEC), each with
+/// its venue-local time and — for the classified sessions (race / sprint /
+/// qualifying) — a link to that session's results. The MotoGP events feed has the
+/// same shape as WEC's.
+pub async fn fetch_motogp(
+    client: &reqwest::Client,
+    key: &str,
+    year: i32,
+) -> Result<Vec<NormalizedMatch>, reqwest::Error> {
+    let url = format!("{BASE}/moto-gp/events?year={year}&limit=100");
+    let resp: EventsResp = get(client, key, &url).await?;
+    let now = Utc::now();
+    Ok(resp
+        .data
+        .iter()
+        .flat_map(|e| {
+            sessions_to_matches(
+                e,
+                "MotoGP",
+                MOTOGP_ID_BASE,
+                motogp_venue_tz(&e.location.country.two_code),
+                Duration::hours(2),
+                true,
+                now,
+            )
+        })
+        .collect())
 }
 
 // ----- Standings ------------------------------------------------------------
@@ -612,6 +732,225 @@ pub async fn fetch_wec_standings(client: &reqwest::Client, key: &str) -> MotorSt
         Err(_) => Vec::new(),
     };
     MotorStandings { tables }
+}
+
+// ----- MotoGP standings -----------------------------------------------------
+
+/// Points come as a decimal string ("186.00"); show a whole number when it is one.
+fn fmt_points_str(s: &str) -> String {
+    s.parse::<f64>().map(fmt_points).unwrap_or_else(|_| s.to_string())
+}
+
+#[derive(Deserialize)]
+struct MotoGpRider {
+    #[serde(default)]
+    position: i64,
+    #[serde(default)]
+    points: String,
+    #[serde(rename = "firstName", default)]
+    first: String,
+    #[serde(rename = "lastName", default)]
+    last: String,
+}
+
+#[derive(Deserialize)]
+struct MotoGpTeamStand {
+    #[serde(default)]
+    position: i64,
+    #[serde(default)]
+    points: String,
+    #[serde(default)]
+    name: String,
+}
+
+/// MotoGP standings: two requests (riders + teams), each a bare array. The feed
+/// carries no nationality, so rows have no flag (unlike WRC's). Any table that
+/// fails or is empty is simply omitted.
+pub async fn fetch_motogp_standings(client: &reqwest::Client, key: &str) -> MotorStandings {
+    let mut tables = Vec::new();
+    if let Ok(rows) = get::<Vec<MotoGpRider>>(
+        client,
+        key,
+        &format!("{BASE}/moto-gp/standings/drivers"),
+    )
+    .await
+    {
+        let rows: Vec<MotorStandingRow> = rows
+            .iter()
+            .map(|r| MotorStandingRow {
+                pos: r.position.to_string(),
+                name: format!("{} {}", r.first, r.last).trim().to_string(),
+                points: fmt_points_str(&r.points),
+                flag: String::new(),
+            })
+            .collect();
+        if !rows.is_empty() {
+            tables.push(MotorStandingTable { group: String::new(), title: "Riders".to_string(), rows });
+        }
+    }
+    if let Ok(rows) =
+        get::<Vec<MotoGpTeamStand>>(client, key, &format!("{BASE}/moto-gp/standings/teams")).await
+    {
+        let rows: Vec<MotorStandingRow> = rows
+            .iter()
+            .map(|r| MotorStandingRow {
+                pos: r.position.to_string(),
+                name: r.name.clone(),
+                points: fmt_points_str(&r.points),
+                flag: String::new(),
+            })
+            .collect();
+        if !rows.is_empty() {
+            tables.push(MotorStandingTable { group: String::new(), title: "Teams".to_string(), rows });
+        }
+    }
+    MotorStandings { tables }
+}
+
+// ----- Results (WRC stage/overall, MotoGP session) --------------------------
+
+/// A driver/rider name pair from a results row.
+#[derive(Deserialize, Default)]
+struct Person {
+    #[serde(rename = "firstName", default)]
+    first: String,
+    #[serde(rename = "lastName", default)]
+    last: String,
+}
+
+impl Person {
+    fn name(&self) -> String {
+        format!("{} {}", self.first, self.last).trim().to_string()
+    }
+}
+
+#[derive(Deserialize, Default)]
+struct NamedRef {
+    #[serde(default)]
+    name: String,
+}
+
+/// A WRC results row — shared by the overall classification (`totalTime`) and a
+/// single stage's times (`stageTime`); `diffFirst` is the gap to the leader.
+#[derive(Deserialize)]
+struct WrcResultRow {
+    #[serde(default)]
+    position: String,
+    #[serde(default)]
+    driver: Person,
+    #[serde(rename = "coDriver", default)]
+    co_driver: Person,
+    #[serde(default)]
+    team: Option<NamedRef>,
+    #[serde(default)]
+    manufacturer: Option<NamedRef>,
+    #[serde(rename = "totalTime", default)]
+    total_time: String,
+    #[serde(rename = "stageTime", default)]
+    stage_time: String,
+    #[serde(rename = "diffFirst", default)]
+    diff_first: String,
+}
+
+fn wrc_result_rows(rows: &[WrcResultRow]) -> Vec<crate::types::MotorResultRow> {
+    rows.iter()
+        .map(|r| {
+            let total = if r.total_time.is_empty() { r.stage_time.clone() } else { r.total_time.clone() };
+            // The leader shows the absolute time; everyone else the gap to first.
+            let time = if r.diff_first.starts_with('+') { r.diff_first.clone() } else { total };
+            let team = r
+                .team
+                .as_ref()
+                .map(|t| t.name.clone())
+                .filter(|s| !s.is_empty())
+                .or_else(|| r.manufacturer.as_ref().map(|m| m.name.clone()))
+                .unwrap_or_default();
+            crate::types::MotorResultRow {
+                pos: r.position.clone(),
+                name: r.driver.name(),
+                codriver: r.co_driver.name(),
+                team,
+                time,
+                flag: String::new(),
+            }
+        })
+        .collect()
+}
+
+/// A MotoGP session results row. The leader's `lapTime` is the absolute time;
+/// `gap` holds the deficit for the rest.
+#[derive(Deserialize)]
+struct MotoResultRow {
+    #[serde(default)]
+    position: String,
+    #[serde(default)]
+    driver: Person,
+    #[serde(default)]
+    team: Option<NamedRef>,
+    #[serde(rename = "lapTime", default)]
+    lap_time: String,
+    #[serde(default)]
+    gap: Option<String>,
+}
+
+fn motogp_result_rows(rows: &[MotoResultRow]) -> Vec<crate::types::MotorResultRow> {
+    rows.iter()
+        .map(|r| {
+            let gap = r.gap.clone().unwrap_or_default();
+            let time = if !gap.is_empty() && gap != "0.000" { gap } else { r.lap_time.clone() };
+            crate::types::MotorResultRow {
+                pos: r.position.clone(),
+                name: r.driver.name(),
+                codriver: String::new(),
+                team: r.team.as_ref().map(|t| t.name.clone()).unwrap_or_default(),
+                time,
+                flag: String::new(),
+            }
+        })
+        .collect()
+}
+
+/// Fetch the classification a [`crate::types::MotorResultRef`] points at: a WRC
+/// rally's overall result (empty session), a single WRC stage's times, or a
+/// MotoGP session's finishing order. One request; empty on any failure. The caller
+/// caches the result (finished classifications never change) so this stays well
+/// within the daily quota even though it's fetched on demand.
+pub async fn fetch_motor_result(
+    client: &reqwest::Client,
+    key: &str,
+    r: &crate::types::MotorResultRef,
+) -> Vec<crate::types::MotorResultRow> {
+    match (r.series.as_str(), r.session_id.is_empty()) {
+        ("WRC", true) => {
+            let url = format!("{BASE}/wrc/rallies/{}/classification", r.event_id);
+            get::<Vec<WrcResultRow>>(client, key, &url)
+                .await
+                .map(|rows| wrc_result_rows(&rows))
+                .unwrap_or_default()
+        }
+        ("WRC", false) => {
+            // The stage detail carries its results inline.
+            #[derive(Deserialize, Default)]
+            struct StageDetail {
+                #[serde(default)]
+                results: Vec<WrcResultRow>,
+            }
+            let url = format!("{BASE}/wrc/rallies/{}/stages/{}", r.event_id, r.session_id);
+            get::<StageDetail>(client, key, &url)
+                .await
+                .map(|d| wrc_result_rows(&d.results))
+                .unwrap_or_default()
+        }
+        ("MotoGP", _) => {
+            let url =
+                format!("{BASE}/moto-gp/events/{}/sessions/{}/results", r.event_id, r.session_id);
+            get::<Vec<MotoResultRow>>(client, key, &url)
+                .await
+                .map(|rows| motogp_result_rows(&rows))
+                .unwrap_or_default()
+        }
+        _ => Vec::new(),
+    }
 }
 
 // ----- HTTP helper ----------------------------------------------------------
@@ -867,5 +1206,125 @@ mod tests {
         let rows = stand_rows(&ts[0].rows);
         assert_eq!(rows[0].flag, "");
         assert_eq!(rows[0].points, "75");
+    }
+
+    #[test]
+    fn motogp_event_expands_sessions_with_result_links() {
+        // MotoGP events have the same shape as WEC's, with typed sessions.
+        let json = r#"{"data":[
+          {"id":"gp-val","name":"GRAND PRIX OF VALENCIA","dateStart":"2026-11-27","dateEnd":"2026-11-29",
+           "status":"completed",
+           "location":{"name":"Circuit Ricardo Tormo","city":"Cheste","country":{"name":"Spain","twoCode":"ES"}},
+           "schedule":[
+             {"id":"s-fp1","name":"Free Practice 1","type":"practice","startTime":"2026-11-27T09:45:00.000Z","status":"completed"},
+             {"id":"s-q2","name":"Qualifying 2","type":"qualifying","startTime":"2026-11-28T10:15:00.000Z","status":"completed"},
+             {"id":"s-spr","name":"Sprint","type":"sprint","startTime":"2026-11-28T14:00:00.000Z","status":"completed"},
+             {"id":"s-race","name":"Race","type":"race","startTime":"2026-11-29T13:00:00.000Z","status":"completed"}
+           ]}
+        ]}"#;
+        let resp: EventsResp = serde_json::from_str(json).unwrap();
+        let now = "2026-12-01T00:00:00Z".parse::<DateTime<Utc>>().unwrap();
+        let ms: Vec<NormalizedMatch> = resp
+            .data
+            .iter()
+            .flat_map(|e| {
+                sessions_to_matches(e, "MotoGP", MOTOGP_ID_BASE, motogp_venue_tz("ES"), Duration::hours(2), true, now)
+            })
+            .collect();
+        // One row per session, all MotoGP under the season-qualified series, with
+        // Spain's venue tz available.
+        assert_eq!(ms.len(), 4);
+        assert!(ms
+            .iter()
+            .all(|m| m.league == "MotoGP" && m.series_name == "GRAND PRIX OF VALENCIA 2026"));
+        assert!(ms.iter().all(|m| m.venue_tz.as_deref() == Some("Europe/Madrid")));
+        assert!(ms.iter().all(|m| m.id >= MOTOGP_ID_BASE));
+        // Results-bearing sessions (race/sprint/qualifying) carry a result ref;
+        // free practice doesn't.
+        let race = ms.iter().find(|m| m.team_a.label == "Race").unwrap();
+        let rref = race.motor_result_ref.as_ref().unwrap();
+        assert_eq!((rref.series.as_str(), rref.event_id.as_str(), rref.session_id.as_str()),
+                   ("MotoGP", "gp-val", "s-race"));
+        assert!(ms.iter().find(|m| m.team_a.label == "Sprint").unwrap().motor_result_ref.is_some());
+        assert!(ms.iter().find(|m| m.team_a.label == "Qualifying 2").unwrap().motor_result_ref.is_some());
+        assert!(ms.iter().find(|m| m.team_a.label == "Free Practice 1").unwrap().motor_result_ref.is_none());
+    }
+
+    #[test]
+    fn parses_motogp_standings_riders_and_teams() {
+        let riders = r#"[
+          {"id":"r1","position":1,"points":"186.00","firstName":"Marco","lastName":"Bezzecchi","code":null,"number":null,"teams":[]},
+          {"id":"r2","position":2,"points":"170.50","firstName":"Marc","lastName":"Marquez"}
+        ]"#;
+        let rows: Vec<MotoGpRider> = serde_json::from_str(riders).unwrap();
+        // Whole-number points print without the decimal; fractional ones keep it.
+        assert_eq!(fmt_points_str(&rows[0].points), "186");
+        assert_eq!(fmt_points_str(&rows[1].points), "170.5");
+        assert_eq!(format!("{} {}", rows[0].first, rows[0].last), "Marco Bezzecchi");
+        let teams = r##"[{"id":"t1","position":1,"points":"363.00","name":"Aprilia Racing","shortName":"Aprilia Racing","color":"#5f259f"}]"##;
+        let ts: Vec<MotoGpTeamStand> = serde_json::from_str(teams).unwrap();
+        assert_eq!(ts[0].name, "Aprilia Racing");
+        assert_eq!(fmt_points_str(&ts[0].points), "363");
+    }
+
+    #[test]
+    fn wrc_classification_rows_show_leader_time_then_gaps() {
+        // The overall classification shape (driver + co-driver + team, total time).
+        let json = r#"[
+          {"position":"1","driver":{"firstName":"Oliver","lastName":"SOLBERG"},
+           "coDriver":{"firstName":"Elliott","lastName":"EDMONDSON"},
+           "team":{"name":"TOYOTA GAZOO RACING WRT"},"manufacturer":{"name":"Toyota"},
+           "totalTime":"4:24:59.000","diffFirst":"0.000"},
+          {"position":"2","driver":{"firstName":"Elfyn","lastName":"EVANS"},
+           "coDriver":{"firstName":"Scott","lastName":"MARTIN"},
+           "team":{"name":"TOYOTA GAZOO RACING WRT"},"manufacturer":{"name":"Toyota"},
+           "totalTime":"4:25:50.800","diffFirst":"+51.800"}
+        ]"#;
+        let rows: Vec<WrcResultRow> = serde_json::from_str(json).unwrap();
+        let out = wrc_result_rows(&rows);
+        assert_eq!(out.len(), 2);
+        // The leader shows the absolute time; the rest show the gap to first.
+        assert_eq!(out[0].name, "Oliver SOLBERG");
+        assert_eq!(out[0].codriver, "Elliott EDMONDSON");
+        assert_eq!(out[0].team, "TOYOTA GAZOO RACING WRT");
+        assert_eq!(out[0].time, "4:24:59.000");
+        assert_eq!(out[1].time, "+51.800");
+        // Results carry no nationality, so no flag.
+        assert_eq!(out[0].flag, "");
+    }
+
+    #[test]
+    fn wrc_stage_results_use_stage_time() {
+        // A single stage's times come under `stageTime` (no `totalTime`).
+        let json = r#"[
+          {"position":"1","driver":{"firstName":"Elfyn","lastName":"EVANS"},
+           "coDriver":{"firstName":"Scott","lastName":"MARTIN"},"team":{"name":"Toyota"},
+           "stageTime":"16:05.700","diffFirst":"0.000"},
+          {"position":"2","driver":{"firstName":"Oliver","lastName":"SOLBERG"},
+           "coDriver":{"firstName":"Elliott","lastName":"EDMONDSON"},"team":{"name":"Toyota"},
+           "stageTime":"16:06.600","diffFirst":"+0.900"}
+        ]"#;
+        let rows: Vec<WrcResultRow> = serde_json::from_str(json).unwrap();
+        let out = wrc_result_rows(&rows);
+        assert_eq!(out[0].time, "16:05.700");
+        assert_eq!(out[1].time, "+0.900");
+    }
+
+    #[test]
+    fn motogp_session_results_leader_total_then_gaps() {
+        let json = r#"[
+          {"position":"1","driver":{"firstName":"Marc","lastName":"Marquez"},
+           "team":{"name":"Ducati Lenovo Team"},"lapTime":"39:51.297","gap":null},
+          {"position":"2","driver":{"firstName":"Marco","lastName":"Bezzecchi"},
+           "team":{"name":"Aprilia Racing"},"lapTime":"39:53.100","gap":"+1.803"}
+        ]"#;
+        let rows: Vec<MotoResultRow> = serde_json::from_str(json).unwrap();
+        let out = motogp_result_rows(&rows);
+        assert_eq!(out[0].name, "Marc Marquez");
+        assert_eq!(out[0].codriver, ""); // bikes have no co-driver
+        assert_eq!(out[0].team, "Ducati Lenovo Team");
+        // Leader shows the absolute time; others the gap.
+        assert_eq!(out[0].time, "39:51.297");
+        assert_eq!(out[1].time, "+1.803");
     }
 }

@@ -68,6 +68,17 @@ pub async fn get_day(
     }
 }
 
+/// The heading for a motorsport result: a rally's overall classification, or the
+/// stage/session's own label (e.g. "SS4 Stiri 1", "Race") for a single session.
+#[cfg(feature = "ssr")]
+fn motor_result_title(r: &crate::types::MotorResultRef, label: &str) -> String {
+    if r.session_id.is_empty() {
+        "Overall classification".to_string()
+    } else {
+        label.to_string()
+    }
+}
+
 /// Per-match detail: the match, its broadcasts, and its event's standings/bracket.
 #[server(GetMatchDetail, "/api")]
 pub async fn get_match_detail(
@@ -81,7 +92,7 @@ pub async fn get_match_detail(
         let Some((sport, id)) = crate::types::parse_match_uid(&uid) else {
             return Ok(MatchDetail::default());
         };
-        let Some((match_view, streams, tournament_id, league)) =
+        let Some((match_view, streams, tournament_id, league, motor_ref)) =
             crate::cache::match_basics(id, sport, &tz, hour24)
         else {
             return Ok(MatchDetail::default());
@@ -124,6 +135,22 @@ pub async fn get_match_detail(
         } else {
             None
         };
+        // For a finished WRC stage/rally or MotoGP session, its classification —
+        // the ocblacktop counterpart of `f1_result`, fetched from the row's
+        // result ref (set by the poller) and TTL-cached. `None` for upcoming
+        // sessions or rows the source doesn't classify.
+        let motor_result = match motor_ref {
+            Some(ref r)
+                if matches!(match_view.status, crate::types::MatchStatus::Finished) =>
+            {
+                let rows = crate::cache::motor_result(r).await;
+                (!rows.is_empty()).then(|| crate::types::MotorResult {
+                    title: motor_result_title(r, &match_view.team_a.label),
+                    rows,
+                })
+            }
+            _ => None,
+        };
         Ok(MatchDetail {
             found: true,
             match_view: Some(match_view),
@@ -132,6 +159,7 @@ pub async fn get_match_detail(
             stages,
             series,
             f1_result,
+            motor_result,
         })
     }
     #[cfg(not(feature = "ssr"))]

@@ -370,7 +370,7 @@ pub fn event_name_eq(league: &str, series: &str, target: &str) -> bool {
 pub fn competition_kind(league: &str) -> &'static str {
     // Racing championships go by "series" (and "WEC"/"WRC" must match before the
     // "championship" keyword below, which their full names would otherwise hit).
-    if matches!(league, "F1" | "WRC" | "WEC") {
+    if matches!(league, "F1" | "MotoGP" | "WRC" | "WEC") {
         return "series";
     }
     // Knockout/standalone competitions: cups, invitationals, majors, masters,
@@ -383,6 +383,22 @@ pub fn competition_kind(league: &str) -> &'static str {
         return "tournament";
     }
     "league"
+}
+
+/// Display rank for the motorsport series chips, so they read in a deliberate
+/// order (F1 · MotoGP · WEC · WRC — single-seaters, then bikes, then sportscars,
+/// then rally) rather than the arbitrary order the feeds merge in. Non-motorsport
+/// leagues all return the same low rank, leaving their existing first-appearance
+/// order untouched (a stable sort by this key only reshuffles the motorsport set).
+#[must_use]
+pub fn motorsport_league_rank(league: &str) -> u8 {
+    match league {
+        "F1" => 0,
+        "MotoGP" => 1,
+        "WEC" => 2,
+        "WRC" => 3,
+        _ => u8::MAX,
+    }
 }
 
 /// Matches for one league/event within a day.
@@ -796,6 +812,54 @@ pub struct MotorStandingRow {
     pub flag: String,
 }
 
+/// A finished motorsport classification for the match page — a WRC stage's times,
+/// a WRC rally's overall result, or a MotoGP session's finishing order. Generic
+/// across the Orange Cat Blacktop series (F1 keeps its richer [`F1Result`]); the
+/// `title` names what it classifies ("Overall classification", "SS4 Stiri 1",
+/// "Race"). Spoiler-bearing — the UI gates it behind the reveal toggle.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MotorResult {
+    pub title: String,
+    pub rows: Vec<MotorResultRow>,
+}
+
+/// One competitor's line in a [`MotorResult`].
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MotorResultRow {
+    /// Finishing/classification position, e.g. "1". May be non-numeric (DNF).
+    pub pos: String,
+    /// The primary competitor: the driver (rally) or rider (MotoGP).
+    pub name: String,
+    /// A second name line — the co-driver (rally); empty for MotoGP.
+    #[serde(default)]
+    pub codriver: String,
+    /// Team / manufacturer / constructor.
+    #[serde(default)]
+    pub team: String,
+    /// The spoiler figure: the leader's total/stage time, a gap ("+51.800") for
+    /// the rest. Empty when the source gives none.
+    #[serde(default)]
+    pub time: String,
+    /// The competitor's nationality flag (SVG); empty when unmapped.
+    #[serde(default)]
+    pub flag: String,
+}
+
+/// A reference for fetching a motorsport row's result on the detail page — a WRC
+/// rally's overall classification (`session_id` empty), a single WRC stage's
+/// times, or a MotoGP session's finishing order. In-memory only, repopulated
+/// each poll like [`crate::types::MlbSeriesRef`]; `None` for everything else.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MotorResultRef {
+    /// The series league, e.g. "WRC" / "MotoGP" — selects the API + endpoint.
+    pub series: String,
+    /// The event UUID (the rally / the MotoGP event).
+    pub event_id: String,
+    /// The stage/session UUID; empty means the event's overall classification.
+    #[serde(default)]
+    pub session_id: String,
+}
+
 /// Everything the per-match detail page shows.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MatchDetail {
@@ -818,6 +882,11 @@ pub struct MatchDetail {
     /// the source doesn't classify (e.g. Sprint Qualifying).
     #[serde(default)]
     pub f1_result: Option<F1Result>,
+    /// For a finished WRC stage/rally or MotoGP session, its classification
+    /// (stage times / overall result / session order). The ocblacktop counterpart
+    /// of `f1_result`. `None` for everything else and for upcoming sessions.
+    #[serde(default)]
+    pub motor_result: Option<MotorResult>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
