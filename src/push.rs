@@ -157,15 +157,19 @@ pub fn spawn_sender() {
             let mut outcomes = Vec::with_capacity(due.len());
             for r in &due {
                 let outcome = send_one(&client, &key, &cfg.vapid_subject, r).await;
-                outcomes.push((r.endpoint.clone(), r.match_id, outcome));
+                // Carry the full timer key so the apply loop marks exactly this
+                // row sent (a match has one row per lead time).
+                outcomes.push((r.endpoint.clone(), r.match_id, r.sport.clone(), r.lead_ms, outcome));
             }
 
             // Apply results (sync). Only mark a reminder sent on success; a
             // transient Failed is left untouched so the next tick retries it
             // (still bounded by notify_at_ms and the 24h prune).
-            for (endpoint, match_id, outcome) in &outcomes {
+            for (endpoint, match_id, sport, lead_ms, outcome) in &outcomes {
                 let res = match outcome {
-                    Outcome::Sent => store::mark_reminder_sent(&conn, endpoint, *match_id),
+                    Outcome::Sent => {
+                        store::mark_reminder_sent(&conn, endpoint, *match_id, sport, *lead_ms)
+                    }
                     Outcome::Gone => store::delete_endpoint(&conn, endpoint),
                     Outcome::Failed => continue,
                 };
@@ -174,7 +178,7 @@ pub fn spawn_sender() {
                 }
             }
             if !outcomes.is_empty() {
-                let sent = outcomes.iter().filter(|(_, _, o)| *o == Outcome::Sent).count();
+                let sent = outcomes.iter().filter(|(.., o)| *o == Outcome::Sent).count();
                 leptos::logging::log!("push: sent {sent}/{} due reminder(s)", outcomes.len());
             }
 
@@ -184,8 +188,9 @@ pub fn spawn_sender() {
     });
 }
 
-/// Turn each sport/event subscription into per-match reminders (insert-if-absent
-/// so already-sent reminders aren't re-armed).
+/// Turn each sport/event subscription into per-match reminders — one row per
+/// (lead offset × matching match). Insert-if-absent so already-sent reminders
+/// aren't re-armed; opted-out matches (the `exclusions` table) are skipped.
 fn expand_subscriptions(conn: &rusqlite::Connection) {
     let subs = match store::list_subscriptions(conn) {
         Ok(s) => s,
@@ -194,25 +199,41 @@ fn expand_subscriptions(conn: &rusqlite::Connection) {
             return;
         }
     };
+    let excluded = match store::list_exclusions(conn) {
+        Ok(x) => x,
+        Err(e) => {
+            leptos::logging::log!("exclusions read failed: {e}");
+            return;
+        }
+    };
     for s in subs {
-        for seed in crate::cache::scope_reminder_seeds(&s.scope_kind, &s.scope_value, s.lead_ms) {
-            let r = store::Reminder {
-                endpoint: s.endpoint.clone(),
-                p256dh: s.p256dh.clone(),
-                auth: s.auth.clone(),
-                match_id: seed.match_id,
-                notify_at_ms: seed.notify_at_ms,
-                title: seed.title,
-                body: seed.body,
-                url: seed.url,
-                sport: seed.sport,
-                league: seed.league,
-                team_a: seed.team_a,
-                team_b: seed.team_b,
-                event: seed.event,
-            };
-            if let Err(e) = store::add_reminder_if_absent(conn, &r) {
-                leptos::logging::log!("expand_subscriptions: add_reminder_if_absent failed: {e}");
+        for &lead_ms in &s.lead_list {
+            for seed in crate::cache::scope_reminder_seeds(&s.scope_kind, &s.scope_value, lead_ms) {
+                // A per-match opt-out blocks every timer for that match.
+                if excluded.contains(&(s.endpoint.clone(), seed.match_id, seed.sport.clone())) {
+                    continue;
+                }
+                let r = store::Reminder {
+                    endpoint: s.endpoint.clone(),
+                    p256dh: s.p256dh.clone(),
+                    auth: s.auth.clone(),
+                    match_id: seed.match_id,
+                    lead_ms: seed.lead_ms,
+                    notify_at_ms: seed.notify_at_ms,
+                    title: seed.title,
+                    body: seed.body,
+                    url: seed.url,
+                    sport: seed.sport,
+                    league: seed.league,
+                    team_a: seed.team_a,
+                    team_b: seed.team_b,
+                    event: seed.event,
+                };
+                if let Err(e) = store::add_reminder_if_absent(conn, &r) {
+                    leptos::logging::log!(
+                        "expand_subscriptions: add_reminder_if_absent failed: {e}"
+                    );
+                }
             }
         }
     }
@@ -255,6 +276,7 @@ mod tests {
             p256dh,
             auth,
             match_id: 1,
+            lead_ms: 900_000,
             notify_at_ms: 0,
             title: "T1 vs GEN".into(),
             body: "LCK · starts soon".into(),
