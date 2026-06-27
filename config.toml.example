@@ -5,15 +5,17 @@
 # serve demo data.
 pandascore_token = ""
 
-# Orange Cat Blacktop API key (https://ocblacktop.com/api) — adds WRC + WEC.
-# Free tier is 250 req/day; these series are polled conservatively (schedule
-# first), so it fits easily. Omit to skip WRC/WEC.
+# Orange Cat Blacktop API key (https://ocblacktop.com/api) — adds WRC + WEC +
+# MotoGP. Free tier is 250 req/day; these series are polled conservatively
+# (schedule first) and served from cache, so it fits easily. Omit to skip them.
 ocblacktop_token = ""
-# How often to refresh the WRC/WEC calendars / standings (seconds), and a hard
-# per-UTC-day request cap as a backstop under the 250/day free tier. Defaults:
-# calendars 30 min, standings 2 h, cap 240 (≈120/day at the defaults).
-# ocblacktop_poll_secs = 1800
-# ocblacktop_standings_poll_secs = 7200
+# How often to refresh the calendars / standings (seconds), and a hard per-UTC-day
+# request cap as a backstop under the 250/day free tier. A calendar refresh costs
+# up to 4 requests (WRC + WEC + MotoGP, +1 for an active rally's stage timetable),
+# a standings refresh 6, so the defaults below work out to ~144/day — under the cap
+# with headroom for on-demand result fetches. Lower them only with quota to spare.
+# ocblacktop_poll_secs = 3600
+# ocblacktop_standings_poll_secs = 10800
 # ocblacktop_daily_cap = 240
 
 # Force demo/fixture data, ignoring the token + cache DB (dev/UI work).
@@ -40,14 +42,18 @@ archive_months = 1
 
 # Periodically re-fetch recent past days for late score corrections (sparse:
 # ~6h for yesterday, slowing to never past a week). Disable to save quota.
+# PandaScore (CS2/LoL) only — the traditional sports come from separate keyless
+# feeds with fixed histories, so this has no effect on them.
 past_refresh = true
 
 # On a fresh DB, slowly backfill older matches back to archive_months, only when
 # there's spare API budget (current/future polling always has priority).
+# PandaScore (CS2/LoL) only, like past_refresh.
 backfill = true
 
-# Skip past-refresh/backfill while the API's remaining hourly budget is below
-# this, reserving headroom for current/future polling.
+# Skip the low-priority past-refresh/backfill work while PandaScore's remaining
+# hourly budget is below this, reserving headroom for current/future polling. A
+# priority threshold, not a global rate limiter — the main poll always runs.
 rate_limit_floor = 200
 
 # SQLite cache path (persists matches/links/reminders). "" disables persistence.
