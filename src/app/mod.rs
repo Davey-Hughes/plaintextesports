@@ -527,6 +527,10 @@ fn SiteHeader() -> impl IntoView {
     // arrow in its place. The brand is a real bar item (it reserves its space), so
     // nothing overlaps and the controls keep their place at any width.
     view! {
+        // `display: contents` keeps this landmark out of the box tree so the
+        // sticky `.toggles` bar's containing block stays `.page` (not this header)
+        // — the banner landmark is added with zero layout/behavior change.
+        <header class="site-header" style="display: contents">
         <div class="toggles">
             <BrandSlot />
             // Display preferences (icons / 24h / theme), grouped so they can sit at
@@ -547,6 +551,7 @@ fn SiteHeader() -> impl IntoView {
             <ClockLink />
             <ScoresToggle />
         </div>
+        </header>
     }
 }
 
@@ -568,7 +573,7 @@ fn RefreshButton() -> impl IntoView {
                 "Server schedule data from {label} — click to pull the latest from the server"
             );
             view! {
-                <button class="refresh-btn" title=title on:click=bump>
+                <button class="refresh-btn" title=title.clone() aria-label=title on:click=bump>
                     <span class="refresh-icon">"\u{21bb}"</span>
                     // The "updated" prefix is dropped on mobile (just the icon +
                     // time) so the schedule controls + clock stay on one row.
@@ -900,9 +905,12 @@ fn team_cell(label: String, abbrev: String) -> AnyView {
     if abbrev.is_empty() {
         view! { {label} }.into_any()
     } else {
+        let full = label.clone();
         view! {
-            <span class="tname">{label}</span>
-            <span class="tabbr">{abbrev}</span>
+            <span title=full>
+                <span class="tname">{label}</span>
+                <span class="tabbr">{abbrev}</span>
+            </span>
         }
         .into_any()
     }
@@ -2363,8 +2371,8 @@ fn SeriesRow(game: SeriesGame) -> impl IntoView {
         row_cls.push_str(" series-current");
     }
     let lead = match status {
-        MatchStatus::Live => view! { <span class="row-bar live"></span> }.into_any(),
-        MatchStatus::Finished => view! { <span class="row-bar final"></span> }.into_any(),
+        MatchStatus::Live => view! { <span class="row-bar live" aria-label="Live"></span> }.into_any(),
+        MatchStatus::Finished => view! { <span class="row-bar final" aria-label="Final"></span> }.into_any(),
         _ => view! { <span class="row-lead-empty"></span> }.into_any(),
     };
     view! {
@@ -2438,7 +2446,7 @@ fn ThemeToggle() -> impl IntoView {
     };
 
     view! {
-        <button class="toggle theme-toggle" title="Switch color theme" on:click=cycle></button>
+        <button class="toggle theme-toggle" title="Switch color theme" aria-label="Switch color theme" on:click=cycle></button>
     }
 }
 
@@ -2469,6 +2477,7 @@ fn IconsToggle() -> impl IntoView {
         <button
             class="toggle state-toggle icons-toggle"
             title=move || if show.get() { "Hide team icons" } else { "Show team icons" }
+            aria-pressed=move || if show.get() { "true" } else { "false" }
             on:click=toggle
         >
             "icons"
@@ -2539,7 +2548,7 @@ fn HourToggle() -> impl IntoView {
         save_hour24_pref(next);
     };
     view! {
-        <button class="toggle" on:click=toggle>
+        <button class="toggle" aria-pressed=move || if hour24.get() { "true" } else { "false" } on:click=toggle>
             {move || if hour24.get() { "24h" } else { "12h" }}
         </button>
     }
@@ -2561,6 +2570,7 @@ fn ScoresToggle() -> impl IntoView {
         <button
             class="toggle state-toggle scores-toggle"
             title=move || if show.get() { "Hide scores" } else { "Show scores" }
+            aria-pressed=move || if show.get() { "true" } else { "false" }
             on:click=toggle
         >
             "scores"
@@ -2605,6 +2615,7 @@ fn SportToggle() -> impl IntoView {
                 class="toggle sport-toggle"
                 class:on=move || traditional.get()
                 title="Switch between esports and traditional sports"
+                aria-pressed=move || if traditional.get() { "true" } else { "false" }
                 on:click=toggle
             >
                 {move || if traditional.get() { "sports" } else { "esports" }}
@@ -3232,7 +3243,8 @@ fn NotificationsPage() -> impl IntoView {
     let import_status = RwSignal::new(String::new());
     let copy_hint = RwSignal::new(String::new());
 
-    let copy_export = move |_| {
+    // Shared so both the click and the keyboard (Enter/Space) handlers can copy.
+    let do_copy = Callback::new(move |()| {
         #[cfg(feature = "hydrate")]
         {
             let s = export_str.get_untracked();
@@ -3243,7 +3255,8 @@ fn NotificationsPage() -> impl IntoView {
         }
         #[cfg(not(feature = "hydrate"))]
         let _ = copy_hint;
-    };
+    });
+    let copy_export = move |_| do_copy.run(());
 
     // Import: "override" replaces the whole set (and clears the server first);
     // "add" unions the new entries onto the existing ones (existing overrides win,
@@ -3412,6 +3425,12 @@ fn NotificationsPage() -> impl IntoView {
                             tabindex="0"
                             title="Click to copy"
                             on:click=copy_export
+                            on:keydown=move |ev| {
+                                if ev.key() == "Enter" || ev.key() == " " {
+                                    ev.prevent_default();
+                                    do_copy.run(());
+                                }
+                            }
                         >
                             <span class="notif-io-code">{move || export_str.get()}</span>
                             <span class="notif-io-pop">{move || export_str.get()}</span>
@@ -4694,7 +4713,7 @@ fn CalendarPicker() -> impl IntoView {
             let on_pick = move |_| pick(iso.clone());
             cells.push(
                 view! {
-                    <button class=cls on:click=on_pick>
+                    <button class=cls title=format!("{y:04}-{m:02}-{day:02}") on:click=on_pick>
                         {day.to_string()}
                     </button>
                 }
@@ -4719,7 +4738,7 @@ fn CalendarPicker() -> impl IntoView {
                         view! {
                             <div class="calendar">
                                 <div class="cal-head">
-                                    <button class="cal-nav" on:click=prev_month>
+                                    <button class="cal-nav" aria-label="Previous month" on:click=prev_month>
                                         "‹"
                                     </button>
                                     <span class="cal-title">
@@ -4728,7 +4747,7 @@ fn CalendarPicker() -> impl IntoView {
                                             format!("{} {y}", month_name(m))
                                         }}
                                     </span>
-                                    <button class="cal-nav" on:click=next_month>
+                                    <button class="cal-nav" aria-label="Next month" on:click=next_month>
                                         "›"
                                     </button>
                                 </div>
@@ -5826,8 +5845,8 @@ fn MatchRow(m: MatchView, show_bo: bool, push: bool) -> impl IntoView {
     // reminder ★ is shown, not the grid. The column holds the ★ (upcoming, push
     // enabled), the live/final side bar, or an empty placeholder.
     let lead = match m.status {
-        MatchStatus::Live => view! { <span class="row-bar live"></span> }.into_any(),
-        MatchStatus::Finished => view! { <span class="row-bar final"></span> }.into_any(),
+        MatchStatus::Live => view! { <span class="row-bar live" aria-label="Live"></span> }.into_any(),
+        MatchStatus::Finished => view! { <span class="row-bar final" aria-label="Final"></span> }.into_any(),
         MatchStatus::Upcoming if push => {
             view! {
                 <StarButton
