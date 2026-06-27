@@ -331,11 +331,19 @@ pub async fn add_reminder(req: ReminderReq) -> Result<(), ServerFnError> {
         // Derive each timer's time/title/body/url from the snapshot so a client
         // can't forge a notification (it only supplies its subscription + match
         // id + the lead offsets).
-        let seeds = crate::cache::reminder_seeds_for_match(req.match_id, &req.sport, &leads);
+        let seeds = crate::cache::reminder_seeds_for_match(req.match_id, &req.sport, &leads, &req.tz);
         if seeds.is_empty() {
             return Err(ServerFnError::new("match not found or already started"));
         }
-        let reminders: Vec<_> = seeds.into_iter().map(|s| s.into_reminder(req.sub.clone())).collect();
+        // Only arm timers whose lead window is still ahead — a timer added after
+        // its notify time passed (e.g. a 1-hour timer on a match starting in 20
+        // minutes) must not fire retroactively the moment it's set.
+        let now = chrono::Utc::now().timestamp_millis();
+        let reminders: Vec<_> = seeds
+            .into_iter()
+            .filter(|s| s.is_armable(now))
+            .map(|s| s.into_reminder(req.sub.clone()))
+            .collect();
         let conn = crate::store::shared(&cfg.db_path)
             .map_err(|e| ServerFnError::new(format!("db: {e}")))?;
         crate::store::set_match_reminders(&conn, &reminders)
@@ -388,6 +396,7 @@ pub async fn add_subscription(req: SubscribeReq) -> Result<(), ServerFnError> {
             // to start, a sensible single fallback for any old reader).
             lead_ms: lead_list.first().copied().unwrap_or(cfg.reminder_lead_ms),
             lead_list,
+            tz: req.tz,
         };
         crate::store::add_subscription(&conn, &s)
             .map_err(|e| ServerFnError::new(format!("db: {e}")))?;

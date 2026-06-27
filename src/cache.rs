@@ -1811,6 +1811,18 @@ pub struct ReminderSeed {
 }
 
 impl ReminderSeed {
+    /// Whether this timer should be armed at all: only when its notify instant is
+    /// still ahead. A timer whose lead window already opened must NOT be armed —
+    /// otherwise it's immediately "due" and fires retroactively. That happens in
+    /// bulk on the first server start (subscription expansion arms every upcoming
+    /// match, and any with a lead longer than the time-to-start is already past),
+    /// right after subscribing, or when a timer is longer than the time remaining.
+    /// Such timers are simply skipped; you only get a heads-up you're still ahead of.
+    #[must_use]
+    pub fn is_armable(&self, now_ms: i64) -> bool {
+        self.notify_at_ms > now_ms
+    }
+
     /// Combine this server-derived seed with a client's push subscription into a
     /// persistable reminder. The seed owns the trusted notification fields; the
     /// subscription only supplies where to deliver it.
@@ -1860,7 +1872,9 @@ fn reminder_seed(m: &NormalizedMatch, lead_ms: i64, tz: &Tz) -> ReminderSeed {
             },
             m.team_b.label
         ),
-        body: format!("{} · {}", m.league, time_label(local, false)),
+        // Tag the time with the viewer's zone abbreviation so it's unambiguous
+        // (and obviously the viewer's local time, not the server's).
+        body: format!("{} · {} {}", m.league, time_label(local, false), local.format("%Z")),
         url: resolved_event_url(m.sport, &m.league, m.begin_at, m.league_url.as_deref()),
     }
 }
@@ -1868,10 +1882,12 @@ fn reminder_seed(m: &NormalizedMatch, lead_ms: i64, tz: &Tz) -> ReminderSeed {
 /// Upcoming matches matching a subscription scope, as reminder seeds. `kind` is
 /// "sport" (value = "cs2"/"lol"), "league" (value = league name), "team" (value =
 /// full team name, matched against either side), or "event" (value = the full
-/// event name, e.g. an F1 Grand Prix).
+/// event name, e.g. an F1 Grand Prix). `tz_name` is the subscriber's IANA zone
+/// (empty ⇒ the server default), used to format each body's start time.
 #[must_use]
-pub fn scope_reminder_seeds(kind: &str, value: &str, lead_ms: i64) -> Vec<ReminderSeed> {
+pub fn scope_reminder_seeds(kind: &str, value: &str, lead_ms: i64, tz_name: &str) -> Vec<ReminderSeed> {
     let cfg = config();
+    let tz = resolve_tz(tz_name, cfg.tz);
     let now = Utc::now();
     let snap = SNAPSHOT.read().unwrap_or_else(PoisonError::into_inner);
     snap.matches
@@ -1884,16 +1900,19 @@ pub fn scope_reminder_seeds(kind: &str, value: &str, lead_ms: i64) -> Vec<Remind
             "event" => event_name_eq(&m.league, &m.series_name, value),
             _ => false,
         })
-        .map(|m| reminder_seed(m, lead_ms, &cfg.tz))
+        .map(|m| reminder_seed(m, lead_ms, &tz))
         .collect()
 }
 
 /// Reminder seeds for a single upcoming starred match by id — one per lead
 /// offset, or empty if the match is unknown, already started, or canceled. Lets
 /// the server (not the client) decide each notification's time/title/body/url.
+/// `tz_name` is the viewer's IANA zone (empty ⇒ the server default), used to
+/// format the body's start time.
 #[must_use]
-pub fn reminder_seeds_for_match(match_id: i64, sport: &str, leads: &[i64]) -> Vec<ReminderSeed> {
+pub fn reminder_seeds_for_match(match_id: i64, sport: &str, leads: &[i64], tz_name: &str) -> Vec<ReminderSeed> {
     let cfg = config();
+    let tz = resolve_tz(tz_name, cfg.tz);
     let now = Utc::now();
     let snap = SNAPSHOT.read().unwrap_or_else(PoisonError::into_inner);
     // Match on (id, sport); an empty sport (older client) falls back to id-only.
@@ -1905,7 +1924,7 @@ pub fn reminder_seeds_for_match(match_id: i64, sport: &str, leads: &[i64]) -> Ve
     }) else {
         return Vec::new();
     };
-    leads.iter().map(|&lead| reminder_seed(m, lead, &cfg.tz)).collect()
+    leads.iter().map(|&lead| reminder_seed(m, lead, &tz)).collect()
 }
 
 // ----- Match detail + event standings/bracket ------------------------------
@@ -3282,6 +3301,41 @@ mod tests {
         assert_eq!(r.sport, "nhl");
         assert_eq!(r.team_a, "Boston Bruins");
         assert_eq!(r.event, "NHL");
+    }
+
+    #[test]
+    fn reminder_seed_body_uses_the_given_timezone() {
+        // A match at 02:00 UTC — 10:00 PM the previous day in New York (EDT, −4),
+        // 7:00 PM in Los Angeles (PDT, −7). The body's start time (and zone tag)
+        // must follow whichever tz the seed is built with, not a server default.
+        let m = at("2026-06-25T02:00:00Z".parse::<DateTime<Utc>>().unwrap(), MatchStatus::Upcoming);
+        let lead = 15 * 60_000;
+
+        let ny = reminder_seed(&m, lead, &chrono_tz::America::New_York);
+        assert!(ny.body.contains("10:00 PM"), "NY body: {}", ny.body);
+        assert!(ny.body.contains("EDT"), "NY body tags the zone: {}", ny.body);
+
+        let la = reminder_seed(&m, lead, &chrono_tz::America::Los_Angeles);
+        assert!(la.body.contains("7:00 PM"), "LA body: {}", la.body);
+        assert!(la.body.contains("PDT"), "LA body tags the zone: {}", la.body);
+
+        // The fire time is the same UTC instant regardless of display tz.
+        assert_eq!(ny.notify_at_ms, la.notify_at_ms);
+        assert_eq!(ny.notify_at_ms, m.begin_at.timestamp_millis() - lead);
+    }
+
+    #[test]
+    fn seed_is_armable_only_when_notify_is_still_ahead() {
+        // A match an hour out, seeded for two timers: a 15-min lead (notify still
+        // ahead) and a 1-day lead (notify long past). Only the future one arms —
+        // otherwise the past one would fire retroactively (the first-start burst).
+        let begin = Utc::now() + Duration::hours(1);
+        let m = at(begin, MatchStatus::Upcoming);
+        let now = Utc::now().timestamp_millis();
+        let soon = reminder_seed(&m, 15 * 60_000, &chrono_tz::Etc::UTC);
+        let far = reminder_seed(&m, 24 * 60 * 60_000, &chrono_tz::Etc::UTC);
+        assert!(soon.is_armable(now), "the 15-min timer is still ahead");
+        assert!(!far.is_armable(now), "the 1-day timer's window already opened");
     }
 
     #[test]

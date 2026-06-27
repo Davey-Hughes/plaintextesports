@@ -18,6 +18,24 @@ use std::sync::{Mutex, PoisonError};
 /// One week in ms — the ceiling for a reminder lead offset.
 const WEEK_MS: i64 = 7 * 24 * 60 * 60 * 1000;
 
+/// Grace window (ms) after a match's start during which a still-unsent reminder
+/// may yet be delivered. A reminder is "due" only within `[notify_at, begin_at +
+/// grace)` (with `begin_at = notify_at + lead`), so one whose window elapsed
+/// while the server was down — e.g. a restart spanning the start of the match —
+/// is skipped instead of fired hours late. Wide enough to ride out a normal
+/// restart/deploy, short enough that a real outage suppresses a now-pointless
+/// "starts soon" ping. A far-out timer (e.g. a 1-week lead) stays deliverable
+/// almost until the match begins, so a brief delay never drops it.
+const DELIVER_GRACE_MS: i64 = 5 * 60 * 1000;
+
+/// The most a reminder may lag its scheduled notify time and still be delivered.
+/// Bounds the previous rule for *long* leads: a 1-day/1-week timer's
+/// `begin_at + grace` window stays open for days, so a server that was off across
+/// its notify time would otherwise fire it hours/days late. Past this cap the
+/// delivery is dropped as stale. Comfortably longer than any restart/deploy, so
+/// an on-time-armed reminder delivered a little late by a brief outage still goes.
+const MAX_LATE_MS: i64 = 2 * 60 * 60 * 1000;
+
 const FETCHED_AT_KEY: &str = "fetched_at_ms";
 
 /// Process-wide write connection shared by the request handlers (reminder /
@@ -138,6 +156,8 @@ pub fn open(path: &str) -> rusqlite::Result<Connection> {
             lead_ms     INTEGER NOT NULL,
             -- Comma-separated lead offsets (ms) this scope arms; '' ⇒ [lead_ms].
             lead_list   TEXT    NOT NULL DEFAULT '',
+            -- Subscriber's IANA tz, for formatting reminder bodies; '' ⇒ server tz.
+            tz          TEXT    NOT NULL DEFAULT '',
             PRIMARY KEY (endpoint, scope_kind, scope_value)
         );",
     )?;
@@ -169,6 +189,8 @@ pub fn open(path: &str) -> rusqlite::Result<Connection> {
     let _ = conn.execute("ALTER TABLE reminders ADD COLUMN event TEXT NOT NULL DEFAULT ''", []);
     // Existing subscriptions predate the per-scope timer list.
     let _ = conn.execute("ALTER TABLE subscriptions ADD COLUMN lead_list TEXT NOT NULL DEFAULT ''", []);
+    // …and the per-subscriber timezone (older rows fall back to the server tz).
+    let _ = conn.execute("ALTER TABLE subscriptions ADD COLUMN tz TEXT NOT NULL DEFAULT ''", []);
 
     // One-time: the reminders PK gained `lead_ms` so a match can hold several
     // timers (one row per lead time). SQLite can't alter a PK in place and
@@ -614,14 +636,24 @@ pub fn remove_reminder(
     Ok(())
 }
 
-/// Unsent reminders whose notify time has arrived. Carries `sport` + `lead_ms` so
-/// the sender can mark the exact timer row sent (a match has several).
+/// Unsent reminders whose notify time has arrived and that haven't gone stale. A
+/// reminder is "due" only when, with `begin_at = notify_at + lead_ms`:
+///   `notify_at <= now < begin_at + grace`   (not past the match start) **and**
+///   `now < notify_at + MAX_LATE`            (not delivered far behind schedule).
+/// So a reminder that came due while the server was down fires only if the match
+/// hasn't started (no pointless late "starts soon") *and* it isn't badly behind
+/// (a long-lead timer the server missed by hours is dropped, not fired late).
+/// Carries `sport` + `lead_ms` so the sender can mark the exact timer row sent.
 pub fn due_reminders(conn: &Connection, now_ms: i64) -> rusqlite::Result<Vec<Reminder>> {
-    let mut stmt = conn.prepare(
+    // The bounds are trusted i64 consts, so inlining them is injection-safe.
+    let mut stmt = conn.prepare(&format!(
         "SELECT endpoint, p256dh, auth, match_id, lead_ms, notify_at_ms, title, body, url, sport
          FROM reminders
-         WHERE sent = 0 AND notify_at_ms <= ?1 ORDER BY notify_at_ms",
-    )?;
+         WHERE sent = 0 AND notify_at_ms <= ?1
+           AND ?1 < notify_at_ms + lead_ms + {DELIVER_GRACE_MS}
+           AND ?1 < notify_at_ms + {MAX_LATE_MS}
+         ORDER BY notify_at_ms",
+    ))?;
     let rows = stmt.query_map([now_ms], |r| {
         Ok(Reminder {
             endpoint: r.get(0)?,
@@ -671,10 +703,15 @@ pub fn delete_endpoint(conn: &Connection, endpoint: &str) -> rusqlite::Result<()
     Ok(())
 }
 
-/// Drop reminders whose notify time is well in the past.
+/// Drop reminders whose match started well in the past (`begin_at = notify_at +
+/// lead_ms < cutoff`). Keyed on the start, not the notify time, so a *sent*
+/// reminder for a still-upcoming match (a long lead that already fired) is
+/// retained — otherwise pruning it would let the subscription-expansion's
+/// insert-if-absent re-arm it and fire a duplicate. Cleaned up once the match is
+/// safely in the past.
 pub fn prune_reminders(conn: &Connection, cutoff_ms: i64) -> rusqlite::Result<()> {
     conn.execute(
-        "DELETE FROM reminders WHERE notify_at_ms < ?1",
+        "DELETE FROM reminders WHERE notify_at_ms + lead_ms < ?1",
         params![cutoff_ms],
     )?;
     Ok(())
@@ -696,6 +733,9 @@ pub struct Subscription {
     pub lead_ms: i64,
     /// The lead offsets (ms) this scope arms — one reminder per offset, per match.
     pub lead_list: Vec<i64>,
+    /// The subscriber's IANA timezone, so expansion bakes each reminder body's
+    /// start time in their zone. Empty ⇒ the server's display tz.
+    pub tz: String,
 }
 
 /// Serialize a lead-offset list for the `lead_list` column.
@@ -735,12 +775,12 @@ pub fn add_subscription(conn: &Connection, s: &Subscription) -> rusqlite::Result
     let lead_list = join_lead_list(&s.lead_list);
     conn.execute(
         "INSERT INTO subscriptions
-            (endpoint, p256dh, auth, scope_kind, scope_value, lead_ms, lead_list)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+            (endpoint, p256dh, auth, scope_kind, scope_value, lead_ms, lead_list, tz)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
          ON CONFLICT(endpoint, scope_kind, scope_value) DO UPDATE SET
             p256dh=excluded.p256dh, auth=excluded.auth,
-            lead_ms=excluded.lead_ms, lead_list=excluded.lead_list",
-        params![s.endpoint, s.p256dh, s.auth, s.scope_kind, s.scope_value, s.lead_ms, lead_list],
+            lead_ms=excluded.lead_ms, lead_list=excluded.lead_list, tz=excluded.tz",
+        params![s.endpoint, s.p256dh, s.auth, s.scope_kind, s.scope_value, s.lead_ms, lead_list, s.tz],
     )?;
     // If the timer set shrank, drop this scope's unsent reminders for offsets no
     // longer wanted, so a removed (e.g. global) timer stops firing immediately;
@@ -788,7 +828,7 @@ pub fn remove_subscription(
 
 pub fn list_subscriptions(conn: &Connection) -> rusqlite::Result<Vec<Subscription>> {
     let mut stmt = conn.prepare(
-        "SELECT endpoint, p256dh, auth, scope_kind, scope_value, lead_ms, lead_list
+        "SELECT endpoint, p256dh, auth, scope_kind, scope_value, lead_ms, lead_list, tz
          FROM subscriptions",
     )?;
     let rows = stmt.query_map([], |r| {
@@ -802,6 +842,7 @@ pub fn list_subscriptions(conn: &Connection) -> rusqlite::Result<Vec<Subscriptio
             scope_value: r.get(4)?,
             lead_ms,
             lead_list: parse_lead_list(&lead_list, lead_ms),
+            tz: r.get(7)?,
         })
     })?;
     rows.collect()
@@ -1060,22 +1101,31 @@ mod tests {
     #[test]
     fn set_match_reminders_replaces_the_timer_set() {
         let conn = open(":memory:").unwrap();
-        // Three timers for one match (1d / 1h / 15m before a start at t=0).
+        // Which lead offsets are stored for a match (asserts the row set itself —
+        // these timers fire a day/hour apart, so they're never simultaneously due).
+        let stored_leads = |conn: &Connection, match_id: i64| -> Vec<i64> {
+            conn.prepare("SELECT lead_ms FROM reminders WHERE match_id=?1 ORDER BY lead_ms")
+                .unwrap()
+                .query_map([match_id], |r| r.get(0))
+                .unwrap()
+                .collect::<rusqlite::Result<_>>()
+                .unwrap()
+        };
+        // Three timers for one match (1d / 1h / 15m before its start).
+        let begin = 100_000_000_000_i64;
         let mut rs = Vec::new();
         for &lead in &[86_400_000_i64, 3_600_000, 900_000] {
             let mut r = reminder(7);
             r.lead_ms = lead;
-            r.notify_at_ms = -lead; // begin_at = 0
+            r.notify_at_ms = begin - lead;
             rs.push(r);
         }
         set_match_reminders(&conn, &rs).unwrap();
-        assert_eq!(due_reminders(&conn, 1000).unwrap().len(), 3);
+        assert_eq!(stored_leads(&conn, 7), vec![900_000, 3_600_000, 86_400_000]);
 
-        // Re-set with a smaller set → the dropped timer's unsent row is removed.
+        // Re-set with a smaller set → the dropped timers' unsent rows are removed.
         set_match_reminders(&conn, &rs[..1]).unwrap();
-        let due = due_reminders(&conn, 1000).unwrap();
-        assert_eq!(due.len(), 1);
-        assert_eq!(due[0].lead_ms, 86_400_000);
+        assert_eq!(stored_leads(&conn, 7), vec![86_400_000]);
     }
 
     #[test]
@@ -1093,6 +1143,134 @@ mod tests {
         let due = due_reminders(&conn, 1000).unwrap();
         assert_eq!(due.len(), 1);
         assert_eq!(due[0].lead_ms, 900_000);
+    }
+
+    #[test]
+    fn timers_fire_each_at_its_own_time() {
+        let conn = open(":memory:").unwrap();
+        let begin = 10_000_000_000_i64;
+        let day = 86_400_000_i64;
+        let hour = 3_600_000_i64;
+        let min = 60_000_i64;
+        // One match, three timers: 1 day / 1 hour / 15 min before the start.
+        for &lead in &[day, hour, 15 * min] {
+            let mut r = reminder(7);
+            r.lead_ms = lead;
+            r.notify_at_ms = begin - lead;
+            add_reminder(&conn, &r).unwrap();
+        }
+        // Simulate one push-sender tick at `now`: deliver everything due, marking
+        // each delivered row sent, and report which lead offsets fired.
+        let mut tick = |now: i64| -> Vec<i64> {
+            let due = due_reminders(&conn, now).unwrap();
+            let mut leads: Vec<i64> = due.iter().map(|r| r.lead_ms).collect();
+            for r in &due {
+                mark_reminder_sent(&conn, &r.endpoint, r.match_id, &r.sport, r.lead_ms).unwrap();
+            }
+            leads.sort_unstable();
+            leads
+        };
+        // Each timer fires at its own moment, in order, and none before its time.
+        assert_eq!(tick(begin - 2 * day), Vec::<i64>::new(), "nothing two days out");
+        assert_eq!(tick(begin - day), vec![day], "the 1-day timer");
+        assert_eq!(tick(begin - hour), vec![hour], "then the 1-hour timer");
+        assert_eq!(tick(begin - 15 * min), vec![15 * min], "then the 15-min timer");
+        // Each fired exactly once — no timer re-delivers at the start.
+        assert_eq!(tick(begin), Vec::<i64>::new(), "no timer re-fires");
+    }
+
+    #[test]
+    fn behind_reminder_after_start_is_suppressed() {
+        let conn = open(":memory:").unwrap();
+        // A 15-min-lead reminder for a match starting at t = 1_000_000.
+        let mut r = reminder(1);
+        r.lead_ms = 900_000;
+        r.notify_at_ms = 1_000_000 - r.lead_ms;
+        add_reminder(&conn, &r).unwrap();
+        let begin_at = r.notify_at_ms + r.lead_ms; // 1_000_000
+
+        // Delivered on time (just past the notify instant): due.
+        assert_eq!(due_reminders(&conn, r.notify_at_ms).unwrap().len(), 1);
+        // A little late but the match hasn't started yet: still due.
+        assert_eq!(due_reminders(&conn, begin_at - 1).unwrap().len(), 1);
+        // Just past the start, inside the grace (covers a brief restart): due.
+        assert_eq!(due_reminders(&conn, begin_at + 60_000).unwrap().len(), 1);
+        // Well past the start — the server was down across the whole window, so
+        // a "starts soon" ping is pointless now: suppressed.
+        assert_eq!(
+            due_reminders(&conn, begin_at + DELIVER_GRACE_MS + 1).unwrap().len(),
+            0
+        );
+    }
+
+    #[test]
+    fn far_future_reminder_behind_schedule_still_fires() {
+        let conn = open(":memory:").unwrap();
+        // A 1-week-lead reminder whose notify time slipped a minute into the past
+        // (the server restarted just after it came due). The match is still ~a
+        // week out, so the reminder is still useful and must fire.
+        let now = 5_000_000_000_i64;
+        let mut r = reminder(2);
+        r.lead_ms = WEEK_MS;
+        r.notify_at_ms = now - 60_000;
+        add_reminder(&conn, &r).unwrap();
+        assert_eq!(due_reminders(&conn, now).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn long_lead_reminder_far_behind_schedule_is_dropped() {
+        let conn = open(":memory:").unwrap();
+        // A 1-week-lead reminder the server missed by three hours (it was off that
+        // long). The match is still days away, so the begin_at grace wouldn't catch
+        // it — but it's well past its notify time, so the staleness cap drops it
+        // rather than firing a "race in a week" ping three hours late.
+        let now = 5_000_000_000_i64;
+        let mut r = reminder(3);
+        r.lead_ms = WEEK_MS;
+        r.notify_at_ms = now - 3 * 60 * 60 * 1000; // 3h late, > MAX_LATE_MS
+        add_reminder(&conn, &r).unwrap();
+        assert_eq!(due_reminders(&conn, now).unwrap().len(), 0);
+        // …but the same timer only a few minutes late still fires (brief restart).
+        let mut fresh = reminder(4);
+        fresh.lead_ms = WEEK_MS;
+        fresh.notify_at_ms = now - 5 * 60 * 1000;
+        add_reminder(&conn, &fresh).unwrap();
+        assert_eq!(
+            due_reminders(&conn, now).unwrap().iter().filter(|r| r.match_id == 4).count(),
+            1
+        );
+    }
+
+    #[test]
+    fn prune_keeps_upcoming_reminders_but_drops_started_ones() {
+        let conn = open(":memory:").unwrap();
+        let now = 10_000_000_000_i64;
+        let day_ms = 24 * 60 * 60 * 1000;
+        // A long-lead reminder that already fired (sent) but whose match is still
+        // a week away. Pruning it would let expansion re-arm and double-fire it.
+        let mut upcoming = reminder(1);
+        upcoming.lead_ms = WEEK_MS;
+        upcoming.notify_at_ms = now - 1000;
+        add_reminder(&conn, &upcoming).unwrap();
+        mark_reminder_sent(&conn, &upcoming.endpoint, upcoming.match_id, &upcoming.sport, upcoming.lead_ms)
+            .unwrap();
+        // A reminder whose match started two days ago — safe to reap.
+        let mut started = reminder(2);
+        started.lead_ms = 0;
+        started.notify_at_ms = now - 2 * day_ms;
+        add_reminder(&conn, &started).unwrap();
+
+        // Prune everything whose match started more than a day ago.
+        prune_reminders(&conn, now - day_ms).unwrap();
+
+        let ids: Vec<i64> = conn
+            .prepare("SELECT match_id FROM reminders ORDER BY match_id")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(ids, vec![1], "the upcoming match's reminder is retained");
     }
 
     #[test]
@@ -1120,6 +1298,30 @@ mod tests {
     }
 
     #[test]
+    fn subscription_round_trips_tz_and_leads() {
+        let conn = open(":memory:").unwrap();
+        add_subscription(
+            &conn,
+            &Subscription {
+                endpoint: "https://push.example/x".into(),
+                p256dh: "p".into(),
+                auth: "a".into(),
+                scope_kind: "league".into(),
+                scope_value: "LCK".into(),
+                lead_ms: 900_000,
+                lead_list: vec![900_000, 3_600_000],
+                tz: "America/New_York".into(),
+            },
+        )
+        .unwrap();
+        let subs = list_subscriptions(&conn).unwrap();
+        assert_eq!(subs.len(), 1);
+        // The subscriber's tz persists, so expansion bakes bodies in their zone.
+        assert_eq!(subs[0].tz, "America/New_York");
+        assert_eq!(subs[0].lead_list, vec![900_000, 3_600_000]);
+    }
+
+    #[test]
     fn clear_endpoint_removes_subs_and_reminders() {
         let conn = open(":memory:").unwrap();
         add_reminder(&conn, &reminder(1)).unwrap();
@@ -1133,6 +1335,7 @@ mod tests {
                 scope_value: "T1".into(),
                 lead_ms: 0,
                 lead_list: vec![0],
+                tz: String::new(),
             },
         )
         .unwrap();

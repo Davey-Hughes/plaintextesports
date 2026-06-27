@@ -18,7 +18,10 @@ type DynError = Box<dyn std::error::Error + Send + Sync>;
 
 /// How often the sender scans for due reminders.
 const TICK: Duration = Duration::from_secs(30);
-/// Drop reminders whose notify time is older than this.
+/// Drop reminders this long after their match has started (see
+/// [`store::prune_reminders`] — pruning is keyed on the start, not the notify
+/// time, so a long-lead reminder for a still-upcoming match isn't reaped early
+/// and re-armed into a duplicate).
 const PRUNE_AFTER_MS: i64 = 24 * 60 * 60 * 1000;
 
 #[derive(Debug, PartialEq, Eq)]
@@ -206,9 +209,16 @@ fn expand_subscriptions(conn: &rusqlite::Connection) {
             return;
         }
     };
+    let now = Utc::now().timestamp_millis();
     for s in subs {
         for &lead_ms in &s.lead_list {
-            for seed in crate::cache::scope_reminder_seeds(&s.scope_kind, &s.scope_value, lead_ms) {
+            for seed in crate::cache::scope_reminder_seeds(&s.scope_kind, &s.scope_value, lead_ms, &s.tz) {
+                // Don't retroactively arm a timer whose lead window already opened
+                // (the common first-start case: a long lead means every match in
+                // that window is already "due"). It would fire at once; skip it.
+                if !seed.is_armable(now) {
+                    continue;
+                }
                 // A per-match opt-out blocks every timer for that match.
                 if excluded.contains(&(s.endpoint.clone(), seed.match_id, seed.sport.clone())) {
                     continue;
