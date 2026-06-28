@@ -161,6 +161,8 @@ pub fn open(path: &str) -> rusqlite::Result<Connection> {
             lead_list   TEXT    NOT NULL DEFAULT '',
             -- Subscriber's IANA tz, for formatting reminder bodies; '' ⇒ server tz.
             tz          TEXT    NOT NULL DEFAULT '',
+            -- Subscriber's 12h/24h pref, for formatting reminder bodies; 0 ⇒ 12h.
+            hour24      INTEGER NOT NULL DEFAULT 0,
             PRIMARY KEY (endpoint, scope_kind, scope_value)
         );",
     )?;
@@ -216,6 +218,11 @@ pub fn open(path: &str) -> rusqlite::Result<Connection> {
     // …and the per-subscriber timezone (older rows fall back to the server tz).
     let _ = conn.execute(
         "ALTER TABLE subscriptions ADD COLUMN tz TEXT NOT NULL DEFAULT ''",
+        [],
+    );
+    // …and the per-subscriber 12h/24h pref (older rows fall back to 12-hour).
+    let _ = conn.execute(
+        "ALTER TABLE subscriptions ADD COLUMN hour24 INTEGER NOT NULL DEFAULT 0",
         [],
     );
 
@@ -827,6 +834,9 @@ pub struct Subscription {
     /// The subscriber's IANA timezone, so expansion bakes each reminder body's
     /// start time in their zone. Empty ⇒ the server's display tz.
     pub tz: String,
+    /// The subscriber's 12h/24h preference, so expansion formats each reminder
+    /// body's start time to match. `false` ⇒ 12-hour.
+    pub hour24: bool,
 }
 
 /// Serialize a lead-offset list for the `lead_list` column.
@@ -866,11 +876,12 @@ pub fn add_subscription(conn: &Connection, s: &Subscription) -> rusqlite::Result
     let lead_list = join_lead_list(&s.lead_list);
     conn.execute(
         "INSERT INTO subscriptions
-            (endpoint, p256dh, auth, scope_kind, scope_value, lead_ms, lead_list, tz)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+            (endpoint, p256dh, auth, scope_kind, scope_value, lead_ms, lead_list, tz, hour24)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
          ON CONFLICT(endpoint, scope_kind, scope_value) DO UPDATE SET
             p256dh=excluded.p256dh, auth=excluded.auth,
-            lead_ms=excluded.lead_ms, lead_list=excluded.lead_list, tz=excluded.tz",
+            lead_ms=excluded.lead_ms, lead_list=excluded.lead_list, tz=excluded.tz,
+            hour24=excluded.hour24",
         params![
             s.endpoint,
             s.p256dh,
@@ -879,7 +890,8 @@ pub fn add_subscription(conn: &Connection, s: &Subscription) -> rusqlite::Result
             s.scope_value,
             s.lead_ms,
             lead_list,
-            s.tz
+            s.tz,
+            s.hour24
         ],
     )?;
     // If the timer set shrank, drop this scope's unsent reminders for offsets no
@@ -934,7 +946,7 @@ pub fn remove_subscription(
 
 pub fn list_subscriptions(conn: &Connection) -> rusqlite::Result<Vec<Subscription>> {
     let mut stmt = conn.prepare(
-        "SELECT endpoint, p256dh, auth, scope_kind, scope_value, lead_ms, lead_list, tz
+        "SELECT endpoint, p256dh, auth, scope_kind, scope_value, lead_ms, lead_list, tz, hour24
          FROM subscriptions",
     )?;
     let rows = stmt.query_map([], |r| {
@@ -949,6 +961,7 @@ pub fn list_subscriptions(conn: &Connection) -> rusqlite::Result<Vec<Subscriptio
             lead_ms,
             lead_list: parse_lead_list(&lead_list, lead_ms),
             tz: r.get(7)?,
+            hour24: r.get(8)?,
         })
     })?;
     rows.collect()
@@ -1469,13 +1482,16 @@ mod tests {
                 lead_ms: 900_000,
                 lead_list: vec![900_000, 3_600_000],
                 tz: "America/New_York".into(),
+                hour24: true,
             },
         )
         .unwrap();
         let subs = list_subscriptions(&conn).unwrap();
         assert_eq!(subs.len(), 1);
-        // The subscriber's tz persists, so expansion bakes bodies in their zone.
+        // The subscriber's tz + 12h/24h pref persist, so expansion bakes bodies in
+        // their zone and chosen clock format.
         assert_eq!(subs[0].tz, "America/New_York");
+        assert!(subs[0].hour24);
         assert_eq!(subs[0].lead_list, vec![900_000, 3_600_000]);
     }
 
@@ -1495,6 +1511,7 @@ mod tests {
                 lead_ms: 900_000,
                 lead_list: vec![900_000],
                 tz: "America/New_York".into(),
+                hour24: false,
             },
         )
         .unwrap();
@@ -1543,6 +1560,7 @@ mod tests {
                 lead_ms: 0,
                 lead_list: vec![0],
                 tz: String::new(),
+                hour24: false,
             },
         )
         .unwrap();

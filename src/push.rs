@@ -221,9 +221,13 @@ fn expand_subscriptions(conn: &rusqlite::Connection) {
     let now = Utc::now().timestamp_millis();
     for s in subs {
         for &lead_ms in &s.lead_list {
-            for seed in
-                crate::cache::scope_reminder_seeds(&s.scope_kind, &s.scope_value, lead_ms, &s.tz)
-            {
+            for seed in crate::cache::scope_reminder_seeds(
+                &s.scope_kind,
+                &s.scope_value,
+                lead_ms,
+                &s.tz,
+                s.hour24,
+            ) {
                 // Don't retroactively arm a timer whose lead window already opened
                 // (the common first-start case: a long lead means every match in
                 // that window is already "due"). It would fire at once; skip it.

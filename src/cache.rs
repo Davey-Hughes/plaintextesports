@@ -2079,7 +2079,7 @@ impl ReminderSeed {
 /// Build a reminder seed for one upcoming match. Centralizes the time/title/
 /// body/url derivation so every reminder (single-match ★ and sport/event
 /// subscription) is produced server-side from the same snapshot data.
-fn reminder_seed(m: &NormalizedMatch, lead_ms: i64, tz: &Tz) -> ReminderSeed {
+fn reminder_seed(m: &NormalizedMatch, lead_ms: i64, tz: &Tz, hour24: bool) -> ReminderSeed {
     let local = m.begin_at.with_timezone(tz);
     ReminderSeed {
         match_id: m.id,
@@ -2102,11 +2102,12 @@ fn reminder_seed(m: &NormalizedMatch, lead_ms: i64, tz: &Tz) -> ReminderSeed {
             m.team_b.label
         ),
         // Tag the time with the viewer's zone abbreviation so it's unambiguous
-        // (and obviously the viewer's local time, not the server's).
+        // (and obviously the viewer's local time, not the server's), in their
+        // chosen 12h/24h format.
         body: format!(
             "{} · {} {}",
             m.league,
-            time_label(local, false),
+            time_label(local, hour24),
             local.format("%Z")
         ),
         url: resolved_event_url(m.sport, &m.league, m.begin_at, m.league_url.as_deref()),
@@ -2117,13 +2118,15 @@ fn reminder_seed(m: &NormalizedMatch, lead_ms: i64, tz: &Tz) -> ReminderSeed {
 /// "sport" (value = "cs2"/"lol"), "league" (value = league name), "team" (value =
 /// full team name, matched against either side), or "event" (value = the full
 /// event name, e.g. an F1 Grand Prix). `tz_name` is the subscriber's IANA zone
-/// (empty ⇒ the server default), used to format each body's start time.
+/// (empty ⇒ the server default) and `hour24` their clock format, used to format
+/// each body's start time.
 #[must_use]
 pub fn scope_reminder_seeds(
     kind: &str,
     value: &str,
     lead_ms: i64,
     tz_name: &str,
+    hour24: bool,
 ) -> Vec<ReminderSeed> {
     let cfg = config();
     let tz = resolve_tz(tz_name, cfg.tz);
@@ -2139,21 +2142,22 @@ pub fn scope_reminder_seeds(
             "event" => event_name_eq(&m.league, &m.series_name, value),
             _ => false,
         })
-        .map(|m| reminder_seed(m, lead_ms, &tz))
+        .map(|m| reminder_seed(m, lead_ms, &tz, hour24))
         .collect()
 }
 
 /// Reminder seeds for a single upcoming starred match by id — one per lead
 /// offset, or empty if the match is unknown, already started, or canceled. Lets
 /// the server (not the client) decide each notification's time/title/body/url.
-/// `tz_name` is the viewer's IANA zone (empty ⇒ the server default), used to
-/// format the body's start time.
+/// `tz_name` is the viewer's IANA zone (empty ⇒ the server default) and `hour24`
+/// their clock format, used to format the body's start time.
 #[must_use]
 pub fn reminder_seeds_for_match(
     match_id: i64,
     sport: &str,
     leads: &[i64],
     tz_name: &str,
+    hour24: bool,
 ) -> Vec<ReminderSeed> {
     let cfg = config();
     let tz = resolve_tz(tz_name, cfg.tz);
@@ -2170,7 +2174,7 @@ pub fn reminder_seeds_for_match(
     };
     leads
         .iter()
-        .map(|&lead| reminder_seed(m, lead, &tz))
+        .map(|&lead| reminder_seed(m, lead, &tz, hour24))
         .collect()
 }
 
@@ -4029,7 +4033,7 @@ mod tests {
         );
         let lead = 15 * 60_000;
 
-        let ny = reminder_seed(&m, lead, &chrono_tz::America::New_York);
+        let ny = reminder_seed(&m, lead, &chrono_tz::America::New_York, false);
         assert!(ny.body.contains("10:00 PM"), "NY body: {}", ny.body);
         assert!(
             ny.body.contains("EDT"),
@@ -4037,7 +4041,7 @@ mod tests {
             ny.body
         );
 
-        let la = reminder_seed(&m, lead, &chrono_tz::America::Los_Angeles);
+        let la = reminder_seed(&m, lead, &chrono_tz::America::Los_Angeles, false);
         assert!(la.body.contains("7:00 PM"), "LA body: {}", la.body);
         assert!(
             la.body.contains("PDT"),
@@ -4045,7 +4049,16 @@ mod tests {
             la.body
         );
 
-        // The fire time is the same UTC instant regardless of display tz.
+        // The 24h preference formats the same instant as "22:00", not "10:00 PM".
+        let ny24 = reminder_seed(&m, lead, &chrono_tz::America::New_York, true);
+        assert!(ny24.body.contains("22:00"), "NY 24h body: {}", ny24.body);
+        assert!(
+            !ny24.body.contains("PM"),
+            "NY 24h body has no AM/PM: {}",
+            ny24.body
+        );
+
+        // The fire time is the same UTC instant regardless of display tz/format.
         assert_eq!(ny.notify_at_ms, la.notify_at_ms);
         assert_eq!(ny.notify_at_ms, m.begin_at.timestamp_millis() - lead);
     }
@@ -4058,8 +4071,8 @@ mod tests {
         let begin = Utc::now() + Duration::hours(1);
         let m = at(begin, MatchStatus::Upcoming);
         let now = Utc::now().timestamp_millis();
-        let soon = reminder_seed(&m, 15 * 60_000, &chrono_tz::Etc::UTC);
-        let far = reminder_seed(&m, 24 * 60 * 60_000, &chrono_tz::Etc::UTC);
+        let soon = reminder_seed(&m, 15 * 60_000, &chrono_tz::Etc::UTC, false);
+        let far = reminder_seed(&m, 24 * 60 * 60_000, &chrono_tz::Etc::UTC, false);
         assert!(soon.is_armable(now), "the 15-min timer is still ahead");
         assert!(
             !far.is_armable(now),
