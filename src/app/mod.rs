@@ -152,6 +152,28 @@ struct RevealedMatches(RwSignal<HashSet<String>>);
 #[derive(Clone, Copy)]
 struct RevealedSections(RwSignal<HashSet<String>>);
 
+/// The "end" time (ms since epoch) a page supplies for the section reveals on it —
+/// when the thing those reveals are about is finished and won't change (an event's
+/// last match, a GP weekend, a series' latest race). Recorded with each reveal so
+/// it can be pruned ~a week past that end. Absent ⇒ section reveals fall back to
+/// "now". Per-match (row) reveals use the row's own match time instead.
+#[derive(Clone, Copy)]
+pub(crate) struct RevealEnd(pub(crate) i64);
+
+/// The reveal "end" to record for a section reveal on the current page: the
+/// page-provided [`RevealEnd`], else the current time (a section with no provided
+/// end is simply protected for a week, then ages out by inactivity).
+#[cfg(feature = "hydrate")]
+pub(crate) fn current_reveal_end() -> i64 {
+    use_context::<RevealEnd>()
+        .map(|r| r.0)
+        .unwrap_or_else(now_ms)
+}
+#[cfg(not(feature = "hydrate"))]
+pub(crate) fn current_reveal_end() -> i64 {
+    use_context::<RevealEnd>().map(|r| r.0).unwrap_or(0)
+}
+
 /// Set of "kind|value" scopes the user is subscribed to (sport/event reminders).
 #[derive(Clone, Copy)]
 struct Subscribed(RwSignal<HashSet<String>>);
@@ -290,8 +312,11 @@ pub fn App() -> impl IntoView {
                 global_timers.set(t);
             }
             overrides.set(load_overrides());
-            revealed.set(load_revealed());
-            sections.set(load_sections());
+            // Prune stale spoiler reveals (both >1wk past their entity's end and
+            // >1wk untouched) as we load them, so the stored set can't grow forever.
+            let reveal_now = now_ms();
+            revealed.set(prune_and_load(keys::REVEALED, reveal_now));
+            sections.set(prune_and_load(keys::SECTIONS, reveal_now));
             range.set(load_range());
             // `games`/`leagues` are initialised by `FilterUrlSync` (URL query, else
             // localStorage) since it needs the router context.

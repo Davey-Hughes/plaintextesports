@@ -205,16 +205,73 @@ pub(crate) fn load_excluded() -> HashSet<String> {
     load_str_set(keys::EXCLUDED)
 }
 
-/// Persist the set of individually-revealed match uids, so a match the user has
-/// already peeked at stays revealed across reloads.
+/// Current wall-clock time (ms since epoch) from the browser, for stamping and
+/// pruning reveal records.
 #[cfg(feature = "hydrate")]
-pub(crate) fn save_revealed(uids: &HashSet<String>) {
-    save_str_set(keys::REVEALED, uids);
+pub(crate) fn now_ms() -> i64 {
+    js_sys::Date::now() as i64
 }
 
+/// Load a reveal store (`revealed` or `sections`), pruning any record that's been
+/// both finished and untouched for over a week, persisting the survivors (which
+/// also migrates the legacy key-only format in place), and returning the surviving
+/// keys to seed the in-memory reveal context.
 #[cfg(feature = "hydrate")]
-pub(crate) fn load_revealed() -> HashSet<String> {
-    load_str_set(keys::REVEALED)
+pub(crate) fn prune_and_load(storage_key: &str, now: i64) -> HashSet<String> {
+    let Some(storage) = web_sys::window().and_then(|w| w.local_storage().ok().flatten()) else {
+        return HashSet::new();
+    };
+    let raw = storage
+        .get_item(storage_key)
+        .ok()
+        .flatten()
+        .unwrap_or_default();
+    let recs = crate::reveal::prune_records(
+        crate::reveal::parse_records(&raw, now),
+        now,
+        crate::reveal::REVEAL_TTL_MS,
+    );
+    let _ = storage.set_item(storage_key, &crate::reveal::serialize_records(&recs));
+    crate::reveal::keys(&recs)
+}
+
+/// Upsert a batch of reveals (toggle-on or view): set each key's end and stamp
+/// `touched = now`, in a single read-modify-write.
+#[cfg(feature = "hydrate")]
+pub(crate) fn touch_reveals(storage_key: &str, items: &[(String, i64)], now: i64) {
+    if items.is_empty() {
+        return;
+    }
+    let Some(storage) = web_sys::window().and_then(|w| w.local_storage().ok().flatten()) else {
+        return;
+    };
+    let raw = storage
+        .get_item(storage_key)
+        .ok()
+        .flatten()
+        .unwrap_or_default();
+    let mut recs = crate::reveal::parse_records(&raw, now);
+    for (key, end_ms) in items {
+        crate::reveal::upsert(&mut recs, key, *end_ms, now);
+    }
+    let _ = storage.set_item(storage_key, &crate::reveal::serialize_records(&recs));
+}
+
+/// Drop one reveal (toggle-off / hide).
+#[cfg(feature = "hydrate")]
+pub(crate) fn remove_reveal(storage_key: &str, key: &str) {
+    let now = now_ms();
+    let Some(storage) = web_sys::window().and_then(|w| w.local_storage().ok().flatten()) else {
+        return;
+    };
+    let raw = storage
+        .get_item(storage_key)
+        .ok()
+        .flatten()
+        .unwrap_or_default();
+    let mut recs = crate::reveal::parse_records(&raw, now);
+    crate::reveal::remove(&mut recs, key);
+    let _ = storage.set_item(storage_key, &crate::reveal::serialize_records(&recs));
 }
 
 /// Persist a set of strings under `key` (newline-separated).
@@ -234,32 +291,6 @@ pub(crate) fn load_str_set(key: &str) -> HashSet<String> {
     if let Some(win) = web_sys::window() {
         if let Ok(Some(storage)) = win.local_storage() {
             if let Ok(Some(v)) = storage.get_item(key) {
-                for part in v.split('\n').filter(|p| !p.is_empty()) {
-                    out.insert(part.to_string());
-                }
-            }
-        }
-    }
-    out
-}
-
-/// Persist revealed standings/bracket sections (newline-separated string keys).
-#[cfg(feature = "hydrate")]
-pub(crate) fn save_sections(keys: &HashSet<String>) {
-    if let Some(win) = web_sys::window() {
-        if let Ok(Some(storage)) = win.local_storage() {
-            let joined = keys.iter().cloned().collect::<Vec<_>>().join("\n");
-            let _ = storage.set_item(keys::SECTIONS, &joined);
-        }
-    }
-}
-
-#[cfg(feature = "hydrate")]
-pub(crate) fn load_sections() -> HashSet<String> {
-    let mut out = HashSet::new();
-    if let Some(win) = web_sys::window() {
-        if let Ok(Some(storage)) = win.local_storage() {
-            if let Ok(Some(v)) = storage.get_item(keys::SECTIONS) {
                 for part in v.split('\n').filter(|p| !p.is_empty()) {
                     out.insert(part.to_string());
                 }

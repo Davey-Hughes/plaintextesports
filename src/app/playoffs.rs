@@ -18,19 +18,77 @@ pub(crate) fn section_reveal(key: String) -> (Memo<bool>, impl Fn(leptos::ev::Mo
         global.is_some_and(|g| g.get())
             || sections.is_some_and(|s| s.with(|set| set.contains(&key.get_value())))
     });
+    // The end (for pruning) to record with this section's reveal — the page's
+    // RevealEnd (the event's last match / GP weekend / latest race).
+    let end = current_reveal_end();
+    #[cfg(not(feature = "hydrate"))]
+    let _ = end;
+    // Viewing counts as interaction: refresh this section's record on mount if it's
+    // a stored reveal, so anything you still look at stays revealed.
+    #[cfg(feature = "hydrate")]
+    Effect::new(move |_| {
+        let k = key.get_value();
+        if sections.is_some_and(|s| s.with_untracked(|set| set.contains(&k))) {
+            touch_reveals(keys::SECTIONS, &[(k, end)], now_ms());
+        }
+    });
     let toggle = move |_: leptos::ev::MouseEvent| {
         if let Some(s) = sections {
             let k = key.get_value();
+            let was = s.with_untracked(|set| set.contains(&k));
             s.update(|set| {
-                if !set.remove(&k) {
-                    set.insert(k);
+                if was {
+                    set.remove(&k);
+                } else {
+                    set.insert(k.clone());
                 }
             });
             #[cfg(feature = "hydrate")]
-            save_sections(&s.get_untracked());
+            if was {
+                remove_reveal(keys::SECTIONS, &k);
+            } else {
+                touch_reveals(keys::SECTIONS, &[(k, end)], now_ms());
+            }
         }
     };
     (revealed, toggle)
+}
+
+/// Sync the localStorage section records after a bracket op mutated the in-memory
+/// set: record (with `end`, fresh touch) the keys it revealed, and drop the records
+/// for the keys it hid. Only the changed keys are touched, so an unrelated reveal
+/// elsewhere isn't refreshed.
+#[cfg(feature = "hydrate")]
+fn sync_section_diff(before: &HashSet<String>, after: &HashSet<String>, end: i64) {
+    let now = now_ms();
+    let added: Vec<(String, i64)> = after.difference(before).map(|k| (k.clone(), end)).collect();
+    touch_reveals(keys::SECTIONS, &added, now);
+    for k in before.difference(after) {
+        remove_reveal(keys::SECTIONS, k);
+    }
+}
+
+/// Viewing a bracket counts as interaction: on mount, refresh every revealed
+/// section key belonging to this bracket (its `np`/`sp` name/score prefixes) so it
+/// stays revealed while you still look at it.
+#[cfg(feature = "hydrate")]
+fn touch_bracket_on_view(
+    sections: Option<RwSignal<HashSet<String>>>,
+    np: String,
+    sp: String,
+    end: i64,
+) {
+    Effect::new(move |_| {
+        if let Some(sec) = sections {
+            let items: Vec<(String, i64)> = sec.with_untracked(|set| {
+                set.iter()
+                    .filter(|k| k.starts_with(&np) || k.starts_with(&sp))
+                    .map(|k| (k.clone(), end))
+                    .collect()
+            });
+            touch_reveals(keys::SECTIONS, &items, now_ms());
+        }
+    });
 }
 
 /// Reveal stage of a bracket series from its precomputed name/score keys:
@@ -602,11 +660,19 @@ pub(crate) fn SwissBracket(
         let set = sections.map(|s| s.get()).unwrap_or_default();
         compute_effective(&grid, &set, g)
     });
+    // The reveal "end" for this bracket's keys (the event's last match).
+    let end = current_reveal_end();
+    #[cfg(not(feature = "hydrate"))]
+    let _ = end;
+    #[cfg(feature = "hydrate")]
+    touch_bracket_on_view(sections, format!("swn:{tid}:"), format!("sws:{tid}:"), end);
     let do_op = move |op: BkOp| {
         if let Some(sec) = sections {
+            #[cfg(feature = "hydrate")]
+            let before = sec.get_untracked();
             sec.update(|set| apply_bracket_op(set, &grid_sv.get_value(), op));
             #[cfg(feature = "hydrate")]
-            save_sections(&sec.get_untracked());
+            sync_section_diff(&before, &sec.get_untracked(), end);
         }
     };
 
@@ -975,12 +1041,20 @@ pub(crate) fn Bracket(
         let set = sections.map(|s| s.get()).unwrap_or_default();
         compute_effective(&grid, &set, g)
     });
+    // The reveal "end" for this bracket's keys (the event's last match).
+    let end = current_reveal_end();
+    #[cfg(not(feature = "hydrate"))]
+    let _ = end;
+    #[cfg(feature = "hydrate")]
+    touch_bracket_on_view(sections, format!("bn:{tid}:"), format!("bs:{tid}:"), end);
     // A single Copy handle for every reveal click (series / round / cascade).
     let do_op = move |op: BkOp| {
         if let Some(sec) = sections {
+            #[cfg(feature = "hydrate")]
+            let before = sec.get_untracked();
             sec.update(|set| apply_bracket_op(set, &grid_sv.get_value(), op));
             #[cfg(feature = "hydrate")]
-            save_sections(&sec.get_untracked());
+            sync_section_diff(&before, &sec.get_untracked(), end);
         }
     };
 
