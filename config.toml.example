@@ -9,14 +9,24 @@ pandascore_token = ""
 # MotoGP. Free tier is 250 req/day; these series are polled conservatively
 # (schedule first) and served from cache, so it fits easily. Omit to skip them.
 ocblacktop_token = ""
-# How often to refresh the calendars / standings (seconds), and a hard per-UTC-day
-# request cap as a backstop under the 250/day free tier. A calendar refresh costs
-# up to 4 requests (WRC + WEC + MotoGP, +1 for an active rally's stage timetable),
-# a standings refresh 6, so the defaults below work out to ~144/day — under the cap
-# with headroom for on-demand result fetches. Lower them only with quota to spare.
-# ocblacktop_poll_secs = 3600
-# ocblacktop_standings_poll_secs = 10800
-# ocblacktop_daily_cap = 240
+# Poll cadence (seconds). Each series (WRC, WEC, MotoGP) is polled independently,
+# only as fast as its nearest event warrants, so a quiet day costs a handful of
+# requests and even a race day stays well under the free tier's 250/day. The
+# per-series tiers:
+#   live — a session of THAT series is running or starts within the hour
+#   near — that series has an event within ~2 weeks
+#   idle — nothing close (off-season / between rounds): the passive baseline
+# Only the in-window series uses the fast tier; the rest stay idle. Standings only
+# change after a round, so they sit on a daily floor and also refresh within the
+# `near` interval once a round finishes. The daily cap is a hard backstop; the
+# request budget and per-series gates are persisted to the cache DB, so restarting
+# the server resumes the day instead of re-polling or resetting the count. Defaults
+# shown — uncomment to tune.
+# ocblacktop_live_poll_secs = 300         # live/imminent session (min 60)
+# ocblacktop_near_poll_secs = 10800       # event within ~2 weeks (min 300)
+# ocblacktop_idle_poll_secs = 86400       # off-season / between rounds (min 3600)
+# ocblacktop_standings_poll_secs = 86400  # standings daily floor (min 3600)
+# ocblacktop_daily_cap = 240              # hard per-UTC-day request ceiling (tier is 250)
 
 # Force demo/fixture data, ignoring the token + cache DB (dev/UI work).
 # demo = true

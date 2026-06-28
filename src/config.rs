@@ -14,11 +14,18 @@ use std::time::Duration;
 #[derive(Debug, Default, Deserialize)]
 struct FileConfig {
     pandascore_token: Option<String>,
-    /// Orange Cat Blacktop API key (WRC + WEC). `x-api-key` header.
+    /// Orange Cat Blacktop API key (WRC + WEC + MotoGP). `x-api-key` header.
     ocblacktop_token: Option<String>,
-    /// WRC/WEC calendar poll interval (s) — slow, the free tier is 250 req/day.
-    ocblacktop_poll_secs: Option<u64>,
-    /// WRC/WEC standings poll interval (s) — slower still (they change post-round).
+    /// Calendar poll interval (s) for a series with a session live or starting
+    /// within the hour — the fast tier (only the in-window series pays it).
+    ocblacktop_live_poll_secs: Option<u64>,
+    /// Calendar poll interval (s) for a series with an event within ~2 weeks.
+    ocblacktop_near_poll_secs: Option<u64>,
+    /// Calendar poll interval (s) for a series with nothing close (off-season /
+    /// between rounds) — the slow passive tier.
+    ocblacktop_idle_poll_secs: Option<u64>,
+    /// Standings poll interval (s) — a daily floor; a finished round also refreshes
+    /// them sooner (edge-triggered), since they only change post-round.
     ocblacktop_standings_poll_secs: Option<u64>,
     /// Hard per-UTC-day cap on Orange Cat Blacktop requests (free tier is 250).
     ocblacktop_daily_cap: Option<u64>,
@@ -67,8 +74,16 @@ impl FileConfig {
         put("PANDASCORE_TOKEN", self.pandascore_token.clone());
         put("OCBLACKTOP_TOKEN", self.ocblacktop_token.clone());
         put(
-            "OCBLACKTOP_POLL_SECS",
-            self.ocblacktop_poll_secs.map(|n| n.to_string()),
+            "OCBLACKTOP_LIVE_POLL_SECS",
+            self.ocblacktop_live_poll_secs.map(|n| n.to_string()),
+        );
+        put(
+            "OCBLACKTOP_NEAR_POLL_SECS",
+            self.ocblacktop_near_poll_secs.map(|n| n.to_string()),
+        );
+        put(
+            "OCBLACKTOP_IDLE_POLL_SECS",
+            self.ocblacktop_idle_poll_secs.map(|n| n.to_string()),
         );
         put(
             "OCBLACKTOP_STANDINGS_POLL_SECS",
@@ -121,13 +136,21 @@ impl FileConfig {
 pub struct Config {
     /// PandaScore API token. `None` => serve demo fixture data.
     pub token: Option<String>,
-    /// Orange Cat Blacktop API key for WRC + WEC (free tier: 250 req/day). `None`
-    /// => those series are skipped. Polled conservatively (schedule-first), so the
-    /// daily quota comfortably covers two episodic series.
+    /// Orange Cat Blacktop API key for WRC + WEC + MotoGP (free tier: 250 req/day).
+    /// `None` => those series are skipped. Polled per-series on a proximity-driven
+    /// cadence (fast only near a live event), so the daily quota covers all three
+    /// with room to spare.
     pub ocblacktop_token: Option<String>,
-    /// WRC/WEC calendar poll interval (slow — quota-limited source).
-    pub ocblacktop_poll: Duration,
-    /// WRC/WEC standings poll interval (slower; they only change post-round).
+    /// Calendar poll interval for a series with a session live or starting within
+    /// the hour (fast tier; only the in-window series uses it).
+    pub ocblacktop_live_poll: Duration,
+    /// Calendar poll interval for a series with an event within ~2 weeks (medium).
+    pub ocblacktop_near_poll: Duration,
+    /// Calendar poll interval for a series with nothing close — off-season /
+    /// between rounds (slow passive tier).
+    pub ocblacktop_idle_poll: Duration,
+    /// Standings poll interval — a daily floor; a just-finished round also
+    /// refreshes them sooner (they only change post-round).
     pub ocblacktop_standings_poll: Duration,
     /// Hard per-UTC-day cap on Orange Cat Blacktop requests (a backstop under the
     /// free tier's 250/day; the poll intervals normally keep usage well below it).
@@ -257,15 +280,22 @@ impl Config {
         let ocblacktop_token = get("OCBLACKTOP_TOKEN")
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty());
-        // Conservative defaults: calendar every 30 min, standings every 2 h; with
-        // ~6 requests per full refresh that's well under the 250/day free tier.
-        // Conservative defaults sized for the free tier's 250 req/day across WRC +
-        // WEC + MotoGP: a calendar refresh is up to 4 requests, a standings refresh
-        // 6, so 60 min / 3 h works out to ~96 + ~48 = ~144/day — under the cap, with
-        // headroom for the active rally's stage detail and on-demand result fetches.
-        let ocblacktop_poll = Duration::from_secs(secs("OCBLACKTOP_POLL_SECS", 3600, 300));
+        // Per-series, proximity-driven cadence sized for the free tier's 250
+        // req/day across WRC + WEC + MotoGP. Each series is polled only as fast as
+        // its nearest event warrants: off-season at the slow `idle` tier (a daily
+        // tick just to catch schedule changes), ramping to `near` within ~2 weeks
+        // of an event, and `live` only while a session of THAT series is running or
+        // imminent. So a quiet day costs a handful of requests and even a race day
+        // stays well under the cap — versus a flat hourly poll of all three, which
+        // burned ~120-144/day around the clock. Standings change only post-round,
+        // so they sit on a daily floor and refresh sooner right after a round.
+        let ocblacktop_live_poll = Duration::from_secs(secs("OCBLACKTOP_LIVE_POLL_SECS", 300, 60));
+        let ocblacktop_near_poll =
+            Duration::from_secs(secs("OCBLACKTOP_NEAR_POLL_SECS", 10800, 300));
+        let ocblacktop_idle_poll =
+            Duration::from_secs(secs("OCBLACKTOP_IDLE_POLL_SECS", 86400, 3600));
         let ocblacktop_standings_poll =
-            Duration::from_secs(secs("OCBLACKTOP_STANDINGS_POLL_SECS", 10800, 600));
+            Duration::from_secs(secs("OCBLACKTOP_STANDINGS_POLL_SECS", 86400, 3600));
         let ocblacktop_daily_cap = secs("OCBLACKTOP_DAILY_CAP", 240, 0);
 
         let tz = get("DISPLAY_TZ")
@@ -326,7 +356,9 @@ impl Config {
         Self {
             token,
             ocblacktop_token,
-            ocblacktop_poll,
+            ocblacktop_live_poll,
+            ocblacktop_near_poll,
+            ocblacktop_idle_poll,
             ocblacktop_standings_poll,
             ocblacktop_daily_cap,
             tz,
@@ -369,8 +401,10 @@ mod tests {
         let c = cfg(&[]);
         assert!(c.token.is_none());
         assert!(c.ocblacktop_token.is_none());
-        assert_eq!(c.ocblacktop_poll.as_secs(), 3600);
-        assert_eq!(c.ocblacktop_standings_poll.as_secs(), 10800);
+        assert_eq!(c.ocblacktop_live_poll.as_secs(), 300);
+        assert_eq!(c.ocblacktop_near_poll.as_secs(), 10800);
+        assert_eq!(c.ocblacktop_idle_poll.as_secs(), 86400);
+        assert_eq!(c.ocblacktop_standings_poll.as_secs(), 86400);
         assert_eq!(c.ocblacktop_daily_cap, 240);
         assert_eq!(c.tz, chrono_tz::America::Los_Angeles);
         assert_eq!(c.idle_poll.as_secs(), 1200);
@@ -395,6 +429,37 @@ mod tests {
         assert!(!cfg(&[("ENABLE_PAST_REFRESH", "false")]).past_refresh);
         assert!(!cfg(&[("ENABLE_BACKFILL", "0")]).backfill);
         assert_eq!(cfg(&[("RATE_LIMIT_FLOOR", "500")]).rate_limit_floor, 500);
+        // Orange Cat Blacktop cadence tiers parse, and clamp below their floors.
+        assert_eq!(
+            cfg(&[("OCBLACKTOP_LIVE_POLL_SECS", "120")])
+                .ocblacktop_live_poll
+                .as_secs(),
+            120
+        );
+        assert_eq!(
+            cfg(&[("OCBLACKTOP_LIVE_POLL_SECS", "5")])
+                .ocblacktop_live_poll
+                .as_secs(),
+            300 // below min 60 -> default
+        );
+        assert_eq!(
+            cfg(&[("OCBLACKTOP_NEAR_POLL_SECS", "7200")])
+                .ocblacktop_near_poll
+                .as_secs(),
+            7200
+        );
+        assert_eq!(
+            cfg(&[("OCBLACKTOP_IDLE_POLL_SECS", "43200")])
+                .ocblacktop_idle_poll
+                .as_secs(),
+            43200
+        );
+        assert_eq!(
+            cfg(&[("OCBLACKTOP_STANDINGS_POLL_SECS", "100")])
+                .ocblacktop_standings_poll
+                .as_secs(),
+            86400 // below min 3600 -> default
+        );
     }
 
     #[test]
