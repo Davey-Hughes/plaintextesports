@@ -11,7 +11,7 @@ use crate::feed::{FetchResult, NormalizedMatch, NormalizedTeam};
 use crate::http::DynError;
 use crate::tiering::{is_tier_one, TierInput};
 use crate::types::{MatchStatus, Sport, StreamView};
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Duration, Utc};
 use serde::Deserialize;
 
 mod brackets;
@@ -366,6 +366,17 @@ async fn get_segment(
 const PER_PAGE: usize = 100;
 /// Safety cap on pages fetched in a single deep scan.
 const DEEP_MAX_PAGES: u32 = 30;
+/// How far back [`fetch_game`] re-checks finished matches each poll. Comfortably
+/// exceeds the display's ~5h live grace so a match that just ended — anywhere in
+/// its live window — is re-fetched and flips out of the "started but never marked
+/// finished" heuristic the same cycle.
+const RECENT_PAST_WINDOW: Duration = Duration::hours(6);
+
+/// The recent-past range `[now - RECENT_PAST_WINDOW, now]` that [`fetch_game`]
+/// re-fetches each poll to catch just-finished matches.
+fn recent_past_window(now: DateTime<Utc>) -> (DateTime<Utc>, DateTime<Utc>) {
+    (now - RECENT_PAST_WINDOW, now)
+}
 
 /// Fetch one page of the upcoming feed as raw (pre-filter) matches, so the
 /// caller can see the page's latest `begin_at` even when every match on it is
@@ -458,23 +469,32 @@ pub async fn fetch_game(
         page += 1;
     }
 
-    // Running + recent past are best-effort (often unavailable on free tier).
-    for segment in ["running", "past"] {
-        let query: &[(&str, &str)] = if segment == "past" {
-            &[("per_page", "30"), ("sort", "-begin_at")]
-        } else {
-            &[("per_page", "50")]
-        };
-        match get_segment(client, token, sport, segment, query).await {
-            Ok(matches) => {
-                for m in matches {
-                    by_id.insert(m.id, m);
-                }
-            }
-            Err(e) => {
-                leptos::logging::log!("pandascore {}/{segment} unavailable: {e}", sport.slug());
+    // Running is best-effort: usually empty on the free tier (no live feed), but
+    // correct when a league does expose it.
+    match get_segment(client, token, sport, "running", &[("per_page", "50")]).await {
+        Ok(matches) => {
+            for m in matches {
+                by_id.insert(m.id, m);
             }
         }
+        Err(e) => leptos::logging::log!("pandascore {}/running unavailable: {e}", sport.slug()),
+    }
+
+    // Recent past via a begin_at range, NOT sort=-begin_at: the free tier's
+    // descending sort returns a wall of null-begin_at placeholder rows that bury
+    // real finished matches past the first page. A range over the recent window
+    // excludes the null rows, so this poll sees a match that just finished and
+    // updates its status/score the same cycle (one page, best-effort) — instead
+    // of leaving it stuck in the started-but-never-finished live heuristic until
+    // the idle past-day refresh catches it.
+    let (from, to) = recent_past_window(Utc::now());
+    match fetch_past_range(client, token, sport, from, to, 1, PER_PAGE as u32).await {
+        Ok(r) => {
+            for m in r.matches {
+                by_id.insert(m.id, m);
+            }
+        }
+        Err(e) => leptos::logging::log!("pandascore {}/past(range) unavailable: {e}", sport.slug()),
     }
 
     Ok(by_id.into_values().collect())
@@ -590,6 +610,20 @@ mod tests {
         assert_eq!(
             begin_at_range(from, to),
             "2026-05-01T00:00:00+00:00,2026-05-08T00:00:00+00:00"
+        );
+    }
+
+    #[test]
+    fn recent_past_window_covers_the_live_grace() {
+        let now = "2026-06-28T21:00:00Z".parse::<DateTime<Utc>>().unwrap();
+        let (from, to) = recent_past_window(now);
+        assert_eq!(to, now, "window ends at now");
+        // Must reach back at least as far as a live match can have started (the
+        // display's ~5h live grace) so the active poll's range /past still sees a
+        // match that just finished at the edge of that window.
+        assert!(
+            from <= now - Duration::hours(5),
+            "recent-past window must cover the live grace"
         );
     }
 
