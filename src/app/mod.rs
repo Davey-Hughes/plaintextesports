@@ -90,9 +90,9 @@ pub fn shell(options: LeptosOptions) -> impl IntoView {
                 // Apply the saved theme + icon + scores preferences before paint to
                 // avoid a flash: CSS hides logos when data-icons="0", and the icons/
                 // scores toggles show their on-state from data-icons/data-scores
-                // (icons default on, scores default off).
+                // (both default off — on only when explicitly stored "1").
                 <script>
-                    r#"(function(){try{var d=document.documentElement;var t=localStorage.getItem('theme')||'dark';d.setAttribute('data-theme',t);d.setAttribute('data-icons',localStorage.getItem('icons')==='0'?'0':'1');d.setAttribute('data-scores',localStorage.getItem('scores')==='1'?'1':'0');}catch(e){document.documentElement.setAttribute('data-theme','dark');}})();"#
+                    r#"(function(){try{var d=document.documentElement;var t=localStorage.getItem('theme')||'dark';d.setAttribute('data-theme',t);d.setAttribute('data-icons',localStorage.getItem('icons')==='1'?'1':'0');d.setAttribute('data-scores',localStorage.getItem('scores')==='1'?'1':'0');}catch(e){document.documentElement.setAttribute('data-theme','dark');}})();"#
                 </script>
                 // Web Push helper used by the reminder ★ buttons.
                 <script>
