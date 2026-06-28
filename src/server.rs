@@ -359,8 +359,13 @@ pub async fn add_reminder(req: ReminderReq) -> Result<(), ServerFnError> {
         // Derive each timer's time/title/body/url from the snapshot so a client
         // can't forge a notification (it only supplies its subscription + match
         // id + the lead offsets).
-        let seeds =
-            crate::cache::reminder_seeds_for_match(req.match_id, &req.sport, &leads, &req.tz);
+        let seeds = crate::cache::reminder_seeds_for_match(
+            req.match_id,
+            &req.sport,
+            &leads,
+            &req.tz,
+            req.hour24,
+        );
         if seeds.is_empty() {
             return Err(ServerFnError::new("match not found or already started"));
         }
@@ -429,6 +434,7 @@ pub async fn add_subscription(req: SubscribeReq) -> Result<(), ServerFnError> {
             lead_ms: lead_list.first().copied().unwrap_or(cfg.reminder_lead_ms),
             lead_list,
             tz: req.tz,
+            hour24: req.hour24,
         };
         crate::store::add_subscription(&conn, &s)
             .map_err(|e| ServerFnError::new(format!("db: {e}")))?;

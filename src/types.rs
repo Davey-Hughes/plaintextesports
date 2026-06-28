@@ -487,6 +487,10 @@ pub struct ReminderReq {
     /// configured display tz. Empty (old client / serde default) ⇒ the server tz.
     #[serde(default)]
     pub tz: String,
+    /// The viewer's 12h/24h preference, so the body's start time matches the rest
+    /// of the UI. `false` (old client / serde default) ⇒ 12-hour.
+    #[serde(default)]
+    pub hour24: bool,
 }
 
 /// Subscribe/unsubscribe to a whole sport or event.
@@ -506,6 +510,10 @@ pub struct SubscribeReq {
     /// the server's display tz.
     #[serde(default)]
     pub tz: String,
+    /// The viewer's 12h/24h preference, stored with the subscription so the
+    /// poller's expansion formats each body's time to match. `false` ⇒ 12-hour.
+    #[serde(default)]
+    pub hour24: bool,
 }
 
 /// The notifications page's starred-match data: the still-upcoming ones to show,

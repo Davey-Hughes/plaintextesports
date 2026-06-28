@@ -1025,8 +1025,10 @@ pub(crate) fn sync_entries(
     if !clear_first && subs.is_empty() && stars.is_empty() && excludes.is_empty() {
         return;
     }
-    // The viewer's zone, so the server bakes each body's start time locally.
+    // The viewer's zone + clock format, so the server bakes each body's start
+    // time locally in the format the rest of the UI uses.
     let tz = detect_tz().unwrap_or_default();
+    let hour24 = load_hour24_pref().unwrap_or(false);
     leptos::task::spawn_local(async move {
         // A user action, so it's fine to prompt + create a subscription.
         let sub = match pte_subscribe(&vapid).await {
@@ -1036,7 +1038,7 @@ pub(crate) fn sync_entries(
         let Some(push) = push_from_js(&sub) else {
             return;
         };
-        arm_entries(push, clear_first, subs, stars, excludes, tz).await;
+        arm_entries(push, clear_first, subs, stars, excludes, tz, hour24).await;
     });
 }
 
@@ -1054,6 +1056,7 @@ pub(crate) async fn arm_entries(
     stars: Vec<(i64, String, Vec<i64>)>,
     excludes: Vec<(i64, String)>,
     tz: String,
+    hour24: bool,
 ) {
     if clear_first {
         let _ = crate::server::clear_notifications(push.endpoint.clone()).await;
@@ -1065,6 +1068,7 @@ pub(crate) async fn arm_entries(
             value,
             leads,
             tz: tz.clone(),
+            hour24,
         })
         .await;
     }
@@ -1075,16 +1079,19 @@ pub(crate) async fn arm_entries(
             sport,
             leads,
             tz: tz.clone(),
+            hour24,
         })
         .await;
     }
     for (match_id, sport) in excludes {
+        // Exclusions don't carry a body, so the format is irrelevant.
         let _ = crate::server::exclude_reminder(crate::types::ReminderReq {
             sub: push.clone(),
             match_id,
             sport,
             leads: Vec::new(),
             tz: String::new(),
+            hour24: false,
         })
         .await;
     }
@@ -1110,7 +1117,10 @@ pub(crate) fn reconcile_notifications(
     if vapid.is_none() {
         return;
     }
+    // Re-arm with the current zone + clock format, so a since-changed 12h/24h
+    // preference re-renders existing reminders' bodies on the next load.
     let tz = detect_tz().unwrap_or_default();
+    let hour24 = load_hour24_pref().unwrap_or(false);
     // Resolve each entry's effective leads (its override else the global list) —
     // the same shape the import/global-edit paths arm with.
     let subs_re: Vec<(String, String, Vec<i64>)> = subscribed
@@ -1146,7 +1156,7 @@ pub(crate) fn reconcile_notifications(
         let Some(push) = push_from_js(&sub) else {
             return;
         };
-        arm_entries(push, true, subs_re, stars_re, excl_re, tz).await;
+        arm_entries(push, true, subs_re, stars_re, excl_re, tz, hour24).await;
     });
 }
 
@@ -1163,9 +1173,10 @@ pub(crate) fn subscribe_scope(
 ) {
     save_subs(&keys);
     let Some(vapid) = vapid else { return };
-    // The viewer's zone, stored with the subscription so expansion bakes each
-    // match's reminder body in their local time.
+    // The viewer's zone + clock format, stored with the subscription so expansion
+    // bakes each match's reminder body in their local time and chosen format.
     let tz = detect_tz().unwrap_or_default();
+    let hour24 = load_hour24_pref().unwrap_or(false);
     leptos::task::spawn_local(async move {
         let sub = match pte_subscribe(&vapid).await {
             Ok(s) => s,
@@ -1189,6 +1200,7 @@ pub(crate) fn subscribe_scope(
                 value,
                 leads,
                 tz,
+                hour24,
             })
             .await;
         } else {
@@ -1243,8 +1255,10 @@ pub(crate) fn sync_match_reminder(
 ) {
     let Some(vapid) = vapid else { return };
     let sport = sport.slug().to_string();
-    // The viewer's zone, so the server bakes the body's start time locally.
+    // The viewer's zone + clock format, so the server bakes the body's start time
+    // locally in the format the rest of the UI uses.
     let tz = detect_tz().unwrap_or_default();
+    let hour24 = load_hour24_pref().unwrap_or(false);
     leptos::task::spawn_local(async move {
         let sub = match pte_subscribe(&vapid).await {
             Ok(s) => s,
@@ -1270,6 +1284,7 @@ pub(crate) fn sync_match_reminder(
                 sport,
                 leads,
                 tz,
+                hour24,
             })
             .await;
         } else if covered {
@@ -1280,6 +1295,7 @@ pub(crate) fn sync_match_reminder(
                 sport,
                 leads: Vec::new(),
                 tz: String::new(),
+                hour24: false,
             })
             .await;
         } else {
