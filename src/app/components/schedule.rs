@@ -328,6 +328,133 @@ pub(crate) fn LeagueChips(
     view! { <div class="chips">{chips}</div> }
 }
 
+/// One day ready for the homepage's keyed `<For>`: the `DayGroup` plus a
+/// content-sensitive `key`. The key changes whenever anything that affects the
+/// day's render does — its own match set/scores/statuses, its position (first day
+/// hosts the "earlier" control), or the cross-day "editions with an upcoming
+/// session" set (a head ★ on a finished day depends on a later day) — so `<For>`
+/// re-renders exactly the days that changed on a filter toggle or 60s refresh and
+/// reuses the rest, instead of rebuilding the whole list.
+struct PreparedDay {
+    key: String,
+    is_first: bool,
+    today_key: String,
+    editions: std::sync::Arc<HashSet<(Sport, String, String)>>,
+    day: DayGroup,
+}
+
+/// The competition chips for the current view and whether to show them. Borrows
+/// the schedule (no clone), shared by the chip row and the day filter so both
+/// agree on when the chip selection applies.
+fn chip_state(
+    s: &ScheduleView,
+    games_set: &HashSet<String>,
+    trad: bool,
+) -> (Vec<(String, Sport)>, bool) {
+    let available = leagues_for_games(s, games_set);
+    let has_sub = s
+        .days
+        .iter()
+        .flat_map(|d| &d.leagues)
+        .flat_map(|lg| &lg.matches)
+        .any(|m| {
+            (games_set.is_empty() || games_set.contains(m.sport.slug()))
+                && m.sport.has_sub_leagues()
+        });
+    let show_chips = if trad {
+        !available.is_empty() && (available.len() > 1 || has_sub)
+    } else {
+        !available.is_empty()
+    };
+    (available, show_chips)
+}
+
+/// Order-independent fingerprint of the editions-with-upcoming set.
+fn editions_signature(e: &HashSet<(Sport, String, String)>) -> u64 {
+    use std::hash::{Hash, Hasher};
+    e.iter()
+        .map(|x| {
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            x.hash(&mut h);
+            h.finish()
+        })
+        .fold(0u64, |a, b| a ^ b)
+}
+
+/// Fingerprint of a day's render-affecting content: its leagues and, per match,
+/// the id + the mutable status/scores the 60s refresh changes.
+fn day_content_hash(d: &DayGroup) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    for lg in &d.leagues {
+        lg.league.hash(&mut h);
+        lg.series_name.hash(&mut h);
+        for m in &lg.matches {
+            m.id.hash(&mut h);
+            std::mem::discriminant(&m.status).hash(&mut h);
+            m.team_a.score.hash(&mut h);
+            m.team_b.score.hash(&mut h);
+        }
+    }
+    h.finish()
+}
+
+/// Apply the chip filter and turn the result into keyed [`PreparedDay`]s for the
+/// homepage's `<For>`. Mirrors the "only apply the chip selection when chips are
+/// on screen" rule so switching to a single-competition tab can't silently empty
+/// it.
+fn prepare_days(
+    s: ScheduleView,
+    games_set: &HashSet<String>,
+    leagues_sel: &HashSet<String>,
+    trad: bool,
+) -> Vec<PreparedDay> {
+    let (_, show_chips) = chip_state(&s, games_set, trad);
+    let leagues_filter = if show_chips || !trad {
+        leagues_sel.clone()
+    } else {
+        HashSet::new()
+    };
+    let filtered = filter_schedule(s, games_set, &leagues_filter);
+    let today_key = filtered.today_key.clone();
+    // Editions with an upcoming session anywhere in the (filtered) window — drives
+    // the head ★, which can sit on a finished day of a still-live edition.
+    let editions: HashSet<(Sport, String, String)> = filtered
+        .days
+        .iter()
+        .flat_map(|d| &d.leagues)
+        .filter(|lg| {
+            lg.matches
+                .iter()
+                .any(|m| matches!(m.status, MatchStatus::Upcoming))
+        })
+        .map(|lg| {
+            let sp = lg.matches.first().map(|m| m.sport).unwrap_or_default();
+            (sp, lg.league.clone(), lg.series_name.clone())
+        })
+        .collect();
+    let ed_sig = editions_signature(&editions);
+    let editions = std::sync::Arc::new(editions);
+    filtered
+        .days
+        .into_iter()
+        .enumerate()
+        .map(|(i, day)| PreparedDay {
+            key: format!(
+                "{}|{}|{:x}|{:x}",
+                day.day_key,
+                i == 0,
+                day_content_hash(&day),
+                ed_sig
+            ),
+            is_first: i == 0,
+            today_key: today_key.clone(),
+            editions: editions.clone(),
+            day,
+        })
+        .collect()
+}
+
 #[component]
 pub(crate) fn ScheduleSection(
     resource: Resource<Result<ScheduleView, ServerFnError>>,
@@ -425,61 +552,113 @@ pub(crate) fn ScheduleSection(
             }
         },
     );
+    // Show ★ reminder buttons only when Web Push is configured. `vapid` is seeded
+    // at render (from the shell <meta>), so this is settled before the first paint.
+    let push =
+        use_context::<RwSignal<Option<String>>>().is_some_and(|v| v.get_untracked().is_some());
     view! {
         // Transition (not Suspense) so re-keying the resource — e.g. "show
         // earlier days" extends the range — keeps the current schedule on screen
         // while the next loads, instead of blanking the page (which flashed the
         // footer up to the top).
         <Transition fallback=|| view! { <p class="loading">"loading…"</p> }>
+            // The frame — chips, single-day nav, and the freshness/demo notices.
+            // Reruns on any change (cheap: no rows), and reads the resource inside
+            // the Transition so loading/refetch behaves as before.
             {move || {
                 let trad = traditional.get();
-                resource
-                    .get()
-                    .map(|res| match res {
-                        Ok(s) => {
-                            let games_set = games.get();
-                            // Competition chips within the current view. In esports
-                            // these are the CS2/LoL events; in sports mode they're
-                            // shown when the view spans more than one league (e.g.
-                            // soccer's Premier League + World Cup), or when the sport
-                            // sub-categorises by league (soccer, motorsport → its F1
-                            // series), so a plain single-league sport (MLB, …) doesn't
-                            // get a chip that just repeats its tab.
-                            let available = leagues_for_games(&s, &games_set);
-                            let has_sub = s
-                                .days
-                                .iter()
-                                .flat_map(|d| &d.leagues)
-                                .flat_map(|lg| &lg.matches)
-                                .any(|m| {
-                                    (games_set.is_empty() || games_set.contains(m.sport.slug()))
-                                        && m.sport.has_sub_leagues()
-                                });
-                            let show_chips = if trad {
-                                !available.is_empty() && (available.len() > 1 || has_sub)
-                            } else {
-                                !available.is_empty()
-                            };
-                            // Only apply the chip filter when chips are on screen, so
-                            // a remembered selection can't silently empty a single-
-                            // competition sport when you switch to its tab.
-                            let leagues_filter =
-                                if show_chips || !trad { leagues.get() } else { HashSet::new() };
-                            let filtered = filter_schedule(s, &games_set, &leagues_filter);
-                            // Show ★ reminder buttons only when Web Push is configured.
-                            let push = use_context::<RwSignal<Option<String>>>()
-                                .is_some_and(|v| v.get().is_some());
+                match resource.get() {
+                    Some(Ok(s)) => {
+                        let games_set = games.get();
+                        let (available, show_chips) = chip_state(&s, &games_set, trad);
+                        if let Some(LastUpdated(lu)) = use_context::<LastUpdated>() {
+                            lu.set(Some(s.fetched_label.clone()));
+                        }
+                        let nav = show_nav.then(|| {
+                            let prev = s.prev_date.clone().unwrap_or_default();
+                            let next = s.next_date.clone().unwrap_or_default();
+                            let label = s.date_label.clone().unwrap_or_default();
                             view! {
-                                {show_chips
-                                    .then(|| view! { <LeagueChips leagues=available selected=leagues /> })}
-                                {render_schedule(filtered, show_nav, push, false, false)}
+                                <nav class="day-nav">
+                                    <A href=format!("/day/{prev}")>"‹ prev"</A>
+                                    <span class="day-nav-label">{label}</span>
+                                    <A href=format!("/day/{next}")>"next ›"</A>
+                                </nav>
                             }
-                                .into_any()
+                        });
+                        let mut notes: Vec<&str> = Vec::new();
+                        if s.demo_forced {
+                            notes.push("demo mode (forced)");
+                        } else if s.using_fixture {
+                            notes.push("demo data — set PANDASCORE_TOKEN for live schedules");
                         }
-                        Err(_) => {
-                            view! { <p class="error">"Failed to load schedule."</p> }.into_any()
+                        if s.stale {
+                            notes.push("data may be stale");
                         }
-                    })
+                        let note = notes.join(" · ");
+                        view! {
+                            {show_chips
+                                .then(|| view! { <LeagueChips leagues=available selected=leagues /> })}
+                            {nav}
+                            {(!note.is_empty())
+                                .then(|| view! { <div class="status-line">{note}</div> })}
+                        }
+                            .into_any()
+                    }
+                    Some(Err(_)) => {
+                        view! { <p class="error">"Failed to load schedule."</p> }.into_any()
+                    }
+                    None => ().into_any(),
+                }
+            }}
+            // The day list: a keyed <For> so a filter toggle / 60s refresh diffs
+            // (re-rendering only the days whose content key changed) instead of
+            // rebuilding every row. `each` reads the resource inside the Transition.
+            <For
+                each=move || {
+                    let trad = traditional.get();
+                    match resource.get() {
+                        Some(Ok(s)) => prepare_days(s, &games.get(), &leagues.get(), trad),
+                        _ => Vec::new(),
+                    }
+                }
+                key=|pd| pd.key.clone()
+                children=move |pd| {
+                    let today = StoredValue::new(pd.today_key);
+                    render_day(pd.day, pd.is_first, today, &pd.editions, false, !show_nav, push)
+                }
+            />
+            // Empty-state message + the homepage's earlier/later reveal controls.
+            {move || {
+                let trad = traditional.get();
+                match resource.get() {
+                    Some(Ok(s)) => {
+                        let empty = prepare_days(s, &games.get(), &leagues.get(), trad).is_empty();
+                        // The homepage (no nav) reveals earlier/later days; the
+                        // single-day view uses prev/next nav instead.
+                        let show_earlier = !show_nav;
+                        view! {
+                            {(show_earlier && empty).then(|| view! { <EarlierControl /> })}
+                            {empty
+                                .then(|| {
+                                    view! {
+                                        <p class="empty">
+                                            {move || {
+                                                if traditional.get() {
+                                                    "No matches in this window."
+                                                } else {
+                                                    "No tier-1 matches in this window."
+                                                }
+                                            }}
+                                        </p>
+                                    }
+                                })}
+                            {show_earlier.then(|| view! { <LaterControl /> })}
+                        }
+                            .into_any()
+                    }
+                    _ => ().into_any(),
+                }
             }}
         </Transition>
         // When exactly one esports event is selected, show its standings/bracket.
@@ -784,203 +963,15 @@ pub(crate) fn render_schedule(
         .into_iter()
         .enumerate()
         .map(|(idx, d)| {
-            let leagues = d
-                .leagues
-                .into_iter()
-                .map(|lg| {
-                    // The best-of always shows per row (right of each match); the
-                    // event title no longer repeats it.
-                    let show_bo = true;
-                    let league_name = lg.league.clone();
-                    // The group's sport (a league is single-sport) scopes the event
-                    // URL and the subscribe key. Read from any of its matches.
-                    let sport = lg.matches.first().map(|m| m.sport).unwrap_or_default();
-                    // Title the group with the full event name (league + edition,
-                    // e.g. "IEM Katowice"); the subscribe key stays the short
-                    // league name, while the full name keys the event link.
-                    let series = lg.series_name.clone();
-                    // The ★ shows while the EDITION (not just this day) still has an
-                    // upcoming session to be reminded about; a wholly-finished edition
-                    // shows the grey bar. Keyed the same way as the edition set above.
-                    let lg_has_upcoming = editions_with_upcoming.contains(&(
-                        sport,
-                        lg.league.clone(),
-                        lg.series_name.clone(),
-                    ));
-                    // A "wholly over" group: every row finished AND the edition has no
-                    // upcoming session (so the header carries no ★). It gets one
-                    // continuous grey rail spanning the header *and* the rows (see
-                    // `.league-over`), instead of a blank header above the rows' bar.
-                    let lg_over = !lg_has_upcoming
-                        && !lg.matches.is_empty()
-                        && lg.matches.iter().all(|m| matches!(m.status, MatchStatus::Finished));
-                    // On the event page the page title already names the event, so we
-                    // drop the per-day league header, the colour-coded bar, and show
-                    // the best-of per row instead.
-                    let league_class = if event_mode {
-                        "league league-plain".to_string()
-                    } else {
-                        let mut c = format!("league {}", league_color_class(&lg.league));
-                        if lg_over {
-                            c.push_str(" league-over");
-                        }
-                        c
-                    };
-                    let head = (!event_mode).then(move || {
-                        let display = full_event_name(&league_name, &series);
-                        // The full edition name keys its event page, so distinct
-                        // editions get distinct URLs.
-                        let event_href = event_path(sport, &display);
-                        // The ★ subscribes to the whole competition (`league|<name>`).
-                        // For a single-edition league like MLB/NHL/NBA/NFL this is the
-                        // same match set — and the same key — as its filter chip's ★,
-                        // so the two stay in lock-step; for F1/WEC it spans every round.
-                        // When the edition is wholly over the ★ is suppressed and the
-                        // header just keeps a blank slot the width of the ★ (a
-                        // transparent ☆), so the title stays aligned with the starred
-                        // groups without drawing anything. The slot is only reserved
-                        // when push is on (the ★ is hidden entirely otherwise).
-                        let star = if lg_has_upcoming {
-                            view! {
-                                <SubscribeStar kind="league" sport=sport value=league_name.clone() />
-                            }
-                            .into_any()
-                        } else if push {
-                            // Invisible stand-in with the IDENTICAL box to a real ★
-                            // (same <button class="sub-star">), so the title lines up
-                            // exactly as in starred groups on every browser. A plain
-                            // <span> ☆ renders in a different font/width than the
-                            // <button> ☆ (notably on Firefox), which nudged the title
-                            // off the time column below.
-                            view! {
-                                <button
-                                    class="sub-star league-head-spacer"
-                                    aria-hidden="true"
-                                    tabindex="-1"
-                                >
-                                    "☆"
-                                </button>
-                            }
-                            .into_any()
-                        } else {
-                            ().into_any()
-                        };
-                        view! {
-                            <div class="league-head">
-                                {star}
-                                <h3 class="league-title">
-                                    <A href=event_href>{display}</A>
-                                </h3>
-                            </div>
-                        }
-                    });
-                    // Group consecutive rows by their side-bar kind so each run of
-                    // finished (grey) or live (accent) rows draws ONE continuous bar
-                    // (on the wrapping `.bar-run`) instead of per-row `.row-bar`
-                    // segments — segments could misalign or show overlap seams at
-                    // fractional zoom (Chrome/Firefox). Upcoming/other rows form a
-                    // bar-less run (their ☆/placeholder stays per-row).
-                    #[derive(PartialEq, Clone, Copy)]
-                    enum BarKind {
-                        Final,
-                        Live,
-                        None,
-                    }
-                    let bar_kind = |s: MatchStatus| match s {
-                        MatchStatus::Finished => BarKind::Final,
-                        MatchStatus::Live => BarKind::Live,
-                        _ => BarKind::None,
-                    };
-                    let mut runs: Vec<(BarKind, Vec<_>)> = Vec::new();
-                    for m in lg.matches {
-                        let k = bar_kind(m.status);
-                        match runs.last_mut() {
-                            Some((rk, ms)) if *rk == k => ms.push(m),
-                            _ => runs.push((k, vec![m])),
-                        }
-                    }
-                    let rows = runs
-                        .into_iter()
-                        .map(|(k, ms)| {
-                            let inner = ms
-                                .into_iter()
-                                .map(|m| view! { <MatchRow m=m show_bo=show_bo push=push /> })
-                                .collect_view();
-                            let cls = match k {
-                                BarKind::Final => "bar-run run-final",
-                                BarKind::Live => "bar-run run-live",
-                                BarKind::None => "bar-run",
-                            };
-                            view! { <div class=cls>{inner}</div> }
-                        })
-                        .collect_view();
-                    view! {
-                        <div class=league_class>
-                            {head}
-                            <div class="rows">{rows}</div>
-                        </div>
-                    }
-                })
-                .collect_view();
-            // Grey a past day's heading, highlight today's (keys sort by date).
-            let day_cls = today_key.with_value(|t| {
-                if t.is_empty() {
-                    "day-title"
-                } else if d.day_key.as_str() < t.as_str() {
-                    "day-title day-past"
-                } else if d.day_key == *t {
-                    "day-title day-today"
-                } else {
-                    "day-title"
-                }
-            });
-            // On the homepage the date heading doubles as a share link: clicking it
-            // writes #day-<date> to the URL (handy for the last days, which you
-            // can't scroll far enough for the scrollspy to reach).
-            let key = d.day_key.clone();
-            // When venue time is shown, annotate each heading so it's clear the
-            // times below are venue-local (the dates can differ from this heading).
-            let show_venue = use_context::<ShowVenue>().map(|s| s.0);
-            let venue_shown = move || show_venue.is_some_and(|sv| sv.get());
-            let heading = view! {
-                <h2
-                    class=day_cls
-                    class:day-share=!event_mode
-                    title=(!event_mode).then_some("Link to this day")
-                    on:click=move |_| {
-                        #[cfg(feature = "hydrate")]
-                        if !event_mode {
-                            if let Some(h) = web_sys::window().and_then(|w| w.history().ok()) {
-                                let _ = h.replace_state_with_url(
-                                    &wasm_bindgen::JsValue::NULL,
-                                    "",
-                                    Some(&format!("#day-{key}")),
-                                );
-                            }
-                        }
-                        #[cfg(not(feature = "hydrate"))]
-                        let _ = &key;
-                    }
-                >
-                    {d.day_label}
-                    {move || {
-                        venue_shown()
-                            .then(|| view! { <span class="day-venue-note">"venue time"</span> })
-                    }}
-                </h2>
-            };
-            // The first day carries the "show earlier days" control beside its date.
-            let head = if idx == 0 && show_earlier {
-                view! { <div class="day-head">{heading}<EarlierControl /></div> }.into_any()
-            } else {
-                heading.into_any()
-            };
-            view! {
-                <section class="day" class:spy=!event_mode id=format!("day-{}", d.day_key)>
-                    {head}
-                    {leagues}
-                </section>
-            }
+            render_day(
+                d,
+                idx == 0,
+                today_key,
+                &editions_with_upcoming,
+                event_mode,
+                show_earlier,
+                push,
+            )
         })
         .collect_view();
 
@@ -1030,6 +1021,225 @@ pub(crate) fn render_schedule(
         {show_earlier.then(|| view! { <LaterControl /> })}
         {upnext_day.map(|day| view! { <UpNextBar day=day /> })}
     }
+}
+
+/// Render one day's `<section>`: its heading (a share link on the homepage, with
+/// the "show earlier" control on the first day), then its league groups, each a
+/// titled header (with the edition ★) over status-grouped row runs. Extracted from
+/// [`render_schedule`] so the live homepage can drive the day list with a keyed
+/// `<For>` (diffing across filter toggles and the 60s refresh) while the static
+/// event/team/day pages keep mapping it straight through.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn render_day(
+    d: DayGroup,
+    is_first: bool,
+    today_key: StoredValue<String>,
+    editions_with_upcoming: &HashSet<(Sport, String, String)>,
+    event_mode: bool,
+    show_earlier: bool,
+    push: bool,
+) -> AnyView {
+    let leagues = d
+        .leagues
+        .into_iter()
+        .map(|lg| {
+            // The best-of always shows per row (right of each match); the
+            // event title no longer repeats it.
+            let show_bo = true;
+            let league_name = lg.league.clone();
+            // The group's sport (a league is single-sport) scopes the event
+            // URL and the subscribe key. Read from any of its matches.
+            let sport = lg.matches.first().map(|m| m.sport).unwrap_or_default();
+            // Title the group with the full event name (league + edition,
+            // e.g. "IEM Katowice"); the subscribe key stays the short
+            // league name, while the full name keys the event link.
+            let series = lg.series_name.clone();
+            // The ★ shows while the EDITION (not just this day) still has an
+            // upcoming session to be reminded about; a wholly-finished edition
+            // shows the grey bar. Keyed the same way as the edition set above.
+            let lg_has_upcoming = editions_with_upcoming.contains(&(
+                sport,
+                lg.league.clone(),
+                lg.series_name.clone(),
+            ));
+            // A "wholly over" group: every row finished AND the edition has no
+            // upcoming session (so the header carries no ★). It gets one
+            // continuous grey rail spanning the header *and* the rows (see
+            // `.league-over`), instead of a blank header above the rows' bar.
+            let lg_over = !lg_has_upcoming
+                && !lg.matches.is_empty()
+                && lg
+                    .matches
+                    .iter()
+                    .all(|m| matches!(m.status, MatchStatus::Finished));
+            // On the event page the page title already names the event, so we
+            // drop the per-day league header, the colour-coded bar, and show
+            // the best-of per row instead.
+            let league_class = if event_mode {
+                "league league-plain".to_string()
+            } else {
+                let mut c = format!("league {}", league_color_class(&lg.league));
+                if lg_over {
+                    c.push_str(" league-over");
+                }
+                c
+            };
+            let head = (!event_mode).then(move || {
+                let display = full_event_name(&league_name, &series);
+                // The full edition name keys its event page, so distinct
+                // editions get distinct URLs.
+                let event_href = event_path(sport, &display);
+                // The ★ subscribes to the whole competition (`league|<name>`).
+                // For a single-edition league like MLB/NHL/NBA/NFL this is the
+                // same match set — and the same key — as its filter chip's ★,
+                // so the two stay in lock-step; for F1/WEC it spans every round.
+                // When the edition is wholly over the ★ is suppressed and the
+                // header just keeps a blank slot the width of the ★ (a
+                // transparent ☆), so the title stays aligned with the starred
+                // groups without drawing anything. The slot is only reserved
+                // when push is on (the ★ is hidden entirely otherwise).
+                let star = if lg_has_upcoming {
+                    view! {
+                        <SubscribeStar kind="league" sport=sport value=league_name.clone() />
+                    }
+                    .into_any()
+                } else if push {
+                    // Invisible stand-in with the IDENTICAL box to a real ★
+                    // (same <button class="sub-star">), so the title lines up
+                    // exactly as in starred groups on every browser. A plain
+                    // <span> ☆ renders in a different font/width than the
+                    // <button> ☆ (notably on Firefox), which nudged the title
+                    // off the time column below.
+                    view! {
+                        <button
+                            class="sub-star league-head-spacer"
+                            aria-hidden="true"
+                            tabindex="-1"
+                        >
+                            "☆"
+                        </button>
+                    }
+                    .into_any()
+                } else {
+                    ().into_any()
+                };
+                view! {
+                    <div class="league-head">
+                        {star}
+                        <h3 class="league-title">
+                            <A href=event_href>{display}</A>
+                        </h3>
+                    </div>
+                }
+            });
+            // Group consecutive rows by their side-bar kind so each run of
+            // finished (grey) or live (accent) rows draws ONE continuous bar
+            // (on the wrapping `.bar-run`) instead of per-row `.row-bar`
+            // segments — segments could misalign or show overlap seams at
+            // fractional zoom (Chrome/Firefox). Upcoming/other rows form a
+            // bar-less run (their ☆/placeholder stays per-row).
+            #[derive(PartialEq, Clone, Copy)]
+            enum BarKind {
+                Final,
+                Live,
+                None,
+            }
+            let bar_kind = |s: MatchStatus| match s {
+                MatchStatus::Finished => BarKind::Final,
+                MatchStatus::Live => BarKind::Live,
+                _ => BarKind::None,
+            };
+            let mut runs: Vec<(BarKind, Vec<_>)> = Vec::new();
+            for m in lg.matches {
+                let k = bar_kind(m.status);
+                match runs.last_mut() {
+                    Some((rk, ms)) if *rk == k => ms.push(m),
+                    _ => runs.push((k, vec![m])),
+                }
+            }
+            let rows = runs
+                .into_iter()
+                .map(|(k, ms)| {
+                    let inner = ms
+                        .into_iter()
+                        .map(|m| view! { <MatchRow m=m show_bo=show_bo push=push /> })
+                        .collect_view();
+                    let cls = match k {
+                        BarKind::Final => "bar-run run-final",
+                        BarKind::Live => "bar-run run-live",
+                        BarKind::None => "bar-run",
+                    };
+                    view! { <div class=cls>{inner}</div> }
+                })
+                .collect_view();
+            view! {
+                <div class=league_class>
+                    {head}
+                    <div class="rows">{rows}</div>
+                </div>
+            }
+        })
+        .collect_view();
+    // Grey a past day's heading, highlight today's (keys sort by date).
+    let day_cls = today_key.with_value(|t| {
+        if t.is_empty() {
+            "day-title"
+        } else if d.day_key.as_str() < t.as_str() {
+            "day-title day-past"
+        } else if d.day_key == *t {
+            "day-title day-today"
+        } else {
+            "day-title"
+        }
+    });
+    // On the homepage the date heading doubles as a share link: clicking it
+    // writes #day-<date> to the URL (handy for the last days, which you
+    // can't scroll far enough for the scrollspy to reach).
+    let key = d.day_key.clone();
+    // When venue time is shown, annotate each heading so it's clear the
+    // times below are venue-local (the dates can differ from this heading).
+    let show_venue = use_context::<ShowVenue>().map(|s| s.0);
+    let venue_shown = move || show_venue.is_some_and(|sv| sv.get());
+    let heading = view! {
+        <h2
+            class=day_cls
+            class:day-share=!event_mode
+            title=(!event_mode).then_some("Link to this day")
+            on:click=move |_| {
+                #[cfg(feature = "hydrate")]
+                if !event_mode {
+                    if let Some(h) = web_sys::window().and_then(|w| w.history().ok()) {
+                        let _ = h.replace_state_with_url(
+                            &wasm_bindgen::JsValue::NULL,
+                            "",
+                            Some(&format!("#day-{key}")),
+                        );
+                    }
+                }
+                #[cfg(not(feature = "hydrate"))]
+                let _ = &key;
+            }
+        >
+            {d.day_label}
+            {move || {
+                venue_shown()
+                    .then(|| view! { <span class="day-venue-note">"venue time"</span> })
+            }}
+        </h2>
+    };
+    // The first day carries the "show earlier days" control beside its date.
+    let head = if is_first && show_earlier {
+        view! { <div class="day-head">{heading}<EarlierControl /></div> }.into_any()
+    } else {
+        heading.into_any()
+    };
+    view! {
+        <section class="day" class:spy=!event_mode id=format!("day-{}", d.day_key)>
+            {head}
+            {leagues}
+        </section>
+    }
+    .into_any()
 }
 
 /// A click handler that toggles whether match `uid`'s score is revealed in the
