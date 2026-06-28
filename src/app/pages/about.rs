@@ -68,4 +68,3 @@ pub(crate) fn AboutPage() -> impl IntoView {
         </article>
     }
 }
-

@@ -121,4 +121,3 @@ pub(crate) fn BrandSlot() -> impl IntoView {
         </div>
     }
 }
-

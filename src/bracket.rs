@@ -113,7 +113,10 @@ pub fn layout(rounds: &[BracketRound]) -> BracketLayout {
             round
                 .matches
                 .iter()
-                .map(|_| Pos { col: col_of[r], y: 0.0 })
+                .map(|_| Pos {
+                    col: col_of[r],
+                    y: 0.0,
+                })
                 .collect()
         })
         .collect();
@@ -141,7 +144,10 @@ pub fn layout(rounds: &[BracketRound]) -> BracketLayout {
                     cursor += 1.0;
                     slot
                 } else {
-                    parents.iter().map(|&(fr, fi)| positions[fr][fi].y).sum::<f64>()
+                    parents
+                        .iter()
+                        .map(|&(fr, fi)| positions[fr][fi].y)
+                        .sum::<f64>()
                         / parents.len() as f64
                 };
             }
@@ -175,7 +181,10 @@ pub fn layout(rounds: &[BracketRound]) -> BracketLayout {
         for i in 0..rounds[r].matches.len() {
             for &(fr, fi) in &rounds[r].matches[i].feeders {
                 if section[r] == "final" || section[fr] == section[r] {
-                    edges.push(Edge { from: (fr, fi), to: (r, i) });
+                    edges.push(Edge {
+                        from: (fr, fi),
+                        to: (r, i),
+                    });
                 }
             }
         }
@@ -184,7 +193,14 @@ pub fn layout(rounds: &[BracketRound]) -> BracketLayout {
     let cols = col_of.iter().copied().max().map_or(0, |c| c + 1);
     let bracket_cols = non_final_cols.max(1);
     let height = positions.iter().flatten().map(|p| p.y).fold(0.0, f64::max) + 1.0;
-    BracketLayout { positions, edges, cols, bracket_cols, height, group_rows }
+    BracketLayout {
+        positions,
+        edges,
+        cols,
+        bracket_cols,
+        height,
+        group_rows,
+    }
 }
 
 /// Right edge (in em) of the last winner's/loser's-bracket column — where a
@@ -226,10 +242,17 @@ mod tests {
     use crate::types::{BracketMatch, BracketRound};
 
     fn m(feeders: &[(usize, usize)]) -> BracketMatch {
-        BracketMatch { feeders: feeders.to_vec(), ..Default::default() }
+        BracketMatch {
+            feeders: feeders.to_vec(),
+            ..Default::default()
+        }
     }
     fn round(section: &str, matches: Vec<BracketMatch>) -> BracketRound {
-        BracketRound { title: String::new(), matches, section: section.to_string() }
+        BracketRound {
+            title: String::new(),
+            matches,
+            section: section.to_string(),
+        }
     }
     fn y(l: &BracketLayout, r: usize, i: usize) -> f64 {
         l.positions[r][i].y
@@ -247,7 +270,10 @@ mod tests {
             round("", vec![m(&[(1, 0), (1, 1)])]),
         ];
         let l = layout(&rounds);
-        assert_eq!([y(&l, 0, 0), y(&l, 0, 1), y(&l, 0, 2), y(&l, 0, 3)], [0.0, 1.0, 2.0, 3.0]);
+        assert_eq!(
+            [y(&l, 0, 0), y(&l, 0, 1), y(&l, 0, 2), y(&l, 0, 3)],
+            [0.0, 1.0, 2.0, 3.0]
+        );
         assert_eq!([y(&l, 1, 0), y(&l, 1, 1)], [0.5, 2.5]);
         assert_eq!(y(&l, 2, 0), 1.5);
         assert_eq!(l.edges.len(), 6);
@@ -273,7 +299,11 @@ mod tests {
         // Lower region below the gap (its only leaf takes the next free slot).
         let lb = y(&l, 2, 0);
         assert!(lb > 1.5, "lower bracket should stack below upper, got {lb}");
-        assert_eq!(y(&l, 3, 0), lb, "LB final sits on its single in-section feeder");
+        assert_eq!(
+            y(&l, 3, 0),
+            lb,
+            "LB final sits on its single in-section feeder"
+        );
         // Grand final centred between the two bracket finals.
         assert_eq!(y(&l, 4, 0), (0.5 + lb) / 2.0);
         // Both finals right-aligned to the same column; grand final follows.
@@ -309,6 +339,9 @@ mod tests {
         ];
         let l = layout(&rounds);
         let (a, b) = (y(&l, 1, 0), y(&l, 1, 1));
-        assert!((a - b).abs() >= 1.0, "centres must be >= 1 slot apart, got {a} and {b}");
+        assert!(
+            (a - b).abs() >= 1.0,
+            "centres must be >= 1 slot apart, got {a} and {b}"
+        );
     }
 }

@@ -16,7 +16,7 @@
 //! gives only a date, no per-stage times).
 
 use crate::pandascore::{NormTeam, NormalizedMatch};
-use crate::types::{Sport, MatchStatus, MotorStandingRow, MotorStandingTable, MotorStandings};
+use crate::types::{MatchStatus, MotorStandingRow, MotorStandingTable, MotorStandings, Sport};
 use chrono::{DateTime, Datelike, Duration, NaiveDate, Utc};
 use serde::Deserialize;
 
@@ -58,7 +58,12 @@ fn flag(two_code: &str) -> String {
 
 /// Map the API's status string to ours; for a vague "scheduled"/unknown, infer
 /// from the event window so an in-progress or just-finished event reads right.
-fn status_of(api: &str, begin: DateTime<Utc>, end: DateTime<Utc>, now: DateTime<Utc>) -> MatchStatus {
+fn status_of(
+    api: &str,
+    begin: DateTime<Utc>,
+    end: DateTime<Utc>,
+    now: DateTime<Utc>,
+) -> MatchStatus {
     match api.to_ascii_lowercase().as_str() {
         "completed" | "finished" | "final" => MatchStatus::Finished,
         "cancelled" | "canceled" | "postponed" => MatchStatus::Canceled,
@@ -77,7 +82,9 @@ fn parse_date(d: &str) -> Option<DateTime<Utc>> {
 }
 
 fn parse_dt(s: &str) -> Option<DateTime<Utc>> {
-    DateTime::parse_from_rfc3339(s).ok().map(|d| d.with_timezone(&Utc))
+    DateTime::parse_from_rfc3339(s)
+        .ok()
+        .map(|d| d.with_timezone(&Utc))
 }
 
 // ----- Shared location shape ------------------------------------------------
@@ -184,8 +191,18 @@ fn motorsport_match(
         league,
         begin_at,
         status,
-        NormTeam { label: label.to_string(), name: String::new(), abbrev: String::new(), score: None },
-        NormTeam { label: String::new(), name: String::new(), abbrev: String::new(), score: None },
+        NormTeam {
+            label: label.to_string(),
+            name: String::new(),
+            abbrev: String::new(),
+            score: None,
+        },
+        NormTeam {
+            label: String::new(),
+            name: String::new(),
+            abbrev: String::new(),
+            score: None,
+        },
     );
     m.series_name = format!("{event_name} {season}");
     m.venue_name = loc.name.clone();
@@ -295,7 +312,11 @@ fn stage_label(s: &Stage) -> String {
 /// with the host country's venue-local time available (like a WEC session). A
 /// stage with no start time is skipped. The id hashes the stage's own UUID, so it
 /// never collides with the rally's date-only placeholder (keyed off the rally id).
-fn rally_stage_matches(r: &Rally, detail: &RallyDetail, now: DateTime<Utc>) -> Vec<NormalizedMatch> {
+fn rally_stage_matches(
+    r: &Rally,
+    detail: &RallyDetail,
+    now: DateTime<Utc>,
+) -> Vec<NormalizedMatch> {
     let venue_tz = wrc_venue_tz(&r.location.country.two_code);
     let sch = &detail.schedule;
     sch.shakedown
@@ -367,8 +388,11 @@ pub async fn fetch_wrc(
 ) -> Result<(Vec<NormalizedMatch>, u64), reqwest::Error> {
     let url = format!("{BASE}/wrc/rallies?year={year}&limit=100");
     let resp: RalliesResp = get(client, key, &url).await?;
-    let mut rows: Vec<NormalizedMatch> =
-        resp.data.iter().filter_map(|r| rally_to_match(r, now)).collect();
+    let mut rows: Vec<NormalizedMatch> = resp
+        .data
+        .iter()
+        .filter_map(|r| rally_to_match(r, now))
+        .collect();
 
     // Spend a second request on the active rally's stage timetable, when there is
     // one. Until its schedule is published the detail carries no timed stages, so
@@ -569,7 +593,11 @@ pub async fn fetch_wec(
     let url = format!("{BASE}/wec/events?year={year}&limit=100");
     let resp: EventsResp = get(client, key, &url).await?;
     let now = Utc::now();
-    Ok(resp.data.iter().flat_map(|e| event_to_matches(e, now)).collect())
+    Ok(resp
+        .data
+        .iter()
+        .flat_map(|e| event_to_matches(e, now))
+        .collect())
 }
 
 // ----- MotoGP: /v1/moto-gp/events?year= -------------------------------------
@@ -738,7 +766,9 @@ pub async fn fetch_wec_standings(client: &reqwest::Client, key: &str) -> MotorSt
 
 /// Points come as a decimal string ("186.00"); show a whole number when it is one.
 fn fmt_points_str(s: &str) -> String {
-    s.parse::<f64>().map(fmt_points).unwrap_or_else(|_| s.to_string())
+    s.parse::<f64>()
+        .map(fmt_points)
+        .unwrap_or_else(|_| s.to_string())
 }
 
 #[derive(Deserialize)]
@@ -768,12 +798,8 @@ struct MotoGpTeamStand {
 /// fails or is empty is simply omitted.
 pub async fn fetch_motogp_standings(client: &reqwest::Client, key: &str) -> MotorStandings {
     let mut tables = Vec::new();
-    if let Ok(rows) = get::<Vec<MotoGpRider>>(
-        client,
-        key,
-        &format!("{BASE}/moto-gp/standings/drivers"),
-    )
-    .await
+    if let Ok(rows) =
+        get::<Vec<MotoGpRider>>(client, key, &format!("{BASE}/moto-gp/standings/drivers")).await
     {
         let rows: Vec<MotorStandingRow> = rows
             .iter()
@@ -785,7 +811,11 @@ pub async fn fetch_motogp_standings(client: &reqwest::Client, key: &str) -> Moto
             })
             .collect();
         if !rows.is_empty() {
-            tables.push(MotorStandingTable { group: String::new(), title: "Riders".to_string(), rows });
+            tables.push(MotorStandingTable {
+                group: String::new(),
+                title: "Riders".to_string(),
+                rows,
+            });
         }
     }
     if let Ok(rows) =
@@ -801,7 +831,11 @@ pub async fn fetch_motogp_standings(client: &reqwest::Client, key: &str) -> Moto
             })
             .collect();
         if !rows.is_empty() {
-            tables.push(MotorStandingTable { group: String::new(), title: "Teams".to_string(), rows });
+            tables.push(MotorStandingTable {
+                group: String::new(),
+                title: "Teams".to_string(),
+                rows,
+            });
         }
     }
     MotorStandings { tables }
@@ -855,9 +889,17 @@ struct WrcResultRow {
 fn wrc_result_rows(rows: &[WrcResultRow]) -> Vec<crate::types::MotorResultRow> {
     rows.iter()
         .map(|r| {
-            let total = if r.total_time.is_empty() { r.stage_time.clone() } else { r.total_time.clone() };
+            let total = if r.total_time.is_empty() {
+                r.stage_time.clone()
+            } else {
+                r.total_time.clone()
+            };
             // The leader shows the absolute time; everyone else the gap to first.
-            let time = if r.diff_first.starts_with('+') { r.diff_first.clone() } else { total };
+            let time = if r.diff_first.starts_with('+') {
+                r.diff_first.clone()
+            } else {
+                total
+            };
             let team = r
                 .team
                 .as_ref()
@@ -897,7 +939,11 @@ fn motogp_result_rows(rows: &[MotoResultRow]) -> Vec<crate::types::MotorResultRo
     rows.iter()
         .map(|r| {
             let gap = r.gap.clone().unwrap_or_default();
-            let time = if !gap.is_empty() && gap != "0.000" { gap } else { r.lap_time.clone() };
+            let time = if !gap.is_empty() && gap != "0.000" {
+                gap
+            } else {
+                r.lap_time.clone()
+            };
             crate::types::MotorResultRow {
                 pos: r.position.clone(),
                 name: r.driver.name(),
@@ -942,8 +988,10 @@ pub async fn fetch_motor_result(
                 .unwrap_or_default()
         }
         ("MotoGP", _) => {
-            let url =
-                format!("{BASE}/moto-gp/events/{}/sessions/{}/results", r.event_id, r.session_id);
+            let url = format!(
+                "{BASE}/moto-gp/events/{}/sessions/{}/results",
+                r.event_id, r.session_id
+            );
             get::<Vec<MotoResultRow>>(client, key, &url)
                 .await
                 .map(|rows| motogp_result_rows(&rows))
@@ -988,7 +1036,11 @@ mod tests {
         let resp: RalliesResp = serde_json::from_str(json).unwrap();
         // Before the 2026 season: Monte-Carlo (Jan) upcoming, Paraguay (Aug 2025) done.
         let now = "2026-01-01T00:00:00Z".parse::<DateTime<Utc>>().unwrap();
-        let ms: Vec<NormalizedMatch> = resp.data.iter().filter_map(|r| rally_to_match(r, now)).collect();
+        let ms: Vec<NormalizedMatch> = resp
+            .data
+            .iter()
+            .filter_map(|r| rally_to_match(r, now))
+            .collect();
         assert_eq!(ms.len(), 2);
         let mc = &ms[0];
         assert_eq!(mc.sport, Sport::Motorsport);
@@ -1040,16 +1092,24 @@ mod tests {
         assert!(ms
             .iter()
             .all(|m| m.league == "WRC" && m.series_name == "EKO Acropolis Rally Greece 2026"));
-        assert!(ms.iter().all(|m| m.venue_tz.as_deref() == Some("Europe/Athens")));
+        assert!(ms
+            .iter()
+            .all(|m| m.venue_tz.as_deref() == Some("Europe/Athens")));
         let ss1 = ms.iter().find(|m| m.team_a.label == "SS1 EKO SSS").unwrap();
         assert_eq!(ss1.begin_at.to_rfc3339(), "2026-06-25T16:02:00+00:00");
         assert_eq!(ss1.status, MatchStatus::Finished);
         // A vague "scheduled" status is read off the window — SS2 is in progress.
-        let ss2 = ms.iter().find(|m| m.team_a.label == "SS2 Bauxites").unwrap();
+        let ss2 = ms
+            .iter()
+            .find(|m| m.team_a.label == "SS2 Bauxites")
+            .unwrap();
         assert_eq!(ss2.status, MatchStatus::Live);
         // The power stage rides in as its own row, labelled so the schedule can flag
         // the day, and still upcoming.
-        let ps = ms.iter().find(|m| m.team_a.label.contains("Power Stage")).unwrap();
+        let ps = ms
+            .iter()
+            .find(|m| m.team_a.label.contains("Power Stage"))
+            .unwrap();
         assert_eq!(ps.begin_at.to_rfc3339(), "2026-06-28T11:12:00+00:00");
         assert_eq!(ps.status, MatchStatus::Upcoming);
         // Stage ids hash the stage UUID, so none collides with the rally's date-only
@@ -1088,7 +1148,7 @@ mod tests {
         assert_eq!(wrc_venue_tz("GR"), Some("Europe/Athens"));
         assert_eq!(wrc_venue_tz("jp"), Some("Asia/Tokyo")); // case-insensitive alpha-2
         assert_eq!(wrc_venue_tz("JPN"), Some("Asia/Tokyo")); // alpha-3, as the feed sends
-        // Spain's round runs on the Canary Islands, an hour behind the mainland.
+                                                             // Spain's round runs on the Canary Islands, an hour behind the mainland.
         assert_eq!(wrc_venue_tz("ES"), Some("Atlantic/Canary"));
         // Off-calendar countries simply have no venue clock.
         assert_eq!(wrc_venue_tz("US"), None);
@@ -1109,20 +1169,31 @@ mod tests {
         ]}"#;
         let resp: EventsResp = serde_json::from_str(json).unwrap();
         let now = "2026-06-26T00:00:00Z".parse::<DateTime<Utc>>().unwrap();
-        let ms: Vec<NormalizedMatch> = resp.data.iter().flat_map(|e| event_to_matches(e, now)).collect();
+        let ms: Vec<NormalizedMatch> = resp
+            .data
+            .iter()
+            .flat_map(|e| event_to_matches(e, now))
+            .collect();
         // One row per session, all under the same season-qualified series.
         assert_eq!(ms.len(), 3);
-        assert!(ms.iter().all(|m| m.league == "WEC" && m.series_name == "24 Hours of Le Mans 2025"));
+        assert!(ms
+            .iter()
+            .all(|m| m.league == "WEC" && m.series_name == "24 Hours of Le Mans 2025"));
         // Each session is labelled by its published name and carries the venue
         // tz, so every row gets the venue-local toggle (FR → Paris).
-        assert!(ms.iter().all(|m| m.venue_tz.as_deref() == Some("Europe/Paris")));
+        assert!(ms
+            .iter()
+            .all(|m| m.venue_tz.as_deref() == Some("Europe/Paris")));
         let race = ms.iter().find(|m| m.team_a.label == "Race").unwrap();
         assert_eq!(race.begin_at.to_rfc3339(), "2025-06-14T14:00:00+00:00");
         assert_eq!(race.status, MatchStatus::Finished);
         // The race keeps the event's base id (so a placeholder upserts into it);
         // a support session is labelled by name and gets a distinct id.
         assert_eq!(race.id, WEC_ID_BASE + stable_hash("uuid-lm"));
-        let quali = ms.iter().find(|m| m.team_a.label == "Qualifying HYPERCAR").unwrap();
+        let quali = ms
+            .iter()
+            .find(|m| m.team_a.label == "Qualifying HYPERCAR")
+            .unwrap();
         assert_ne!(quali.id, race.id);
         assert!(quali.id >= WEC_ID_BASE);
     }
@@ -1136,7 +1207,11 @@ mod tests {
         ]}"#;
         let resp: EventsResp = serde_json::from_str(json).unwrap();
         let now = "2026-06-26T00:00:00Z".parse::<DateTime<Utc>>().unwrap();
-        let ms: Vec<NormalizedMatch> = resp.data.iter().flat_map(|e| event_to_matches(e, now)).collect();
+        let ms: Vec<NormalizedMatch> = resp
+            .data
+            .iter()
+            .flat_map(|e| event_to_matches(e, now))
+            .collect();
         // A single placeholder, anchored at noon UTC (right day for any viewer),
         // labelled as the race-to-come, with no venue tz → the view shows no clock.
         assert_eq!(ms.len(), 1);
@@ -1154,8 +1229,8 @@ mod tests {
         // Single-zone hosts come straight from the country code.
         assert_eq!(wec_venue_tz("FR"), Some("Europe/Paris"));
         assert_eq!(wec_venue_tz("jp"), Some("Asia/Tokyo")); // case-insensitive
-        // Multi-zone countries: the sole WEC venue pins the zone (COTA → Central,
-        // Interlagos → São Paulo), not the country's "first" zone.
+                                                            // Multi-zone countries: the sole WEC venue pins the zone (COTA → Central,
+                                                            // Interlagos → São Paulo), not the country's "first" zone.
         assert_eq!(wec_venue_tz("US"), Some("America/Chicago"));
         assert_eq!(wec_venue_tz("BR"), Some("America/Sao_Paulo"));
         // The feed reports Japan as alpha-3 "JPN", not "JP" — both resolve.
@@ -1228,7 +1303,15 @@ mod tests {
             .data
             .iter()
             .flat_map(|e| {
-                sessions_to_matches(e, "MotoGP", MOTOGP_ID_BASE, motogp_venue_tz("ES"), Duration::hours(2), true, now)
+                sessions_to_matches(
+                    e,
+                    "MotoGP",
+                    MOTOGP_ID_BASE,
+                    motogp_venue_tz("ES"),
+                    Duration::hours(2),
+                    true,
+                    now,
+                )
             })
             .collect();
         // One row per session, all MotoGP under the season-qualified series, with
@@ -1237,17 +1320,40 @@ mod tests {
         assert!(ms
             .iter()
             .all(|m| m.league == "MotoGP" && m.series_name == "GRAND PRIX OF VALENCIA 2026"));
-        assert!(ms.iter().all(|m| m.venue_tz.as_deref() == Some("Europe/Madrid")));
+        assert!(ms
+            .iter()
+            .all(|m| m.venue_tz.as_deref() == Some("Europe/Madrid")));
         assert!(ms.iter().all(|m| m.id >= MOTOGP_ID_BASE));
         // Results-bearing sessions (race/sprint/qualifying) carry a result ref;
         // free practice doesn't.
         let race = ms.iter().find(|m| m.team_a.label == "Race").unwrap();
         let rref = race.motor_result_ref.as_ref().unwrap();
-        assert_eq!((rref.series.as_str(), rref.event_id.as_str(), rref.session_id.as_str()),
-                   ("MotoGP", "gp-val", "s-race"));
-        assert!(ms.iter().find(|m| m.team_a.label == "Sprint").unwrap().motor_result_ref.is_some());
-        assert!(ms.iter().find(|m| m.team_a.label == "Qualifying 2").unwrap().motor_result_ref.is_some());
-        assert!(ms.iter().find(|m| m.team_a.label == "Free Practice 1").unwrap().motor_result_ref.is_none());
+        assert_eq!(
+            (
+                rref.series.as_str(),
+                rref.event_id.as_str(),
+                rref.session_id.as_str()
+            ),
+            ("MotoGP", "gp-val", "s-race")
+        );
+        assert!(ms
+            .iter()
+            .find(|m| m.team_a.label == "Sprint")
+            .unwrap()
+            .motor_result_ref
+            .is_some());
+        assert!(ms
+            .iter()
+            .find(|m| m.team_a.label == "Qualifying 2")
+            .unwrap()
+            .motor_result_ref
+            .is_some());
+        assert!(ms
+            .iter()
+            .find(|m| m.team_a.label == "Free Practice 1")
+            .unwrap()
+            .motor_result_ref
+            .is_none());
     }
 
     #[test]
@@ -1260,7 +1366,10 @@ mod tests {
         // Whole-number points print without the decimal; fractional ones keep it.
         assert_eq!(fmt_points_str(&rows[0].points), "186");
         assert_eq!(fmt_points_str(&rows[1].points), "170.5");
-        assert_eq!(format!("{} {}", rows[0].first, rows[0].last), "Marco Bezzecchi");
+        assert_eq!(
+            format!("{} {}", rows[0].first, rows[0].last),
+            "Marco Bezzecchi"
+        );
         let teams = r##"[{"id":"t1","position":1,"points":"363.00","name":"Aprilia Racing","shortName":"Aprilia Racing","color":"#5f259f"}]"##;
         let ts: Vec<MotoGpTeamStand> = serde_json::from_str(teams).unwrap();
         assert_eq!(ts[0].name, "Aprilia Racing");

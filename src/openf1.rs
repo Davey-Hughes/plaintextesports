@@ -90,7 +90,8 @@ async fn get_json<T: DeserializeOwned>(client: &reqwest::Client, url: &str) -> O
 
 /// The date part of an OpenF1 "2026-06-12T11:30:00+00:00" timestamp.
 fn date_of(ts: &str) -> Option<NaiveDate> {
-    ts.get(..10).and_then(|d| NaiveDate::parse_from_str(d, "%Y-%m-%d").ok())
+    ts.get(..10)
+        .and_then(|d| NaiveDate::parse_from_str(d, "%Y-%m-%d").ok())
 }
 
 /// Format a lap time given in seconds, e.g. 76.363 → "1:16.363".
@@ -177,8 +178,10 @@ fn session_rows(
     session_key: i64,
     drivers: &std::collections::HashMap<i64, (String, String)>,
 ) -> Vec<F1ResultRow> {
-    let mut rows: Vec<&SessionResult> =
-        all.iter().filter(|r| r.session_key == session_key).collect();
+    let mut rows: Vec<&SessionResult> = all
+        .iter()
+        .filter(|r| r.session_key == session_key)
+        .collect();
     // Classified order: by position, the unplaced (no lap) last.
     rows.sort_by_key(|r| r.position.unwrap_or(i64::MAX));
     rows.iter()
@@ -227,7 +230,10 @@ pub async fn fetch_practice(
     for s in sessions {
         let rows = session_rows(&results, s.session_key, &drivers);
         if !rows.is_empty() {
-            out.push(F1Result { session: s.session_name, rows });
+            out.push(F1Result {
+                session: s.session_name,
+                rows,
+            });
         }
     }
     out

@@ -60,7 +60,11 @@ pub(crate) fn norm_leads(mut v: Vec<i64>) -> Vec<i64> {
 /// Parse a comma-separated ms list (the localStorage `timers` value / override).
 #[cfg_attr(not(feature = "hydrate"), allow(dead_code))]
 pub(crate) fn parse_lead_list(s: &str) -> Vec<i64> {
-    norm_leads(s.split(',').filter_map(|p| p.trim().parse::<i64>().ok()).collect())
+    norm_leads(
+        s.split(',')
+            .filter_map(|p| p.trim().parse::<i64>().ok())
+            .collect(),
+    )
 }
 
 /// Serialize a timer list as comma-separated ms (for localStorage).
@@ -72,8 +76,15 @@ pub(crate) fn join_lead_list(v: &[i64]) -> String {
 /// The effective timers for an entry: its override if set, else the global list.
 /// (Client-only: resolved when arming a reminder/subscription.)
 #[cfg_attr(not(feature = "hydrate"), allow(dead_code))]
-pub(crate) fn effective_leads(key: &str, overrides: &BTreeMap<String, Vec<i64>>, global: &[i64]) -> Vec<i64> {
-    overrides.get(key).cloned().unwrap_or_else(|| global.to_vec())
+pub(crate) fn effective_leads(
+    key: &str,
+    overrides: &BTreeMap<String, Vec<i64>>,
+    global: &[i64],
+) -> Vec<i64> {
+    overrides
+        .get(key)
+        .cloned()
+        .unwrap_or_else(|| global.to_vec())
 }
 
 /// Split a match uid (`"{slug}-{id}"`, see [`crate::types::match_uid`]) back into
@@ -101,11 +112,19 @@ pub(crate) struct NotifBackup {
 /// minute-multiple), so the export stores minutes — far shorter than the ms used
 /// internally. These convert between the two for the wire format.
 pub(crate) fn join_lead_min(v: &[i64]) -> String {
-    v.iter().map(|ms| (ms / 60_000).to_string()).collect::<Vec<_>>().join(",")
+    v.iter()
+        .map(|ms| (ms / 60_000).to_string())
+        .collect::<Vec<_>>()
+        .join(",")
 }
 
 pub(crate) fn parse_lead_min(s: &str) -> Vec<i64> {
-    norm_leads(s.split(',').filter_map(|p| p.trim().parse::<i64>().ok()).map(|m| m * 60_000).collect())
+    norm_leads(
+        s.split(',')
+            .filter_map(|p| p.trim().parse::<i64>().ok())
+            .map(|m| m * 60_000)
+            .collect(),
+    )
 }
 
 /// DEFLATE a byte slice (best compression). Empty on failure (the caller only
@@ -143,7 +162,11 @@ pub(crate) fn encode_backup(b: &NotifBackup) -> String {
         }
         s
     };
-    let mut lines = vec![row("S", &b.subs), row("R", &b.starred), row("X", &b.excluded)];
+    let mut lines = vec![
+        row("S", &b.subs),
+        row("R", &b.starred),
+        row("X", &b.excluded),
+    ];
     lines.push(format!("T\t{}", join_lead_min(&b.timers)));
     for (k, v) in &b.overrides {
         lines.push(format!("O\t{k}\t{}", join_lead_min(v)));
@@ -181,7 +204,10 @@ pub(crate) fn decode_backup(s: &str) -> Option<NotifBackup> {
             Some("T") => b.timers = parse_lead_min(f.next().unwrap_or_default()),
             Some("O") => {
                 if let Some(key) = f.next().filter(|k| !k.is_empty()) {
-                    b.overrides.push((key.to_string(), parse_lead_min(f.next().unwrap_or_default())));
+                    b.overrides.push((
+                        key.to_string(),
+                        parse_lead_min(f.next().unwrap_or_default()),
+                    ));
                 }
             }
             _ => {}
@@ -331,7 +357,9 @@ pub(crate) fn TimerPicker(
 /// "↺ global" reset. `rearm` re-applies the resulting list server-side.
 #[component]
 pub(crate) fn EntryTimers(entry_key: String, rearm: Callback<Vec<i64>>) -> impl IntoView {
-    let global = use_context::<GlobalTimers>().expect("global timers context").0;
+    let global = use_context::<GlobalTimers>()
+        .expect("global timers context")
+        .0;
     let overrides = use_context::<Overrides>().expect("overrides context").0;
     let vapid = use_context::<RwSignal<Option<String>>>().expect("vapid context");
     // Nothing to schedule when push is off.
@@ -341,7 +369,9 @@ pub(crate) fn EntryTimers(entry_key: String, rearm: Callback<Vec<i64>>) -> impl 
     let has_override = Memo::new(move |_| overrides.with(|o| o.contains_key(&k_has)));
     let k_cur = entry_key.clone();
     let current = Signal::derive(move || {
-        overrides.with(|o| o.get(&k_cur).cloned()).unwrap_or_else(|| global.get())
+        overrides
+            .with(|o| o.get(&k_cur).cloned())
+            .unwrap_or_else(|| global.get())
     });
 
     let k_set = entry_key.clone();
@@ -358,7 +388,11 @@ pub(crate) fn EntryTimers(entry_key: String, rearm: Callback<Vec<i64>>) -> impl 
         });
         #[cfg(feature = "hydrate")]
         save_overrides(&overrides.get_untracked());
-        rearm.run(if revert { global.get_untracked() } else { leads });
+        rearm.run(if revert {
+            global.get_untracked()
+        } else {
+            leads
+        });
     });
 
     // Start customizing: fork an override from the current global timers. A
@@ -466,13 +500,14 @@ pub(crate) fn NotificationsPage() -> impl IntoView {
         }
     });
 
-    let global = use_context::<GlobalTimers>().expect("global timers context").0;
+    let global = use_context::<GlobalTimers>()
+        .expect("global timers context")
+        .0;
     let overrides = use_context::<Overrides>().expect("overrides context").0;
     let push_on = move || vapid.with(|v| v.is_some());
 
     // Anything to clear? (subscriptions or stars; exclusions alone aren't shown).
-    let has_any =
-        move || !subscribed.with(HashSet::is_empty) || !starred.with(HashSet::is_empty);
+    let has_any = move || !subscribed.with(HashSet::is_empty) || !starred.with(HashSet::is_empty);
     let clear_all = move |_| {
         subscribed.set(HashSet::new());
         starred.set(HashSet::new());
@@ -514,7 +549,9 @@ pub(crate) fn NotificationsPage() -> impl IntoView {
                 .get_untracked()
                 .iter()
                 .filter(|u| !ov.contains_key(*u))
-                .filter_map(|u| parse_uid(u).map(|(sp, id)| (id, sp.slug().to_string(), next.clone())))
+                .filter_map(|u| {
+                    parse_uid(u).map(|(sp, id)| (id, sp.slug().to_string(), next.clone()))
+                })
                 .collect();
             sync_entries(false, subs_re, stars_re, Vec::new(), vapid.get_untracked());
         }
@@ -604,7 +641,8 @@ pub(crate) fn NotificationsPage() -> impl IntoView {
                 .starred
                 .iter()
                 .filter_map(|u| {
-                    parse_uid(u).map(|(sp, id)| (id, sp.slug().to_string(), effective_leads(u, &ov, &g)))
+                    parse_uid(u)
+                        .map(|(sp, id)| (id, sp.slug().to_string(), effective_leads(u, &ov, &g)))
                 })
                 .collect();
             let excl_re: Vec<_> = b
@@ -788,7 +826,14 @@ pub(crate) fn SubRow(key: String) -> impl IntoView {
             #[cfg(feature = "hydrate")]
             {
                 let keys: Vec<String> = subscribed.with_untracked(|s| s.iter().cloned().collect());
-                subscribe_scope(kind.clone(), value.clone(), true, keys, vapid.get_untracked(), leads);
+                subscribe_scope(
+                    kind.clone(),
+                    value.clone(),
+                    true,
+                    keys,
+                    vapid.get_untracked(),
+                    leads,
+                );
             }
             #[cfg(not(feature = "hydrate"))]
             {
@@ -808,10 +853,16 @@ pub(crate) fn SubRow(key: String) -> impl IntoView {
         // A whole competition (MLB, F1, World Cup, LCK) — tagged with its best-fit
         // noun (league / tournament / series), distinct from a single event/edition
         // below; both link to the /event/ page for the name.
-        "league" => {
-            (competition_kind(&value), value.clone(), sport.map(|sp| event_path(sp, &value)))
-        }
-        _ => ("event", value.clone(), sport.map(|sp| event_path(sp, &value))),
+        "league" => (
+            competition_kind(&value),
+            value.clone(),
+            sport.map(|sp| event_path(sp, &value)),
+        ),
+        _ => (
+            "event",
+            value.clone(),
+            sport.map(|sp| event_path(sp, &value)),
+        ),
     };
 
     let key_for_click = key.clone();
@@ -827,7 +878,14 @@ pub(crate) fn SubRow(key: String) -> impl IntoView {
             });
             save_overrides(&overrides.get_untracked());
             let keys: Vec<String> = subscribed.with_untracked(|s| s.iter().cloned().collect());
-            subscribe_scope(kind.clone(), value.clone(), false, keys, vapid.get_untracked(), Vec::new());
+            subscribe_scope(
+                kind.clone(),
+                value.clone(),
+                false,
+                keys,
+                vapid.get_untracked(),
+                Vec::new(),
+            );
         }
         #[cfg(not(feature = "hydrate"))]
         {
@@ -884,7 +942,12 @@ pub(crate) fn StarredRow(m: MatchView) -> impl IntoView {
             format!("{} · {}", m.series_name, m.team_a.label)
         }
     } else {
-        format!("{} {} {}", m.team_a.label, versus_sep(m.sport), m.team_b.label)
+        format!(
+            "{} {} {}",
+            m.team_a.label,
+            versus_sep(m.sport),
+            m.team_b.label
+        )
     };
     // The scopes that also cover this match — so removing it actually stops the
     // notification (opt out) rather than just dropping a redundant star.
@@ -893,7 +956,11 @@ pub(crate) fn StarredRow(m: MatchView) -> impl IntoView {
         sub_key("league", m.sport, &m.league),
         sub_key("team", m.sport, &m.team_a.name),
         sub_key("team", m.sport, &m.team_b.name),
-        sub_key("event", m.sport, &full_event_name(&m.league, &m.series_name)),
+        sub_key(
+            "event",
+            m.sport,
+            &full_event_name(&m.league, &m.series_name),
+        ),
     ];
     let remove = {
         let uid = uid.clone();
@@ -966,7 +1033,9 @@ pub(crate) fn sync_entries(
             Ok(s) => s,
             Err(_) => return,
         };
-        let Some(push) = push_from_js(&sub) else { return };
+        let Some(push) = push_from_js(&sub) else {
+            return;
+        };
         arm_entries(push, clear_first, subs, stars, excludes, tz).await;
     });
 }
@@ -1054,7 +1123,13 @@ pub(crate) fn reconcile_notifications(
     let stars_re: Vec<(i64, String, Vec<i64>)> = starred
         .iter()
         .filter_map(|u| {
-            parse_uid(u).map(|(sp, id)| (id, sp.slug().to_string(), effective_leads(u, &overrides, &global)))
+            parse_uid(u).map(|(sp, id)| {
+                (
+                    id,
+                    sp.slug().to_string(),
+                    effective_leads(u, &overrides, &global),
+                )
+            })
         })
         .collect();
     let excl_re: Vec<(i64, String)> = excluded
@@ -1068,7 +1143,9 @@ pub(crate) fn reconcile_notifications(
         };
         // `null` (no permission / no subscription yet) ⇒ nothing to reconcile, and
         // crucially no prompt.
-        let Some(push) = push_from_js(&sub) else { return };
+        let Some(push) = push_from_js(&sub) else {
+            return;
+        };
         arm_entries(push, true, subs_re, stars_re, excl_re, tz).await;
     });
 }
@@ -1227,7 +1304,6 @@ pub(crate) fn clear_all_notifications(vapid: Option<String>) {
     });
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1240,7 +1316,10 @@ mod tests {
         ];
         overrides.sort();
         let b = NotifBackup {
-            subs: vec!["sport|cs2".to_string(), "team|mlb|Detroit Tigers".to_string()],
+            subs: vec![
+                "sport|cs2".to_string(),
+                "team|mlb|Detroit Tigers".to_string(),
+            ],
             starred: vec!["lol-99".to_string()],
             excluded: vec!["mlb-7".to_string()],
             timers: vec![900_000, 86_400_000],
@@ -1249,7 +1328,9 @@ mod tests {
         let decoded = decode_backup(&encode_backup(&b)).expect("decodes");
         assert_eq!(decoded, b);
         // Tab/space-bearing keys (team names) survive the framing.
-        assert!(decoded.subs.contains(&"team|mlb|Detroit Tigers".to_string()));
+        assert!(decoded
+            .subs
+            .contains(&"team|mlb|Detroit Tigers".to_string()));
         // A bad prefix is rejected.
         assert!(decode_backup("nope").is_none());
         assert!(decode_backup("pte1:!!!notbase64").is_none());

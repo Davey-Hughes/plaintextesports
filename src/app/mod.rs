@@ -5,12 +5,11 @@ use crate::server::{
     get_schedule, get_site, get_team_schedule,
 };
 use crate::types::{
-    competition_kind, full_event_name, DayGroup, EventInfo, F1Result, F1Standings, Sport,
-    MatchDetail, MatchStatus, MatchView, MotorResult, MotorStandingTable, MotorStandings,
-    ScheduleView, Series, SeriesGame, StreamView,
+    competition_kind, full_event_name, DayGroup, EventInfo, F1Result, F1Standings, MatchDetail,
+    MatchStatus, MatchView, MotorResult, MotorStandingTable, MotorStandings, ScheduleView, Series,
+    SeriesGame, Sport, StreamView,
 };
 use leptos::prelude::*;
-use std::collections::{BTreeMap, HashSet};
 use leptos_meta::{provide_meta_context, HashedStylesheet, MetaTags, Title};
 use leptos_router::{
     components::{Route, Router, Routes, A},
@@ -18,6 +17,7 @@ use leptos_router::{
     params::Params,
     ParamSegment, StaticSegment,
 };
+use std::collections::{BTreeMap, HashSet};
 
 // Standings / Swiss grid / elimination bracket rendering + reveal machinery.
 mod playoffs;
@@ -345,7 +345,7 @@ pub fn App() -> impl IntoView {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::{BracketMatch, DayGroup, Sport, LeagueGroup, TeamView};
+    use crate::types::{BracketMatch, DayGroup, LeagueGroup, Sport, TeamView};
 
     #[test]
     fn fmt_lead_picks_the_largest_whole_unit() {
@@ -415,16 +415,16 @@ mod tests {
                 score: None,
                 winner: false,
                 logo: String::new(),
-                            abbrev: String::new(),
-},
+                abbrev: String::new(),
+            },
             team_b: TeamView {
                 label: "B".into(),
                 name: "B".into(),
                 score: None,
                 winner: false,
                 logo: String::new(),
-                            abbrev: String::new(),
-},
+                abbrev: String::new(),
+            },
             stream_url: None,
             event_url: String::new(),
             begin_at_ms: 0,
@@ -500,7 +500,7 @@ mod tests {
         // "show later days" extends the forward end, capped at TRAD_FORWARD_MAX.
         assert_eq!(trad_day_bounds("2026-06-24", 0, 4).1, "2026-06-30"); // +6
         assert_eq!(trad_day_bounds("2026-06-24", 0, 100).1, "2026-07-01"); // capped +7
-        // "show earlier days" pushes the start back.
+                                                                           // "show earlier days" pushes the start back.
         assert_eq!(trad_day_bounds("2026-06-24", 3, 0).0, "2026-06-21");
     }
 
@@ -554,11 +554,17 @@ mod tests {
         let grid = semis_final_grid();
         let mut set = HashSet::new();
         // Nothing revealed → final lineup is hidden (feeders unscored).
-        assert_eq!(compute_effective(&grid, &set, false), vec![vec![0, 0], vec![0]]);
+        assert_eq!(
+            compute_effective(&grid, &set, false),
+            vec![vec![0, 0], vec![0]]
+        );
         // Reveal both semis' scores → the final's lineup (stage 1) auto-appears.
         apply_stage(&mut set, "bn:1:0:0", "bs:1:0:0", 2);
         apply_stage(&mut set, "bn:1:0:1", "bs:1:0:1", 2);
-        assert_eq!(compute_effective(&grid, &set, false), vec![vec![2, 2], vec![1]]);
+        assert_eq!(
+            compute_effective(&grid, &set, false),
+            vec![vec![2, 2], vec![1]]
+        );
     }
 
     #[test]
@@ -568,10 +574,16 @@ mod tests {
         // Clicking the final before its teams are known reveals the feeding semis'
         // scores; the final's lineup then auto-appears (names, no score yet).
         apply_bracket_op(&mut set, &grid, BkOp::Series(1, 0));
-        assert_eq!(compute_effective(&grid, &set, false), vec![vec![2, 2], vec![1]]);
+        assert_eq!(
+            compute_effective(&grid, &set, false),
+            vec![vec![2, 2], vec![1]]
+        );
         // The next click reveals the final's own score.
         apply_bracket_op(&mut set, &grid, BkOp::Series(1, 0));
-        assert_eq!(compute_effective(&grid, &set, false), vec![vec![2, 2], vec![2]]);
+        assert_eq!(
+            compute_effective(&grid, &set, false),
+            vec![vec![2, 2], vec![2]]
+        );
     }
 
     #[test]
@@ -600,7 +612,12 @@ mod tests {
             feeders: feeders.to_vec(),
         };
         vec![
-            vec![cell(0, 0, &[]), cell(0, 1, &[]), cell(0, 2, &[]), cell(0, 3, &[])],
+            vec![
+                cell(0, 0, &[]),
+                cell(0, 1, &[]),
+                cell(0, 2, &[]),
+                cell(0, 3, &[]),
+            ],
             vec![cell(1, 0, &[(0, 0), (0, 1)]), cell(1, 1, &[(0, 2), (0, 3)])],
             vec![cell(2, 0, &[(1, 0), (1, 1)])],
         ]
@@ -649,7 +666,10 @@ mod tests {
             compute_effective(&grid, &set, false),
             vec![vec![1, 1, 1, 1], vec![0, 0], vec![0]]
         );
-        assert!(!set.contains("bs:1:0:0"), "the granular score reveal is cleared");
+        assert!(
+            !set.contains("bs:1:0:0"),
+            "the granular score reveal is cleared"
+        );
         // The next cascade reveals the whole round's scores together.
         apply_bracket_op(&mut set, &grid, BkOp::Cascade);
         assert_eq!(
@@ -677,7 +697,10 @@ mod tests {
             compute_effective(&grid, &set, false),
             vec![vec![1, 1, 1, 1], vec![0, 0], vec![0]]
         );
-        assert!(!set.contains("bs:1:1:0"), "the ahead semifinal reveal is forgotten");
+        assert!(
+            !set.contains("bs:1:1:0"),
+            "the ahead semifinal reveal is forgotten"
+        );
     }
 
     #[test]
@@ -724,14 +747,19 @@ mod tests {
     fn leagues_for_games_first_appearance_order() {
         let s = sched(vec![vec!["LCK", "LEC"], vec!["LCK", "LPL"]]);
         let names_of = |games: &HashSet<String>| -> Vec<String> {
-            leagues_for_games(&s, games).into_iter().map(|(l, _)| l).collect()
+            leagues_for_games(&s, games)
+                .into_iter()
+                .map(|(l, _)| l)
+                .collect()
         };
         assert_eq!(names_of(&HashSet::new()), vec!["LCK", "LEC", "LPL"]);
         // `mv` matches are LoL, so the cs2 sport filter hides them all.
         assert!(names_of(&names(&["cs2"])).is_empty());
         assert_eq!(names_of(&names(&["lol"])), vec!["LCK", "LEC", "LPL"]);
         // Each chip carries its match's sport, for the sport-scoped subscribe key.
-        assert!(leagues_for_games(&s, &HashSet::new()).iter().all(|(_, sp)| *sp == Sport::Lol));
+        assert!(leagues_for_games(&s, &HashSet::new())
+            .iter()
+            .all(|(_, sp)| *sp == Sport::Lol));
     }
 
     #[test]
@@ -760,12 +788,20 @@ mod tests {
             days: vec![DayGroup {
                 day_key: "d0".into(),
                 day_label: "D0".into(),
-                leagues: vec![lol("LEC"), motor("WRC"), motor("F1"), motor("WEC"), motor("MotoGP")],
+                leagues: vec![
+                    lol("LEC"),
+                    motor("WRC"),
+                    motor("F1"),
+                    motor("WEC"),
+                    motor("MotoGP"),
+                ],
             }],
             ..Default::default()
         };
-        let names: Vec<String> =
-            leagues_for_games(&s, &HashSet::new()).into_iter().map(|(l, _)| l).collect();
+        let names: Vec<String> = leagues_for_games(&s, &HashSet::new())
+            .into_iter()
+            .map(|(l, _)| l)
+            .collect();
         // The non-motorsport chip keeps its leading slot; the motorsport chips are
         // tidied into F1 · MotoGP · WEC · WRC within their existing positions.
         assert_eq!(names, vec!["LEC", "F1", "MotoGP", "WEC", "WRC"]);
@@ -776,13 +812,19 @@ mod tests {
         // A whole-sport sub keys by slug alone; parsing resolves the sport back.
         let k = sub_key("sport", Sport::Cs2, "cs2");
         assert_eq!(k, "sport|cs2");
-        assert_eq!(parse_sub_key(&k), ("sport".to_string(), Some(Sport::Cs2), "cs2".to_string()));
+        assert_eq!(
+            parse_sub_key(&k),
+            ("sport".to_string(), Some(Sport::Cs2), "cs2".to_string())
+        );
 
         // team/league/event fold the sport in but keep the bare name as the value
         // (what the server matches on), so the notifications page can rebuild the
         // sport-scoped page link without changing the server-side scope format.
-        for (kind, value) in [("team", "Detroit Tigers"), ("league", "MLB"), ("event", "World Cup")]
-        {
+        for (kind, value) in [
+            ("team", "Detroit Tigers"),
+            ("league", "MLB"),
+            ("event", "World Cup"),
+        ] {
             let k = sub_key(kind, Sport::Mlb, value);
             assert_eq!(k, format!("{kind}|mlb|{value}"));
             assert_eq!(
@@ -795,7 +837,11 @@ mod tests {
         let k = sub_key("event", Sport::Cs2, "A|B Invitational");
         assert_eq!(
             parse_sub_key(&k),
-            ("event".to_string(), Some(Sport::Cs2), "A|B Invitational".to_string())
+            (
+                "event".to_string(),
+                Some(Sport::Cs2),
+                "A|B Invitational".to_string()
+            )
         );
     }
 
@@ -818,8 +864,17 @@ mod tests {
     fn filter_schedule_games_and_events_are_anded() {
         let s = sched(vec![vec!["LCK", "LEC"]]);
         // LoL sport keeps both; cs2 drops everything (mv matches are LoL).
-        assert_eq!(filter_schedule(s.clone(), &names(&["lol"]), &HashSet::new()).days.len(), 1);
-        assert!(filter_schedule(s.clone(), &names(&["cs2"]), &HashSet::new()).days.is_empty());
+        assert_eq!(
+            filter_schedule(s.clone(), &names(&["lol"]), &HashSet::new())
+                .days
+                .len(),
+            1
+        );
+        assert!(
+            filter_schedule(s.clone(), &names(&["cs2"]), &HashSet::new())
+                .days
+                .is_empty()
+        );
         // lol AND only the LCK event → one group.
         let f = filter_schedule(s, &names(&["lol"]), &names(&["LCK"]));
         assert_eq!(f.days[0].leagues.len(), 1);
@@ -836,7 +891,7 @@ mod tests {
         assert!(resolve_sport_mode(None, Some("nhl"), None)); // traditional
         assert!(!resolve_sport_mode(None, Some("cs2"), Some("sports"))); // esports slug overrides cookie
         assert!(resolve_sport_mode(None, Some("cs2,mlb"), None)); // any traditional ⇒ sports
-        // An unknown ?g (no known slug) falls through to the cookie.
+                                                                  // An unknown ?g (no known slug) falls through to the cookie.
         assert!(resolve_sport_mode(None, Some("bogus"), Some("sports")));
         // Else the cookie, defaulting to esports.
         assert!(resolve_sport_mode(None, None, Some("sports")));
@@ -847,8 +902,14 @@ mod tests {
     #[cfg(any(feature = "ssr", feature = "hydrate"))]
     #[test]
     fn query_param_extracts_first_match() {
-        assert_eq!(query_param("mode=sports&g=nhl", "mode").as_deref(), Some("sports"));
-        assert_eq!(query_param("mode=sports&g=nhl", "g").as_deref(), Some("nhl"));
+        assert_eq!(
+            query_param("mode=sports&g=nhl", "mode").as_deref(),
+            Some("sports")
+        );
+        assert_eq!(
+            query_param("mode=sports&g=nhl", "g").as_deref(),
+            Some("nhl")
+        );
         assert_eq!(query_param("g=cs2,lol", "g").as_deref(), Some("cs2,lol"));
         assert_eq!(query_param("mode=sports", "g"), None);
         assert_eq!(query_param("", "mode"), None);

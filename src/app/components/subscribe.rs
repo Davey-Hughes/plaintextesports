@@ -9,7 +9,9 @@ use crate::app::*;
 pub(crate) fn SubscribeStar(kind: &'static str, sport: Sport, value: String) -> impl IntoView {
     let subscribed = use_context::<Subscribed>().expect("subscribed context").0;
     let vapid = use_context::<RwSignal<Option<String>>>().expect("vapid context");
-    let global = use_context::<GlobalTimers>().expect("global timers context").0;
+    let global = use_context::<GlobalTimers>()
+        .expect("global timers context")
+        .0;
     let overrides = use_context::<Overrides>().expect("overrides context").0;
     let key = sub_key(kind, sport, &value);
     let key_active = key.clone();
@@ -29,7 +31,14 @@ pub(crate) fn SubscribeStar(kind: &'static str, sport: Sport, value: String) -> 
         {
             let keys: Vec<String> = subscribed.with_untracked(|s| s.iter().cloned().collect());
             let leads = effective_leads(&key, &overrides.get_untracked(), &global.get_untracked());
-            subscribe_scope(kind.to_string(), value.clone(), !now_on, keys, vapid.get_untracked(), leads);
+            subscribe_scope(
+                kind.to_string(),
+                value.clone(),
+                !now_on,
+                keys,
+                vapid.get_untracked(),
+                leads,
+            );
         }
         #[cfg(not(feature = "hydrate"))]
         {
@@ -52,12 +61,20 @@ pub(crate) fn SubscribeStar(kind: &'static str, sport: Sport, value: String) -> 
 }
 
 #[component]
-pub(crate) fn StarButton(id: i64, sport: Sport, league: String, team_a: String, team_b: String) -> impl IntoView {
+pub(crate) fn StarButton(
+    id: i64,
+    sport: Sport,
+    league: String,
+    team_a: String,
+    team_b: String,
+) -> impl IntoView {
     let starred = use_context::<RwSignal<HashSet<String>>>().expect("starred context");
     let subscribed = use_context::<Subscribed>().expect("subscribed context").0;
     let excluded = use_context::<Excluded>().expect("excluded context").0;
     let vapid = use_context::<RwSignal<Option<String>>>().expect("vapid context");
-    let global = use_context::<GlobalTimers>().expect("global timers context").0;
+    let global = use_context::<GlobalTimers>()
+        .expect("global timers context")
+        .0;
     let overrides = use_context::<Overrides>().expect("overrides context").0;
     // The match's uid keys the star/exclude sets (ids aren't unique across games).
     let uid = crate::types::match_uid(sport, id);
@@ -131,4 +148,3 @@ pub(crate) fn StarButton(id: i64, sport: Sport, league: String, team_a: String, 
         </button>
     }
 }
-

@@ -8,7 +8,7 @@
 //! toggle (like esports); the start time still shows in the viewer's zone.
 
 use crate::pandascore::{NormTeam, NormalizedMatch};
-use crate::types::{EventInfo, Sport, MatchStatus, StandingRow};
+use crate::types::{EventInfo, MatchStatus, Sport, StandingRow};
 use chrono::{DateTime, Datelike, NaiveDate, NaiveDateTime, Utc};
 use serde::Deserialize;
 
@@ -178,7 +178,11 @@ impl Venue {
     /// "City, State" (US) or "City, Country", whichever the feed provides.
     fn location(&self) -> String {
         let a = &self.address;
-        let region = if a.state.is_empty() { &a.country } else { &a.state };
+        let region = if a.state.is_empty() {
+            &a.country
+        } else {
+            &a.state
+        };
         match (a.city.is_empty(), region.is_empty()) {
             (false, false) => format!("{}, {region}", a.city),
             (false, true) => a.city.clone(),
@@ -233,7 +237,10 @@ impl TeamRef {
 /// team-logo URL.
 fn espn_logo(url: &str) -> String {
     match url.find("/i/teamlogos/") {
-        Some(i) => format!("https://a.espncdn.com/combiner/i?img={}&h=80&w=80", &url[i..]),
+        Some(i) => format!(
+            "https://a.espncdn.com/combiner/i?img={}&h=80&w=80",
+            &url[i..]
+        ),
         None => String::new(),
     }
 }
@@ -253,11 +260,20 @@ fn venue_tz(city: &str, country: &str) -> Option<&'static str> {
                 "Colorado" | "Utah" => "America/Denver",
                 "Texas" | "Missouri" | "Illinois" | "Minnesota" | "Wisconsin" | "Louisiana"
                 | "Oklahoma" | "Tennessee" | "Kansas" | "Nebraska" => "America/Chicago",
-                "Pennsylvania" | "Florida" | "New Jersey" | "New York" | "Georgia"
-                | "Massachusetts" | "Michigan" | "Ohio" | "North Carolina" | "Indiana"
-                | "District of Columbia" | "Virginia" | "South Carolina" | "Maryland" => {
-                    "America/New_York"
-                }
+                "Pennsylvania"
+                | "Florida"
+                | "New Jersey"
+                | "New York"
+                | "Georgia"
+                | "Massachusetts"
+                | "Michigan"
+                | "Ohio"
+                | "North Carolina"
+                | "Indiana"
+                | "District of Columbia"
+                | "Virginia"
+                | "South Carolina"
+                | "Maryland" => "America/New_York",
                 _ => return None,
             })
         }
@@ -278,7 +294,11 @@ fn parse_date(s: &str) -> Option<DateTime<Utc>> {
     DateTime::parse_from_rfc3339(s)
         .map(|d| d.with_timezone(&Utc))
         .ok()
-        .or_else(|| NaiveDateTime::parse_from_str(s, "%Y-%m-%dT%H:%MZ").ok().map(|n| n.and_utc()))
+        .or_else(|| {
+            NaiveDateTime::parse_from_str(s, "%Y-%m-%dT%H:%MZ")
+                .ok()
+                .map(|n| n.and_utc())
+        })
 }
 
 fn status_of(state: &str, name: &str) -> MatchStatus {
@@ -326,8 +346,8 @@ fn to_match(e: Event, lg: &EspnLeague) -> Option<NormalizedMatch> {
     m.team_b_logo = espn_logo(&home.team.logo);
     // ESPN gives no venue tz; derive one (where known) so the schedule's
     // venue-time toggle works — notably for the World Cup's US/Canada/Mexico hosts.
-    m.venue_tz = venue_tz(&comp.venue.address.city, &comp.venue.address.country)
-        .map(str::to_string);
+    m.venue_tz =
+        venue_tz(&comp.venue.address.city, &comp.venue.address.country).map(str::to_string);
     // A dated tournament (the World Cup) carries its year as the series, so each
     // edition is a distinct event; the seasonal leagues keep an empty series.
     if lg.dated_event {
@@ -351,7 +371,13 @@ pub async fn fetch_schedule(
         start.format("%Y%m%d"),
         end.format("%Y%m%d"),
     );
-    let resp: Scoreboard = client.get(&url).send().await?.error_for_status()?.json().await?;
+    let resp: Scoreboard = client
+        .get(&url)
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
     Ok(resp
         .events
         .into_iter()
@@ -414,7 +440,11 @@ impl Entry {
             .map_or(0, |v| v as i32)
     }
     fn stat_str(&self, name: &str) -> String {
-        self.stats.iter().find(|s| s.name == name).map(|s| s.display_value.clone()).unwrap_or_default()
+        self.stats
+            .iter()
+            .find(|s| s.name == name)
+            .map(|s| s.display_value.clone())
+            .unwrap_or_default()
     }
 }
 
@@ -487,10 +517,19 @@ pub async fn fetch_standings(
     season: Option<i32>,
 ) -> Result<Vec<EventInfo>, reqwest::Error> {
     let url = match season {
-        Some(s) => format!("{CORE}/{}/{}/standings?season={s}", lg.espn_sport, lg.league),
+        Some(s) => format!(
+            "{CORE}/{}/{}/standings?season={s}",
+            lg.espn_sport, lg.league
+        ),
         None => format!("{CORE}/{}/{}/standings", lg.espn_sport, lg.league),
     };
-    let resp: StandingsResp = client.get(&url).send().await?.error_for_status()?.json().await?;
+    let resp: StandingsResp = client
+        .get(&url)
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
     Ok(conferences_from(resp, lg))
 }
 
@@ -511,8 +550,11 @@ mod tests {
              {"homeAway":"away","score":"111","team":{"shortDisplayName":"Grizzlies","displayName":"Memphis Grizzlies","abbreviation":"MEM"}}]}]}
         ]}"#;
         let resp: Scoreboard = serde_json::from_str(json).unwrap();
-        let games: Vec<NormalizedMatch> =
-            resp.events.into_iter().filter_map(|e| to_match(e, &NBA)).collect();
+        let games: Vec<NormalizedMatch> = resp
+            .events
+            .into_iter()
+            .filter_map(|e| to_match(e, &NBA))
+            .collect();
         assert_eq!(games.len(), 2);
         assert_eq!(games[0].sport, Sport::Nba);
         // Away at home: team_a is the away side.

@@ -6,7 +6,7 @@
 //! one label is the session name (e.g. "Race"); results live on the event page.
 
 use crate::pandascore::{NormTeam, NormalizedMatch};
-use crate::types::{F1Result, F1ResultRow, F1StandingRow, F1Standings, Sport, MatchStatus};
+use crate::types::{F1Result, F1ResultRow, F1StandingRow, F1Standings, MatchStatus, Sport};
 use chrono::{DateTime, Duration, NaiveDate, Utc};
 use serde::Deserialize;
 
@@ -187,7 +187,12 @@ fn sessions(r: &RawRace) -> Vec<Session> {
     let mut out = Vec::new();
     let mut push = |ord, label, s: &Option<RawSession>| {
         if let Some(x) = s {
-            out.push(Session { ord, label, date: x.date.clone(), time: x.time.clone() });
+            out.push(Session {
+                ord,
+                label,
+                date: x.date.clone(),
+                time: x.time.clone(),
+            });
         }
     };
     push(1, "Practice 1", &r.fp1);
@@ -197,7 +202,12 @@ fn sessions(r: &RawRace) -> Vec<Session> {
     push(5, "Sprint", &r.sprint);
     push(6, "Qualifying", &r.qualifying);
     // The race itself lives on the race object's own date/time.
-    out.push(Session { ord: 7, label: "Race", date: r.date.clone(), time: r.time.clone() });
+    out.push(Session {
+        ord: 7,
+        label: "Race",
+        date: r.date.clone(),
+        time: r.time.clone(),
+    });
     out
 }
 
@@ -533,12 +543,24 @@ pub async fn fetch_results(client: &reqwest::Client, season: i64, round: i64) ->
     let mut out = Vec::new();
     let mut push = |session: &str, rows: Vec<F1ResultRow>| {
         if !rows.is_empty() {
-            out.push(F1Result { session: session.to_string(), rows });
+            out.push(F1Result {
+                session: session.to_string(),
+                rows,
+            });
         }
     };
-    push("Race", race.map(|r| race_rows(&r.results)).unwrap_or_default());
-    push("Sprint", sprint.map(|s| race_rows(&s.sprint)).unwrap_or_default());
-    push("Qualifying", quali.map(|q| quali_rows(&q.qualifying)).unwrap_or_default());
+    push(
+        "Race",
+        race.map(|r| race_rows(&r.results)).unwrap_or_default(),
+    );
+    push(
+        "Sprint",
+        sprint.map(|s| race_rows(&s.sprint)).unwrap_or_default(),
+    );
+    push(
+        "Qualifying",
+        quali.map(|q| quali_rows(&q.qualifying)).unwrap_or_default(),
+    );
     // Practice timing (FP1/FP2/FP3) isn't in Jolpica — pull it from OpenF1 and
     // append it under qualifying. Matched to the OpenF1 weekend by the race date.
     if let Some(date) = date {
@@ -609,8 +631,12 @@ fn driver_standing_rows(rs: &[RawDriverStanding]) -> Vec<F1StandingRow> {
                 points: r.points.clone(),
                 wins: r.wins.clone(),
                 flag: nationality_flag(&r.driver.nationality),
-                constructor_logo: team.map(|c| constructor_logo(&c.constructor_id)).unwrap_or_default(),
-                constructor_abbrev: team.map(|c| constructor_abbrev(&c.constructor_id)).unwrap_or_default(),
+                constructor_logo: team
+                    .map(|c| constructor_logo(&c.constructor_id))
+                    .unwrap_or_default(),
+                constructor_abbrev: team
+                    .map(|c| constructor_abbrev(&c.constructor_id))
+                    .unwrap_or_default(),
             }
         })
         .collect()
@@ -654,21 +680,30 @@ async fn get_standings_list(client: &reqwest::Client, url: &str) -> Option<Stand
 pub async fn fetch_standings(client: &reqwest::Client, season: i64, round: i64) -> F1Standings {
     let drv = format!("{BASE}/{season}/{round}/driverStandings.json?limit=40");
     let con = format!("{BASE}/{season}/{round}/constructorStandings.json?limit=40");
-    let (mut drivers, mut constructors) =
-        tokio::join!(get_standings_list(client, &drv), get_standings_list(client, &con));
+    let (mut drivers, mut constructors) = tokio::join!(
+        get_standings_list(client, &drv),
+        get_standings_list(client, &con)
+    );
     // An unraced round has no standings yet — use the latest completed instead.
     if drivers.as_ref().is_none_or(|l| l.drivers.is_empty()) {
         let drv2 = format!("{BASE}/{season}/driverStandings.json?limit=40");
         let con2 = format!("{BASE}/{season}/constructorStandings.json?limit=40");
-        let (d2, c2) =
-            tokio::join!(get_standings_list(client, &drv2), get_standings_list(client, &con2));
+        let (d2, c2) = tokio::join!(
+            get_standings_list(client, &drv2),
+            get_standings_list(client, &con2)
+        );
         drivers = d2;
         constructors = c2;
     }
-    let asof = drivers.as_ref().and_then(|l| l.round.parse().ok()).unwrap_or(round);
+    let asof = drivers
+        .as_ref()
+        .and_then(|l| l.round.parse().ok())
+        .unwrap_or(round);
     F1Standings {
         round: asof,
-        drivers: drivers.map(|l| driver_standing_rows(&l.drivers)).unwrap_or_default(),
+        drivers: drivers
+            .map(|l| driver_standing_rows(&l.drivers))
+            .unwrap_or_default(),
         constructors: constructors
             .map(|l| constructor_standing_rows(&l.constructors))
             .unwrap_or_default(),
@@ -693,15 +728,33 @@ mod tests {
         }]}}}"#;
         let resp: Resp = serde_json::from_str(json).unwrap();
         let now = "2026-01-01T00:00:00Z".parse::<DateTime<Utc>>().unwrap();
-        let ms: Vec<NormalizedMatch> =
-            resp.data.race_table.races.iter().flat_map(|r| to_matches(r, now)).collect();
+        let ms: Vec<NormalizedMatch> = resp
+            .data
+            .race_table
+            .races
+            .iter()
+            .flat_map(|r| to_matches(r, now))
+            .collect();
         // FP1, FP2, FP3, Qualifying, Race — no sprint sessions this weekend.
         assert_eq!(ms.len(), 5);
-        assert!(ms.iter().all(|m| m.sport == Sport::Motorsport && m.league == "F1"));
+        assert!(ms
+            .iter()
+            .all(|m| m.sport == Sport::Motorsport && m.league == "F1"));
         // The series is the GP qualified by season, so editions don't collide.
-        assert!(ms.iter().all(|m| m.series_name == "Austrian Grand Prix 2026"));
+        assert!(ms
+            .iter()
+            .all(|m| m.series_name == "Austrian Grand Prix 2026"));
         let labels: Vec<&str> = ms.iter().map(|m| m.team_a.label.as_str()).collect();
-        assert_eq!(labels, ["Practice 1", "Practice 2", "Practice 3", "Qualifying", "Race"]);
+        assert_eq!(
+            labels,
+            [
+                "Practice 1",
+                "Practice 2",
+                "Practice 3",
+                "Qualifying",
+                "Race"
+            ]
+        );
         // Every session is in the future relative to `now`, so all upcoming.
         assert!(ms.iter().all(|m| m.status == MatchStatus::Upcoming));
         // The race session carries the race object's own time (13:00Z on the 28th).
@@ -724,10 +777,24 @@ mod tests {
         }]}}}"#;
         let resp: Resp = serde_json::from_str(json).unwrap();
         let now = "2026-01-01T00:00:00Z".parse::<DateTime<Utc>>().unwrap();
-        let ms: Vec<NormalizedMatch> =
-            resp.data.race_table.races.iter().flat_map(|r| to_matches(r, now)).collect();
+        let ms: Vec<NormalizedMatch> = resp
+            .data
+            .race_table
+            .races
+            .iter()
+            .flat_map(|r| to_matches(r, now))
+            .collect();
         let labels: Vec<&str> = ms.iter().map(|m| m.team_a.label.as_str()).collect();
-        assert_eq!(labels, ["Practice 1", "Sprint Qualifying", "Sprint", "Qualifying", "Race"]);
+        assert_eq!(
+            labels,
+            [
+                "Practice 1",
+                "Sprint Qualifying",
+                "Sprint",
+                "Qualifying",
+                "Race"
+            ]
+        );
     }
 
     #[test]

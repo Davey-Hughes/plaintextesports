@@ -5,7 +5,7 @@
 //! walks it a week at a time and de-dupes.
 
 use crate::pandascore::{NormTeam, NormalizedMatch};
-use crate::types::{EventInfo, Sport, MatchStatus, StandingRow};
+use crate::types::{EventInfo, MatchStatus, Sport, StandingRow};
 use chrono::{DateTime, Duration, NaiveDate, Utc};
 use serde::Deserialize;
 use std::collections::HashSet;
@@ -81,7 +81,10 @@ impl RawTeam {
 
     /// Full name ("Montréal Canadiens") — keys the team page + subscription.
     fn full_name(&self) -> String {
-        match (self.place_name.default.trim(), self.common_name.default.trim()) {
+        match (
+            self.place_name.default.trim(),
+            self.common_name.default.trim(),
+        ) {
             (place, common) if !place.is_empty() && !common.is_empty() => {
                 format!("{place} {common}")
             }
@@ -113,7 +116,9 @@ fn series_name(game_type: i64) -> String {
 }
 
 fn to_match(g: RawGame) -> Option<NormalizedMatch> {
-    let begin_at = DateTime::parse_from_rfc3339(&g.start_time_utc).ok()?.with_timezone(&Utc);
+    let begin_at = DateTime::parse_from_rfc3339(&g.start_time_utc)
+        .ok()?
+        .with_timezone(&Utc);
     let mut m = NormalizedMatch::team_sport(
         g.id,
         Sport::Nhl,
@@ -162,10 +167,23 @@ pub async fn fetch_schedule(
     while anchor <= end {
         let url = format!("{BASE}/schedule/{}", anchor.format("%Y-%m-%d"));
         let resp: Option<ScheduleResp> = if first {
-            Some(client.get(&url).send().await?.error_for_status()?.json().await?)
+            Some(
+                client
+                    .get(&url)
+                    .send()
+                    .await?
+                    .error_for_status()?
+                    .json()
+                    .await?,
+            )
         } else {
             // Best-effort: a flaky later week shouldn't drop the weeks we have.
-            match client.get(&url).send().await.and_then(reqwest::Response::error_for_status) {
+            match client
+                .get(&url)
+                .send()
+                .await
+                .and_then(reqwest::Response::error_for_status)
+            {
                 Ok(r) => r.json().await.ok(),
                 Err(_) => None,
             }
@@ -272,11 +290,15 @@ fn divisions_from(resp: StandingsResp) -> Vec<EventInfo> {
 }
 
 /// Fetch the current NHL standings, one table per division. Keyless, like MLB.
-pub async fn fetch_standings(
-    client: &reqwest::Client,
-) -> Result<Vec<EventInfo>, reqwest::Error> {
+pub async fn fetch_standings(client: &reqwest::Client) -> Result<Vec<EventInfo>, reqwest::Error> {
     let url = format!("{BASE}/standings/now");
-    let resp: StandingsResp = client.get(&url).send().await?.error_for_status()?.json().await?;
+    let resp: StandingsResp = client
+        .get(&url)
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
     Ok(divisions_from(resp))
 }
 
@@ -297,8 +319,12 @@ mod tests {
            "homeTeam":{"commonName":{"default":"Oilers"},"placeName":{"default":"Edmonton"},"abbrev":"EDM","score":5}}
         ]}]}"#;
         let resp: ScheduleResp = serde_json::from_str(json).unwrap();
-        let games: Vec<NormalizedMatch> =
-            resp.game_week.into_iter().flat_map(|d| d.games).filter_map(to_match).collect();
+        let games: Vec<NormalizedMatch> = resp
+            .game_week
+            .into_iter()
+            .flat_map(|d| d.games)
+            .filter_map(to_match)
+            .collect();
         assert_eq!(games.len(), 2);
         assert_eq!(games[0].sport, Sport::Nhl);
         assert_eq!(games[0].team_a.label, "Canadiens");

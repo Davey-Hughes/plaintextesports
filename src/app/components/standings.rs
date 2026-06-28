@@ -188,4 +188,3 @@ pub(crate) fn TraditionalStandings(league: Memo<String>) -> impl IntoView {
         </Suspense>
     }
 }
-

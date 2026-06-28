@@ -107,7 +107,10 @@ fn page_url(wiki: &str, title: &str) -> String {
         .chars()
         .map(|c| if c == ' ' { '_' } else { c })
         .collect();
-    format!("https://liquipedia.net/{wiki}/{}", encode_path(&underscored))
+    format!(
+        "https://liquipedia.net/{wiki}/{}",
+        encode_path(&underscored)
+    )
 }
 
 fn encode_path(s: &str) -> String {

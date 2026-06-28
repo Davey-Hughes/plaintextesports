@@ -66,4 +66,3 @@ pub(crate) fn SiteFooter() -> impl IntoView {
         </footer>
     }
 }
-

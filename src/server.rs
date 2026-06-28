@@ -1,12 +1,12 @@
 //! Leptos server functions. The bodies read the in-memory cache on the server;
 //! on the client the `#[server]` macro replaces them with a network call.
 
+#[cfg(feature = "ssr")]
+use crate::types::Sport;
 use crate::types::{
     EventInfo, F1Result, F1Standings, MatchDetail, MotorStandings, ReminderReq, ScheduleView,
     SiteInfo, SubscribeReq,
 };
-#[cfg(feature = "ssr")]
-use crate::types::Sport;
 use leptos::prelude::*;
 
 /// Homepage schedule. `sport` is "all"/"cs2"/"lol"; `tz` is an IANA name (empty
@@ -115,7 +115,9 @@ pub async fn get_match_detail(
             &match_view.team_b.name,
         );
         let series = if match_view.sport == Sport::Mlb {
-            crate::cache::mlb_series(id, &tz, hour24).await.unwrap_or_default()
+            crate::cache::mlb_series(id, &tz, hour24)
+                .await
+                .unwrap_or_default()
         } else {
             crate::types::Series::default()
         };
@@ -140,9 +142,7 @@ pub async fn get_match_detail(
         // result ref (set by the poller) and TTL-cached. `None` for upcoming
         // sessions or rows the source doesn't classify.
         let motor_result = match motor_ref {
-            Some(ref r)
-                if matches!(match_view.status, crate::types::MatchStatus::Finished) =>
-            {
+            Some(ref r) if matches!(match_view.status, crate::types::MatchStatus::Finished) => {
                 let rows = crate::cache::motor_result(r).await;
                 (!rows.is_empty()).then(|| crate::types::MotorResult {
                     title: motor_result_title(r, &match_view.team_a.label),
@@ -359,7 +359,8 @@ pub async fn add_reminder(req: ReminderReq) -> Result<(), ServerFnError> {
         // Derive each timer's time/title/body/url from the snapshot so a client
         // can't forge a notification (it only supplies its subscription + match
         // id + the lead offsets).
-        let seeds = crate::cache::reminder_seeds_for_match(req.match_id, &req.sport, &leads, &req.tz);
+        let seeds =
+            crate::cache::reminder_seeds_for_match(req.match_id, &req.sport, &leads, &req.tz);
         if seeds.is_empty() {
             return Err(ServerFnError::new("match not found or already started"));
         }
@@ -391,7 +392,10 @@ pub async fn add_reminder(req: ReminderReq) -> Result<(), ServerFnError> {
 #[cfg(feature = "ssr")]
 fn resolve_leads(leads: Vec<i64>, fallback_ms: i64) -> Vec<i64> {
     const WEEK_MS: i64 = 7 * 24 * 60 * 60 * 1000;
-    let mut v: Vec<i64> = leads.into_iter().filter(|&ms| (0..=WEEK_MS).contains(&ms)).collect();
+    let mut v: Vec<i64> = leads
+        .into_iter()
+        .filter(|&ms| (0..=WEEK_MS).contains(&ms))
+        .collect();
     v.sort_unstable();
     v.dedup();
     v.truncate(10);
