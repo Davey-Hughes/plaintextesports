@@ -7,7 +7,7 @@
 //! ESPN doesn't expose a venue IANA timezone, so these games carry no venue-time
 //! toggle (like esports); the start time still shows in the viewer's zone.
 
-use crate::pandascore::{NormTeam, NormalizedMatch};
+use crate::feed::{NormalizedMatch, NormalizedTeam};
 use crate::types::{EventInfo, MatchStatus, Sport, StandingRow};
 use chrono::{DateTime, Datelike, NaiveDate, NaiveDateTime, Utc};
 use serde::Deserialize;
@@ -327,13 +327,13 @@ fn to_match(e: Event, lg: &EspnLeague) -> Option<NormalizedMatch> {
         lg.name,
         begin_at,
         status_of(&e.status.r#type.state, &e.status.r#type.name),
-        NormTeam {
+        NormalizedTeam {
             label: away.team.label(),
             name: away.team.full_name(),
             abbrev: away.team.abbreviation.clone(),
             score: score(away),
         },
-        NormTeam {
+        NormalizedTeam {
             label: home.team.label(),
             name: home.team.full_name(),
             abbrev: home.team.abbreviation.clone(),

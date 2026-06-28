@@ -15,14 +15,13 @@
 //! single date-only placeholder. WRC rallies stay one row per rally (the feed
 //! gives only a date, no per-stage times).
 
-use crate::pandascore::{NormTeam, NormalizedMatch};
+use crate::feed::{NormalizedMatch, NormalizedTeam};
+use crate::http::USER_AGENT;
 use crate::types::{MatchStatus, MotorStandingRow, MotorStandingTable, MotorStandings, Sport};
 use chrono::{DateTime, Datelike, Duration, NaiveDate, Utc};
 use serde::Deserialize;
 
 const BASE: &str = "https://api.ocblacktop.com/v1";
-const USER_AGENT: &str =
-    "plaintextesports/0.1 (https://github.com/ralphpotato/plaintextesports; ralphpotato@gmail.com)";
 const API_KEY_HEADER: &str = "x-api-key";
 
 // Distinct high id ranges per series so WRC/WEC/F1 ids never collide (they now
@@ -191,13 +190,13 @@ fn motorsport_match(
         league,
         begin_at,
         status,
-        NormTeam {
+        NormalizedTeam {
             label: label.to_string(),
             name: String::new(),
             abbrev: String::new(),
             score: None,
         },
-        NormTeam {
+        NormalizedTeam {
             label: String::new(),
             name: String::new(),
             abbrev: String::new(),
