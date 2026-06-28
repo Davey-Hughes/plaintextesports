@@ -37,7 +37,8 @@ pub(crate) fn ThemeToggle() -> impl IntoView {
 /// flips the attribute + saved preference. Mirrors [`ThemeToggle`].
 #[component]
 pub(crate) fn IconsToggle() -> impl IntoView {
-    let show = RwSignal::new(true);
+    // Default off; the hydrate effect below reads the saved preference.
+    let show = RwSignal::new(false);
 
     Effect::new(move |_| {
         #[cfg(feature = "hydrate")]
@@ -69,10 +70,11 @@ pub(crate) fn IconsToggle() -> impl IntoView {
 /// The saved icon preference: on unless explicitly stored off.
 #[cfg(feature = "hydrate")]
 pub(crate) fn saved_icons() -> bool {
+    // Default off (like the scores toggle): on only when explicitly stored "1".
     web_sys::window()
         .and_then(|w| w.local_storage().ok().flatten())
         .and_then(|s| s.get_item(keys::ICONS).ok().flatten())
-        != Some("0".to_string())
+        == Some("1".to_string())
 }
 
 /// Apply the icon preference: set `data-icons` on <html> and persist it.
