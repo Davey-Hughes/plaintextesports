@@ -202,6 +202,9 @@ pub(crate) fn detail_view(d: MatchDetail) -> impl IntoView {
         ..
     } = d;
     let m = match_view.expect("found implies match_view");
+    // This match's time is the reveal "end" for every section reveal on the page
+    // (its results, the series rows), so they prune ~a week past the match.
+    provide_context(RevealEnd(m.begin_at_ms));
     // Per-page reveal key for a motorsport (WRC/MotoGP) result section.
     let motor_reveal_key = format!("motorres:{}", m.id);
     // For an F1 session page, derive (season, round) from the id encoding
@@ -308,7 +311,7 @@ pub(crate) fn detail_view(d: MatchDetail) -> impl IntoView {
         })
     };
     // Per-match reveal button (hidden when the global toggle already shows all).
-    let toggle = reveal_toggler(revealed, muid);
+    let toggle = reveal_toggler(revealed, muid, m.begin_at_ms);
     // Hide the reveal toggle when the global toggle already shows all, or when
     // the match hasn't been played yet (nothing to reveal).
     let toggle_hidden = move || global.is_some_and(|g| g.get()) || !played;
@@ -643,7 +646,9 @@ pub(crate) fn SeriesRow(game: SeriesGame) -> impl IntoView {
     // shared with the schedule via the per-match set keyed on its uid. Series
     // games are always MLB. A played game's badge is the reveal control.
     let muid = crate::types::match_uid(Sport::Mlb, match_id);
-    let (reveal, toggle_reveal) = row_reveal(&muid);
+    // A series game has no timestamp of its own, so use the match page's reveal end
+    // (the headline game's time) for all of the series' rows.
+    let (reveal, toggle_reveal) = row_reveal(&muid, current_reveal_end());
     let meta_view = reveal_meta(
         reveal,
         toggle_reveal,

@@ -248,6 +248,17 @@ pub(crate) fn EventPage() -> impl IntoView {
                 let lg_name = league();
                 match sched {
                     Some(Ok(mut s)) => {
+                        // The event's last match is the reveal "end" for its
+                        // standings/bracket reveals — they prune ~a week past it.
+                        let reveal_end = s
+                            .days
+                            .iter()
+                            .flat_map(|d| &d.leagues)
+                            .flat_map(|lg| &lg.matches)
+                            .map(|m| m.begin_at_ms)
+                            .max()
+                            .unwrap_or(0);
+                        provide_context(RevealEnd(reveal_end));
                         // The route segment is already the full edition name.
                         let title = lg_name.clone();
                         // The sport this event belongs to (all its matches share

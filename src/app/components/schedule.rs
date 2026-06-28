@@ -1050,18 +1050,31 @@ pub(crate) fn render_schedule(
 pub(crate) fn reveal_toggler(
     revealed: Option<RwSignal<HashSet<String>>>,
     uid: String,
+    end_ms: i64,
 ) -> impl Fn(leptos::ev::MouseEvent) + Clone {
+    // Only consumed by the hydrate-only record write below.
+    #[cfg(not(feature = "hydrate"))]
+    let _ = end_ms;
     move |ev: leptos::ev::MouseEvent| {
         ev.prevent_default();
         ev.stop_propagation();
         if let Some(r) = revealed {
+            let was = r.with_untracked(|s| s.contains(&uid));
             r.update(|s| {
-                if !s.remove(&uid) {
+                if was {
+                    s.remove(&uid);
+                } else {
                     s.insert(uid.clone());
                 }
             });
+            // Record/clear the localStorage reveal record so it carries the match's
+            // end (for pruning) and a fresh touch timestamp.
             #[cfg(feature = "hydrate")]
-            save_revealed(&r.get_untracked());
+            if was {
+                remove_reveal(keys::REVEALED, &uid);
+            } else {
+                touch_reveals(keys::REVEALED, &[(uid.clone(), end_ms)], now_ms());
+            }
         }
     }
 }
@@ -1115,7 +1128,10 @@ pub(crate) fn venue_time_cell(
 /// A row's spoiler-reveal state, keyed on the match uid: a memo that's true when
 /// the global toggle is on or this row was individually revealed, plus the click
 /// handler that toggles just this row.
-pub(crate) fn row_reveal(muid: &str) -> (Memo<bool>, impl Fn(leptos::ev::MouseEvent) + Clone) {
+pub(crate) fn row_reveal(
+    muid: &str,
+    end_ms: i64,
+) -> (Memo<bool>, impl Fn(leptos::ev::MouseEvent) + Clone) {
     let global = use_context::<ShowScores>().map(|s| s.0);
     let revealed = use_context::<RevealedMatches>().map(|r| r.0);
     let reveal = {
@@ -1125,7 +1141,19 @@ pub(crate) fn row_reveal(muid: &str) -> (Memo<bool>, impl Fn(leptos::ev::MouseEv
                 || revealed.is_some_and(|r| r.with(|set| set.contains(&muid)))
         })
     };
-    let toggle = reveal_toggler(revealed, muid.to_string());
+    // Viewing counts as interaction: if this row is a stored reveal being rendered,
+    // refresh its touch (and re-capture its end) once on mount, so anything you
+    // still look at stays revealed.
+    #[cfg(feature = "hydrate")]
+    {
+        let uid = muid.to_string();
+        Effect::new(move |_| {
+            if revealed.is_some_and(|r| r.with_untracked(|s| s.contains(&uid))) {
+                touch_reveals(keys::REVEALED, &[(uid.clone(), end_ms)], now_ms());
+            }
+        });
+    }
+    let toggle = reveal_toggler(revealed, muid.to_string(), end_ms);
     (reveal, toggle)
 }
 
@@ -1257,7 +1285,9 @@ pub(crate) fn MatchRow(m: MatchView, show_bo: bool, push: bool) -> impl IntoView
         .row_href
         .clone()
         .unwrap_or_else(|| crate::types::match_path(m.sport, m.id));
-    let (reveal, toggle_reveal) = row_reveal(&muid);
+    // The match's own start time is its reveal "end" (matches are short; a week's
+    // grace absorbs the duration).
+    let (reveal, toggle_reveal) = row_reveal(&muid, m.begin_at_ms);
     // The bo rides beside the badge (only when present, so the reveal underline
     // doesn't extend into an empty cell on uniform events). Score-less rows
     // (upcoming, or a live match still at the 0-0 placeholder) get a static meta.
