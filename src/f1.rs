@@ -306,6 +306,11 @@ struct ResultsTable {
 }
 #[derive(Deserialize, Default)]
 struct ResultsRace {
+    // The race date, also present on the schedule's race object. Read here so the
+    // OpenF1 weekend-match date comes free with the results instead of costing a
+    // separate round lookup.
+    #[serde(rename = "date", default)]
+    date: String,
     #[serde(rename = "Results", default)]
     results: Vec<RawResult>,
     #[serde(rename = "SprintResults", default)]
@@ -533,12 +538,17 @@ pub async fn fetch_results(client: &reqwest::Client, season: i64, round: i64) ->
         format!("{base}/sprint.json?limit=40"),
         format!("{base}/qualifying.json?limit=40"),
     );
-    let (race, sprint, quali, date) = tokio::join!(
+    let (race, sprint, quali) = tokio::join!(
         get_results(client, &race_url),
         get_results(client, &sprint_url),
         get_results(client, &quali_url),
-        round_date(client, season, round),
     );
+    // The race date (for OpenF1 weekend-matching) rides along in any of the
+    // results payloads, so take it from there rather than spending a 4th request.
+    let date_from_results = [&race, &sprint, &quali]
+        .into_iter()
+        .flatten()
+        .find_map(|r| NaiveDate::parse_from_str(r.date.get(..10)?, "%Y-%m-%d").ok());
     let mut out = Vec::new();
     let mut push = |session: &str, rows: Vec<F1ResultRow>| {
         if !rows.is_empty() {
@@ -561,7 +571,13 @@ pub async fn fetch_results(client: &reqwest::Client, season: i64, round: i64) ->
         quali.map(|q| quali_rows(&q.qualifying)).unwrap_or_default(),
     );
     // Practice timing (FP1/FP2/FP3) isn't in Jolpica — pull it from OpenF1 and
-    // append it under qualifying. Matched to the OpenF1 weekend by the race date.
+    // append it under qualifying. Matched to the OpenF1 weekend by the race date,
+    // taken from the results above; only an upcoming GP with no results yet falls
+    // back to the dedicated round lookup.
+    let date = match date_from_results {
+        Some(d) => Some(d),
+        None => round_date(client, season, round).await,
+    };
     if let Some(date) = date {
         out.extend(crate::openf1::fetch_practice(client, season, date).await);
     }

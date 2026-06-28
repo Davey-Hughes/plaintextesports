@@ -469,9 +469,23 @@ pub async fn fetch_game(
         page += 1;
     }
 
-    // Running is best-effort: usually empty on the free tier (no live feed), but
-    // correct when a league does expose it.
-    match get_segment(client, token, sport, "running", &[("per_page", "50")]).await {
+    // Running and recent-past are independent best-effort endpoints, so fetch them
+    // concurrently. Running is usually empty on the free tier (no live feed) but
+    // correct when a league exposes it. Recent past uses a begin_at range, NOT
+    // sort=-begin_at: the free tier's descending sort returns a wall of
+    // null-begin_at placeholder rows that bury real finished matches past the
+    // first page; a range over the recent window excludes them, so this poll sees
+    // a match that just finished and updates its status/score the same cycle —
+    // instead of leaving it stuck in the started-but-never-finished live heuristic
+    // until the idle past-day refresh catches it.
+    let (from, to) = recent_past_window(Utc::now());
+    let (running, past) = tokio::join!(
+        get_segment(client, token, sport, "running", &[("per_page", "50")]),
+        fetch_past_range(client, token, sport, from, to, 1, PER_PAGE as u32),
+    );
+    // Insert running first, then recent-past, so the fresher finished-match data
+    // from /past wins on any id present in both.
+    match running {
         Ok(matches) => {
             for m in matches {
                 by_id.insert(m.id, m);
@@ -479,16 +493,7 @@ pub async fn fetch_game(
         }
         Err(e) => leptos::logging::log!("pandascore {}/running unavailable: {e}", sport.slug()),
     }
-
-    // Recent past via a begin_at range, NOT sort=-begin_at: the free tier's
-    // descending sort returns a wall of null-begin_at placeholder rows that bury
-    // real finished matches past the first page. A range over the recent window
-    // excludes the null rows, so this poll sees a match that just finished and
-    // updates its status/score the same cycle (one page, best-effort) — instead
-    // of leaving it stuck in the started-but-never-finished live heuristic until
-    // the idle past-day refresh catches it.
-    let (from, to) = recent_past_window(Utc::now());
-    match fetch_past_range(client, token, sport, from, to, 1, PER_PAGE as u32).await {
+    match past {
         Ok(r) => {
             for m in r.matches {
                 by_id.insert(m.id, m);

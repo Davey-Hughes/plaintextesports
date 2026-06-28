@@ -1531,13 +1531,17 @@ fn to_view(m: &NormalizedMatch, tz: &Tz, now: DateTime<Utc>, hour24: bool) -> Ma
         && (m.league == "WRC" || m.league == "WEC")
         && m.venue_tz.is_none();
 
-    // PandaScore returns placeholder 0-0 results on unplayed matches, so only
-    // trust a score once it's nonzero: a finished Bo-X always has a winner with
-    // >0, and a live match's map count is real only past the 0-0 placeholder.
-    // This also keeps a match we assume is over (started, never marked finished)
-    // from rendering a fake 0-0 final.
+    // PandaScore returns placeholder 0-0 results on unplayed matches, and a match
+    // we only *assume* is over (started, never marked finished) may still hold
+    // that placeholder — so for esports map counts and assumed-over rows, trust a
+    // score only once it's nonzero (a real Bo-X final always has a winner > 0, and
+    // a live map count is real only past 0-0). A traditional sport the *source*
+    // itself marked finished can legitimately end 0-0 (a soccer draw), so trust
+    // that as the real result rather than blanking it.
+    let nonzero = matches!((m.team_a.score, m.team_b.score), (Some(a), Some(b)) if a > 0 || b > 0);
+    let real_traditional_final = m.status == MatchStatus::Finished && m.sport.traditional();
     let trust_scores = matches!(status, MatchStatus::Finished | MatchStatus::Live)
-        && matches!((m.team_a.score, m.team_b.score), (Some(a), Some(b)) if a > 0 || b > 0);
+        && (nonzero || real_traditional_final);
     let mut team_a = TeamView {
         label: m.team_a.label.clone(),
         name: m.team_a.name.clone(),
@@ -1590,7 +1594,6 @@ fn to_view(m: &NormalizedMatch, tz: &Tz, now: DateTime<Utc>, hour24: bool) -> Ma
         sport: m.sport,
         league: m.league.clone(),
         series_name: m.series_name.clone(),
-        tier: m.tier.clone(),
         status,
         clock_label: if date_only {
             String::new()
@@ -1604,7 +1607,6 @@ fn to_view(m: &NormalizedMatch, tz: &Tz, now: DateTime<Utc>, hour24: bool) -> Ma
         best_of: m.best_of.map(|n| format!("Bo{n}")).unwrap_or_default(),
         team_a,
         team_b,
-        stream_url: m.stream_url.clone(),
         event_url: resolved_event_url(m.sport, &m.league, m.begin_at, m.league_url.as_deref()),
         begin_at_ms: m.begin_at.timestamp_millis(),
         row_href: None,
@@ -1779,6 +1781,17 @@ fn collapse_wrc_days(views: Vec<MatchView>, tz: &Tz, snap: &Snapshot) -> Vec<Mat
         m.sport == Sport::Motorsport && m.league == "WRC" && !m.clock_label.is_empty()
     };
 
+    // Only WRC stage rows get condensed. With none in view — every esports page,
+    // and any traditional page with no WRC stage in window (the common case) —
+    // skip the full O(n) cross-sport snapshot pre-scan and the regroup entirely;
+    // just keep the input time-sorted (the homepage appends out-of-window
+    // motorsport rows, so the sort still matters).
+    if !views.iter().any(is_stage) {
+        let mut views = views;
+        views.sort_by_key(|m| m.begin_at_ms);
+        return views;
+    }
+
     // Leg ordinal + power-stage flag per (series, local day), taken from the whole
     // rally in the snapshot — not just the windowed subset — so a single-day view
     // still numbers its leg from the rally's first day.
@@ -1931,15 +1944,16 @@ pub fn homepage_view(game_filter: &str, tz_name: &str, hour24: bool) -> Schedule
     if traditional {
         let start_ms = start.timestamp_millis();
         let have: std::collections::HashSet<i64> = all.iter().map(|m| m.id).collect();
-        for mv in next_motorsport_events(&snap, now, &tz, hour24) {
+        for m in next_motorsport_events(&snap) {
             // Surface the event's today-or-later rows only. Its already-finished
             // past days (e.g. the opening leg of a rally that's already under way)
             // belong on the event page, not the main schedule, which runs from
             // today forward. Rows within the window arrive via matches_in_window;
             // this only adds what's beyond it (a future event, or later days of one
-            // running past the forward cap).
-            if mv.begin_at_ms >= start_ms && !have.contains(&mv.id) {
-                all.push(mv);
+            // running past the forward cap). Filter/dedup before to_view so the
+            // dropped past rows never pay for the conversion.
+            if m.begin_at.timestamp_millis() >= start_ms && !have.contains(&m.id) {
+                all.push(to_view(m, &tz, now, hour24));
             }
         }
     }
@@ -1948,14 +1962,19 @@ pub fn homepage_view(game_filter: &str, tz_name: &str, hour24: bool) -> Schedule
     // events from outside the daily window (e.g. a live multi-day event that began
     // before today), and group_days needs time-sorted input.
     let all = collapse_wrc_days(all, &tz, &snap);
+    // Done with the snapshot — copy the freshness metadata out and release the
+    // read lock before group_days (sort + clones) so it doesn't block the poller's
+    // periodic write.
+    let (fetched_at, stale, using_fixture) = (snap.fetched_at, snap.stale, snap.using_fixture);
+    drop(snap);
 
     ScheduleView {
         days: group_days(all, &tz),
         today_key: today.format("%Y-%m-%d").to_string(),
-        fetched_at_ms: snap.fetched_at.timestamp_millis(),
-        fetched_label: time_label(snap.fetched_at.with_timezone(&tz), hour24),
-        stale: snap.stale,
-        using_fixture: snap.using_fixture,
+        fetched_at_ms: fetched_at.timestamp_millis(),
+        fetched_label: time_label(fetched_at.with_timezone(&tz), hour24),
+        stale,
+        using_fixture,
         demo_forced: cfg.demo,
         date_label: None,
         prev_date: None,
@@ -1963,43 +1982,39 @@ pub fn homepage_view(game_filter: &str, tz_name: &str, hour24: bool) -> Schedule
     }
 }
 
-/// Every session of the next upcoming Grand Prix (its whole weekend) as views.
-/// Empty when no F1 session is upcoming (off-season).
-fn next_motorsport_events(
-    snap: &Snapshot,
-    now: DateTime<Utc>,
-    tz: &Tz,
-    hour24: bool,
-) -> Vec<MatchView> {
-    // Motorsport series are episodic — often more than a week between events, and
-    // a single event (an F1 weekend, a rally, an endurance race) can run several
-    // days. So surface, per series (F1/WRC/WEC, by league), the whole of its
-    // soonest not-yet-finished event, even when it's beyond the short traditional
-    // forward window. Without this an episodic series shows nothing for days.
-    let leagues: std::collections::BTreeSet<&str> = snap
-        .matches
-        .iter()
-        .filter(|m| m.sport == Sport::Motorsport)
-        .map(|m| m.league.as_str())
-        .collect();
-    let series: Vec<String> = leagues
-        .into_iter()
-        .filter_map(|lg| {
-            snap.matches
-                .iter()
-                .filter(|m| {
-                    m.sport == Sport::Motorsport
-                        && m.league == lg
-                        && matches!(m.status, MatchStatus::Live | MatchStatus::Upcoming)
-                })
-                .min_by_key(|m| m.begin_at)
-                .map(|m| m.series_name.clone())
-        })
-        .collect();
+/// Every row of each motorsport series' soonest not-yet-finished event (an F1
+/// weekend, a rally, an endurance round), borrowed from the snapshot.
+///
+/// Motorsport series are episodic — often more than a week between events, and a
+/// single event spans several days — so the short traditional forward window
+/// misses them; this surfaces, per series (by league), the whole of its current
+/// or next event. Returns borrowed `NormalizedMatch` rows so the caller can
+/// window and de-duplicate *before* paying for the per-row `to_view` conversion
+/// (a rally has up to ~16 stages, most of them already-finished past days the
+/// homepage then drops). Empty off-season.
+fn next_motorsport_events(snap: &Snapshot) -> Vec<&NormalizedMatch> {
+    use std::collections::{HashMap, HashSet};
+    // One pass: per league, the series_name of its soonest live/upcoming row.
+    let mut soonest: HashMap<&str, (DateTime<Utc>, &str)> = HashMap::new();
+    for m in &snap.matches {
+        if m.sport != Sport::Motorsport
+            || !matches!(m.status, MatchStatus::Live | MatchStatus::Upcoming)
+        {
+            continue;
+        }
+        soonest
+            .entry(m.league.as_str())
+            .and_modify(|cur| {
+                if m.begin_at < cur.0 {
+                    *cur = (m.begin_at, m.series_name.as_str());
+                }
+            })
+            .or_insert((m.begin_at, m.series_name.as_str()));
+    }
+    let series: HashSet<&str> = soonest.values().map(|(_, s)| *s).collect();
     snap.matches
         .iter()
-        .filter(|m| m.sport == Sport::Motorsport && series.contains(&m.series_name))
-        .map(|m| to_view(m, tz, now, hour24))
+        .filter(|m| m.sport == Sport::Motorsport && series.contains(m.series_name.as_str()))
         .collect()
 }
 
@@ -2019,6 +2034,8 @@ pub fn day_view(date: &str, game_filter: &str, tz_name: &str, hour24: bool) -> S
     let snap = SNAPSHOT.read().unwrap_or_else(PoisonError::into_inner);
     let all = matches_in_window(&snap, traditional, sport, start, end, &tz, now, hour24);
     let all = collapse_wrc_days(all, &tz, &snap);
+    let (fetched_at, stale, using_fixture) = (snap.fetched_at, snap.stale, snap.using_fixture);
+    drop(snap);
 
     let local_noon = tz
         .from_local_datetime(&day.and_hms_opt(12, 0, 0).unwrap())
@@ -2032,10 +2049,10 @@ pub fn day_view(date: &str, game_filter: &str, tz_name: &str, hour24: bool) -> S
             .date_naive()
             .format("%Y-%m-%d")
             .to_string(),
-        fetched_at_ms: snap.fetched_at.timestamp_millis(),
-        fetched_label: time_label(snap.fetched_at.with_timezone(&tz), hour24),
-        stale: snap.stale,
-        using_fixture: snap.using_fixture,
+        fetched_at_ms: fetched_at.timestamp_millis(),
+        fetched_label: time_label(fetched_at.with_timezone(&tz), hour24),
+        stale,
+        using_fixture,
         demo_forced: cfg.demo,
         date_label: Some(day_label(local_noon)),
         prev_date: Some((day - Duration::days(1)).format("%Y-%m-%d").to_string()),
@@ -2069,6 +2086,8 @@ pub fn range_view(
     let snap = SNAPSHOT.read().unwrap_or_else(PoisonError::into_inner);
     let all = matches_in_window(&snap, traditional, sport, start, end, &tz, now, hour24);
     let all = collapse_wrc_days(all, &tz, &snap);
+    let (fetched_at, stale, using_fixture) = (snap.fetched_at, snap.stale, snap.using_fixture);
+    drop(snap);
 
     ScheduleView {
         days: group_days(all, &tz),
@@ -2077,10 +2096,10 @@ pub fn range_view(
             .date_naive()
             .format("%Y-%m-%d")
             .to_string(),
-        fetched_at_ms: snap.fetched_at.timestamp_millis(),
-        fetched_label: time_label(snap.fetched_at.with_timezone(&tz), hour24),
-        stale: snap.stale,
-        using_fixture: snap.using_fixture,
+        fetched_at_ms: fetched_at.timestamp_millis(),
+        fetched_label: time_label(fetched_at.with_timezone(&tz), hour24),
+        stale,
+        using_fixture,
         demo_forced: cfg.demo,
         date_label: None,
         prev_date: None,
@@ -3850,6 +3869,23 @@ mod tests {
     }
 
     #[test]
+    fn to_view_keeps_zero_zero_soccer_draw() {
+        let now = Utc::now();
+        // A traditional sport the source itself marked finished can legitimately
+        // end 0-0 (a soccer draw) — unlike an esports Bo-X, that's the real
+        // result and must render "0 - 0", not blank.
+        let mut draw = at(now - Duration::hours(2), MatchStatus::Finished);
+        draw.sport = Sport::Soccer;
+        draw.team_a.score = Some(0);
+        draw.team_b.score = Some(0);
+        let v = to_view(&draw, &Tz::UTC, now, true);
+        assert_eq!(v.team_a.score, Some(0));
+        assert_eq!(v.team_b.score, Some(0));
+        // A draw has no winner.
+        assert!(!v.team_a.winner && !v.team_b.winner);
+    }
+
+    #[test]
     fn to_view_shows_live_scores_only_when_nonzero() {
         let now = Utc::now();
         // A live match with a real partial score: shown, but no winner yet.
@@ -3885,7 +3921,6 @@ mod tests {
             sport: Sport::Lol,
             league: league.into(),
             series_name: String::new(),
-            tier: "S".into(),
             status: MatchStatus::Upcoming,
             clock_label: String::new(),
             date_label: String::new(),
@@ -3909,7 +3944,6 @@ mod tests {
                 logo: String::new(),
                 abbrev: String::new(),
             },
-            stream_url: None,
             event_url: String::new(),
             begin_at_ms: at_ms,
             row_href: None,
@@ -3944,7 +3978,6 @@ mod tests {
             sport,
             league: league.into(),
             series_name: String::new(),
-            tier: "S".into(),
             status: MatchStatus::Upcoming,
             clock_label: String::new(),
             date_label: String::new(),
@@ -3968,7 +4001,6 @@ mod tests {
                 logo: String::new(),
                 abbrev: String::new(),
             },
-            stream_url: None,
             event_url: String::new(),
             begin_at_ms: at_ms,
             row_href: None,
@@ -3999,7 +4031,6 @@ mod tests {
             sport: Sport::Cs2,
             league: "IEM".into(),
             series_name: series.into(),
-            tier: "S".into(),
             status: MatchStatus::Upcoming,
             clock_label: String::new(),
             date_label: String::new(),
@@ -4023,7 +4054,6 @@ mod tests {
                 logo: String::new(),
                 abbrev: String::new(),
             },
-            stream_url: None,
             event_url: String::new(),
             begin_at_ms: at_ms,
             row_href: None,

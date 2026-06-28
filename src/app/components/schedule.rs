@@ -1132,15 +1132,19 @@ pub(crate) fn row_reveal(
     };
     // Viewing counts as interaction: if this row is a stored reveal being rendered,
     // refresh its touch (and re-capture its end) once on mount, so anything you
-    // still look at stays revealed.
+    // still look at stays revealed. Only the (few) rows actually in the revealed
+    // set need this, so gate the effect's creation on that — a large schedule
+    // otherwise spins up a reactive node per row at hydration for nothing. The
+    // condition is read untracked (the original effect did too), so it's settled
+    // once at mount, not re-evaluated.
     #[cfg(feature = "hydrate")]
     {
         let uid = muid.to_string();
-        Effect::new(move |_| {
-            if revealed.is_some_and(|r| r.with_untracked(|s| s.contains(&uid))) {
+        if revealed.is_some_and(|r| r.with_untracked(|s| s.contains(&uid))) {
+            Effect::new(move |_| {
                 touch_reveals(keys::REVEALED, &[(uid.clone(), end_ms)], now_ms());
-            }
-        });
+            });
+        }
     }
     let toggle = reveal_toggler(revealed, muid.to_string(), end_ms);
     (reveal, toggle)

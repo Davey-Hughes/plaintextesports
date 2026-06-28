@@ -9,6 +9,34 @@ use crate::app::*;
 #[cfg(any(feature = "ssr", feature = "hydrate"))]
 pub(crate) const SPORT_MODE_KEY: &str = "mode";
 
+/// The detected-timezone cookie key (browser IANA zone). Read on the server too so
+/// the first paint already renders in the viewer's zone — without it the schedule
+/// resource re-keys (tz default "" → real zone) right after hydration and refetches
+/// the whole schedule. Lives beside [`SPORT_MODE_KEY`] for the same reason.
+#[cfg(any(feature = "ssr", feature = "hydrate"))]
+pub(crate) const TZ_COOKIE_KEY: &str = "tz";
+
+/// The 24-hour-clock cookie key ("1"/"0"). Mirrors the localStorage [`keys::HOUR24`]
+/// preference into a cookie so the server can seed it on the first paint (same
+/// re-key-and-refetch avoidance as [`TZ_COOKIE_KEY`]).
+#[cfg(any(feature = "ssr", feature = "hydrate"))]
+pub(crate) const HOUR24_COOKIE_KEY: &str = "h24";
+
+/// Read a cookie value from the SSR request's `Cookie` header.
+#[cfg(feature = "ssr")]
+pub(crate) fn ssr_cookie(parts: &http::request::Parts, key: &str) -> Option<String> {
+    parts
+        .headers
+        .get(http::header::COOKIE)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|cookies| {
+            cookies.split(';').find_map(|kv| {
+                let (k, v) = kv.trim().split_once('=')?;
+                (k == key).then(|| v.to_string())
+            })
+        })
+}
+
 /// Update the URL hash to the `.spy` section currently scrolled into view (its
 /// `id` becomes the hash) via `replaceState`, so it neither scrolls nor stacks
 /// history. Targets are the homepage day groups and the event page's sections.
@@ -313,21 +341,52 @@ pub(crate) fn initial_sport_mode() -> bool {
         return false;
     };
     let query = parts.uri.query().unwrap_or_default();
-    let cookie_mode = parts
-        .headers
-        .get(http::header::COOKIE)
-        .and_then(|v| v.to_str().ok())
-        .and_then(|cookies| {
-            cookies.split(';').find_map(|kv| {
-                let (k, v) = kv.trim().split_once('=')?;
-                (k == SPORT_MODE_KEY).then(|| v.to_string())
-            })
-        });
     resolve_sport_mode(
         query_param(query, SPORT_MODE_KEY).as_deref(),
         query_param(query, "g").as_deref(),
-        cookie_mode.as_deref(),
+        ssr_cookie(&parts, SPORT_MODE_KEY).as_deref(),
     )
+}
+
+/// The timezone IANA name for this render, read from the `tz` cookie so SSR and
+/// hydrate seed the schedule resource with the same value (the browser-detected
+/// zone is later confirmed/updated by the post-hydration effect). Empty until the
+/// browser has reported one (the server then falls back to the configured default).
+#[cfg(feature = "ssr")]
+pub(crate) fn initial_tz() -> String {
+    use_context::<http::request::Parts>()
+        .and_then(|parts| ssr_cookie(&parts, TZ_COOKIE_KEY))
+        .unwrap_or_default()
+}
+
+#[cfg(feature = "hydrate")]
+pub(crate) fn initial_tz() -> String {
+    read_cookie(TZ_COOKIE_KEY).unwrap_or_default()
+}
+
+#[cfg(not(any(feature = "ssr", feature = "hydrate")))]
+pub(crate) fn initial_tz() -> String {
+    String::new()
+}
+
+/// The 24-hour-clock preference for this render, read from the `h24` cookie so SSR
+/// and hydrate agree on the first paint. Defaults to true (24h); the localStorage
+/// pref still takes over (and back-fills the cookie) in the post-hydration effect.
+#[cfg(feature = "ssr")]
+pub(crate) fn initial_hour24() -> bool {
+    use_context::<http::request::Parts>()
+        .and_then(|parts| ssr_cookie(&parts, HOUR24_COOKIE_KEY))
+        .is_none_or(|v| v != "0")
+}
+
+#[cfg(feature = "hydrate")]
+pub(crate) fn initial_hour24() -> bool {
+    read_cookie(HOUR24_COOKIE_KEY).is_none_or(|v| v != "0")
+}
+
+#[cfg(not(any(feature = "ssr", feature = "hydrate")))]
+pub(crate) fn initial_hour24() -> bool {
+    true
 }
 
 #[cfg(feature = "hydrate")]

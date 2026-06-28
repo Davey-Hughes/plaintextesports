@@ -267,7 +267,6 @@ pub struct MatchView {
     /// `league` to title the event/match pages (e.g. "IEM Cologne Major").
     #[serde(default)]
     pub series_name: String,
-    pub tier: String,
     pub status: MatchStatus,
     /// Start time in the display tz, e.g. "6:00 PM" (always the clock time; the
     /// live/final state is conveyed separately by `status`).
@@ -292,8 +291,11 @@ pub struct MatchView {
     pub best_of: String,
     pub team_a: TeamView,
     pub team_b: TeamView,
-    pub stream_url: Option<String>,
     /// Link to the event page: official site when known, else a Liquipedia search.
+    /// Computed server-side and folded into the enclosing `LeagueGroup`
+    /// ([`group_days`]); never read per-row on the client, so it's skipped on the
+    /// wire instead of repeated on every match.
+    #[serde(skip)]
     pub event_url: String,
     pub begin_at_ms: i64,
     /// When set, the whole row links here instead of its own `/match` page. The
