@@ -1284,7 +1284,7 @@ pub(crate) fn MatchRow(m: MatchView, show_bo: bool, push: bool) -> impl IntoView
         reveal,
         toggle_reveal,
         m.status,
-        &status_class,
+        status_class,
         badge,
         Some(bo),
         has,

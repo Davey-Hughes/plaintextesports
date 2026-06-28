@@ -189,10 +189,9 @@ pub(crate) fn decode_backup(s: &str) -> Option<NotifBackup> {
     let s = s.trim();
     let body = if let Some(rest) = s.strip_prefix("pte1z:") {
         String::from_utf8(inflate(&b64.decode(rest).ok()?)?).ok()?
-    } else if let Some(rest) = s.strip_prefix("pte1:") {
-        String::from_utf8(b64.decode(rest).ok()?).ok()?
     } else {
-        return None;
+        let rest = s.strip_prefix("pte1:")?;
+        String::from_utf8(b64.decode(rest).ok()?).ok()?
     };
     let mut b = NotifBackup::default();
     for line in body.split('\n') {

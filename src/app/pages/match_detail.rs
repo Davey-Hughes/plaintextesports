@@ -653,7 +653,7 @@ pub(crate) fn SeriesRow(game: SeriesGame) -> impl IntoView {
         reveal,
         toggle_reveal,
         status,
-        &status_class,
+        status_class,
         badge,
         None,
         played,
