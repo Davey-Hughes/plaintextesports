@@ -5,14 +5,13 @@
 //! name`). F1 is single-entity — a session has no opposing team — so the row's
 //! one label is the session name (e.g. "Race"); results live on the event page.
 
-use crate::pandascore::{NormTeam, NormalizedMatch};
+use crate::feed::{NormalizedMatch, NormalizedTeam};
+use crate::http::USER_AGENT;
 use crate::types::{F1Result, F1ResultRow, F1StandingRow, F1Standings, MatchStatus, Sport};
 use chrono::{DateTime, Duration, NaiveDate, Utc};
 use serde::Deserialize;
 
 const BASE: &str = "https://api.jolpi.ca/ergast/f1";
-const USER_AGENT: &str =
-    "plaintextesports/0.1 (https://github.com/ralphpotato/plaintextesports; ralphpotato@gmail.com)";
 
 #[derive(Deserialize)]
 struct Resp {
@@ -236,13 +235,13 @@ fn to_matches(r: &RawRace, now: DateTime<Utc>) -> Vec<NormalizedMatch> {
                 begin_at,
                 status,
                 // Single-entity: the one label is the session; no opponent.
-                NormTeam {
+                NormalizedTeam {
                     label: s.label.to_string(),
                     name: String::new(),
                     abbrev: String::new(),
                     score: None,
                 },
-                NormTeam {
+                NormalizedTeam {
                     label: String::new(),
                     name: String::new(),
                     abbrev: String::new(),

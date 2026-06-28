@@ -4,7 +4,7 @@
 //! toggle. The schedule endpoint returns a week at a time, so a date-range fetch
 //! walks it a week at a time and de-dupes.
 
-use crate::pandascore::{NormTeam, NormalizedMatch};
+use crate::feed::{NormalizedMatch, NormalizedTeam};
 use crate::types::{EventInfo, MatchStatus, Sport, StandingRow};
 use chrono::{DateTime, Duration, NaiveDate, Utc};
 use serde::Deserialize;
@@ -125,13 +125,13 @@ fn to_match(g: RawGame) -> Option<NormalizedMatch> {
         "NHL",
         begin_at,
         status_of(&g.game_state, &g.schedule_state),
-        NormTeam {
+        NormalizedTeam {
             label: g.away_team.label(),
             name: g.away_team.full_name(),
             abbrev: g.away_team.abbrev.clone(),
             score: g.away_team.score,
         },
-        NormTeam {
+        NormalizedTeam {
             label: g.home_team.label(),
             name: g.home_team.full_name(),
             abbrev: g.home_team.abbrev.clone(),

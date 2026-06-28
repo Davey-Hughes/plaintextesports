@@ -9,13 +9,9 @@
 //! the resolver loop + SQLite cache in `cache.rs` — which keeps us within
 //! Liquipedia's API terms (descriptive User-Agent, aggressive caching, low rate).
 
+use crate::http::{DynError, USER_AGENT};
 use crate::types::Sport;
 use serde::Deserialize;
-
-type DynError = Box<dyn std::error::Error + Send + Sync>;
-
-const USER_AGENT: &str =
-    "plaintextesports/0.1 (https://github.com/ralphpotato/plaintextesports; ralphpotato@gmail.com)";
 
 /// Tokens too generic to require a match on.
 const STOPWORDS: &[&str] = &["the", "of", "and"];

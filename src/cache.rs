@@ -7,7 +7,8 @@
 //! demo fixture (relative to "now") so the UI is always usable.
 
 use crate::config::config;
-use crate::pandascore::{fetch_game, FetchResult, NormTeam, NormalizedMatch};
+use crate::feed::{FetchResult, NormalizedMatch, NormalizedTeam};
+use crate::pandascore::fetch_game;
 use crate::types::{
     event_name_eq, full_event_name, BracketMatch, BracketRound, DayGroup, EventInfo, LeagueGroup,
     MatchStatus, MatchView, ScheduleView, Sport, StandingRow, StreamView, TeamView,
@@ -463,7 +464,7 @@ const MAX_PREWARM_PER_CYCLE: usize = 8;
 /// Shared HTTP client for on-demand standings/bracket fetches.
 static HTTP: Lazy<reqwest::Client> = Lazy::new(|| {
     reqwest::Client::builder()
-        .user_agent("plaintextesports/0.1 (+https://github.com/ralphpotato/plaintextesports)")
+        .user_agent(crate::http::USER_AGENT)
         .build()
         .unwrap_or_default()
 });
@@ -545,7 +546,7 @@ pub fn spawn_poller() {
 
     tokio::spawn(async move {
         let client = match reqwest::Client::builder()
-            .user_agent("plaintextesports/0.1 (+https://github.com/ralphpotato/plaintextesports)")
+            .user_agent(crate::http::USER_AGENT)
             .build()
         {
             Ok(c) => c,
@@ -2975,8 +2976,8 @@ fn demo_bracket_event(name: &str, rounds: Vec<BracketRound>) -> EventInfo {
 
 // ----- Demo fixture (no token) ---------------------------------------------
 
-fn demo_team(label: &str, score: Option<i64>) -> NormTeam {
-    NormTeam {
+fn demo_team(label: &str, score: Option<i64>) -> NormalizedTeam {
+    NormalizedTeam {
         label: label.to_string(),
         name: label.to_string(),
         abbrev: String::new(),
@@ -2993,8 +2994,8 @@ fn demo_match(
     begin_at: DateTime<Utc>,
     status: MatchStatus,
     best_of: i64,
-    a: NormTeam,
-    b: NormTeam,
+    a: NormalizedTeam,
+    b: NormalizedTeam,
 ) -> NormalizedMatch {
     NormalizedMatch {
         id,
@@ -3406,13 +3407,13 @@ mod tests {
             "WRC",
             begin.parse::<DateTime<Utc>>().unwrap(),
             MatchStatus::Upcoming,
-            NormTeam {
+            NormalizedTeam {
                 label: label.into(),
                 name: String::new(),
                 abbrev: String::new(),
                 score: None,
             },
-            NormTeam {
+            NormalizedTeam {
                 label: String::new(),
                 name: String::new(),
                 abbrev: String::new(),
@@ -3442,13 +3443,13 @@ mod tests {
             "WRC",
             "2026-07-16T12:00:00Z".parse().unwrap(),
             MatchStatus::Upcoming,
-            NormTeam {
+            NormalizedTeam {
                 label: "Rally Estonia".into(),
                 name: String::new(),
                 abbrev: String::new(),
                 score: None,
             },
-            NormTeam {
+            NormalizedTeam {
                 label: String::new(),
                 name: String::new(),
                 abbrev: String::new(),
@@ -3464,13 +3465,13 @@ mod tests {
             "F1",
             "2026-06-26T13:00:00Z".parse().unwrap(),
             MatchStatus::Upcoming,
-            NormTeam {
+            NormalizedTeam {
                 label: "Race".into(),
                 name: String::new(),
                 abbrev: String::new(),
                 score: None,
             },
-            NormTeam {
+            NormalizedTeam {
                 label: String::new(),
                 name: String::new(),
                 abbrev: String::new(),
@@ -3547,13 +3548,13 @@ mod tests {
             begin_at: begin,
             status,
             best_of: Some(3),
-            team_a: NormTeam {
+            team_a: NormalizedTeam {
                 label: "A".into(),
                 name: "A".into(),
                 score: None,
                 abbrev: String::new(),
             },
-            team_b: NormTeam {
+            team_b: NormalizedTeam {
                 label: "B".into(),
                 name: "B".into(),
                 score: None,

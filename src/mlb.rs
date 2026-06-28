@@ -2,7 +2,7 @@
 //! required), normalized into the same [`NormalizedMatch`] model as the esports
 //! feeds so it flows through the existing schedule UI unchanged.
 
-use crate::pandascore::{NormTeam, NormalizedMatch};
+use crate::feed::{NormalizedMatch, NormalizedTeam};
 use crate::types::{EventInfo, MatchStatus, Sport, StandingRow, StreamView};
 use chrono::{DateTime, NaiveDate, Utc};
 use serde::Deserialize;
@@ -327,13 +327,13 @@ fn to_match(g: RawGame) -> Option<NormalizedMatch> {
         "MLB",
         begin_at,
         status_of(&g.status),
-        NormTeam {
+        NormalizedTeam {
             label: g.teams.away.team.label(),
             name: g.teams.away.team.full_name(),
             abbrev: g.teams.away.team.abbreviation.clone(),
             score: g.teams.away.score,
         },
-        NormTeam {
+        NormalizedTeam {
             label: g.teams.home.team.label(),
             name: g.teams.home.team.full_name(),
             abbrev: g.teams.home.team.abbreviation.clone(),

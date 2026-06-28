@@ -6,6 +6,7 @@
 //! delivers due reminders, pruning dead subscriptions (404/410).
 
 use crate::config::Config;
+use crate::http::DynError;
 use crate::store::{self, Reminder};
 use base64ct::{Base64UrlUnpadded, Encoding};
 use chrono::Utc;
@@ -13,8 +14,6 @@ use std::time::Duration;
 use web_push_native::jwt_simple::algorithms::ES256KeyPair;
 use web_push_native::p256::PublicKey;
 use web_push_native::{Auth, WebPushBuilder};
-
-type DynError = Box<dyn std::error::Error + Send + Sync>;
 
 /// How often the sender scans for due reminders.
 const TICK: Duration = Duration::from_secs(30);

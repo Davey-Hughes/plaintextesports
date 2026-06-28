@@ -17,6 +17,10 @@ pub mod espn;
 #[cfg(feature = "ssr")]
 pub mod f1;
 #[cfg(feature = "ssr")]
+pub mod feed;
+#[cfg(feature = "ssr")]
+pub mod http;
+#[cfg(feature = "ssr")]
 pub mod liquipedia;
 #[cfg(feature = "ssr")]
 pub mod mlb;

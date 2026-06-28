@@ -6,7 +6,7 @@
 //! match that finishes and drops out of the API's window is retained until it
 //! ages past the retention cutoff.
 
-use crate::pandascore::{NormTeam, NormalizedMatch};
+use crate::feed::{NormalizedMatch, NormalizedTeam};
 use crate::types::{MatchStatus, Sport};
 use chrono::{DateTime, Utc};
 use once_cell::sync::OnceCell;
@@ -327,7 +327,7 @@ fn row_to_match(row: &rusqlite::Row) -> rusqlite::Result<Option<NormalizedMatch>
         begin_at: DateTime::from_timestamp_millis(begin_ms).unwrap_or_else(Utc::now),
         status: MatchStatus::from_db(&status),
         best_of: row.get("best_of")?,
-        team_a: NormTeam {
+        team_a: NormalizedTeam {
             label: row.get("team_a_label")?,
             // Older rows predate team_a_name; fall back to the label.
             name: team_name(row, "team_a_name", "team_a_label")?,
@@ -336,7 +336,7 @@ fn row_to_match(row: &rusqlite::Row) -> rusqlite::Result<Option<NormalizedMatch>
                 .unwrap_or_default(),
             score: row.get("team_a_score")?,
         },
-        team_b: NormTeam {
+        team_b: NormalizedTeam {
             label: row.get("team_b_label")?,
             name: team_name(row, "team_b_name", "team_b_label")?,
             abbrev: row
@@ -1016,13 +1016,13 @@ mod tests {
             begin_at,
             status: MatchStatus::Upcoming,
             best_of: Some(3),
-            team_a: NormTeam {
+            team_a: NormalizedTeam {
                 label: "T1".into(),
                 name: "T1".into(),
                 score: None,
                 abbrev: String::new(),
             },
-            team_b: NormTeam {
+            team_b: NormalizedTeam {
                 label: "GEN".into(),
                 name: "Gen.G".into(),
                 score: Some(1),

@@ -8,14 +8,13 @@
 //! before the race. From there: practice sessions → driver map → each session's
 //! classification (fastest lap per driver).
 
+use crate::http::USER_AGENT;
 use crate::types::{F1Result, F1ResultRow};
 use chrono::{Duration, NaiveDate};
 use serde::de::DeserializeOwned;
 use serde::Deserialize;
 
 const BASE: &str = "https://api.openf1.org/v1";
-const USER_AGENT: &str =
-    "plaintextesports/0.1 (https://github.com/ralphpotato/plaintextesports; ralphpotato@gmail.com)";
 
 #[derive(Deserialize)]
 struct Meeting {
