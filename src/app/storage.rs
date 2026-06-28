@@ -23,11 +23,15 @@ pub(crate) fn load_hour24_pref() -> Option<bool> {
 
 #[cfg(feature = "hydrate")]
 pub(crate) fn save_hour24_pref(hour24: bool) {
+    let val = if hour24 { "1" } else { "0" };
     if let Some(win) = web_sys::window() {
         if let Ok(Some(storage)) = win.local_storage() {
-            let _ = storage.set_item(keys::HOUR24, if hour24 { "1" } else { "0" });
+            let _ = storage.set_item(keys::HOUR24, val);
         }
     }
+    // Mirror to a cookie so the next SSR render seeds the same value (and the
+    // schedule resource doesn't re-key after hydration). See [`initial_hour24`].
+    write_cookie(HOUR24_COOKIE_KEY, val);
 }
 
 #[cfg(feature = "hydrate")]

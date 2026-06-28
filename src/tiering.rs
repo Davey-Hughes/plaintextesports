@@ -84,32 +84,54 @@ pub fn is_tier_one(sport: Sport, input: &TierInput) -> bool {
 
 /// Core decision, parameterized over the lists so it can be unit-tested with
 /// arbitrary allow/deny sets independent of the shipped consts.
+///
+/// All comparisons are case-insensitive but allocation-free: the allow/deny
+/// consts are lowercase and slugs are short, so we compare bytes directly
+/// (`eq_ignore_ascii_case` / a no-alloc ASCII-CI substring scan) rather than
+/// lowercasing each slug into a fresh `String` — this runs once per raw match,
+/// thousands of times per deep scan.
 fn decide(allow: &[&str], deny: &[&str], input: &TierInput) -> bool {
-    let slugs: [Option<String>; 3] = [
-        input.league_slug.map(str::to_ascii_lowercase),
-        input.series_slug.map(str::to_ascii_lowercase),
-        input.tournament_slug.map(str::to_ascii_lowercase),
-    ];
-    let present: Vec<&str> = slugs.iter().filter_map(|s| s.as_deref()).collect();
+    let present = [input.league_slug, input.series_slug, input.tournament_slug]
+        .into_iter()
+        .flatten();
 
-    // 1. Allowlist — exact full-slug match wins outright.
-    if present.iter().any(|s| allow.iter().any(|a| a == s)) {
-        return true;
+    // Allowlist (exact match) beats denylist (substring) beats base tier. A
+    // single pass suffices: allow wins immediately; deny is remembered but can
+    // still be overridden by an allow hit on a later slug.
+    let mut denied = false;
+    for s in present {
+        // 1. Allowlist — exact full-slug match wins outright.
+        if allow.iter().any(|a| a.eq_ignore_ascii_case(s)) {
+            return true;
+        }
+        // 2. Denylist — substring match excludes (unless a later slug allows).
+        if !denied && deny.iter().any(|bad| contains_ascii_ci(s, bad)) {
+            denied = true;
+        }
     }
-
-    // 2. Denylist — substring match excludes.
-    if present
-        .iter()
-        .any(|s| deny.iter().any(|bad| s.contains(bad)))
-    {
+    if denied {
         return false;
     }
 
     // 3. Base — tournament tier S or A.
-    matches!(
-        input.tier.map(str::to_ascii_uppercase).as_deref(),
-        Some("S" | "A")
-    )
+    input
+        .tier
+        .is_some_and(|t| t.eq_ignore_ascii_case("s") || t.eq_ignore_ascii_case("a"))
+}
+
+/// Case-insensitive ASCII substring test with no allocation. `needle` is assumed
+/// already-lowercase (every denylist const is), so only the haystack is folded
+/// as the windows are compared.
+fn contains_ascii_ci(haystack: &str, needle: &str) -> bool {
+    let (h, n) = (haystack.as_bytes(), needle.as_bytes());
+    if n.is_empty() {
+        return true;
+    }
+    if n.len() > h.len() {
+        return false;
+    }
+    h.windows(n.len())
+        .any(|w| w.iter().zip(n).all(|(a, b)| a.eq_ignore_ascii_case(b)))
 }
 
 #[cfg(test)]

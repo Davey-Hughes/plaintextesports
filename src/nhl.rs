@@ -160,48 +160,57 @@ pub async fn fetch_schedule(
     start: NaiveDate,
     end: NaiveDate,
 ) -> Result<Vec<NormalizedMatch>, reqwest::Error> {
-    let mut seen = HashSet::new();
-    let mut out = Vec::new();
-    let mut anchor = start;
-    let mut first = true;
+    // Fetch the first week up front — its error propagates, so a real outage
+    // keeps the old data. The remaining weeks are independent best-effort requests
+    // (a flaky later week mustn't drop the weeks we have), so fetch them
+    // concurrently rather than walking week-by-week and paying a round-trip each.
+    let week_url = |d: NaiveDate| format!("{BASE}/schedule/{}", d.format("%Y-%m-%d"));
+
+    let first: ScheduleResp = client
+        .get(week_url(start))
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+
+    let mut anchors = Vec::new();
+    let mut anchor = start + Duration::days(7);
     while anchor <= end {
-        let url = format!("{BASE}/schedule/{}", anchor.format("%Y-%m-%d"));
-        let resp: Option<ScheduleResp> = if first {
-            Some(
-                client
-                    .get(&url)
-                    .send()
-                    .await?
-                    .error_for_status()?
-                    .json()
-                    .await?,
-            )
-        } else {
-            // Best-effort: a flaky later week shouldn't drop the weeks we have.
+        anchors.push(anchor);
+        anchor += Duration::days(7);
+    }
+    let rest = futures::future::join_all(anchors.into_iter().map(|a| {
+        let url = week_url(a);
+        async move {
             match client
                 .get(&url)
                 .send()
                 .await
                 .and_then(reqwest::Response::error_for_status)
             {
-                Ok(r) => r.json().await.ok(),
+                Ok(r) => r.json::<ScheduleResp>().await.ok(),
                 Err(_) => None,
             }
-        };
-        first = false;
-        if let Some(resp) = resp {
-            for day in resp.game_week {
-                for g in day.games {
-                    if let Some(m) = to_match(g) {
-                        let d = m.begin_at.date_naive();
-                        if d >= start && d <= end && seen.insert(m.id) {
-                            out.push(m);
-                        }
+        }
+    }))
+    .await;
+
+    // Process first week then the rest in ascending order, de-duping by id.
+    let mut seen = HashSet::new();
+    let mut out = Vec::new();
+    for resp in std::iter::once(Some(first)).chain(rest) {
+        let Some(resp) = resp else { continue };
+        for day in resp.game_week {
+            for g in day.games {
+                if let Some(m) = to_match(g) {
+                    let d = m.begin_at.date_naive();
+                    if d >= start && d <= end && seen.insert(m.id) {
+                        out.push(m);
                     }
                 }
             }
         }
-        anchor += Duration::days(7);
     }
     Ok(out)
 }

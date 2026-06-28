@@ -231,10 +231,13 @@ struct SportMode(RwSignal<bool>);
 pub fn App() -> impl IntoView {
     provide_meta_context();
 
-    // Shared user preferences: 24h time (default on) and the detected IANA
-    // timezone ("" => server default until the browser reports one).
-    let hour24 = RwSignal::new(true);
-    let tz = RwSignal::new(String::new());
+    // Shared user preferences: 24h time and the detected IANA timezone, both
+    // seeded from their cookies at render (server + hydrate) so the first paint —
+    // and the schedule resource's key — already match the viewer. The
+    // post-hydration effect confirms them from the browser and back-fills the
+    // cookies, re-keying only if a seed was actually wrong.
+    let hour24 = RwSignal::new(initial_hour24());
+    let tz = RwSignal::new(initial_tz());
     // Reminder state: starred match ids, and the VAPID public key (None until
     // fetched / if Web Push isn't configured).
     let starred = RwSignal::new(HashSet::<String>::new());
@@ -293,16 +296,27 @@ pub fn App() -> impl IntoView {
     provide_context(SportMode(traditional));
 
     // After hydration, pick up the browser's timezone + saved preferences and
-    // the push key. (Client-side only; the initial render uses the defaults above
-    // — sport mode excepted, resolved at render — so there's no hydration mismatch.)
+    // the push key. (Client-side only; the initial render uses the cookie-seeded
+    // values above, so there's no hydration mismatch.) The schedule resource keys
+    // on tz/hour24/range, and an `RwSignal::set` notifies even when the value is
+    // unchanged, so each of those is guarded by a `get_untracked` compare —
+    // otherwise the cookie-seeded common case would still refetch the whole
+    // schedule right after hydration.
     Effect::new(move |_| {
         #[cfg(feature = "hydrate")]
         {
             if let Some(z) = detect_tz() {
-                tz.set(z);
+                // Persist for the next SSR render; re-key only if the seed was wrong.
+                write_cookie(TZ_COOKIE_KEY, &z);
+                if tz.get_untracked() != z {
+                    tz.set(z);
+                }
             }
             if let Some(h) = load_hour24_pref() {
-                hour24.set(h);
+                write_cookie(HOUR24_COOKIE_KEY, if h { "1" } else { "0" });
+                if hour24.get_untracked() != h {
+                    hour24.set(h);
+                }
             }
             show_scores.set(load_scores_pref());
             starred.set(load_starred());
@@ -317,7 +331,11 @@ pub fn App() -> impl IntoView {
             let reveal_now = now_ms();
             revealed.set(prune_and_load(keys::REVEALED, reveal_now));
             sections.set(prune_and_load(keys::SECTIONS, reveal_now));
-            range.set(load_range());
+            // Also in the schedule resource key, so guard it the same way.
+            let saved_range = load_range();
+            if range.get_untracked() != saved_range {
+                range.set(saved_range);
+            }
             // `games`/`leagues` are initialised by `FilterUrlSync` (URL query, else
             // localStorage) since it needs the router context.
             setup_scrollspy();
@@ -426,7 +444,6 @@ mod tests {
             sport: Sport::Lol,
             league: league.into(),
             series_name: String::new(),
-            tier: "S".into(),
             status: MatchStatus::Upcoming,
             clock_label: String::new(),
             date_label: String::new(),
@@ -450,7 +467,6 @@ mod tests {
                 logo: String::new(),
                 abbrev: String::new(),
             },
-            stream_url: None,
             event_url: String::new(),
             begin_at_ms: 0,
             row_href: None,
