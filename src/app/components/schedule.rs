@@ -361,8 +361,11 @@ fn chip_state(
             (games_set.is_empty() || games_set.contains(m.sport.slug()))
                 && m.sport.has_sub_leagues()
         });
+    // A game filter being active shows the chip(s) even for a single competition
+    // (e.g. baseball → just MLB), so the competition you've narrowed to is always
+    // named on screen rather than vanishing.
     let show_chips = if trad {
-        !available.is_empty() && (available.len() > 1 || has_sub)
+        !available.is_empty() && (available.len() > 1 || has_sub || !games_set.is_empty())
     } else {
         !available.is_empty()
     };
@@ -400,21 +403,25 @@ fn day_content_hash(d: &DayGroup) -> u64 {
 }
 
 /// Apply the chip filter and turn the result into keyed [`PreparedDay`]s for the
-/// homepage's `<For>`. Mirrors the "only apply the chip selection when chips are
-/// on screen" rule so switching to a single-competition tab can't silently empty
-/// it.
+/// homepage's `<For>`. Only the selections that correspond to a visible chip are
+/// applied, so switching to a single-competition tab can't silently empty the view
+/// (a stale selection from another sport is ignored) while a lone chip still
+/// narrows.
 fn prepare_days(
     s: ScheduleView,
     games_set: &HashSet<String>,
     leagues_sel: &HashSet<String>,
     trad: bool,
 ) -> Vec<PreparedDay> {
-    let (_, show_chips) = chip_state(&s, games_set, trad);
-    let leagues_filter = if show_chips || !trad {
-        leagues_sel.clone()
-    } else {
-        HashSet::new()
-    };
+    let (available, _) = chip_state(&s, games_set, trad);
+    let available: HashSet<String> = available.into_iter().map(|(l, _)| l).collect();
+    // An empty result ⇒ no league constraint (i.e. "all"); otherwise keep only the
+    // selected leagues that are actually on offer for the current games.
+    let leagues_filter: HashSet<String> = leagues_sel
+        .iter()
+        .filter(|l| available.contains(*l))
+        .cloned()
+        .collect();
     let filtered = filter_schedule(s, games_set, &leagues_filter);
     let today_key = filtered.today_key.clone();
     // Editions with an upcoming session anywhere in the (filtered) window — drives
@@ -597,8 +604,18 @@ pub(crate) fn ScheduleSection(
                         }
                         let note = notes.join(" · ");
                         view! {
-                            {show_chips
-                                .then(|| view! { <LeagueChips leagues=available selected=leagues /> })}
+                            {if show_chips {
+                                view! { <LeagueChips leagues=available selected=leagues /> }
+                                    .into_any()
+                            } else if !games_set.is_empty() {
+                                // A game filter is active but matched no competition
+                                // — keep a blank chip row (its reserved min-height)
+                                // so the page doesn't shift between a populated and
+                                // an empty filtered result.
+                                view! { <div class="chips"></div> }.into_any()
+                            } else {
+                                ().into_any()
+                            }}
                             {nav}
                             {(!note.is_empty())
                                 .then(|| view! { <div class="status-line">{note}</div> })}

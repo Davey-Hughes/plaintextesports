@@ -2177,10 +2177,11 @@ a {
 }
 
 .swiss.sw-tracing .sw-match:has(.sw-path) .sw-row:not(.sw-path) {
-  // Hide the traced team's opponent so only the one path shows — but with
-  // opacity (not visibility), so it stays hoverable: moving the cursor across it
+  // Dim — don't hide — the traced team's opponent, so you can see who it faced in
+  // each round while the traced path still stands out (the lit row keeps its
+  // highlight background). Stays hoverable: moving the cursor onto the opponent
   // switches the trace to that team.
-  opacity: 0;
+  opacity: 0.6;
 }
 
 .sw-path {
