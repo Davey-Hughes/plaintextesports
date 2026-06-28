@@ -559,16 +559,29 @@ pub fn spawn_poller() {
         let mut last_deep: Option<DateTime<Utc>> = None;
         // Last-seen API budget, used to throttle low-priority past work.
         let mut rate_remaining: Option<u64> = None;
-        // Orange Cat Blacktop (WRC/WEC): the last fetched calendars, merged into
-        // the Motorsport feed every cycle but refreshed only on their own slow
-        // gates, under a hard per-UTC-day request cap (free tier is 250/day).
+        // Orange Cat Blacktop (WRC/WEC/MotoGP): the last fetched calendars, merged
+        // into the Motorsport feed every cycle but refreshed only on each series'
+        // own proximity-driven gate, under a hard per-UTC-day request cap (free
+        // tier is 250/day). These in-memory caches start empty on a restart; the
+        // persisted snapshot rows drive the gates until they refill.
         let mut last_wrc: Vec<NormalizedMatch> = Vec::new();
         let mut last_wec: Vec<NormalizedMatch> = Vec::new();
         let mut last_motogp: Vec<NormalizedMatch> = Vec::new();
-        let mut ocb_events_at: Option<DateTime<Utc>> = None;
-        let mut ocb_standings_at: Option<DateTime<Utc>> = None;
-        let mut ocb_day: Option<NaiveDate> = None;
-        let mut ocb_used: u64 = 0;
+        // Resume the day's budget and the per-series/standings gates from the meta
+        // table so a restart doesn't re-fire a full refresh or reset the cap.
+        let mut ocb_day: Option<NaiveDate> = store
+            .as_ref()
+            .and_then(|c| crate::store::get_meta(c, OCB_META_DAY))
+            .and_then(|s| s.parse::<NaiveDate>().ok());
+        let mut ocb_used: u64 = store
+            .as_ref()
+            .and_then(|c| crate::store::get_meta(c, OCB_META_USED))
+            .and_then(|s| s.parse::<u64>().ok())
+            .unwrap_or(0);
+        let mut ocb_wrc_at = ocb_load_at(store.as_ref(), OCB_META_WRC_AT);
+        let mut ocb_wec_at = ocb_load_at(store.as_ref(), OCB_META_WEC_AT);
+        let mut ocb_motogp_at = ocb_load_at(store.as_ref(), OCB_META_MOTOGP_AT);
+        let mut ocb_standings_at = ocb_load_at(store.as_ref(), OCB_META_STANDINGS_AT);
         loop {
             let now = Utc::now();
             let active = {
@@ -648,9 +661,13 @@ pub fn spawn_poller() {
                 (Ok(a), Err(_)) | (Err(_), Ok(a)) => Ok(a),
                 (Err(e), Err(_)) => Err(e.into()),
             };
-            // Orange Cat Blacktop (WRC + WEC + MotoGP) — fetched on their own slow
-            // gates, never every cycle, under a hard per-UTC-day cap (free tier
-            // 250/day). Results stay cached in last_wrc/last_wec/last_motogp and
+            // Orange Cat Blacktop (WRC + WEC + MotoGP) — polled per series on a
+            // proximity-driven cadence: fast only while a session of THAT series is
+            // live or imminent, medium within ~2 weeks of an event, slow otherwise.
+            // The day's budget and the per-series/standings gates are persisted
+            // (meta table) so restarts resume the day rather than re-firing.
+            // Cadence reads each series' rows from the snapshot (persisted), so it's
+            // correct on a restart before the in-memory calendars refill. Results
             // merge into the Motorsport feed below; only the network fetch is
             // throttled. (Per-result classifications are fetched on demand by the
             // detail page and cached separately — see `motor_result`.)
@@ -658,24 +675,41 @@ pub fn spawn_poller() {
                 if ocb_day != Some(now.date_naive()) {
                     ocb_day = Some(now.date_naive());
                     ocb_used = 0;
+                    ocb_save_budget(store.as_ref(), now.date_naive(), ocb_used);
                 }
                 let cap = cfg.ocblacktop_daily_cap;
-                let events_iv = Duration::seconds(cfg.ocblacktop_poll.as_secs() as i64);
-                let standings_iv =
-                    Duration::seconds(cfg.ocblacktop_standings_poll.as_secs() as i64);
-                // Calendars: up to 4 requests — WEC events (1), MotoGP events (1),
-                // plus WRC, which is the rallies calendar (1) and, when a rally is
-                // live or imminent, its per-stage timetable (1 more). Reserve 4; bill
-                // the exact count WRC reports back so the quota stays accurate.
-                if ocb_events_at.is_none_or(|t| now - t >= events_iv) && ocb_used + 4 <= cap {
-                    let year = now.year();
-                    let (wrc, wec, motogp) = tokio::join!(
-                        crate::ocblacktop::fetch_wrc(&client, key, year, now),
-                        crate::ocblacktop::fetch_wec(&client, key, year),
-                        crate::ocblacktop::fetch_motogp(&client, key, year),
-                    );
-                    ocb_events_at = Some(now);
-                    match wrc {
+                let live = Duration::seconds(cfg.ocblacktop_live_poll.as_secs() as i64);
+                let near = Duration::seconds(cfg.ocblacktop_near_poll.as_secs() as i64);
+                let idle = Duration::seconds(cfg.ocblacktop_idle_poll.as_secs() as i64);
+                // The three series' currently-known rows, from the snapshot. Cadence
+                // is derived from these, so it survives a restart (the in-memory
+                // last_* caches are empty until refetched).
+                let ocb_ms: Vec<NormalizedMatch> = {
+                    let snap = SNAPSHOT.read().unwrap_or_else(PoisonError::into_inner);
+                    snap.matches
+                        .iter()
+                        .filter(|m| {
+                            m.sport == Sport::Motorsport
+                                && matches!(m.league.as_str(), "WRC" | "WEC" | "MotoGP")
+                        })
+                        .cloned()
+                        .collect()
+                };
+                let rows_of = |lg: &str| {
+                    ocb_ms
+                        .iter()
+                        .filter(|m| m.league == lg)
+                        .cloned()
+                        .collect::<Vec<_>>()
+                };
+                let wrc_iv = series_cadence(&rows_of("WRC"), now, live, near, idle);
+                let wec_iv = series_cadence(&rows_of("WEC"), now, live, near, idle);
+                let motogp_iv = series_cadence(&rows_of("MotoGP"), now, live, near, idle);
+
+                // WRC: rallies calendar (1) + the active rally's stage timetable (1
+                // more, near/live only) — reserve 2, bill the exact count it reports.
+                if ocb_wrc_at.is_none_or(|t| now - t >= wrc_iv) && ocb_used + 2 <= cap {
+                    match crate::ocblacktop::fetch_wrc(&client, key, now.year(), now).await {
                         Ok((v, used)) => {
                             last_wrc = v;
                             ocb_used += used;
@@ -687,20 +721,41 @@ pub fn spawn_poller() {
                             leptos::logging::log!("WRC fetch failed: {e}");
                         }
                     }
-                    ocb_used += 1; // WEC events
-                    match wec {
+                    ocb_wrc_at = Some(now);
+                    ocb_save_at(store.as_ref(), OCB_META_WRC_AT, now);
+                    ocb_save_budget(store.as_ref(), now.date_naive(), ocb_used);
+                }
+                // WEC: one events request.
+                if ocb_wec_at.is_none_or(|t| now - t >= wec_iv) && ocb_used < cap {
+                    match crate::ocblacktop::fetch_wec(&client, key, now.year()).await {
                         Ok(v) => last_wec = v,
                         Err(e) => leptos::logging::log!("WEC fetch failed: {e}"),
                     }
-                    ocb_used += 1; // MotoGP events
-                    match motogp {
+                    ocb_used += 1;
+                    ocb_wec_at = Some(now);
+                    ocb_save_at(store.as_ref(), OCB_META_WEC_AT, now);
+                    ocb_save_budget(store.as_ref(), now.date_naive(), ocb_used);
+                }
+                // MotoGP: one events request.
+                if ocb_motogp_at.is_none_or(|t| now - t >= motogp_iv) && ocb_used < cap {
+                    match crate::ocblacktop::fetch_motogp(&client, key, now.year()).await {
                         Ok(v) => last_motogp = v,
                         Err(e) => leptos::logging::log!("MotoGP fetch failed: {e}"),
                     }
+                    ocb_used += 1;
+                    ocb_motogp_at = Some(now);
+                    ocb_save_at(store.as_ref(), OCB_META_MOTOGP_AT, now);
+                    ocb_save_budget(store.as_ref(), now.date_naive(), ocb_used);
                 }
                 // Standings: 6 requests (WRC drivers/co-drivers/manufacturers + WEC
-                // + MotoGP riders/teams).
-                if ocb_standings_at.is_none_or(|t| now - t >= standings_iv) && ocb_used + 6 <= cap {
+                // + MotoGP riders/teams). They only change post-round, so refresh on
+                // a daily floor plus an edge-trigger once any series finishes a round
+                // (no oftener than the `near` cadence).
+                let standings_floor =
+                    Duration::seconds(cfg.ocblacktop_standings_poll.as_secs() as i64);
+                if standings_due(&ocb_ms, now, ocb_standings_at, standings_floor, near)
+                    && ocb_used + 6 <= cap
+                {
                     let (wrc_s, wec_s, motogp_s) = tokio::join!(
                         crate::ocblacktop::fetch_wrc_standings(&client, key),
                         crate::ocblacktop::fetch_wec_standings(&client, key),
@@ -708,6 +763,8 @@ pub fn spawn_poller() {
                     );
                     ocb_used += 6;
                     ocb_standings_at = Some(now);
+                    ocb_save_at(store.as_ref(), OCB_META_STANDINGS_AT, now);
+                    ocb_save_budget(store.as_ref(), now.date_naive(), ocb_used);
                     if !wrc_s.tables.is_empty() {
                         *WRC_STANDINGS
                             .write()
@@ -955,6 +1012,111 @@ fn is_active_window(
         let imminent = m.begin_at > now && m.begin_at <= now + lead;
         live || imminent
     })
+}
+
+/// Switch an Orange Cat Blacktop series to its fast (`live`) tier this far ahead
+/// of a session's start, so a stage/race is already being polled when it begins.
+const OCB_LIVE_LEAD: Duration = Duration::minutes(60);
+/// How far ahead an event counts as "near" (the medium tier) — roughly when WRC
+/// publishes a rally's stage timetable, so we ramp up in time to catch it.
+const OCB_NEAR_WITHIN: Duration = Duration::days(14);
+/// A finished session stays "recent" — worth a standings refresh — for this long
+/// after its start, covering a race weekend's worth of just-completed sessions.
+const OCB_STANDINGS_SETTLE: Duration = Duration::hours(48);
+
+/// Per-series poll cadence derived from a series' currently-known matches: the
+/// fast `live` tier when a session is running or starts within the hour, the
+/// medium `near` tier when its next event is within ~2 weeks, else the slow
+/// `idle` tier (off-season / between rounds). Pure, so it's unit-tested; the
+/// poller feeds it the persisted snapshot rows for one series, so it reads right
+/// across a restart (the in-memory calendar caches are empty until a refetch).
+fn series_cadence(
+    matches: &[NormalizedMatch],
+    now: DateTime<Utc>,
+    live: Duration,
+    near: Duration,
+    idle: Duration,
+) -> Duration {
+    let mut soonest: Option<Duration> = None;
+    for m in matches {
+        match m.status {
+            MatchStatus::Live => return live,
+            MatchStatus::Upcoming => {
+                let until = m.begin_at - now;
+                if until >= Duration::zero() && soonest.is_none_or(|s| until < s) {
+                    soonest = Some(until);
+                }
+            }
+            MatchStatus::Finished | MatchStatus::Canceled => {}
+        }
+    }
+    match soonest {
+        Some(until) if until <= OCB_LIVE_LEAD => live,
+        Some(until) if until <= OCB_NEAR_WITHIN => near,
+        _ => idle,
+    }
+}
+
+/// Whether the championship standings are due a refresh. They only move after a
+/// round, so this is edge-triggered: refresh once a session has finished within
+/// the settle window (no more often than `post_round`), plus a `daily_floor`
+/// backstop that also covers the off-season and the first-ever run. Pure, for
+/// unit testing.
+fn standings_due(
+    matches: &[NormalizedMatch],
+    now: DateTime<Utc>,
+    last_fetch: Option<DateTime<Utc>>,
+    daily_floor: Duration,
+    post_round: Duration,
+) -> bool {
+    let since = last_fetch.map(|t| now - t);
+    // Daily floor (and the first-ever run, when `since` is None).
+    if since.is_none_or(|d| d >= daily_floor) {
+        return true;
+    }
+    // A round just finished: refresh, but no more often than `post_round`.
+    let recent_finish = matches.iter().any(|m| {
+        matches!(m.status, MatchStatus::Finished) && {
+            let age = now - m.begin_at;
+            age >= Duration::zero() && age <= OCB_STANDINGS_SETTLE
+        }
+    });
+    recent_finish && since.is_none_or(|d| d >= post_round)
+}
+
+// Meta keys for the persisted Orange Cat Blacktop poll state. Persisting the
+// day's request budget and the per-series/standings gates means a restart
+// resumes the day instead of re-firing a full refresh — across many restarts
+// (e.g. iterating in dev) that re-firing used to burn through the daily quota.
+const OCB_META_DAY: &str = "ocb_budget_day";
+const OCB_META_USED: &str = "ocb_budget_used";
+const OCB_META_WRC_AT: &str = "ocb_wrc_at";
+const OCB_META_WEC_AT: &str = "ocb_wec_at";
+const OCB_META_MOTOGP_AT: &str = "ocb_motogp_at";
+const OCB_META_STANDINGS_AT: &str = "ocb_standings_at";
+
+/// Load a persisted millisecond timestamp from the meta table.
+fn ocb_load_at(store: Option<&rusqlite::Connection>, key: &str) -> Option<DateTime<Utc>> {
+    store
+        .and_then(|c| crate::store::get_meta(c, key))
+        .and_then(|s| s.parse::<i64>().ok())
+        .and_then(DateTime::from_timestamp_millis)
+}
+
+/// Persist a millisecond timestamp to the meta table (best effort).
+fn ocb_save_at(store: Option<&rusqlite::Connection>, key: &str, at: DateTime<Utc>) {
+    if let Some(c) = store {
+        let _ = crate::store::set_meta(c, key, &at.timestamp_millis().to_string());
+    }
+}
+
+/// Persist the day's request budget (UTC date + count) so a restart can't reset
+/// it and let repeated restarts exceed the daily cap.
+fn ocb_save_budget(store: Option<&rusqlite::Connection>, day: NaiveDate, used: u64) {
+    if let Some(c) = store {
+        let _ = crate::store::set_meta(c, OCB_META_DAY, &day.to_string());
+        let _ = crate::store::set_meta(c, OCB_META_USED, &used.to_string());
+    }
 }
 
 /// Persist freshly polled matches (if a store is present) and refresh the
@@ -3900,6 +4062,132 @@ mod tests {
         // Today (0) is the main poll's job; > 1 week is locked.
         assert_eq!(refresh_interval(0), None);
         assert_eq!(refresh_interval(8), None);
+    }
+
+    // ----- Orange Cat Blacktop per-series poll cadence -----------------------
+
+    /// A motorsport row for one series with a given status/start, for cadence
+    /// tests. Reuses `at` (league is irrelevant — the cadence functions receive an
+    /// already-league-filtered slice).
+    fn ms(begin: DateTime<Utc>, status: MatchStatus) -> NormalizedMatch {
+        let mut m = at(begin, status);
+        m.sport = Sport::Motorsport;
+        m.league = "WRC".into();
+        m
+    }
+
+    // Tier durations distinct enough that the chosen tier is unambiguous.
+    const LIVE: Duration = Duration::minutes(5);
+    const NEAR: Duration = Duration::hours(3);
+    const IDLE: Duration = Duration::hours(24);
+
+    #[test]
+    fn cadence_live_when_a_session_is_running() {
+        let now = Utc::now();
+        let ms = [ms(now - Duration::minutes(20), MatchStatus::Live)];
+        assert_eq!(series_cadence(&ms, now, LIVE, NEAR, IDLE), LIVE);
+    }
+
+    #[test]
+    fn cadence_live_when_a_session_starts_within_the_hour() {
+        let now = Utc::now();
+        let ms = [ms(now + Duration::minutes(30), MatchStatus::Upcoming)];
+        assert_eq!(series_cadence(&ms, now, LIVE, NEAR, IDLE), LIVE);
+    }
+
+    #[test]
+    fn cadence_near_when_an_event_is_within_two_weeks() {
+        let now = Utc::now();
+        let ms = [ms(now + Duration::days(5), MatchStatus::Upcoming)];
+        assert_eq!(series_cadence(&ms, now, LIVE, NEAR, IDLE), NEAR);
+    }
+
+    #[test]
+    fn cadence_idle_when_the_next_event_is_far_off() {
+        let now = Utc::now();
+        let ms = [ms(now + Duration::days(20), MatchStatus::Upcoming)];
+        assert_eq!(series_cadence(&ms, now, LIVE, NEAR, IDLE), IDLE);
+    }
+
+    #[test]
+    fn cadence_idle_when_there_are_no_matches() {
+        let now = Utc::now();
+        assert_eq!(series_cadence(&[], now, LIVE, NEAR, IDLE), IDLE);
+    }
+
+    #[test]
+    fn cadence_ignores_finished_and_past_rows() {
+        let now = Utc::now();
+        // A just-finished session and a long-past upcoming straggler must not
+        // count as live; the only real future event is far off → idle.
+        let ms = [
+            ms(now - Duration::hours(2), MatchStatus::Finished),
+            ms(now - Duration::hours(1), MatchStatus::Upcoming), // stale, begin in the past
+            ms(now + Duration::days(20), MatchStatus::Upcoming),
+        ];
+        assert_eq!(series_cadence(&ms, now, LIVE, NEAR, IDLE), IDLE);
+    }
+
+    #[test]
+    fn cadence_picks_the_soonest_upcoming() {
+        let now = Utc::now();
+        // A far event and a within-the-hour event in the same series → live wins.
+        let ms = [
+            ms(now + Duration::days(10), MatchStatus::Upcoming),
+            ms(now + Duration::minutes(40), MatchStatus::Upcoming),
+        ];
+        assert_eq!(series_cadence(&ms, now, LIVE, NEAR, IDLE), LIVE);
+    }
+
+    // ----- Orange Cat Blacktop standings cadence -----------------------------
+
+    const DAILY: Duration = Duration::hours(24);
+    const POST_ROUND: Duration = Duration::hours(3);
+
+    #[test]
+    fn standings_due_on_first_run() {
+        let now = Utc::now();
+        assert!(standings_due(&[], now, None, DAILY, POST_ROUND));
+    }
+
+    #[test]
+    fn standings_due_after_the_daily_floor_even_when_quiet() {
+        let now = Utc::now();
+        let last = Some(now - Duration::hours(25));
+        assert!(standings_due(&[], now, last, DAILY, POST_ROUND));
+    }
+
+    #[test]
+    fn standings_not_due_when_recently_fetched_and_nothing_finished() {
+        let now = Utc::now();
+        let last = Some(now - Duration::hours(2));
+        assert!(!standings_due(&[], now, last, DAILY, POST_ROUND));
+    }
+
+    #[test]
+    fn standings_due_after_a_round_finishes() {
+        let now = Utc::now();
+        let last = Some(now - Duration::hours(4)); // past the post-round gap
+        let rows = [ms(now - Duration::hours(2), MatchStatus::Finished)];
+        assert!(standings_due(&rows, now, last, DAILY, POST_ROUND));
+    }
+
+    #[test]
+    fn standings_not_due_again_within_the_post_round_gap() {
+        let now = Utc::now();
+        let last = Some(now - Duration::minutes(30)); // inside the 3h gap
+        let rows = [ms(now - Duration::hours(2), MatchStatus::Finished)];
+        assert!(!standings_due(&rows, now, last, DAILY, POST_ROUND));
+    }
+
+    #[test]
+    fn standings_ignores_finishes_older_than_the_settle_window() {
+        let now = Utc::now();
+        let last = Some(now - Duration::hours(4));
+        // Finished three days ago — well outside the 48h settle window, and the
+        // daily floor hasn't elapsed → not due.
+        let rows = [ms(now - Duration::days(3), MatchStatus::Finished)];
+        assert!(!standings_due(&rows, now, last, DAILY, POST_ROUND));
     }
 
     #[test]
