@@ -4,6 +4,7 @@
 
 pub mod app;
 pub mod bracket;
+pub mod reveal;
 pub mod server;
 pub mod types;
 
