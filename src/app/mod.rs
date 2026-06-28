@@ -788,7 +788,7 @@ mod tests {
     }
 
     #[test]
-    fn leagues_for_games_tidies_motorsport_order() {
+    fn leagues_for_games_motorsport_follows_schedule_order() {
         // A motorsport league group whose chip carries Sport::Motorsport.
         let motor = |name: &str| {
             let mut m = mv(name);
@@ -808,7 +808,7 @@ mod tests {
             bo: None,
             matches: vec![mv(name)],
         };
-        // The series appear in an arbitrary feed order (WRC, F1, WEC, MotoGP).
+        // The series appear in the schedule in this order (WRC, F1, WEC, MotoGP).
         let s = ScheduleView {
             days: vec![DayGroup {
                 day_key: "d0".into(),
@@ -827,9 +827,9 @@ mod tests {
             .into_iter()
             .map(|(l, _)| l)
             .collect();
-        // The non-motorsport chip keeps its leading slot; the motorsport chips are
-        // tidied into F1 · MotoGP · WEC · WRC within their existing positions.
-        assert_eq!(names, vec!["LEC", "F1", "MotoGP", "WEC", "WRC"]);
+        // The chips follow the schedule's first-appearance order exactly — no
+        // separate tidy — so the filter bar matches the order leagues appear.
+        assert_eq!(names, vec!["LEC", "WRC", "F1", "WEC", "MotoGP"]);
     }
 
     #[test]

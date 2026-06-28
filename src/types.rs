@@ -398,22 +398,6 @@ pub fn competition_kind(league: &str) -> &'static str {
     "league"
 }
 
-/// Display rank for the motorsport series chips, so they read in a deliberate
-/// order (F1 · MotoGP · WEC · WRC — single-seaters, then bikes, then sportscars,
-/// then rally) rather than the arbitrary order the feeds merge in. Non-motorsport
-/// leagues all return the same low rank, leaving their existing first-appearance
-/// order untouched (a stable sort by this key only reshuffles the motorsport set).
-#[must_use]
-pub fn motorsport_league_rank(league: &str) -> u8 {
-    match league {
-        "F1" => 0,
-        "MotoGP" => 1,
-        "WEC" => 2,
-        "WRC" => 3,
-        _ => u8::MAX,
-    }
-}
-
 /// Matches for one league/event within a day.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LeagueGroup {

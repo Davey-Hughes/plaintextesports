@@ -528,20 +528,9 @@ pub(crate) fn leagues_for_games(s: &ScheduleView, games: &HashSet<String>) -> Ve
             }
         }
     }
-    // Tidy the motorsport series chips into a deliberate order (F1 · MotoGP · WEC ·
-    // WRC) within the slots they already occupy, leaving every other chip in its
-    // first-appearance position.
-    let motor_slots: Vec<usize> = out
-        .iter()
-        .enumerate()
-        .filter(|(_, (_, sp))| *sp == Sport::Motorsport)
-        .map(|(i, _)| i)
-        .collect();
-    let mut motor: Vec<(String, Sport)> = motor_slots.iter().map(|&i| out[i].clone()).collect();
-    motor.sort_by_key(|(l, _)| crate::types::motorsport_league_rank(l));
-    for (&slot, val) in motor_slots.iter().zip(motor) {
-        out[slot] = val;
-    }
+    // Order is first-appearance across the (chronological, sport-grouped) days —
+    // the exact same iteration the schedule renders, so the chips read in the same
+    // order the leagues appear as you scroll.
     out
 }
 
