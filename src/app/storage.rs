@@ -43,7 +43,9 @@ pub(crate) fn load_scores_pref() -> bool {
 pub(crate) fn read_cookie(name: &str) -> Option<String> {
     use wasm_bindgen::JsValue;
     let doc = web_sys::window()?.document()?;
-    let cookies = js_sys::Reflect::get(&doc, &JsValue::from_str("cookie")).ok()?.as_string()?;
+    let cookies = js_sys::Reflect::get(&doc, &JsValue::from_str("cookie"))
+        .ok()?
+        .as_string()?;
     cookies.split(';').find_map(|kv| {
         let (k, v) = kv.trim().split_once('=')?;
         (k == name).then(|| v.to_string())
@@ -63,7 +65,10 @@ pub(crate) fn write_cookie(name: &str, value: &str) {
 
 #[cfg(feature = "hydrate")]
 pub(crate) fn save_sport_pref(traditional: bool) {
-    write_cookie(SPORT_MODE_KEY, if traditional { "sports" } else { "esports" });
+    write_cookie(
+        SPORT_MODE_KEY,
+        if traditional { "sports" } else { "esports" },
+    );
 }
 
 /// Apply the scores preference: set `data-scores` on <html> (drives the scores
@@ -263,4 +268,3 @@ pub(crate) fn load_sections() -> HashSet<String> {
     }
     out
 }
-

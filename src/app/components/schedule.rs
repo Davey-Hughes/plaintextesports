@@ -18,7 +18,10 @@ pub(crate) fn FilterUrlSync() -> impl IntoView {
         use leptos_router::NavigateOptions;
 
         fn parse_set(v: &str) -> HashSet<String> {
-            v.split(',').filter(|p| !p.is_empty()).map(str::to_string).collect()
+            v.split(',')
+                .filter(|p| !p.is_empty())
+                .map(str::to_string)
+                .collect()
         }
 
         let query = use_query_map();
@@ -49,8 +52,11 @@ pub(crate) fn FilterUrlSync() -> impl IntoView {
             } else if let Some(v) = &g_param {
                 let slugs = parse_set(v);
                 if slugs.iter().any(|s| Sport::from_filter(s).is_some()) {
-                    traditional
-                        .set(slugs.iter().any(|s| Sport::from_filter(s).is_some_and(Sport::traditional)));
+                    traditional.set(
+                        slugs
+                            .iter()
+                            .any(|s| Sport::from_filter(s).is_some_and(Sport::traditional)),
+                    );
                 }
             }
         });
@@ -69,7 +75,11 @@ pub(crate) fn FilterUrlSync() -> impl IntoView {
                 let mut v: Vec<String> = set.iter().cloned().collect();
                 v.sort();
                 v.iter()
-                    .map(|s| js_sys::encode_uri_component(s).as_string().unwrap_or_default())
+                    .map(|s| {
+                        js_sys::encode_uri_component(s)
+                            .as_string()
+                            .unwrap_or_default()
+                    })
                     .collect::<Vec<_>>()
                     .join(",")
             };
@@ -84,13 +94,24 @@ pub(crate) fn FilterUrlSync() -> impl IntoView {
             if !l.is_empty() {
                 parts.push(format!("e={}", enc(&l)));
             }
-            let want = if parts.is_empty() { String::new() } else { format!("?{}", parts.join("&")) };
+            let want = if parts.is_empty() {
+                String::new()
+            } else {
+                format!("?{}", parts.join("&"))
+            };
             // Skip a redundant navigation (also breaks any feedback loop).
             if location.search.get_untracked() == want {
                 return;
             }
             let url = format!("{path}{want}");
-            navigate(&url, NavigateOptions { replace: true, scroll: false, ..Default::default() });
+            navigate(
+                &url,
+                NavigateOptions {
+                    replace: true,
+                    scroll: false,
+                    ..Default::default()
+                },
+            );
         });
     }
 }
@@ -330,18 +351,24 @@ pub(crate) fn ScheduleSection(
         let (league, season) = if !traditional.get() {
             (String::new(), None)
         } else if let Some(Ok(s)) = resource.get() {
-            let available: Vec<String> =
-                leagues_for_games(&s, &games.get()).into_iter().map(|(l, _)| l).collect();
+            let available: Vec<String> = leagues_for_games(&s, &games.get())
+                .into_iter()
+                .map(|(l, _)| l)
+                .collect();
             let selected = leagues.get();
             let effective: Vec<String> = if selected.is_empty() {
                 available
             } else {
-                available.into_iter().filter(|l| selected.contains(l)).collect()
+                available
+                    .into_iter()
+                    .filter(|l| selected.contains(l))
+                    .collect()
             };
             match effective.as_slice() {
-                [only] if only == "F1" => {
-                    ("F1".to_string(), f1_season_round(&s).map(|(season, _)| season))
-                }
+                [only] if only == "F1" => (
+                    "F1".to_string(),
+                    f1_season_round(&s).map(|(season, _)| season),
+                ),
                 [only] => (only.clone(), None),
                 _ => (String::new(), None),
             }
@@ -370,7 +397,11 @@ pub(crate) fn ScheduleSection(
     // from the ocblacktop poller cache, when the filters narrow to one of them.
     let motor_home_league = Memo::new(move |_| {
         let l = single_league.get();
-        if matches!(l.as_str(), "WRC" | "WEC" | "MotoGP") { l } else { String::new() }
+        if matches!(l.as_str(), "WRC" | "WEC" | "MotoGP") {
+            l
+        } else {
+            String::new()
+        }
     });
     let motor_home_standings = Resource::new(
         move || motor_home_league.get(),
@@ -488,7 +519,9 @@ pub(crate) fn leagues_for_games(s: &ScheduleView, games: &HashSet<String>) -> Ve
     let mut out: Vec<(String, Sport)> = Vec::new();
     for day in &s.days {
         for lg in &day.leagues {
-            let Some(sport) = lg.matches.first().map(|m| m.sport) else { continue };
+            let Some(sport) = lg.matches.first().map(|m| m.sport) else {
+                continue;
+            };
             let game_ok = games.is_empty() || games.contains(sport.slug());
             if game_ok && !out.iter().any(|(l, _)| l == &lg.league) {
                 out.push((lg.league.clone(), sport));
@@ -498,8 +531,12 @@ pub(crate) fn leagues_for_games(s: &ScheduleView, games: &HashSet<String>) -> Ve
     // Tidy the motorsport series chips into a deliberate order (F1 · MotoGP · WEC ·
     // WRC) within the slots they already occupy, leaving every other chip in its
     // first-appearance position.
-    let motor_slots: Vec<usize> =
-        out.iter().enumerate().filter(|(_, (_, sp))| *sp == Sport::Motorsport).map(|(i, _)| i).collect();
+    let motor_slots: Vec<usize> = out
+        .iter()
+        .enumerate()
+        .filter(|(_, (_, sp))| *sp == Sport::Motorsport)
+        .map(|(i, _)| i)
+        .collect();
     let mut motor: Vec<(String, Sport)> = motor_slots.iter().map(|&i| out[i].clone()).collect();
     motor.sort_by_key(|(l, _)| crate::types::motorsport_league_rank(l));
     for (&slot, val) in motor_slots.iter().zip(motor) {
@@ -521,7 +558,10 @@ pub(crate) fn filter_schedule(
     for day in &mut s.days {
         day.leagues.retain(|lg| {
             let game_ok = games.is_empty()
-                || lg.matches.first().is_some_and(|m| games.contains(m.sport.slug()));
+                || lg
+                    .matches
+                    .first()
+                    .is_some_and(|m| games.contains(m.sport.slug()));
             let league_ok = leagues.is_empty() || leagues.contains(&lg.league);
             game_ok && league_ok
         });
@@ -550,7 +590,11 @@ pub(crate) fn UpNextBar(day: DayGroup) -> impl IntoView {
         .any(|m| matches!(m.status, MatchStatus::Live | MatchStatus::Upcoming));
     let label = format!(
         "{} · {}",
-        if upcoming { "▸ Up next" } else { "▸ Latest" },
+        if upcoming {
+            "▸ Up next"
+        } else {
+            "▸ Latest"
+        },
         day.day_label
     );
     let more = all.len().saturating_sub(CAP);
@@ -631,8 +675,9 @@ pub(crate) fn UpNextBar(day: DayGroup) -> impl IntoView {
             // requires Send + Sync).
             let observe = |el: web_sys::Element, sig: RwSignal<bool>| {
                 let cb = Closure::<dyn FnMut(js_sys::Array)>::new(move |entries: js_sys::Array| {
-                    let first =
-                        entries.get(0).unchecked_into::<web_sys::IntersectionObserverEntry>();
+                    let first = entries
+                        .get(0)
+                        .unchecked_into::<web_sys::IntersectionObserverEntry>();
                     sig.set(first.is_intersecting());
                 });
                 if let Ok(obs) = web_sys::IntersectionObserver::new(cb.as_ref().unchecked_ref()) {
@@ -716,9 +761,10 @@ pub(crate) fn render_schedule(
         .then(|| {
             days.iter()
                 .position(|d| {
-                    d.leagues.iter().flat_map(|lg| &lg.matches).any(|m| {
-                        matches!(m.status, MatchStatus::Live | MatchStatus::Upcoming)
-                    })
+                    d.leagues
+                        .iter()
+                        .flat_map(|lg| &lg.matches)
+                        .any(|m| matches!(m.status, MatchStatus::Live | MatchStatus::Upcoming))
                 })
                 .or_else(|| days.len().checked_sub(1))
                 .and_then(|i| days.get(i).cloned())
@@ -734,7 +780,11 @@ pub(crate) fn render_schedule(
     let editions_with_upcoming: HashSet<(Sport, String, String)> = days
         .iter()
         .flat_map(|d| &d.leagues)
-        .filter(|lg| lg.matches.iter().any(|m| matches!(m.status, MatchStatus::Upcoming)))
+        .filter(|lg| {
+            lg.matches
+                .iter()
+                .any(|m| matches!(m.status, MatchStatus::Upcoming))
+        })
         .map(|lg| {
             let sp = lg.matches.first().map(|m| m.sport).unwrap_or_default();
             (sp, lg.league.clone(), lg.series_name.clone())
@@ -1092,11 +1142,17 @@ pub(crate) fn reveal_meta(
     bo: Option<String>,
     revealable: bool,
 ) -> AnyView {
-    let noun = if matches!(status, MatchStatus::Live) { "live score" } else { "final score" };
+    let noun = if matches!(status, MatchStatus::Live) {
+        "live score"
+    } else {
+        "final score"
+    };
     let show_title = format!("Show the {noun}");
     let hide_title = format!("Hide the {noun}");
     let badge_cls = format!("row-badge {status_class}");
-    let bo_span = bo.filter(|s| !s.is_empty()).map(|b| view! { <span class="row-bo">{b}</span> });
+    let bo_span = bo
+        .filter(|s| !s.is_empty())
+        .map(|b| view! { <span class="row-bo">{b}</span> });
     if revealable {
         view! {
             <span class="row-meta">
@@ -1197,13 +1253,23 @@ pub(crate) fn MatchRow(m: MatchView, show_bo: bool, push: bool) -> impl IntoView
     let muid = crate::types::match_uid(m.sport, m.id);
     // Most rows link to their own /match page; a collapsed WRC "Day N" row instead
     // points at that day on the event page (where its stages are listed).
-    let row_href =
-        m.row_href.clone().unwrap_or_else(|| crate::types::match_path(m.sport, m.id));
+    let row_href = m
+        .row_href
+        .clone()
+        .unwrap_or_else(|| crate::types::match_path(m.sport, m.id));
     let (reveal, toggle_reveal) = row_reveal(&muid);
     // The bo rides beside the badge (only when present, so the reveal underline
     // doesn't extend into an empty cell on uniform events). Score-less rows
     // (upcoming, or a live match still at the 0-0 placeholder) get a static meta.
-    let meta_view = reveal_meta(reveal, toggle_reveal, m.status, &status_class, badge, Some(bo), has);
+    let meta_view = reveal_meta(
+        reveal,
+        toggle_reveal,
+        m.status,
+        &status_class,
+        badge,
+        Some(bo),
+        has,
+    );
 
     // The time can toggle to also show the local time at the venue (MLB stadiums
     // carry a timezone; esports don't, so there it stays a plain label). The
@@ -1280,4 +1346,3 @@ pub(crate) fn MatchRow(m: MatchView, show_bo: bool, push: bool) -> impl IntoView
     }
     .into_any()
 }
-

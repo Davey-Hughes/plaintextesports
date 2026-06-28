@@ -10,9 +10,7 @@ use std::collections::HashSet;
 /// Reveal state for a persisted section key (standings / one bracket round),
 /// OR'd with the global "show scores". Returns `(revealed, toggle, toggle-hidden)`
 /// where the toggle is shared across every page showing this same section.
-pub(crate) fn section_reveal(
-    key: String,
-) -> (Memo<bool>, impl Fn(leptos::ev::MouseEvent) + Copy) {
+pub(crate) fn section_reveal(key: String) -> (Memo<bool>, impl Fn(leptos::ev::MouseEvent) + Copy) {
     let global = use_context::<ShowScores>().map(|s| s.0);
     let sections = use_context::<RevealedSections>().map(|s| s.0);
     let key = StoredValue::new(key);
@@ -188,9 +186,7 @@ pub(crate) fn compute_effective(
 /// and — for later rounds — its feeders' scores revealed (lineup known).
 fn bk_advanceable(grid: &[Vec<BkCell>], eff: &[Vec<u8>], r: usize, i: usize) -> bool {
     let c = &grid[r][i];
-    c.max > 0
-        && eff[r][i] < c.max
-        && (c.feeders.is_empty() || auto_stage(eff, &c.feeders) == 1)
+    c.max > 0 && eff[r][i] < c.max && (c.feeders.is_empty() || auto_stage(eff, &c.feeders) == 1)
 }
 
 /// A bracket reveal action, applied against the shared section set.
@@ -227,7 +223,12 @@ fn bk_teams_known(grid: &[Vec<BkCell>], eff: &[Vec<u8>], r: usize, i: usize) -> 
 /// were individually revealed earlier into the even progression, so the outer
 /// "round"/"Bracket" controls don't preserve those granular reveals out of order
 /// ("revealing is granular, hiding is bigger-picture").
-fn reveal_round_uniform(set: &mut HashSet<String>, grid: &[Vec<BkCell>], eff: &[Vec<u8>], r: usize) {
+fn reveal_round_uniform(
+    set: &mut HashSet<String>,
+    grid: &[Vec<BkCell>],
+    eff: &[Vec<u8>],
+    r: usize,
+) {
     let min_stage = (0..grid[r].len())
         .filter(|&i| grid[r][i].max > 0)
         .map(|i| eff[r][i])
@@ -240,7 +241,11 @@ fn reveal_round_uniform(set: &mut HashSet<String>, grid: &[Vec<BkCell>], eff: &[
             continue;
         }
         // A score can't show before the lineup is known.
-        let cap = if bk_teams_known(grid, eff, r, i) { c.max } else { c.max.min(1) };
+        let cap = if bk_teams_known(grid, eff, r, i) {
+            c.max
+        } else {
+            c.max.min(1)
+        };
         let t = target.min(cap);
         // If the auto-revealed lineup already provides this stage, clear the manual
         // entry and let auto provide it (and so hiding a feeder still cascades).
@@ -315,8 +320,8 @@ pub(crate) fn apply_bracket_op(set: &mut HashSet<String>, grid: &[Vec<BkCell>], 
             hide_rounds_after(set, grid, r);
         }
         BkOp::Cascade => {
-            let frontier =
-                (0..grid.len()).find(|&r| (0..grid[r].len()).any(|i| bk_advanceable(grid, &eff, r, i)));
+            let frontier = (0..grid.len())
+                .find(|&r| (0..grid[r].len()).any(|i| bk_advanceable(grid, &eff, r, i)));
             match frontier {
                 Some(r) => {
                     reveal_round_uniform(set, grid, &eff, r);
@@ -433,7 +438,10 @@ struct BkRender {
 
 /// The day number from a `YYYY-MM-DD` key (leading zero stripped by parsing).
 fn day_num(key: &str) -> u32 {
-    key.rsplit('-').next().and_then(|s| s.parse().ok()).unwrap_or(0)
+    key.rsplit('-')
+        .next()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0)
 }
 
 /// Format a `YYYY-MM-DD` day key as a short date, e.g. "Jun 18".
@@ -441,7 +449,11 @@ fn fmt_day_short(key: &str) -> String {
     const MONTHS: [&str; 12] = [
         "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
     ];
-    let month: usize = key.split('-').nth(1).and_then(|s| s.parse().ok()).unwrap_or(0);
+    let month: usize = key
+        .split('-')
+        .nth(1)
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0);
     let Some(mon) = MONTHS.get(month.wrapping_sub(1)) else {
         return String::new();
     };
@@ -602,7 +614,19 @@ pub(crate) fn SwissBracket(
     // result, hover-trace, and a name that scrolls to the schedule row.
     let mk_match = move |m: SwRender| -> leptos::prelude::AnyView {
         let SwRender {
-            r, i, team_a, team_b, sa, sb, winner, mid, a_record, b_record, f0, f1, max,
+            r,
+            i,
+            team_a,
+            team_b,
+            sa,
+            sb,
+            winner,
+            mid,
+            a_record,
+            b_record,
+            f0,
+            f1,
+            max,
         } = m;
         let stage = move || eff.with(|e| e.get(r).and_then(|row| row.get(i)).copied().unwrap_or(0));
         let fed_shown = move |f: Option<(usize, usize)>| {
@@ -717,7 +741,11 @@ pub(crate) fn SwissBracket(
             }
             .into_any()
         };
-        let title = if max == 0 { "Not decided yet" } else { "Click to reveal this match" };
+        let title = if max == 0 {
+            "Not decided yet"
+        } else {
+            "Click to reveal this match"
+        };
         view! {
             <div
                 class="sw-match"
@@ -763,9 +791,11 @@ pub(crate) fn SwissBracket(
                             }
                             match outcomes.iter_mut().find(|(r, _, _)| r == rec) {
                                 Some(e) => e.2.push((m.r, m.i)),
-                                None => {
-                                    outcomes.push((rec.clone(), record_is_pass(rec), vec![(m.r, m.i)]))
-                                }
+                                None => outcomes.push((
+                                    rec.clone(),
+                                    record_is_pass(rec),
+                                    vec![(m.r, m.i)],
+                                )),
                             }
                         }
                     }
@@ -775,12 +805,17 @@ pub(crate) fn SwissBracket(
                             .filter(|(_, _, pos)| {
                                 pos.iter().any(|&(rr, ii)| {
                                     eff.with(|e| {
-                                        e.get(rr).and_then(|row| row.get(ii)).copied().unwrap_or(0) >= 2
+                                        e.get(rr).and_then(|row| row.get(ii)).copied().unwrap_or(0)
+                                            >= 2
                                     })
                                 })
                             })
                             .map(|(rec, pass, _)| {
-                                let cls = if *pass { "sw-out sw-pass" } else { "sw-out sw-exit" };
+                                let cls = if *pass {
+                                    "sw-out sw-pass"
+                                } else {
+                                    "sw-out sw-exit"
+                                };
                                 view! { <span class=cls>{rec.clone()}</span> }
                             })
                             .collect_view()
@@ -878,13 +913,13 @@ pub(crate) fn Bracket(
     const LABEL_GAP: f64 = 0.5; // below the banner, above the title
     const TOP_PAD: f64 = 0.3; // above the topmost banner/title
     let half_h = bracket::BOX_H_EM / 2.0;
-    let multi =
-        layout.group_rows.len() > 1 || layout.group_rows.first().is_some_and(|(s, _, _)| !s.is_empty());
-    let head_em = TOP_PAD
-        + half_h
-        + TITLE_GAP
-        + TITLE_EM
-        + if multi { LABEL_GAP + LABEL_EM } else { 0.0 };
+    let multi = layout.group_rows.len() > 1
+        || layout
+            .group_rows
+            .first()
+            .is_some_and(|(s, _, _)| !s.is_empty());
+    let head_em =
+        TOP_PAD + half_h + TITLE_GAP + TITLE_EM + if multi { LABEL_GAP + LABEL_EM } else { 0.0 };
     let center_em = move |y: f64| y * bracket::ROW_EM + head_em;
 
     // Build the reveal grid (keys/max/feeders, for stage computation + clicks)

@@ -37,7 +37,9 @@ pub(crate) fn EventStageCombo(
             let anchor = e
                 .current_target()
                 .and_then(|t| t.dyn_into::<web_sys::Element>().ok());
-            let before = anchor.as_ref().map(|el| el.get_bounding_client_rect().top());
+            let before = anchor
+                .as_ref()
+                .map(|el| el.get_bounding_client_rect().top());
             swiss_grid.set(grid);
             if let (Some(el), Some(before)) = (anchor, before) {
                 request_animation_frame(move || {
@@ -54,7 +56,15 @@ pub(crate) fn EventStageCombo(
             swiss_grid.set(grid);
         }
     };
-    let EventInfo { tournament_id, stage, sport, standings, rounds, swiss, .. } = event;
+    let EventInfo {
+        tournament_id,
+        stage,
+        sport,
+        standings,
+        rounds,
+        swiss,
+        ..
+    } = event;
     let bracket_only = standings.is_empty();
     let has_swiss = !swiss.is_empty();
     let label = (!stage.is_empty()).then(|| view! { <h2 class="stage-head">{stage}</h2> });
@@ -161,7 +171,12 @@ pub(crate) fn EventPage() -> impl IntoView {
     // An F1 GP event page shows each finished session's full finishing order,
     // fetched on demand once the schedule reveals which (season, round) it is.
     let f1_results = Resource::new(
-        move || schedule.get().and_then(Result::ok).and_then(|s| f1_season_round(&s)),
+        move || {
+            schedule
+                .get()
+                .and_then(Result::ok)
+                .and_then(|s| f1_season_round(&s))
+        },
         |sr| async move {
             match sr {
                 Some((season, round)) => get_f1_results(season, round).await.unwrap_or_default(),
@@ -172,12 +187,15 @@ pub(crate) fn EventPage() -> impl IntoView {
     // The championship standings as of this GP's round (same source key as the
     // results), shown below them on an F1 event page.
     let f1_standings = Resource::new(
-        move || schedule.get().and_then(Result::ok).and_then(|s| f1_season_round(&s)),
+        move || {
+            schedule
+                .get()
+                .and_then(Result::ok)
+                .and_then(|s| f1_season_round(&s))
+        },
         |sr| async move {
             match sr {
-                Some((season, round)) => {
-                    get_f1_standings(season, round).await.unwrap_or_default()
-                }
+                Some((season, round)) => get_f1_standings(season, round).await.unwrap_or_default(),
                 None => F1Standings::default(),
             }
         },
@@ -185,7 +203,13 @@ pub(crate) fn EventPage() -> impl IntoView {
     // WRC/WEC/MotoGP event pages show the series' current championship standings
     // (from the ocblacktop poller cache); empty for F1 / non-motorsport events.
     let motor_standings = Resource::new(
-        move || schedule.get().and_then(Result::ok).map(|s| motor_series(&s)).unwrap_or_default(),
+        move || {
+            schedule
+                .get()
+                .and_then(Result::ok)
+                .map(|s| motor_series(&s))
+                .unwrap_or_default()
+        },
         |lg| async move {
             if lg.is_empty() {
                 MotorStandings::default()
@@ -498,4 +522,3 @@ pub(crate) fn EventPage() -> impl IntoView {
         </Suspense>
     }
 }
-

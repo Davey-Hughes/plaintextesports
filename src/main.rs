@@ -40,9 +40,7 @@ async fn main() {
     /// subscription when the browser rotates it (the SW posts here from
     /// `pushsubscriptionchange`), so pending reminders aren't lost. A plain JSON
     /// route rather than a Leptos server fn, since the SW calls it with `fetch`.
-    async fn push_migrate(
-        axum::Json(b): axum::Json<MigrateBody>,
-    ) -> axum::http::StatusCode {
+    async fn push_migrate(axum::Json(b): axum::Json<MigrateBody>) -> axum::http::StatusCode {
         use axum::http::StatusCode;
         let cfg = plaintextesports::config::Config::from_env();
         if cfg.db_path.is_empty() {
@@ -54,13 +52,15 @@ async fn main() {
             auth: b.auth,
         };
         match plaintextesports::store::shared(&cfg.db_path) {
-            Ok(conn) => match plaintextesports::store::migrate_endpoint(&conn, &b.old_endpoint, &new) {
-                Ok(()) => StatusCode::OK,
-                Err(e) => {
-                    log!("push-migrate failed: {e}");
-                    StatusCode::INTERNAL_SERVER_ERROR
+            Ok(conn) => {
+                match plaintextesports::store::migrate_endpoint(&conn, &b.old_endpoint, &new) {
+                    Ok(()) => StatusCode::OK,
+                    Err(e) => {
+                        log!("push-migrate failed: {e}");
+                        StatusCode::INTERNAL_SERVER_ERROR
+                    }
                 }
-            },
+            }
             Err(e) => {
                 log!("push-migrate db open failed: {e}");
                 StatusCode::INTERNAL_SERVER_ERROR

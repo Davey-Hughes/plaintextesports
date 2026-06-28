@@ -7,7 +7,7 @@
 
 use crate::tiering::{is_tier_one, TierInput};
 use crate::types::{
-    BracketMatch, BracketRound, Sport, MatchStatus, StandingRow, StreamView, SwissBucket,
+    BracketMatch, BracketRound, MatchStatus, Sport, StandingRow, StreamView, SwissBucket,
     SwissMatch, SwissRound,
 };
 use chrono::{DateTime, Utc};
@@ -274,7 +274,11 @@ fn map_status(raw: Option<&str>) -> MatchStatus {
 fn team_label(team: Option<&RawTeam>) -> (String, String, Option<i64>) {
     match team {
         Some(t) => {
-            let acronym = t.acronym.as_deref().map(str::trim).filter(|s| !s.is_empty());
+            let acronym = t
+                .acronym
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty());
             let name = t.name.as_deref().map(str::trim).filter(|s| !s.is_empty());
             let label = acronym.or(name).unwrap_or("TBD").to_string();
             let full = name.or(acronym).unwrap_or("TBD").to_string();
@@ -398,7 +402,10 @@ fn tier_input(raw: &RawMatch) -> TierInput<'_> {
 }
 
 /// Deserialize a PandaScore matches array, normalize, and keep only tier-1.
-pub fn parse_and_filter(sport: Sport, json: &str) -> Result<Vec<NormalizedMatch>, serde_json::Error> {
+pub fn parse_and_filter(
+    sport: Sport,
+    json: &str,
+) -> Result<Vec<NormalizedMatch>, serde_json::Error> {
     let raw: Vec<RawMatch> = serde_json::from_str(json)?;
     Ok(raw
         .iter()
@@ -827,7 +834,9 @@ fn build_swiss(raw: &[RawBracketMatch]) -> Vec<SwissRound> {
                 labels.entry(a).or_insert_with(|| label_a.clone());
                 labels.entry(b).or_insert_with(|| label_b.clone());
             }
-            let (pw, pl) = id_a.and_then(|a| records.get(&a).copied()).unwrap_or((0, 0));
+            let (pw, pl) = id_a
+                .and_then(|a| records.get(&a).copied())
+                .unwrap_or((0, 0));
             let winner = match m.winner_id {
                 w if w.is_some() && w == id_a => "a",
                 w if w.is_some() && w == id_b => "b",
@@ -1058,7 +1067,11 @@ fn build_rounds(raw: &[RawBracketMatch]) -> Vec<BracketRound> {
         .collect();
 
     // Order columns by section, then depth (preserving input order within one).
-    let sections: &[&str] = if double_elim { &["upper", "lower", "final"] } else { &[""] };
+    let sections: &[&str] = if double_elim {
+        &["upper", "lower", "final"]
+    } else {
+        &[""]
+    };
     let mut columns: Vec<(&str, Vec<&RawBracketMatch>)> = Vec::new();
     for &sec in sections {
         for d in 0..=max_depth {
@@ -1135,8 +1148,15 @@ fn build_rounds(raw: &[RawBracketMatch]) -> Vec<BracketRound> {
                 .iter()
                 .find_map(|m| m.name.as_deref().and_then(clean_round_name))
                 .unwrap_or_else(|| round_title(ms.len()));
-            let matches = ms.iter().map(|m| to_bracket_match(m, &pos)).collect::<Vec<_>>();
-            BracketRound { title, matches, section: sec.to_string() }
+            let matches = ms
+                .iter()
+                .map(|m| to_bracket_match(m, &pos))
+                .collect::<Vec<_>>();
+            BracketRound {
+                title,
+                matches,
+                section: sec.to_string(),
+            }
         })
         .collect()
 }
@@ -1238,8 +1258,8 @@ mod tests {
             label: label.into(),
             name: label.into(),
             score: Some(3),
-                    abbrev: String::new(),
-};
+            abbrev: String::new(),
+        };
         let when = "2026-06-24T18:00:00Z".parse::<DateTime<Utc>>().unwrap();
         let m = NormalizedMatch::team_sport(
             7,
@@ -1339,11 +1359,19 @@ mod tests {
         assert_eq!(rounds[2].matches[0].feeders, vec![(1, 0), (1, 1)]);
         // Each semifinal's feeders sit at 2i / 2i+1 of the quarterfinal column.
         for (i, sf) in rounds[1].matches.iter().enumerate() {
-            assert_eq!(sf.feeders, vec![(0, 2 * i), (0, 2 * i + 1)], "semifinal {i}");
+            assert_eq!(
+                sf.feeders,
+                vec![(0, 2 * i), (0, 2 * i + 1)],
+                "semifinal {i}"
+            );
         }
         // Final.prev = [10, 11] orders the semis [C/D, A/B]; that propagates to
         // the quarterfinal column so each semifinal sits between its feeders.
-        let qf_a: Vec<&str> = rounds[0].matches.iter().map(|m| m.team_a.as_str()).collect();
+        let qf_a: Vec<&str> = rounds[0]
+            .matches
+            .iter()
+            .map(|m| m.team_a.as_str())
+            .collect();
         assert_eq!(qf_a, vec!["C1", "D1", "A1", "B1"]);
     }
 
@@ -1351,16 +1379,17 @@ mod tests {
     fn build_swiss_buckets_and_outcomes() {
         // A 4-team, first-to-2 Swiss: rounds parse from names, records replay
         // into buckets, and 2-0 / 0-2 trigger advance / eliminate.
-        let g = |id: i64, name: &str, a: (i64, &str), b: (i64, &str), wa: i64, wb: i64, win: i64| {
-            format!(
-                r#"{{"id":{id},"name":"{name}",
+        let g =
+            |id: i64, name: &str, a: (i64, &str), b: (i64, &str), wa: i64, wb: i64, win: i64| {
+                format!(
+                    r#"{{"id":{id},"name":"{name}",
                   "opponents":[{{"opponent":{{"id":{},"acronym":"{}"}}}},
                                {{"opponent":{{"id":{},"acronym":"{}"}}}}],
                   "results":[{{"team_id":{},"score":{wa}}},{{"team_id":{},"score":{wb}}}],
                   "winner_id":{win}}}"#,
-                a.0, a.1, b.0, b.1, a.0, b.0
-            )
-        };
+                    a.0, a.1, b.0, b.1, a.0, b.0
+                )
+            };
         let json = format!(
             "[{}]",
             [
@@ -1375,7 +1404,12 @@ mod tests {
         let raw: Vec<RawBracketMatch> = serde_json::from_str(&json).expect("valid json");
         let swiss = build_swiss(&raw);
         assert_eq!(swiss.len(), 3, "three rounds");
-        let recs = |r: &SwissRound| r.buckets.iter().map(|b| b.record.clone()).collect::<Vec<_>>();
+        let recs = |r: &SwissRound| {
+            r.buckets
+                .iter()
+                .map(|b| b.record.clone())
+                .collect::<Vec<_>>()
+        };
         assert_eq!(recs(&swiss[0]), vec!["0-0"]);
         assert_eq!(recs(&swiss[1]), vec!["1-0", "0-1"]); // most wins first
         assert_eq!(recs(&swiss[2]), vec!["1-1"]);
@@ -1399,11 +1433,26 @@ mod tests {
     #[test]
     fn clean_round_name_strips_section_and_instance() {
         let c = |s: &str| clean_round_name(s);
-        assert_eq!(c("Upper bracket semifinal 1: KC vs DCG").as_deref(), Some("Semifinals"));
-        assert_eq!(c("Upper bracket quarterfinal 3: TBD vs TBD").as_deref(), Some("Quarterfinals"));
-        assert_eq!(c("Upper bracket final: TBD vs TBD").as_deref(), Some("Final"));
-        assert_eq!(c("Lower bracket round 1 match 2: TBD vs TBD").as_deref(), Some("Round 1"));
-        assert_eq!(c("Lower bracket final: TBD vs TBD").as_deref(), Some("Final"));
+        assert_eq!(
+            c("Upper bracket semifinal 1: KC vs DCG").as_deref(),
+            Some("Semifinals")
+        );
+        assert_eq!(
+            c("Upper bracket quarterfinal 3: TBD vs TBD").as_deref(),
+            Some("Quarterfinals")
+        );
+        assert_eq!(
+            c("Upper bracket final: TBD vs TBD").as_deref(),
+            Some("Final")
+        );
+        assert_eq!(
+            c("Lower bracket round 1 match 2: TBD vs TBD").as_deref(),
+            Some("Round 1")
+        );
+        assert_eq!(
+            c("Lower bracket final: TBD vs TBD").as_deref(),
+            Some("Final")
+        );
         assert_eq!(c("Grand final: TBD vs TBD").as_deref(), Some("Grand Final"));
         assert_eq!(c("").as_deref(), None);
     }

@@ -204,4 +204,3 @@ pub(crate) fn SportToggle() -> impl IntoView {
         </div>
     }
 }
-

@@ -36,8 +36,18 @@ pub(crate) fn weekday(y: i32, m: u32, d: u32) -> u32 {
 
 pub(crate) fn month_name(m: u32) -> &'static str {
     [
-        "January", "February", "March", "April", "May", "June", "July", "August", "September",
-        "October", "November", "December",
+        "January",
+        "February",
+        "March",
+        "April",
+        "May",
+        "June",
+        "July",
+        "August",
+        "September",
+        "October",
+        "November",
+        "December",
     ]
     .get(m.saturating_sub(1) as usize)
     .copied()
@@ -146,7 +156,10 @@ pub(crate) fn CalendarPicker() -> impl IntoView {
                 if start.is_some() || end.is_some() {
                     None
                 } else if sport_mode.get() {
-                    Some((iso_from_today(-earlier.get()), iso_from_today(trad_forward(later.get()))))
+                    Some((
+                        iso_from_today(-earlier.get()),
+                        iso_from_today(trad_forward(later.get())),
+                    ))
                 } else if earlier.get() > 0 {
                     Some((iso_from_today(-earlier.get()), iso_from_today(0)))
                 } else {
@@ -242,4 +255,3 @@ pub(crate) fn CalendarPicker() -> impl IntoView {
         </span>
     }
 }
-

@@ -162,7 +162,13 @@ pub fn spawn_sender() {
                 let outcome = send_one(&client, &key, &cfg.vapid_subject, r).await;
                 // Carry the full timer key so the apply loop marks exactly this
                 // row sent (a match has one row per lead time).
-                outcomes.push((r.endpoint.clone(), r.match_id, r.sport.clone(), r.lead_ms, outcome));
+                outcomes.push((
+                    r.endpoint.clone(),
+                    r.match_id,
+                    r.sport.clone(),
+                    r.lead_ms,
+                    outcome,
+                ));
             }
 
             // Apply results (sync). Only mark a reminder sent on success; a
@@ -181,7 +187,10 @@ pub fn spawn_sender() {
                 }
             }
             if !outcomes.is_empty() {
-                let sent = outcomes.iter().filter(|(.., o)| *o == Outcome::Sent).count();
+                let sent = outcomes
+                    .iter()
+                    .filter(|(.., o)| *o == Outcome::Sent)
+                    .count();
                 leptos::logging::log!("push: sent {sent}/{} due reminder(s)", outcomes.len());
             }
 
@@ -212,7 +221,9 @@ fn expand_subscriptions(conn: &rusqlite::Connection) {
     let now = Utc::now().timestamp_millis();
     for s in subs {
         for &lead_ms in &s.lead_list {
-            for seed in crate::cache::scope_reminder_seeds(&s.scope_kind, &s.scope_value, lead_ms, &s.tz) {
+            for seed in
+                crate::cache::scope_reminder_seeds(&s.scope_kind, &s.scope_value, lead_ms, &s.tz)
+            {
                 // Don't retroactively arm a timer whose lead window already opened
                 // (the common first-start case: a long lead means every match in
                 // that window is already "due"). It would fire at once; skip it.
@@ -275,9 +286,8 @@ mod tests {
         use web_push_native::p256::SecretKey;
         // A deterministic "browser" subscription keypair.
         let ua_secret = SecretKey::from_slice(&[7u8; 32]).unwrap();
-        let p256dh = Base64UrlUnpadded::encode_string(
-            ua_secret.public_key().to_sec1_bytes().as_ref(),
-        );
+        let p256dh =
+            Base64UrlUnpadded::encode_string(ua_secret.public_key().to_sec1_bytes().as_ref());
         let auth = Base64UrlUnpadded::encode_string(&[3u8; 16]);
 
         let key = ES256KeyPair::generate();

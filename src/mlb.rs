@@ -3,7 +3,7 @@
 //! feeds so it flows through the existing schedule UI unchanged.
 
 use crate::pandascore::{NormTeam, NormalizedMatch};
-use crate::types::{EventInfo, Sport, MatchStatus, StandingRow, StreamView};
+use crate::types::{EventInfo, MatchStatus, Sport, StandingRow, StreamView};
 use chrono::{DateTime, NaiveDate, Utc};
 use serde::Deserialize;
 use std::collections::HashSet;
@@ -173,7 +173,11 @@ fn team_logo(team_id: i64) -> String {
 
 fn status_of(s: &RawStatus) -> MatchStatus {
     let d = s.detailed_state.to_lowercase();
-    if d.contains("postpone") || d.contains("cancel") || d.contains("suspend") || d.contains("forfeit") {
+    if d.contains("postpone")
+        || d.contains("cancel")
+        || d.contains("suspend")
+        || d.contains("forfeit")
+    {
         return MatchStatus::Canceled;
     }
     match s.abstract_state.as_str() {
@@ -196,8 +200,16 @@ fn clean_network(name: &str) -> String {
 /// Sort key: TV before radio, national before local, home before away. Lower
 /// sorts first, so the most useful "where to watch" entries lead the list.
 fn broadcast_rank(b: &RawBroadcast) -> (i32, i32, i32) {
-    let tv = if b.kind.eq_ignore_ascii_case("TV") { 0 } else { 1 };
-    let nat = if b.is_national || b.home_away == "national" { 0 } else { 1 };
+    let tv = if b.kind.eq_ignore_ascii_case("TV") {
+        0
+    } else {
+        1
+    };
+    let nat = if b.is_national || b.home_away == "national" {
+        0
+    } else {
+        1
+    };
     let side = match b.home_away.as_str() {
         "national" => 0,
         "home" => 1,
@@ -306,7 +318,9 @@ fn broadcasts(raw: &[RawBroadcast]) -> Vec<StreamView> {
 }
 
 fn to_match(g: RawGame) -> Option<NormalizedMatch> {
-    let begin_at = DateTime::parse_from_rfc3339(&g.game_date).ok()?.with_timezone(&Utc);
+    let begin_at = DateTime::parse_from_rfc3339(&g.game_date)
+        .ok()?
+        .with_timezone(&Utc);
     let mut m = NormalizedMatch::team_sport(
         g.game_pk,
         Sport::Mlb,
@@ -332,7 +346,10 @@ fn to_match(g: RawGame) -> Option<NormalizedMatch> {
     m.series_name = if g.series.eq_ignore_ascii_case("Regular Season") {
         String::new()
     } else {
-        g.series.strip_prefix("MLB ").unwrap_or(&g.series).to_string()
+        g.series
+            .strip_prefix("MLB ")
+            .unwrap_or(&g.series)
+            .to_string()
     };
     // The stadium's IANA timezone, so the UI can show the local time at the
     // ballpark (handles cross-country and neutral-site games).
@@ -346,9 +363,7 @@ fn to_match(g: RawGame) -> Option<NormalizedMatch> {
     // Carry the two teams' ids + this game's series position so the detail page
     // can fetch the whole series between them. Only when both ids and a sane
     // series length are present.
-    m.mlb_series = (g.teams.away.team.id > 0
-        && g.teams.home.team.id > 0
-        && g.games_in_series > 0)
+    m.mlb_series = (g.teams.away.team.id > 0 && g.teams.home.team.id > 0 && g.games_in_series > 0)
         .then_some(crate::types::MlbSeriesRef {
             team_id_a: g.teams.away.team.id,
             team_id_b: g.teams.home.team.id,
@@ -369,8 +384,19 @@ pub async fn fetch_schedule(
         start.format("%Y-%m-%d"),
         end.format("%Y-%m-%d"),
     );
-    let resp: ScheduleResp = client.get(&url).send().await?.error_for_status()?.json().await?;
-    Ok(resp.dates.into_iter().flat_map(|d| d.games).filter_map(to_match).collect())
+    let resp: ScheduleResp = client
+        .get(&url)
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    Ok(resp
+        .dates
+        .into_iter()
+        .flat_map(|d| d.games)
+        .filter_map(to_match)
+        .collect())
 }
 
 // ----- Series (the multi-game set between two teams) ------------------------
@@ -416,7 +442,9 @@ fn build_series(
         .unwrap_or(0);
     let mut raw: Vec<RawGame> = games
         .into_iter()
-        .filter(|g| g.series_game_number > 0 && (anchor_len == 0 || g.games_in_series == anchor_len))
+        .filter(|g| {
+            g.series_game_number > 0 && (anchor_len == 0 || g.games_in_series == anchor_len)
+        })
         .collect();
     // Order by series game number, then start time (doubleheaders share a number
     // only across series, but keep a stable tiebreak by date/pk).
@@ -552,9 +580,22 @@ pub async fn fetch_series(
         start.format("%Y-%m-%d"),
         end.format("%Y-%m-%d"),
     );
-    let resp: ScheduleResp = client.get(&url).send().await?.error_for_status()?.json().await?;
+    let resp: ScheduleResp = client
+        .get(&url)
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
     let games: Vec<RawGame> = resp.dates.into_iter().flat_map(|d| d.games).collect();
-    Ok(build_series(games, game_pk, series.team_id_a, team_a_label, team_b_label, fmt_labels))
+    Ok(build_series(
+        games,
+        game_pk,
+        series.team_id_a,
+        team_a_label,
+        team_b_label,
+        fmt_labels,
+    ))
 }
 
 // ----- Standings -----------------------------------------------------------
@@ -642,7 +683,11 @@ fn divisions_from(resp: StandingsResp) -> Vec<EventInfo> {
                     ties: 0,
                     game_wins: 0,
                     game_losses: 0,
-                    gb: if t.games_back == "-" { "—".to_string() } else { t.games_back },
+                    gb: if t.games_back == "-" {
+                        "—".to_string()
+                    } else {
+                        t.games_back
+                    },
                 })
                 .collect();
             rows.sort_by_key(|r| r.rank);
@@ -673,7 +718,13 @@ pub async fn fetch_standings(
     let url = format!(
         "{BASE}/standings?leagueId=103,104&season={season}&standingsTypes=regularSeason&hydrate=team",
     );
-    let resp: StandingsResp = client.get(&url).send().await?.error_for_status()?.json().await?;
+    let resp: StandingsResp = client
+        .get(&url)
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
     Ok(divisions_from(resp))
 }
 
@@ -694,8 +745,12 @@ mod tests {
                     "home":{"score":3,"team":{"name":"New York Mets","teamName":"Mets","abbreviation":"NYM"}}}}
         ]}]}"#;
         let resp: ScheduleResp = serde_json::from_str(json).unwrap();
-        let games: Vec<NormalizedMatch> =
-            resp.dates.into_iter().flat_map(|d| d.games).filter_map(to_match).collect();
+        let games: Vec<NormalizedMatch> = resp
+            .dates
+            .into_iter()
+            .flat_map(|d| d.games)
+            .filter_map(to_match)
+            .collect();
         assert_eq!(games.len(), 2);
         assert_eq!(games[0].sport, Sport::Mlb);
         assert_eq!(games[0].team_a.label, "Rangers");
@@ -739,15 +794,39 @@ mod tests {
         let out = broadcasts(&raw);
         // TV group (national first, then away), then MLB.tv, then radio.
         assert_eq!(out.len(), 4);
-        assert_eq!((out[0].name.as_str(), out[0].tag.as_str(), out[0].group.as_str()), ("FOX", "national · TV", "tv"));
+        assert_eq!(
+            (
+                out[0].name.as_str(),
+                out[0].tag.as_str(),
+                out[0].group.as_str()
+            ),
+            ("FOX", "national · TV", "tv")
+        );
         // A national broadcaster gets a watch link; a local network stays text.
         assert_eq!(out[0].url, "https://www.foxsports.com/live");
-        assert_eq!((out[1].name.as_str(), out[1].tag.as_str(), out[1].group.as_str()), ("Rangers Sports Network", "away · TV", "tv"));
+        assert_eq!(
+            (
+                out[1].name.as_str(),
+                out[1].tag.as_str(),
+                out[1].group.as_str()
+            ),
+            ("Rangers Sports Network", "away · TV", "tv")
+        );
         assert!(out[1].url.is_empty());
         // MLB.tv is inserted between TV and radio, with a link.
-        assert_eq!((out[2].name.as_str(), out[2].group.as_str()), ("MLB.tv", "streaming"));
+        assert_eq!(
+            (out[2].name.as_str(), out[2].group.as_str()),
+            ("MLB.tv", "streaming")
+        );
         assert_eq!(out[2].url, "https://www.mlb.com/tv");
-        assert_eq!((out[3].name.as_str(), out[3].tag.as_str(), out[3].group.as_str()), ("560AM WQAM", "home · radio", "radio"));
+        assert_eq!(
+            (
+                out[3].name.as_str(),
+                out[3].tag.as_str(),
+                out[3].group.as_str()
+            ),
+            ("560AM WQAM", "home · radio", "radio")
+        );
         assert!(out[3].url.is_empty());
     }
 
@@ -832,12 +911,18 @@ mod tests {
         assert_eq!(series.games[0].venue_label, "@America/Toronto");
         // A game without a venue tz gets no venue label.
         assert_eq!(series.games[1].venue_label, "");
-        assert_eq!((series.games[0].score_a, series.games[0].score_b), (Some(2), Some(4)));
+        assert_eq!(
+            (series.games[0].score_a, series.games[0].score_b),
+            (Some(2), Some(4))
+        );
         assert_eq!(series.games[0].winner, "b"); // Jays won G1
         assert!(!series.games[0].current);
         // G2 is the current game; Astros won it.
         assert!(series.games[1].current);
-        assert_eq!((series.games[1].score_a, series.games[1].score_b), (Some(9), Some(7)));
+        assert_eq!(
+            (series.games[1].score_a, series.games[1].score_b),
+            (Some(9), Some(7))
+        );
         assert_eq!(series.games[1].winner, "a");
         // G3 upcoming — no scores, no winner.
         assert_eq!(series.games[2].status, MatchStatus::Upcoming);
@@ -860,10 +945,16 @@ mod tests {
             utc_labels,
         );
         // G1: Jays beat Astros 4-2 → a=4, b=2, winner "a".
-        assert_eq!((series.games[0].score_a, series.games[0].score_b), (Some(4), Some(2)));
+        assert_eq!(
+            (series.games[0].score_a, series.games[0].score_b),
+            (Some(4), Some(2))
+        );
         assert_eq!(series.games[0].winner, "a");
         // G2 (current): Astros beat Jays 9-7 → a=7, b=9, winner "b".
-        assert_eq!((series.games[1].score_a, series.games[1].score_b), (Some(7), Some(9)));
+        assert_eq!(
+            (series.games[1].score_a, series.games[1].score_b),
+            (Some(7), Some(9))
+        );
         assert_eq!(series.games[1].winner, "b");
     }
 
@@ -875,10 +966,27 @@ mod tests {
         games.push(RawGame {
             game_pk: 999999,
             game_date: "2026-06-25T20:07:00Z".into(),
-            status: RawStatus { abstract_state: "Final".into(), detailed_state: "Final".into() },
+            status: RawStatus {
+                abstract_state: "Final".into(),
+                detailed_state: "Final".into(),
+            },
             teams: RawTeams {
-                away: RawSide { score: Some(1), team: RawTeamRef { id: 117, team_name: "Astros".into(), ..Default::default() } },
-                home: RawSide { score: Some(0), team: RawTeamRef { id: 141, team_name: "Blue Jays".into(), ..Default::default() } },
+                away: RawSide {
+                    score: Some(1),
+                    team: RawTeamRef {
+                        id: 117,
+                        team_name: "Astros".into(),
+                        ..Default::default()
+                    },
+                },
+                home: RawSide {
+                    score: Some(0),
+                    team: RawTeamRef {
+                        id: 141,
+                        team_name: "Blue Jays".into(),
+                        ..Default::default()
+                    },
+                },
             },
             series: "Regular Season".into(),
             series_game_number: 1,
@@ -897,15 +1005,27 @@ mod tests {
         // No final games yet → empty.
         assert_eq!(series_record_label(0, 0, "A", "B", 3), "");
         // Tie.
-        assert_eq!(series_record_label(1, 1, "A", "B", 3), "Series tied 1\u{2013}1");
+        assert_eq!(
+            series_record_label(1, 1, "A", "B", 3),
+            "Series tied 1\u{2013}1"
+        );
         // Lead without clinching (1-0 of a 3-game set).
         assert_eq!(series_record_label(1, 0, "A", "B", 3), "A lead 1\u{2013}0");
         // Clinched a 3-game set (2-1).
-        assert_eq!(series_record_label(2, 1, "A", "B", 3), "A win series 2\u{2013}1");
-        assert_eq!(series_record_label(1, 2, "A", "B", 3), "B win series 2\u{2013}1");
+        assert_eq!(
+            series_record_label(2, 1, "A", "B", 3),
+            "A win series 2\u{2013}1"
+        );
+        assert_eq!(
+            series_record_label(1, 2, "A", "B", 3),
+            "B win series 2\u{2013}1"
+        );
         // A 2-game set: at 1-0 there's still a game to play (lead); at 2-0 it's
         // a completed sweep (won).
         assert_eq!(series_record_label(1, 0, "A", "B", 2), "A lead 1\u{2013}0");
-        assert_eq!(series_record_label(2, 0, "A", "B", 2), "A win series 2\u{2013}0");
+        assert_eq!(
+            series_record_label(2, 0, "A", "B", 2),
+            "A win series 2\u{2013}0"
+        );
     }
 }

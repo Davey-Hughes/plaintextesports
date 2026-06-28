@@ -110,4 +110,3 @@ pub(crate) fn TeamPage() -> impl IntoView {
         </Suspense>
     }
 }
-

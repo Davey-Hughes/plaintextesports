@@ -60,7 +60,9 @@ fn allowlist(sport: Sport) -> &'static [&'static str] {
         Sport::Lol => LOL_ALLOWLIST,
         Sport::Cs2 => CS_ALLOWLIST,
         // Traditional sports aren't tier-filtered (every sport/session is shown).
-        Sport::Mlb | Sport::Nhl | Sport::Nba | Sport::Nfl | Sport::Soccer | Sport::Motorsport => &[],
+        Sport::Mlb | Sport::Nhl | Sport::Nba | Sport::Nfl | Sport::Soccer | Sport::Motorsport => {
+            &[]
+        }
     }
 }
 
@@ -68,7 +70,9 @@ fn denylist(sport: Sport) -> &'static [&'static str] {
     match sport {
         Sport::Lol => LOL_DENYLIST,
         Sport::Cs2 => CS_DENYLIST,
-        Sport::Mlb | Sport::Nhl | Sport::Nba | Sport::Nfl | Sport::Soccer | Sport::Motorsport => &[],
+        Sport::Mlb | Sport::Nhl | Sport::Nba | Sport::Nfl | Sport::Soccer | Sport::Motorsport => {
+            &[]
+        }
     }
 }
 
@@ -94,7 +98,10 @@ fn decide(allow: &[&str], deny: &[&str], input: &TierInput) -> bool {
     }
 
     // 2. Denylist — substring match excludes.
-    if present.iter().any(|s| deny.iter().any(|bad| s.contains(bad))) {
+    if present
+        .iter()
+        .any(|s| deny.iter().any(|bad| s.contains(bad)))
+    {
         return false;
     }
 
@@ -136,8 +143,14 @@ mod tests {
 
     #[test]
     fn base_drops_low_and_missing_tiers() {
-        assert!(!is_tier_one(Sport::Cs2, &league("cs-go-some-cup", Some("b"))));
-        assert!(!is_tier_one(Sport::Lol, &league("league-of-legends-prm", None)));
+        assert!(!is_tier_one(
+            Sport::Cs2,
+            &league("cs-go-some-cup", Some("b"))
+        ));
+        assert!(!is_tier_one(
+            Sport::Lol,
+            &league("league-of-legends-prm", None)
+        ));
     }
 
     #[test]
@@ -168,7 +181,11 @@ mod tests {
         let allow = ["league-of-legends-lck"];
         let deny: [&str; 0] = [];
         // Exact match included.
-        assert!(decide(&allow, &deny, &league("league-of-legends-lck", None)));
+        assert!(decide(
+            &allow,
+            &deny,
+            &league("league-of-legends-lck", None)
+        ));
         // Near-miss NOT force-included by the allowlist (would fall through to
         // base, which is None here -> excluded).
         assert!(!decide(

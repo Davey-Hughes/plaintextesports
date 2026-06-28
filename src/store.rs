@@ -7,7 +7,7 @@
 //! ages past the retention cutoff.
 
 use crate::pandascore::{NormTeam, NormalizedMatch};
-use crate::types::{Sport, MatchStatus};
+use crate::types::{MatchStatus, Sport};
 use chrono::{DateTime, Utc};
 use once_cell::sync::OnceCell;
 use rusqlite::{params, Connection};
@@ -64,7 +64,10 @@ pub fn open(path: &str) -> rusqlite::Result<Connection> {
     // their own connection; WAL + this busy timeout lets the writers coexist.
     conn.pragma_update(None, "busy_timeout", 5000)?;
     // `meta` first, so the migration flag below is readable.
-    conn.execute("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)", [])?;
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)",
+        [],
+    )?;
     // One-time: the reminders primary key gained `sport` (a match id isn't unique
     // across games/sources). Drop the old single-id-keyed table once so the
     // CREATE below rebuilds it with the (endpoint, match_id, sport) key. Reminders
@@ -167,7 +170,10 @@ pub fn open(path: &str) -> rusqlite::Result<Connection> {
     // Must precede the ADD COLUMN block so an old `serie_name` is renamed rather
     // than left alongside a freshly-added `series_name`.
     let _ = conn.execute("ALTER TABLE matches RENAME COLUMN game TO sport", []);
-    let _ = conn.execute("ALTER TABLE matches RENAME COLUMN serie_name TO series_name", []);
+    let _ = conn.execute(
+        "ALTER TABLE matches RENAME COLUMN serie_name TO series_name",
+        [],
+    );
     let _ = conn.execute("ALTER TABLE reminders RENAME COLUMN game TO sport", []);
     // Add columns missing from older DBs (ignored if the column already exists).
     let _ = conn.execute("ALTER TABLE matches ADD COLUMN league_url TEXT", []);
@@ -182,15 +188,36 @@ pub fn open(path: &str) -> rusqlite::Result<Connection> {
     let _ = conn.execute("ALTER TABLE matches ADD COLUMN venue_location TEXT", []);
     let _ = conn.execute("ALTER TABLE matches ADD COLUMN team_a_logo TEXT", []);
     let _ = conn.execute("ALTER TABLE matches ADD COLUMN team_b_logo TEXT", []);
-    let _ = conn.execute("ALTER TABLE reminders ADD COLUMN sport TEXT NOT NULL DEFAULT ''", []);
-    let _ = conn.execute("ALTER TABLE reminders ADD COLUMN league TEXT NOT NULL DEFAULT ''", []);
-    let _ = conn.execute("ALTER TABLE reminders ADD COLUMN team_a TEXT NOT NULL DEFAULT ''", []);
-    let _ = conn.execute("ALTER TABLE reminders ADD COLUMN team_b TEXT NOT NULL DEFAULT ''", []);
-    let _ = conn.execute("ALTER TABLE reminders ADD COLUMN event TEXT NOT NULL DEFAULT ''", []);
+    let _ = conn.execute(
+        "ALTER TABLE reminders ADD COLUMN sport TEXT NOT NULL DEFAULT ''",
+        [],
+    );
+    let _ = conn.execute(
+        "ALTER TABLE reminders ADD COLUMN league TEXT NOT NULL DEFAULT ''",
+        [],
+    );
+    let _ = conn.execute(
+        "ALTER TABLE reminders ADD COLUMN team_a TEXT NOT NULL DEFAULT ''",
+        [],
+    );
+    let _ = conn.execute(
+        "ALTER TABLE reminders ADD COLUMN team_b TEXT NOT NULL DEFAULT ''",
+        [],
+    );
+    let _ = conn.execute(
+        "ALTER TABLE reminders ADD COLUMN event TEXT NOT NULL DEFAULT ''",
+        [],
+    );
     // Existing subscriptions predate the per-scope timer list.
-    let _ = conn.execute("ALTER TABLE subscriptions ADD COLUMN lead_list TEXT NOT NULL DEFAULT ''", []);
+    let _ = conn.execute(
+        "ALTER TABLE subscriptions ADD COLUMN lead_list TEXT NOT NULL DEFAULT ''",
+        [],
+    );
     // …and the per-subscriber timezone (older rows fall back to the server tz).
-    let _ = conn.execute("ALTER TABLE subscriptions ADD COLUMN tz TEXT NOT NULL DEFAULT ''", []);
+    let _ = conn.execute(
+        "ALTER TABLE subscriptions ADD COLUMN tz TEXT NOT NULL DEFAULT ''",
+        [],
+    );
 
     // One-time: the reminders PK gained `lead_ms` so a match can hold several
     // timers (one row per lead time). SQLite can't alter a PK in place and
@@ -286,7 +313,9 @@ fn row_to_match(row: &rusqlite::Row) -> rusqlite::Result<Option<NormalizedMatch>
         sport,
         league: row.get("league")?,
         league_url: row.get("league_url")?,
-        series_name: row.get::<_, Option<String>>("series_name")?.unwrap_or_default(),
+        series_name: row
+            .get::<_, Option<String>>("series_name")?
+            .unwrap_or_default(),
         tier: row.get("tier")?,
         begin_at: DateTime::from_timestamp_millis(begin_ms).unwrap_or_else(Utc::now),
         status: MatchStatus::from_db(&status),
@@ -295,22 +324,34 @@ fn row_to_match(row: &rusqlite::Row) -> rusqlite::Result<Option<NormalizedMatch>
             label: row.get("team_a_label")?,
             // Older rows predate team_a_name; fall back to the label.
             name: team_name(row, "team_a_name", "team_a_label")?,
-            abbrev: row.get::<_, Option<String>>("team_a_abbrev")?.unwrap_or_default(),
+            abbrev: row
+                .get::<_, Option<String>>("team_a_abbrev")?
+                .unwrap_or_default(),
             score: row.get("team_a_score")?,
         },
         team_b: NormTeam {
             label: row.get("team_b_label")?,
             name: team_name(row, "team_b_name", "team_b_label")?,
-            abbrev: row.get::<_, Option<String>>("team_b_abbrev")?.unwrap_or_default(),
+            abbrev: row
+                .get::<_, Option<String>>("team_b_abbrev")?
+                .unwrap_or_default(),
             score: row.get("team_b_score")?,
         },
         stream_url: row.get("stream_url")?,
         tournament_id: row.get("tournament_id")?,
         venue_tz: row.get("venue_tz")?,
-        venue_name: row.get::<_, Option<String>>("venue_name")?.unwrap_or_default(),
-        venue_location: row.get::<_, Option<String>>("venue_location")?.unwrap_or_default(),
-        team_a_logo: row.get::<_, Option<String>>("team_a_logo")?.unwrap_or_default(),
-        team_b_logo: row.get::<_, Option<String>>("team_b_logo")?.unwrap_or_default(),
+        venue_name: row
+            .get::<_, Option<String>>("venue_name")?
+            .unwrap_or_default(),
+        venue_location: row
+            .get::<_, Option<String>>("venue_location")?
+            .unwrap_or_default(),
+        team_a_logo: row
+            .get::<_, Option<String>>("team_a_logo")?
+            .unwrap_or_default(),
+        team_b_logo: row
+            .get::<_, Option<String>>("team_b_logo")?
+            .unwrap_or_default(),
         // Streams aren't persisted (in-memory only); repopulated on next poll.
         streams: Vec::new(),
         // Series refs aren't persisted (MLB, in-memory); repopulated on next poll.
@@ -337,11 +378,9 @@ pub fn load_fetched_at(conn: &Connection) -> Option<i64> {
 /// per-day past-refresh timestamps.
 #[must_use]
 pub fn get_meta(conn: &Connection, key: &str) -> Option<String> {
-    conn.query_row(
-        "SELECT value FROM meta WHERE key = ?1",
-        params![key],
-        |r| r.get::<_, String>(0),
-    )
+    conn.query_row("SELECT value FROM meta WHERE key = ?1", params![key], |r| {
+        r.get::<_, String>(0)
+    })
     .ok()
 }
 
@@ -427,7 +466,9 @@ pub fn upsert_and_prune(
             if keep.is_empty() {
                 continue;
             }
-            let holes = std::iter::repeat_n("?", keep.len()).collect::<Vec<_>>().join(",");
+            let holes = std::iter::repeat_n("?", keep.len())
+                .collect::<Vec<_>>()
+                .join(",");
             let sql = format!("DELETE FROM matches WHERE league = ?1 AND id NOT IN ({holes})");
             let mut vals: Vec<rusqlite::types::Value> = Vec::with_capacity(keep.len() + 1);
             vals.push(rusqlite::types::Value::Text((*league).to_string()));
@@ -620,7 +661,11 @@ pub fn clear_exclusion(
 pub fn list_exclusions(conn: &Connection) -> rusqlite::Result<HashSet<(String, i64, String)>> {
     let mut stmt = conn.prepare("SELECT endpoint, match_id, sport FROM exclusions")?;
     let rows = stmt.query_map([], |r| {
-        Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?, r.get::<_, String>(2)?))
+        Ok((
+            r.get::<_, String>(0)?,
+            r.get::<_, i64>(1)?,
+            r.get::<_, String>(2)?,
+        ))
     })?;
     rows.collect()
 }
@@ -699,9 +744,18 @@ pub fn mark_reminder_sent(
 /// Remove all reminders, subscriptions, and opt-outs for a dead endpoint
 /// (404/410 push).
 pub fn delete_endpoint(conn: &Connection, endpoint: &str) -> rusqlite::Result<()> {
-    conn.execute("DELETE FROM reminders WHERE endpoint = ?1", params![endpoint])?;
-    conn.execute("DELETE FROM subscriptions WHERE endpoint = ?1", params![endpoint])?;
-    conn.execute("DELETE FROM exclusions WHERE endpoint = ?1", params![endpoint])?;
+    conn.execute(
+        "DELETE FROM reminders WHERE endpoint = ?1",
+        params![endpoint],
+    )?;
+    conn.execute(
+        "DELETE FROM subscriptions WHERE endpoint = ?1",
+        params![endpoint],
+    )?;
+    conn.execute(
+        "DELETE FROM exclusions WHERE endpoint = ?1",
+        params![endpoint],
+    )?;
     Ok(())
 }
 
@@ -712,7 +766,11 @@ pub fn delete_endpoint(conn: &Connection, endpoint: &str) -> rusqlite::Result<()
 /// re-arm. A no-op if old == new. `OR IGNORE` so a row that already exists under
 /// the new endpoint (e.g. a reconcile already ran) is left as-is — the stale old
 /// one is dropped below and would otherwise 410-prune anyway.
-pub fn migrate_endpoint(conn: &Connection, old: &str, new: &crate::types::PushSub) -> rusqlite::Result<()> {
+pub fn migrate_endpoint(
+    conn: &Connection,
+    old: &str,
+    new: &crate::types::PushSub,
+) -> rusqlite::Result<()> {
     if old == new.endpoint {
         return Ok(());
     }
@@ -813,12 +871,27 @@ pub fn add_subscription(conn: &Connection, s: &Subscription) -> rusqlite::Result
          ON CONFLICT(endpoint, scope_kind, scope_value) DO UPDATE SET
             p256dh=excluded.p256dh, auth=excluded.auth,
             lead_ms=excluded.lead_ms, lead_list=excluded.lead_list, tz=excluded.tz",
-        params![s.endpoint, s.p256dh, s.auth, s.scope_kind, s.scope_value, s.lead_ms, lead_list, s.tz],
+        params![
+            s.endpoint,
+            s.p256dh,
+            s.auth,
+            s.scope_kind,
+            s.scope_value,
+            s.lead_ms,
+            lead_list,
+            s.tz
+        ],
     )?;
     // If the timer set shrank, drop this scope's unsent reminders for offsets no
     // longer wanted, so a removed (e.g. global) timer stops firing immediately;
     // newly-added offsets are armed by the next expansion tick.
-    prune_scope_leads(conn, &s.endpoint, &s.scope_kind, &s.scope_value, &s.lead_list)?;
+    prune_scope_leads(
+        conn,
+        &s.endpoint,
+        &s.scope_kind,
+        &s.scope_value,
+        &s.lead_list,
+    )?;
     Ok(())
 }
 
@@ -900,12 +973,18 @@ pub fn delete_unsent_reminders_by_scope(
 /// Remove everything an endpoint is signed up for — all subscriptions, all
 /// (unsent) reminders, and all opt-outs. Backs "clear all".
 pub fn clear_endpoint(conn: &Connection, endpoint: &str) -> rusqlite::Result<()> {
-    conn.execute("DELETE FROM subscriptions WHERE endpoint = ?1", params![endpoint])?;
+    conn.execute(
+        "DELETE FROM subscriptions WHERE endpoint = ?1",
+        params![endpoint],
+    )?;
     conn.execute(
         "DELETE FROM reminders WHERE endpoint = ?1 AND sent = 0",
         params![endpoint],
     )?;
-    conn.execute("DELETE FROM exclusions WHERE endpoint = ?1", params![endpoint])?;
+    conn.execute(
+        "DELETE FROM exclusions WHERE endpoint = ?1",
+        params![endpoint],
+    )?;
     Ok(())
 }
 
@@ -928,14 +1007,14 @@ mod tests {
                 label: "T1".into(),
                 name: "T1".into(),
                 score: None,
-                            abbrev: String::new(),
-},
+                abbrev: String::new(),
+            },
             team_b: NormTeam {
                 label: "GEN".into(),
                 name: "Gen.G".into(),
                 score: Some(1),
-                            abbrev: String::new(),
-},
+                abbrev: String::new(),
+            },
             stream_url: Some("https://twitch.tv/lck".into()),
             tournament_id: Some(42),
             venue_tz: Some("America/New_York".into()),
@@ -957,7 +1036,14 @@ mod tests {
         let old = sample(2, now - chrono::Duration::days(10));
         let cutoff = (now - chrono::Duration::days(2)).timestamp_millis();
 
-        upsert_and_prune(&mut conn, &[recent, old], now.timestamp_millis(), cutoff, &[]).unwrap();
+        upsert_and_prune(
+            &mut conn,
+            &[recent, old],
+            now.timestamp_millis(),
+            cutoff,
+            &[],
+        )
+        .unwrap();
 
         // The old match is pruned; the recent one survives and round-trips.
         let all = load_all(&conn).unwrap();
@@ -997,7 +1083,14 @@ mod tests {
         };
 
         // First poll: a WRC rally placeholder, plus an F1 row under the same sport.
-        upsert_and_prune(&mut conn, &[motor(100, "WRC"), motor(200, "F1")], ms, cutoff, &[]).unwrap();
+        upsert_and_prune(
+            &mut conn,
+            &[motor(100, "WRC"), motor(200, "F1")],
+            ms,
+            cutoff,
+            &[],
+        )
+        .unwrap();
         assert_eq!(load_all(&conn).unwrap().len(), 2);
 
         // Next poll: the rally is expanded into stage rows with new ids, so the WRC
@@ -1063,12 +1156,19 @@ mod tests {
             [],
         )
         .unwrap();
-        conn.execute("ALTER TABLE matches RENAME COLUMN game TO sport", []).unwrap();
-        conn.execute("ALTER TABLE matches RENAME COLUMN serie_name TO series_name", []).unwrap();
+        conn.execute("ALTER TABLE matches RENAME COLUMN game TO sport", [])
+            .unwrap();
+        conn.execute(
+            "ALTER TABLE matches RENAME COLUMN serie_name TO series_name",
+            [],
+        )
+        .unwrap();
         let (sport, series): (String, String) = conn
-            .query_row("SELECT sport, series_name FROM matches WHERE id = 1", [], |r| {
-                Ok((r.get(0)?, r.get(1)?))
-            })
+            .query_row(
+                "SELECT sport, series_name FROM matches WHERE id = 1",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
             .unwrap();
         assert_eq!(sport, "lol");
         assert_eq!(series, "Spring");
@@ -1124,7 +1224,11 @@ mod tests {
         // loop is expected to skip it (see `list_exclusions`), so it stays gone.
         exclude_match(&conn, &r.endpoint, r.match_id, &r.sport).unwrap();
         assert_eq!(due_reminders(&conn, 1000).unwrap().len(), 0);
-        assert!(list_exclusions(&conn).unwrap().contains(&(r.endpoint.clone(), r.match_id, r.sport.clone())));
+        assert!(list_exclusions(&conn).unwrap().contains(&(
+            r.endpoint.clone(),
+            r.match_id,
+            r.sport.clone()
+        )));
 
         // Re-include it (explicit arm) → opt-out cleared and it's due again.
         add_reminder(&conn, &r).unwrap();
@@ -1205,10 +1309,18 @@ mod tests {
             leads
         };
         // Each timer fires at its own moment, in order, and none before its time.
-        assert_eq!(tick(begin - 2 * day), Vec::<i64>::new(), "nothing two days out");
+        assert_eq!(
+            tick(begin - 2 * day),
+            Vec::<i64>::new(),
+            "nothing two days out"
+        );
         assert_eq!(tick(begin - day), vec![day], "the 1-day timer");
         assert_eq!(tick(begin - hour), vec![hour], "then the 1-hour timer");
-        assert_eq!(tick(begin - 15 * min), vec![15 * min], "then the 15-min timer");
+        assert_eq!(
+            tick(begin - 15 * min),
+            vec![15 * min],
+            "then the 15-min timer"
+        );
         // Each fired exactly once — no timer re-delivers at the start.
         assert_eq!(tick(begin), Vec::<i64>::new(), "no timer re-fires");
     }
@@ -1232,7 +1344,9 @@ mod tests {
         // Well past the start — the server was down across the whole window, so
         // a "starts soon" ping is pointless now: suppressed.
         assert_eq!(
-            due_reminders(&conn, begin_at + DELIVER_GRACE_MS + 1).unwrap().len(),
+            due_reminders(&conn, begin_at + DELIVER_GRACE_MS + 1)
+                .unwrap()
+                .len(),
             0
         );
     }
@@ -1270,7 +1384,11 @@ mod tests {
         fresh.notify_at_ms = now - 5 * 60 * 1000;
         add_reminder(&conn, &fresh).unwrap();
         assert_eq!(
-            due_reminders(&conn, now).unwrap().iter().filter(|r| r.match_id == 4).count(),
+            due_reminders(&conn, now)
+                .unwrap()
+                .iter()
+                .filter(|r| r.match_id == 4)
+                .count(),
             1
         );
     }
@@ -1286,8 +1404,14 @@ mod tests {
         upcoming.lead_ms = WEEK_MS;
         upcoming.notify_at_ms = now - 1000;
         add_reminder(&conn, &upcoming).unwrap();
-        mark_reminder_sent(&conn, &upcoming.endpoint, upcoming.match_id, &upcoming.sport, upcoming.lead_ms)
-            .unwrap();
+        mark_reminder_sent(
+            &conn,
+            &upcoming.endpoint,
+            upcoming.match_id,
+            &upcoming.sport,
+            upcoming.lead_ms,
+        )
+        .unwrap();
         // A reminder whose match started two days ago — safe to reap.
         let mut started = reminder(2);
         started.lead_ms = 0;

@@ -20,7 +20,16 @@ pub(crate) fn HomePage() -> impl IntoView {
     // esports ("all") vs MLB and re-fetches when toggled. Traditional sports cap
     // the forward window and reveal more days with "show later days".
     let schedule = Resource::new(
-        move || (range.get(), earlier.get(), later.get(), tz.get(), hour24.get(), traditional.get()),
+        move || {
+            (
+                range.get(),
+                earlier.get(),
+                later.get(),
+                tz.get(),
+                hour24.get(),
+                traditional.get(),
+            )
+        },
         |(r, e, l, z, h, trad)| async move {
             // "trad" = all traditional sports; the sport tabs narrow it client-side.
             let f = if trad { "trad" } else { "all" }.to_string();
@@ -90,7 +99,10 @@ pub(crate) fn trad_forward(later: i64) -> i64 {
 /// days forward. Pure (built on [`iso_add_days`]) so it's identical on SSR and
 /// hydrate — the event page filters its days by this without a browser clock.
 pub(crate) fn trad_day_bounds(today: &str, earlier: i64, later: i64) -> (String, String) {
-    (iso_add_days(today, -earlier), iso_add_days(today, trad_forward(later)))
+    (
+        iso_add_days(today, -earlier),
+        iso_add_days(today, trad_forward(later)),
+    )
 }
 
 /// Whether an event/team page should cap its forward window. Only MLB needs it:
@@ -157,11 +169,17 @@ pub(crate) fn motorsport_watch(league: &str) -> &'static [(&'static str, &'stati
         // From 2026 Apple TV is F1's exclusive US broadcaster (so F1 TV is blacked
         // out in the US); F1 TV still covers the rest of the world.
         "F1" => &[
-            ("Apple TV (US)", "https://tv.apple.com/us/channel/formula-1/tvs.sbd.241000"),
+            (
+                "Apple TV (US)",
+                "https://tv.apple.com/us/channel/formula-1/tvs.sbd.241000",
+            ),
             ("F1 TV (outside US)", "https://f1tv.formula1.com/"),
         ],
         "WRC" => &[("Rally.TV", "https://www.rally.tv/en")],
-        "WEC" => &[("FIA WEC on YouTube", "https://www.youtube.com/@FIAWEC/streams")],
+        "WEC" => &[(
+            "FIA WEC on YouTube",
+            "https://www.youtube.com/@FIAWEC/streams",
+        )],
         "MotoGP" => &[("MotoGP VideoPass", "https://videopass.motogp.com/")],
         _ => &[],
     }
@@ -219,4 +237,3 @@ pub(crate) fn DayPage() -> impl IntoView {
         <ScheduleSection resource=schedule games leagues show_nav=true />
     }
 }
-

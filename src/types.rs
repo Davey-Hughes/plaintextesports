@@ -119,7 +119,14 @@ impl Sport {
     /// The traditional sports, in display order — drives the in-mode sport tabs.
     #[must_use]
     pub fn traditional_sports() -> &'static [Sport] {
-        &[Self::Mlb, Self::Nhl, Self::Nba, Self::Nfl, Self::Soccer, Self::Motorsport]
+        &[
+            Self::Mlb,
+            Self::Nhl,
+            Self::Nba,
+            Self::Nfl,
+            Self::Soccer,
+            Self::Motorsport,
+        ]
     }
 
     /// The label for the standings table's last column: a map/game record for
@@ -376,8 +383,14 @@ pub fn competition_kind(league: &str) -> &'static str {
     // Knockout/standalone competitions: cups, invitationals, majors, masters,
     // championships, and Intel Extreme Masters ("IEM"). A domestic "… League"
     // (Premier League, XSE Pro League) has none of these, so it stays a league.
-    const TOURNAMENT_WORDS: &[&str] =
-        &["cup", "invitational", "major", "masters", "championship", "iem"];
+    const TOURNAMENT_WORDS: &[&str] = &[
+        "cup",
+        "invitational",
+        "major",
+        "masters",
+        "championship",
+        "iem",
+    ];
     let lower = league.to_ascii_lowercase();
     if TOURNAMENT_WORDS.iter().any(|w| lower.contains(w)) {
         return "tournament";
@@ -1062,7 +1075,7 @@ mod tests {
         assert_eq!(MatchStatus::Finished.badge(), "Final");
         assert_eq!(MatchStatus::Canceled.badge(), "Canc.");
         assert_eq!(MatchStatus::Upcoming.badge(), ""); // no badge while upcoming
-        // Row classes the SCSS keys off (note "final", not the wire "finished").
+                                                       // Row classes the SCSS keys off (note "final", not the wire "finished").
         assert_eq!(MatchStatus::Live.row_class(), "live");
         assert_eq!(MatchStatus::Finished.row_class(), "final");
         assert_eq!(MatchStatus::Canceled.row_class(), "canceled");

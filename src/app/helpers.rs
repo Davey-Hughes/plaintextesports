@@ -31,7 +31,10 @@ pub(crate) fn scrollspy_update() {
     let mut last_above = String::new();
     let mut contained = String::new();
     for i in 0..nodes.length() {
-        let Some(el) = nodes.item(i).and_then(|n| n.dyn_into::<web_sys::Element>().ok()) else {
+        let Some(el) = nodes
+            .item(i)
+            .and_then(|n| n.dyn_into::<web_sys::Element>().ok())
+        else {
             continue;
         };
         let r = el.get_bounding_client_rect();
@@ -42,15 +45,27 @@ pub(crate) fn scrollspy_update() {
             }
         }
     }
-    let active = if contained.is_empty() { last_above } else { contained };
+    let active = if contained.is_empty() {
+        last_above
+    } else {
+        contained
+    };
     let loc = win.location();
-    let want = if active.is_empty() { String::new() } else { format!("#{active}") };
+    let want = if active.is_empty() {
+        String::new()
+    } else {
+        format!("#{active}")
+    };
     if loc.hash().unwrap_or_default() == want {
         return;
     }
     let url = if want.is_empty() {
         // Strip the hash, keeping the path + query.
-        format!("{}{}", loc.pathname().unwrap_or_default(), loc.search().unwrap_or_default())
+        format!(
+            "{}{}",
+            loc.pathname().unwrap_or_default(),
+            loc.search().unwrap_or_default()
+        )
     } else {
         want
     };
@@ -317,7 +332,9 @@ pub(crate) fn initial_sport_mode() -> bool {
 
 #[cfg(feature = "hydrate")]
 pub(crate) fn initial_sport_mode() -> bool {
-    let search = web_sys::window().and_then(|w| w.location().search().ok()).unwrap_or_default();
+    let search = web_sys::window()
+        .and_then(|w| w.location().search().ok())
+        .unwrap_or_default();
     let query = search.trim_start_matches('?');
     resolve_sport_mode(
         query_param(query, SPORT_MODE_KEY).as_deref(),
@@ -371,7 +388,11 @@ pub(crate) fn initial_lead_ms() -> i64 {
 pub(crate) fn initial_lead_ms() -> i64 {
     web_sys::window()
         .and_then(|w| w.document())
-        .and_then(|d| d.query_selector("meta[name=\"pte-lead-ms\"]").ok().flatten())
+        .and_then(|d| {
+            d.query_selector("meta[name=\"pte-lead-ms\"]")
+                .ok()
+                .flatten()
+        })
         .and_then(|el| el.get_attribute("content"))
         .and_then(|s| s.parse::<i64>().ok())
         .filter(|&ms| (0..=WEEK_MS).contains(&ms))
@@ -392,7 +413,12 @@ pub(crate) fn initial_lead_ms() -> i64 {
 #[cfg(any(feature = "ssr", feature = "hydrate"))]
 pub(crate) fn parse_filter_param(query: &str, key: &str) -> HashSet<String> {
     query_param(query, key)
-        .map(|v| v.split(',').filter(|p| !p.is_empty()).map(dec_segment).collect())
+        .map(|v| {
+            v.split(',')
+                .filter(|p| !p.is_empty())
+                .map(dec_segment)
+                .collect()
+        })
         .unwrap_or_default()
 }
 
@@ -405,7 +431,9 @@ pub(crate) fn initial_filter(key: &str) -> HashSet<String> {
 
 #[cfg(feature = "hydrate")]
 pub(crate) fn initial_filter(key: &str) -> HashSet<String> {
-    let search = web_sys::window().and_then(|w| w.location().search().ok()).unwrap_or_default();
+    let search = web_sys::window()
+        .and_then(|w| w.location().search().ok())
+        .unwrap_or_default();
     parse_filter_param(search.trim_start_matches('?'), key)
 }
 
@@ -495,9 +523,7 @@ pub(crate) fn setup_autorefresh(resource: Resource<Result<ScheduleView, ServerFn
             use std::time::Duration;
             // Keep the handle so client-side route changes clear the timer instead
             // of leaking a new 60s refetch loop on every page mount.
-            if let Ok(handle) =
-                set_interval_with_handle(refresh, Duration::from_secs(60))
-            {
+            if let Ok(handle) = set_interval_with_handle(refresh, Duration::from_secs(60)) {
                 on_cleanup(move || handle.clear());
             }
         }
@@ -556,4 +582,3 @@ pub(crate) fn league_color_class(name: &str) -> String {
     }
     format!("lc-{}", h % LEAGUE_COLORS)
 }
-

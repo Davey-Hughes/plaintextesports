@@ -25,8 +25,7 @@ pub(crate) fn F1Results(results: Vec<F1Result>, season: i64, round: i64) -> impl
         .map(|r| {
             let session = r.session;
             let anchor = f1_anchor(&session);
-            let (revealed, toggle) =
-                section_reveal(format!("f1res:{season}:{round}:{session}"));
+            let (revealed, toggle) = section_reveal(format!("f1res:{season}:{round}:{session}"));
             let count = r.rows.len();
             let rows = StoredValue::new(r.rows);
             // Always render every row so revealing doesn't shift the page; the
@@ -40,9 +39,23 @@ pub(crate) fn F1Results(results: Vec<F1Result>, season: i64, round: i64) -> impl
                         // Flags/logos are gated with the names — showing a flag while
                         // the driver is blank would leak who finished where.
                         let (driver, con, cabbr, detail, flag, clogo) = if show {
-                            (row.driver, row.constructor, row.constructor_abbrev, row.detail, row.flag, row.constructor_logo)
+                            (
+                                row.driver,
+                                row.constructor,
+                                row.constructor_abbrev,
+                                row.detail,
+                                row.flag,
+                                row.constructor_logo,
+                            )
                         } else {
-                            (String::new(), String::new(), String::new(), String::new(), String::new(), String::new())
+                            (
+                                String::new(),
+                                String::new(),
+                                String::new(),
+                                String::new(),
+                                String::new(),
+                                String::new(),
+                            )
                         };
                         view! {
                             <li class="f1-row">
@@ -97,9 +110,10 @@ pub(crate) fn MotorResultView(result: MotorResult, reveal_key: String) -> impl I
     let rows = StoredValue::new(rows);
     // Always render every row so revealing doesn't shift the page; the position
     // column (a row number) stays, and the names / team / time blank until shown.
-    let order = move || {
-        let show = revealed.get();
-        rows.get_value()
+    let order =
+        move || {
+            let show = revealed.get();
+            rows.get_value()
             .into_iter()
             .map(|row| {
                 let (name, codriver, team, time, flag) = if show {
@@ -121,7 +135,7 @@ pub(crate) fn MotorResultView(result: MotorResult, reveal_key: String) -> impl I
                 }
             })
             .collect_view()
-    };
+        };
     view! {
         <section class="detail-section">
             <h2 class="section-title f1-results-title">"Results"</h2>
@@ -506,7 +520,11 @@ pub(crate) fn StreamsList(streams: Vec<StreamView>) -> impl IntoView {
             } else {
                 (s.name.clone(), String::new())
             };
-            let tags = if s.name.is_empty() { stream_tags(&s) } else { s.tag.clone() };
+            let tags = if s.name.is_empty() {
+                stream_tags(&s)
+            } else {
+                s.tag.clone()
+            };
             let mut cls = String::from("stream");
             // Highlight an esports official broadcast (not the per-sport MLB flag).
             if s.official && s.name.is_empty() {
@@ -551,7 +569,11 @@ pub(crate) fn StreamsList(streams: Vec<StreamView>) -> impl IntoView {
 /// never leaks the leader ahead of the scores it's derived from.
 #[component]
 pub(crate) fn SeriesSection(series: Series, record_reveal: Memo<bool>) -> impl IntoView {
-    let Series { games, game_label, record_label } = series;
+    let Series {
+        games,
+        game_label,
+        record_label,
+    } = series;
     // Whether any game can swap to a ballpark-local time (so the "venue time"
     // hint by the title only appears when there's actually a venue toggle here,
     // not just because some other page flipped the shared ShowVenue).
@@ -572,8 +594,8 @@ pub(crate) fn SeriesSection(series: Series, record_reveal: Memo<bool>) -> impl I
             </p>
         }
     });
-    let game_label = (!game_label.is_empty())
-        .then(|| view! { <span class="series-meta">{game_label}</span> });
+    let game_label =
+        (!game_label.is_empty()).then(|| view! { <span class="series-meta">{game_label}</span> });
     // When the ballpark time is being shown (and this series has a venue toggle),
     // a small blue "venue time" hint by the title makes the swapped state obvious.
     let venue_hint = has_venue.then(|| {
@@ -622,7 +644,15 @@ pub(crate) fn SeriesRow(game: SeriesGame) -> impl IntoView {
     // games are always MLB. A played game's badge is the reveal control.
     let muid = crate::types::match_uid(Sport::Mlb, match_id);
     let (reveal, toggle_reveal) = row_reveal(&muid);
-    let meta_view = reveal_meta(reveal, toggle_reveal, status, &status_class, badge, None, played);
+    let meta_view = reveal_meta(
+        reveal,
+        toggle_reveal,
+        status,
+        &status_class,
+        badge,
+        None,
+        played,
+    );
 
     // Each row leads with its date and start time on one line, both in the
     // viewer's tz so they always agree. When the venue tz is known it's clickable
@@ -679,4 +709,3 @@ pub(crate) fn SeriesRow(game: SeriesGame) -> impl IntoView {
         </div>
     }
 }
-
