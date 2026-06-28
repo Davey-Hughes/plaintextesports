@@ -586,12 +586,7 @@ pub fn spawn_poller() {
             let now = Utc::now();
             let active = {
                 let snap = SNAPSHOT.read().unwrap_or_else(PoisonError::into_inner);
-                is_active_window(
-                    &snap.matches,
-                    now,
-                    Duration::hours(5),
-                    Duration::minutes(15),
-                )
+                is_active_window(&snap.matches, now, LIVE_GRACE, Duration::minutes(15))
             };
             // Always deep-scan when idle; while active, deep-scan only every
             // `idle_poll` so a long live event still discovers far-out matches
@@ -995,6 +990,14 @@ pub fn spawn_poller() {
     });
 }
 
+/// How long after its start a match the API never marks "finished" is still
+/// assumed to be live. The free tier has no realtime feed, so a started match
+/// with no terminal status is shown as live up to this long — past it, we assume
+/// it's over rather than leaving a permanent fake "LIVE". Bounds both the poll
+/// cadence ([`is_active_window`]) and the display heuristic ([`effective_status`])
+/// so the two agree. Sized to cover a long Bo5.
+const LIVE_GRACE: Duration = Duration::hours(5);
+
 /// True when any match is live (started within `grace` and not finished) or
 /// starts within `lead`. Drives both the fast/slow cadence and shallow/deep
 /// fetch depth. `grace` bounds how long a match the free tier never marks
@@ -1295,10 +1298,14 @@ fn apply_past(
 }
 
 /// How often to re-fetch a past day's scores, by age in whole days vs today
-/// (UTC). `None` = never: age 0 (today) is the main poll's job, and matches over
+/// (UTC). Today (0) gets a short interval: the main poll can miss a match that
+/// finished and dropped out of /upcoming (the free tier's /running and top-of
+/// /past feeds don't reliably surface it), so the date-range re-fetch closes the
+/// gap the same day instead of waiting for the next. `None` = never: matches over
 /// a week old are locked (scores no longer change, frees budget for backfill).
 fn refresh_interval(age_days: i64) -> Option<Duration> {
     match age_days {
+        0 => Some(Duration::minutes(30)),
         1 => Some(Duration::hours(6)),
         2 => Some(Duration::hours(12)),
         3 => Some(Duration::hours(24)),
@@ -1324,8 +1331,8 @@ fn refresh_key(sport: Sport, day: NaiveDate) -> String {
 }
 
 /// The single most-overdue past `(sport, day)` bucket due for a score refresh,
-/// or `None`. Only buckets that actually have matches in the snapshot and fall
-/// in the 1–7-day refresh window are considered.
+/// or `None`. Only buckets that actually have matches in the snapshot and that
+/// [`refresh_interval`] still tracks (today through a week old) are considered.
 fn next_due_refresh_bucket(
     conn: &rusqlite::Connection,
     now: DateTime<Utc>,
@@ -1341,7 +1348,7 @@ fn next_due_refresh_bucket(
                 continue;
             }
             let day = m.begin_at.date_naive();
-            if (1..=7).contains(&(today - day).num_days()) {
+            if refresh_interval((today - day).num_days()).is_some() {
                 set.insert((m.sport, day));
             }
         }
@@ -1495,7 +1502,17 @@ fn short_day_label(local: DateTime<Tz>) -> String {
 /// finished" live heuristic (the free tier has no real-time feed).
 fn effective_status(m: &NormalizedMatch, now: DateTime<Utc>) -> MatchStatus {
     match m.status {
-        MatchStatus::Upcoming if m.begin_at <= now => MatchStatus::Live,
+        // Started but never marked finished. The free tier has no realtime feed,
+        // so treat it as live only within the grace window; past that, assume it
+        // ended rather than leaving a permanent fake "LIVE" — the real result is
+        // backfilled by the past-day refresh.
+        MatchStatus::Upcoming if m.begin_at <= now => {
+            if now < m.begin_at + LIVE_GRACE {
+                MatchStatus::Live
+            } else {
+                MatchStatus::Finished
+            }
+        }
         other => other,
     }
 }
@@ -1515,15 +1532,12 @@ fn to_view(m: &NormalizedMatch, tz: &Tz, now: DateTime<Utc>, hour24: bool) -> Ma
         && m.venue_tz.is_none();
 
     // PandaScore returns placeholder 0-0 results on unplayed matches, so only
-    // trust a finished match's score, or a live match's score once it's nonzero
-    // (a real in-progress map count rather than the 0-0 placeholder).
-    let trust_scores = match status {
-        MatchStatus::Finished => true,
-        MatchStatus::Live => {
-            matches!((m.team_a.score, m.team_b.score), (Some(a), Some(b)) if a > 0 || b > 0)
-        }
-        _ => false,
-    };
+    // trust a score once it's nonzero: a finished Bo-X always has a winner with
+    // >0, and a live match's map count is real only past the 0-0 placeholder.
+    // This also keeps a match we assume is over (started, never marked finished)
+    // from rendering a fake 0-0 final.
+    let trust_scores = matches!(status, MatchStatus::Finished | MatchStatus::Live)
+        && matches!((m.team_a.score, m.team_b.score), (Some(a), Some(b)) if a > 0 || b > 0);
     let mut team_a = TeamView {
         label: m.team_a.label.clone(),
         name: m.team_a.name.clone(),
@@ -3783,9 +3797,19 @@ mod tests {
     fn effective_status_live_heuristic() {
         let now = Utc::now();
         let mut m = at(now - Duration::hours(1), MatchStatus::Upcoming);
+        // Started recently, still inside the live grace → treated as Live.
         assert_eq!(effective_status(&m, now), MatchStatus::Live);
+        // Just inside the grace window → still Live.
+        m.begin_at = now - LIVE_GRACE + Duration::minutes(1);
+        assert_eq!(effective_status(&m, now), MatchStatus::Live);
+        // Past the grace window with no finished signal → assume over, rather
+        // than a permanent fake "LIVE" on a match that ended hours ago.
+        m.begin_at = now - LIVE_GRACE - Duration::minutes(1);
+        assert_eq!(effective_status(&m, now), MatchStatus::Finished);
+        // Not started yet → unchanged.
         m.begin_at = now + Duration::hours(1);
         assert_eq!(effective_status(&m, now), MatchStatus::Upcoming);
+        // A real finished status is always preserved.
         m.status = MatchStatus::Finished;
         m.begin_at = now - Duration::hours(1);
         assert_eq!(effective_status(&m, now), MatchStatus::Finished);
@@ -3808,6 +3832,21 @@ mod tests {
         let v = to_view(&up, &Tz::UTC, now, true);
         assert_eq!(v.team_a.score, None);
         assert_eq!(v.team_b.score, None);
+    }
+
+    #[test]
+    fn to_view_hides_placeholder_zero_zero_on_finished() {
+        let now = Utc::now();
+        // A match marked finished but still at PandaScore's 0-0 placeholder (the
+        // assume-over heuristic, or a result we haven't fetched yet) must not
+        // render a fake "0 - 0" final with no winner.
+        let mut fin = at(now - Duration::hours(8), MatchStatus::Finished);
+        fin.team_a.score = Some(0);
+        fin.team_b.score = Some(0);
+        let v = to_view(&fin, &Tz::UTC, now, true);
+        assert_eq!(v.team_a.score, None);
+        assert_eq!(v.team_b.score, None);
+        assert!(!v.team_a.winner && !v.team_b.winner);
     }
 
     #[test]
@@ -4059,8 +4098,10 @@ mod tests {
         assert_eq!(refresh_interval(2), Some(Duration::hours(12)));
         assert_eq!(refresh_interval(3), Some(Duration::hours(24)));
         assert_eq!(refresh_interval(7), Some(Duration::hours(48)));
-        // Today (0) is the main poll's job; > 1 week is locked.
-        assert_eq!(refresh_interval(0), None);
+        // Today (0) is eligible too: the main poll can miss a match that
+        // finished and dropped out of /upcoming, so re-fetch today's scores
+        // cheaply via the date-range path. > 1 week is locked.
+        assert_eq!(refresh_interval(0), Some(Duration::minutes(30)));
         assert_eq!(refresh_interval(8), None);
     }
 
