@@ -349,13 +349,21 @@ fn rally_stage_matches(
         .collect()
 }
 
-/// The rally whose stage timetable to fetch this cycle: the live one, else the
-/// soonest upcoming whose start is within the window where the detailed schedule
-/// is typically published (~2 weeks out). `None` off-week, so no detail request is
-/// spent. Picking just one keeps WRC at one extra request per cycle.
+/// The rally whose stage timetable to fetch this cycle, in priority order: the
+/// live one; else a just-finished one (within a few days of ending) so its final
+/// per-stage results are captured and then kept after the rally — see
+/// [`crate::cache::reconcile_wrc`]; else the soonest upcoming whose start is
+/// within the window the detailed schedule is typically published (~2 weeks out).
+/// `None` off-week, so no detail request is spent. Picking just one keeps WRC at
+/// one extra request per cycle.
 fn active_rally(rallies: &[Rally], now: DateTime<Utc>) -> Option<&Rally> {
     let publish_lead = Duration::days(14);
-    let mut soonest: Option<(&Rally, DateTime<Utc>)> = None;
+    // A finished rally's stages need fetching only once more to persist them;
+    // stay eligible a few days so a cold start (or the idle poll cadence) still
+    // catches it, then stop re-spending the request.
+    let recent_window = Duration::days(3);
+    let mut recent: Option<(&Rally, DateTime<Utc>)> = None; // most-recently ended
+    let mut soonest: Option<(&Rally, DateTime<Utc>)> = None; // soonest to start
     for r in rallies {
         let Some(begin) = parse_date(&r.date_start).map(|d| d + Duration::hours(12)) else {
             continue;
@@ -363,6 +371,11 @@ fn active_rally(rallies: &[Rally], now: DateTime<Utc>) -> Option<&Rally> {
         let end = parse_date(&r.date_end).unwrap_or(begin) + Duration::days(1);
         match status_of(&r.status, begin, end, now) {
             MatchStatus::Live => return Some(r),
+            MatchStatus::Finished
+                if now - end <= recent_window && recent.is_none_or(|(_, e)| end > e) =>
+            {
+                recent = Some((r, end));
+            }
             MatchStatus::Upcoming
                 if begin - now <= publish_lead && soonest.is_none_or(|(_, b)| begin < b) =>
             {
@@ -371,7 +384,9 @@ fn active_rally(rallies: &[Rally], now: DateTime<Utc>) -> Option<&Rally> {
             _ => {}
         }
     }
-    soonest.map(|(r, _)| r)
+    // A just-finished rally takes precedence over an imminent one: its results are
+    // final and worth keeping, whereas the upcoming one is only a schedule pre-fetch.
+    recent.or(soonest).map(|(r, _)| r)
 }
 
 /// The WRC season as single-entity rows: one date-only placeholder per rally, with
@@ -393,9 +408,9 @@ pub async fn fetch_wrc(
         .filter_map(|r| rally_to_match(r, now))
         .collect();
 
-    // Spend a second request on the active rally's stage timetable, when there is
-    // one. Until its schedule is published the detail carries no timed stages, so
-    // we simply keep the placeholder.
+    // Spend a second request on the active (live / just-finished / imminent)
+    // rally's stage timetable, when there is one. Until its schedule is published
+    // the detail carries no timed stages, so we simply keep the placeholder.
     let Some(active) = active_rally(&resp.data, now) else {
         return Ok((rows, 1));
     };
@@ -1140,6 +1155,28 @@ mod tests {
         // far-off September rally is skipped, so no detail request is wasted on it.
         assert_eq!(active_rally(&resp.data[2..], now).unwrap().id, "soon");
         assert!(active_rally(&resp.data[3..], now).is_none());
+    }
+
+    #[test]
+    fn active_rally_captures_a_just_finished_rally() {
+        let resp: RalliesResp = serde_json::from_str(
+            r#"{"data":[
+              {"id":"justdone","name":"A","dateStart":"2026-06-25","dateEnd":"2026-06-28",
+               "status":"completed","location":{"country":{"twoCode":"GR"}}},
+              {"id":"soon","name":"B","dateStart":"2026-07-10","dateEnd":"2026-07-13",
+               "status":"scheduled","location":{"country":{"twoCode":"EE"}}}
+            ]}"#,
+        )
+        .unwrap();
+        // A day after the rally ended its final stages are still worth fetching —
+        // and take precedence over the upcoming round's schedule pre-fetch, so a
+        // finished rally's per-stage results get captured and kept.
+        let now = "2026-06-29T12:00:00Z".parse::<DateTime<Utc>>().unwrap();
+        assert_eq!(active_rally(&resp.data, now).unwrap().id, "justdone");
+        // Well after it ended (its stages are already persisted) fall back to the
+        // soonest upcoming, so no request is wasted re-fetching the old rally.
+        let later = "2026-07-05T00:00:00Z".parse::<DateTime<Utc>>().unwrap();
+        assert_eq!(active_rally(&resp.data, later).unwrap().id, "soon");
     }
 
     #[test]
