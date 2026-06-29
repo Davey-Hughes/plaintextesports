@@ -1,7 +1,7 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512">
   <rect width="512" height="512" fill="#0d0d0d"/>
   <g transform="translate(256 256) scale(0.74) translate(-256 -256)">
-    <rect x="34" y="34" width="444" height="444" fill="none" stroke="#555555" stroke-width="14"/>
+    <rect x="34" y="34" width="444" height="444" fill="none" stroke="#d4d4d4" stroke-width="14"/>
     <text x="256" y="256" fill="#d4d4d4"
           font-family="ui-monospace, 'SFMono-Regular', Menlo, Consolas, 'Liberation Mono', monospace"
           font-size="200" font-weight="600" text-anchor="middle"
