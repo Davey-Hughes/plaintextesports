@@ -2472,6 +2472,15 @@ a.sw-link {
   white-space: nowrap;
 }
 
+// The rally co-driver, shown inline after the driver inside the .f1-driver cell.
+// A small gap + muted colour so it reads as a distinct second name rather than
+// running into the driver's. (WEC crews join into one name with " · " and leave
+// this empty; MotoGP has no co-driver — so this only affects WRC.)
+.motor-codriver {
+  margin-left: 0.4em;
+  color: var(--muted);
+}
+
 .f1-con {
   color: var(--muted);
   overflow: hidden;

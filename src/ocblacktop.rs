@@ -1059,22 +1059,22 @@ fn wec_result_rows(rows: &[WecResultRow]) -> Vec<crate::types::MotorResultRow> {
 }
 
 /// Fetch the classification a [`crate::types::MotorResultRef`] points at: a WRC
-/// rally's overall result (empty session), a single WRC stage's times, or a
-/// MotoGP session's finishing order. One request; empty on any failure. The caller
-/// caches the result (finished classifications never change) so this stays well
-/// within the daily quota even though it's fetched on demand.
+/// rally's overall result (empty session), a single WRC stage's times, a WEC or
+/// MotoGP session's finishing order. `None` on a fetch/parse error (so the caller
+/// doesn't cache a transient failure); `Some(rows)` on success — `rows` is empty
+/// only when the source genuinely returned nothing. One request.
 pub async fn fetch_motor_result(
     client: &reqwest::Client,
     key: &str,
     r: &crate::types::MotorResultRef,
-) -> Vec<crate::types::MotorResultRow> {
+) -> Option<Vec<crate::types::MotorResultRow>> {
     match (r.series.as_str(), r.session_id.is_empty()) {
         ("WRC", true) => {
             let url = format!("{BASE}/wrc/rallies/{}/classification", r.event_id);
             get::<Vec<WrcResultRow>>(client, key, &url)
                 .await
                 .map(|rows| wrc_result_rows(&rows))
-                .unwrap_or_default()
+                .ok()
         }
         ("WRC", false) => {
             // The stage detail carries its results inline.
@@ -1087,7 +1087,7 @@ pub async fn fetch_motor_result(
             get::<StageDetail>(client, key, &url)
                 .await
                 .map(|d| wrc_result_rows(&d.results))
-                .unwrap_or_default()
+                .ok()
         }
         ("WEC", _) => {
             let url = format!(
@@ -1097,7 +1097,7 @@ pub async fn fetch_motor_result(
             get::<Vec<WecResultRow>>(client, key, &url)
                 .await
                 .map(|rows| wec_result_rows(&rows))
-                .unwrap_or_default()
+                .ok()
         }
         ("MotoGP", _) => {
             let url = format!(
@@ -1107,9 +1107,9 @@ pub async fn fetch_motor_result(
             get::<Vec<MotoResultRow>>(client, key, &url)
                 .await
                 .map(|rows| motogp_result_rows(&rows))
-                .unwrap_or_default()
+                .ok()
         }
-        _ => Vec::new(),
+        _ => Some(Vec::new()),
     }
 }
 

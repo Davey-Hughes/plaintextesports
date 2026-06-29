@@ -406,18 +406,25 @@ pub async fn motor_result(r: &crate::types::MotorResultRef) -> Vec<crate::types:
     let Some(token) = config().ocblacktop_token.as_deref() else {
         return Vec::new();
     };
-    let rows = crate::ocblacktop::fetch_motor_result(&HTTP, token, r).await;
-    MOTOR_RESULTS
-        .write()
-        .unwrap_or_else(PoisonError::into_inner)
-        .insert(
-            cache_key,
-            CachedMotorResult {
-                rows: rows.clone(),
-                fetched_at: Utc::now(),
-            },
-        );
-    rows
+    // Cache a *successful* response (even an empty one — results not posted yet);
+    // a transient fetch/parse error (`None`) is NOT cached, so a flaky upstream
+    // 500 doesn't hide a result for the full TTL — the next view retries.
+    match crate::ocblacktop::fetch_motor_result(&HTTP, token, r).await {
+        Some(rows) => {
+            MOTOR_RESULTS
+                .write()
+                .unwrap_or_else(PoisonError::into_inner)
+                .insert(
+                    cache_key,
+                    CachedMotorResult {
+                        rows: rows.clone(),
+                        fetched_at: Utc::now(),
+                    },
+                );
+            rows
+        }
+        None => Vec::new(),
+    }
 }
 
 /// The ordered (section title, result ref) list a motorsport event page shows,
