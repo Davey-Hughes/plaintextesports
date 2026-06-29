@@ -171,9 +171,11 @@ fn update_standings<E: std::fmt::Display>(
     store: &RwLock<Vec<EventInfo>>,
     raw: Result<Vec<EventInfo>, E>,
     name: &str,
+    ns: &str,
 ) {
     match raw {
         Ok(tables) if !tables.is_empty() => {
+            db_cache_put(ns, "", &tables, Utc::now());
             *store.write().unwrap_or_else(PoisonError::into_inner) = tables;
         }
         Ok(_) => {}
@@ -185,6 +187,7 @@ fn update_standings<E: std::fmt::Display>(
 fn update_soccer_standings<E: std::fmt::Display>(league: &str, raw: Result<Vec<EventInfo>, E>) {
     match raw {
         Ok(tables) if !tables.is_empty() => {
+            db_cache_put("soccer_standings", league, &tables, Utc::now());
             SOCCER_STANDINGS
                 .write()
                 .unwrap_or_else(PoisonError::into_inner)
@@ -741,6 +744,42 @@ fn db_cache_get_ns<T: serde::de::DeserializeOwned>(ns: &str) -> Vec<(String, T, 
         .collect()
 }
 
+/// Populate the poller-refreshed standings caches from the persisted result_cache
+/// on boot, so a restart serves the last-known standings before the first poll.
+fn load_persisted_standings() {
+    let fill_vec = |ns: &str, store: &RwLock<Vec<EventInfo>>| {
+        if let Some((tables, _)) = db_cache_get::<Vec<EventInfo>>(ns, "") {
+            if !tables.is_empty() {
+                *store.write().unwrap_or_else(PoisonError::into_inner) = tables;
+            }
+        }
+    };
+    fill_vec("mlb_standings", &MLB_STANDINGS);
+    fill_vec("nhl_standings", &NHL_STANDINGS);
+    fill_vec("nba_standings", &NBA_STANDINGS);
+    fill_vec("nfl_standings", &NFL_STANDINGS);
+    {
+        let mut soccer = SOCCER_STANDINGS
+            .write()
+            .unwrap_or_else(PoisonError::into_inner);
+        for (league, tables, _) in db_cache_get_ns::<Vec<EventInfo>>("soccer_standings") {
+            if !tables.is_empty() {
+                soccer.insert(league, tables);
+            }
+        }
+    }
+    let fill_motor = |ns: &str, store: &RwLock<crate::types::MotorStandings>| {
+        if let Some((s, _)) = db_cache_get::<crate::types::MotorStandings>(ns, "") {
+            if !s.tables.is_empty() {
+                *store.write().unwrap_or_else(PoisonError::into_inner) = s;
+            }
+        }
+    };
+    fill_motor("wrc_standings", &WRC_STANDINGS);
+    fill_motor("wec_standings", &WEC_STANDINGS);
+    fill_motor("motogp_standings", &MOTOGP_STANDINGS);
+}
+
 /// Start the background poller. Loads any persisted matches first (so a restart
 /// serves data immediately), then either polls PandaScore or, with no token,
 /// falls back to demo data.
@@ -800,6 +839,9 @@ pub fn spawn_poller() {
             }
         }
     }
+    // Load persisted standings so a restart serves the last-known tables
+    // before the first poll completes (uses CACHE_DB, not the boot conn).
+    load_persisted_standings();
 
     let Some(token) = cfg.token.clone() else {
         leptos::logging::log!("PANDASCORE_TOKEN not set — serving demo fixture data");
@@ -1046,16 +1088,19 @@ pub fn spawn_poller() {
                     ocb_save_at(store.as_ref(), OCB_META_STANDINGS_AT, now);
                     ocb_save_budget(store.as_ref(), now.date_naive(), ocb_used);
                     if !wrc_s.tables.is_empty() {
+                        db_cache_put("wrc_standings", "", &wrc_s, now);
                         *WRC_STANDINGS
                             .write()
                             .unwrap_or_else(PoisonError::into_inner) = wrc_s;
                     }
                     if !wec_s.tables.is_empty() {
+                        db_cache_put("wec_standings", "", &wec_s, now);
                         *WEC_STANDINGS
                             .write()
                             .unwrap_or_else(PoisonError::into_inner) = wec_s;
                     }
                     if !motogp_s.tables.is_empty() {
+                        db_cache_put("motogp_standings", "", &motogp_s, now);
                         *MOTOGP_STANDINGS
                             .write()
                             .unwrap_or_else(PoisonError::into_inner) = motogp_s;
@@ -1101,10 +1146,10 @@ pub fn spawn_poller() {
             );
             // Refresh each standings cache. Keep the old tables on a fetch error
             // or an empty off-season response, rather than blanking the page.
-            update_standings(&MLB_STANDINGS, mlb_standings_raw, "MLB");
-            update_standings(&NHL_STANDINGS, nhl_standings_raw, "NHL");
-            update_standings(&NBA_STANDINGS, nba_standings_raw, "NBA");
-            update_standings(&NFL_STANDINGS, nfl_standings_raw, "NFL");
+            update_standings(&MLB_STANDINGS, mlb_standings_raw, "MLB", "mlb_standings");
+            update_standings(&NHL_STANDINGS, nhl_standings_raw, "NHL", "nhl_standings");
+            update_standings(&NBA_STANDINGS, nba_standings_raw, "NBA", "nba_standings");
+            update_standings(&NFL_STANDINGS, nfl_standings_raw, "NFL", "nfl_standings");
             // Soccer is keyed by competition: the PL's single table, the World
             // Cup's group tables.
             update_soccer_standings("Premier League", epl_standings_raw);
