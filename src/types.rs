@@ -867,6 +867,31 @@ pub struct MotorResultRef {
     pub session_id: String,
 }
 
+impl MotorResultRef {
+    /// Serialize for the DB as `series|event_id|session_id`. The series is a short
+    /// token ("WRC"/"WEC"/"MotoGP") and the ids are UUIDs, so none contain `|`;
+    /// `session_id` may be empty (an overall-classification placeholder).
+    #[must_use]
+    pub fn to_db(&self) -> String {
+        format!("{}|{}|{}", self.series, self.event_id, self.session_id)
+    }
+
+    /// Parse a [`Self::to_db`] string back; `None` if it's empty or malformed
+    /// (missing the series or event id).
+    #[must_use]
+    pub fn from_db(s: &str) -> Option<Self> {
+        let mut parts = s.splitn(3, '|');
+        let series = parts.next().unwrap_or_default().to_string();
+        let event_id = parts.next().unwrap_or_default().to_string();
+        let session_id = parts.next().unwrap_or_default().to_string();
+        (!series.is_empty() && !event_id.is_empty()).then_some(Self {
+            series,
+            event_id,
+            session_id,
+        })
+    }
+}
+
 /// Everything the per-match detail page shows.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MatchDetail {

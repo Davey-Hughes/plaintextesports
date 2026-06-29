@@ -7,7 +7,7 @@
 //! ages past the retention cutoff.
 
 use crate::feed::{NormalizedMatch, NormalizedTeam};
-use crate::types::{MatchStatus, Sport};
+use crate::types::{MatchStatus, MotorResultRef, Sport};
 use chrono::{DateTime, Utc};
 use once_cell::sync::OnceCell;
 use rusqlite::{params, Connection};
@@ -102,6 +102,10 @@ pub fn open(path: &str) -> rusqlite::Result<Connection> {
             team_b_logo  TEXT,
             stream_url   TEXT,
             tournament_id INTEGER,
+            -- Serialized MotorResultRef (`series|event_id|session_id`) for WRC/WEC/
+            -- MotoGP rows, so a finished stage's results survive a restart without
+            -- waiting for the next (infrequent) ocblacktop fetch. NULL otherwise.
+            motor_ref    TEXT,
             PRIMARY KEY (id, sport)
         );
         CREATE INDEX IF NOT EXISTS idx_matches_begin ON matches (begin_at_ms);
@@ -190,6 +194,7 @@ pub fn open(path: &str) -> rusqlite::Result<Connection> {
     let _ = conn.execute("ALTER TABLE matches ADD COLUMN venue_location TEXT", []);
     let _ = conn.execute("ALTER TABLE matches ADD COLUMN team_a_logo TEXT", []);
     let _ = conn.execute("ALTER TABLE matches ADD COLUMN team_b_logo TEXT", []);
+    let _ = conn.execute("ALTER TABLE matches ADD COLUMN motor_ref TEXT", []);
     let _ = conn.execute(
         "ALTER TABLE reminders ADD COLUMN sport TEXT NOT NULL DEFAULT ''",
         [],
@@ -363,8 +368,13 @@ fn row_to_match(row: &rusqlite::Row) -> rusqlite::Result<Option<NormalizedMatch>
         streams: Vec::new(),
         // Series refs aren't persisted (MLB, in-memory); repopulated on next poll.
         mlb_series: None,
-        // Motorsport result refs (WRC/MotoGP) are in-memory only too.
-        motor_result_ref: None,
+        // The motorsport result ref IS persisted (the ocblacktop fetch that sets it
+        // is too infrequent to rely on re-attaching it each poll — a restart would
+        // blank a finished stage's results until the next fetch). Parsed back here.
+        motor_result_ref: row
+            .get::<_, Option<String>>("motor_ref")?
+            .as_deref()
+            .and_then(MotorResultRef::from_db),
     }))
 }
 
@@ -418,8 +428,8 @@ pub fn upsert_and_prune(
                  team_a_label, team_a_score, team_b_label, team_b_score, stream_url,
                  league_url, tournament_id, series_name, team_a_name, team_b_name, venue_tz,
                  venue_name, venue_location, team_a_logo, team_b_logo,
-                 team_a_abbrev, team_b_abbrev)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24)
+                 team_a_abbrev, team_b_abbrev, motor_ref)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25)
              ON CONFLICT(id, sport) DO UPDATE SET
                 league=excluded.league, tier=excluded.tier,
                 begin_at_ms=excluded.begin_at_ms, status=excluded.status,
@@ -432,7 +442,8 @@ pub fn upsert_and_prune(
                 venue_tz=excluded.venue_tz, venue_name=excluded.venue_name,
                 venue_location=excluded.venue_location,
                 team_a_logo=excluded.team_a_logo, team_b_logo=excluded.team_b_logo,
-                team_a_abbrev=excluded.team_a_abbrev, team_b_abbrev=excluded.team_b_abbrev",
+                team_a_abbrev=excluded.team_a_abbrev, team_b_abbrev=excluded.team_b_abbrev,
+                motor_ref=excluded.motor_ref",
         )?;
         for m in matches {
             up.execute(params![
@@ -460,6 +471,7 @@ pub fn upsert_and_prune(
                 m.team_b_logo,
                 m.team_a.abbrev,
                 m.team_b.abbrev,
+                m.motor_result_ref.as_ref().map(MotorResultRef::to_db),
             ])?;
         }
         // Fully-enumerated feeds (the WRC season feed returns every rally each
@@ -1122,6 +1134,67 @@ mod tests {
         // Superseded WRC placeholder (100) gone; its stages and the F1 row (a league
         // not being replaced) survive.
         assert_eq!(ids, std::collections::HashSet::from([101, 102, 200]));
+    }
+
+    #[test]
+    fn motor_result_ref_round_trips() {
+        use crate::types::MotorResultRef;
+        let mut conn = open(":memory:").unwrap();
+        let now = Utc::now();
+        let ms = now.timestamp_millis();
+        let cutoff = (now - chrono::Duration::days(30)).timestamp_millis();
+
+        // A WRC stage row (per-stage result) and a rally placeholder (overall
+        // classification, empty session id).
+        let mut stage = sample(7, now);
+        stage.sport = Sport::Motorsport;
+        stage.league = "WRC".into();
+        stage.motor_result_ref = Some(MotorResultRef {
+            series: "WRC".into(),
+            event_id: "rally-uuid".into(),
+            session_id: "stage-uuid".into(),
+        });
+        let mut placeholder = sample(8, now);
+        placeholder.sport = Sport::Motorsport;
+        placeholder.league = "WRC".into();
+        placeholder.motor_result_ref = Some(MotorResultRef {
+            series: "WRC".into(),
+            event_id: "rally2-uuid".into(),
+            session_id: String::new(),
+        });
+
+        upsert_and_prune(&mut conn, &[stage, placeholder], ms, cutoff, &[]).unwrap();
+
+        let all = load_all(&conn).unwrap();
+        let by_id = |id: i64| {
+            all.iter()
+                .find(|m| m.id == id)
+                .unwrap()
+                .motor_result_ref
+                .clone()
+        };
+        // The per-stage ref survives the DB round-trip, so a restart renders the
+        // stage's results immediately instead of waiting for the next ocb fetch.
+        assert_eq!(
+            by_id(7),
+            Some(MotorResultRef {
+                series: "WRC".into(),
+                event_id: "rally-uuid".into(),
+                session_id: "stage-uuid".into(),
+            })
+        );
+        // The placeholder's empty session id round-trips too (overall result).
+        assert_eq!(by_id(8).unwrap().session_id, "");
+        // A row with no ref stays None.
+        let plain = sample(9, now);
+        upsert_and_prune(&mut conn, &[plain], ms, cutoff, &[]).unwrap();
+        let all = load_all(&conn).unwrap();
+        assert!(all
+            .iter()
+            .find(|m| m.id == 9)
+            .unwrap()
+            .motor_result_ref
+            .is_none());
     }
 
     #[test]

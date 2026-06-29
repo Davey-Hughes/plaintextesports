@@ -582,6 +582,13 @@ pub fn spawn_poller() {
         let mut ocb_wec_at = ocb_load_at(store.as_ref(), OCB_META_WEC_AT);
         let mut ocb_motogp_at = ocb_load_at(store.as_ref(), OCB_META_MOTOGP_AT);
         let mut ocb_standings_at = ocb_load_at(store.as_ref(), OCB_META_STANDINGS_AT);
+        // Force one calendar refresh on the first poll after a restart, regardless
+        // of the persisted per-series cadence: the in-memory result refs are gone
+        // (and a just-migrated/restarted DB may carry none), so without this a
+        // finished WRC stage's results stay blank until the next cadence-due fetch —
+        // up to a full idle day off. The persisted daily cap still bounds it, so even
+        // a crash loop can't exceed the budget.
+        let mut ocb_initial = true;
         loop {
             let now = Utc::now();
             let active = {
@@ -703,7 +710,9 @@ pub fn spawn_poller() {
 
                 // WRC: rallies calendar (1) + the active rally's stage timetable (1
                 // more, near/live only) — reserve 2, bill the exact count it reports.
-                if ocb_wrc_at.is_none_or(|t| now - t >= wrc_iv) && ocb_used + 2 <= cap {
+                if (ocb_initial || ocb_wrc_at.is_none_or(|t| now - t >= wrc_iv))
+                    && ocb_used + 2 <= cap
+                {
                     match crate::ocblacktop::fetch_wrc(&client, key, now.year(), now).await {
                         Ok((v, used)) => {
                             last_wrc = v;
@@ -721,7 +730,7 @@ pub fn spawn_poller() {
                     ocb_save_budget(store.as_ref(), now.date_naive(), ocb_used);
                 }
                 // WEC: one events request.
-                if ocb_wec_at.is_none_or(|t| now - t >= wec_iv) && ocb_used < cap {
+                if (ocb_initial || ocb_wec_at.is_none_or(|t| now - t >= wec_iv)) && ocb_used < cap {
                     match crate::ocblacktop::fetch_wec(&client, key, now.year()).await {
                         Ok(v) => last_wec = v,
                         Err(e) => leptos::logging::log!("WEC fetch failed: {e}"),
@@ -732,7 +741,9 @@ pub fn spawn_poller() {
                     ocb_save_budget(store.as_ref(), now.date_naive(), ocb_used);
                 }
                 // MotoGP: one events request.
-                if ocb_motogp_at.is_none_or(|t| now - t >= motogp_iv) && ocb_used < cap {
+                if (ocb_initial || ocb_motogp_at.is_none_or(|t| now - t >= motogp_iv))
+                    && ocb_used < cap
+                {
                     match crate::ocblacktop::fetch_motogp(&client, key, now.year()).await {
                         Ok(v) => last_motogp = v,
                         Err(e) => leptos::logging::log!("MotoGP fetch failed: {e}"),
@@ -742,6 +753,8 @@ pub fn spawn_poller() {
                     ocb_save_at(store.as_ref(), OCB_META_MOTOGP_AT, now);
                     ocb_save_budget(store.as_ref(), now.date_naive(), ocb_used);
                 }
+                // The one-shot initial refresh is spent; revert to the cadence gates.
+                ocb_initial = false;
                 // Standings: 6 requests (WRC drivers/co-drivers/manufacturers + WEC
                 // + MotoGP riders/teams). They only change post-round, so refresh on
                 // a daily floor plus an edge-trigger once any series finishes a round
@@ -1122,6 +1135,44 @@ fn ocb_save_budget(store: Option<&rusqlite::Connection>, day: NaiveDate, used: u
     }
 }
 
+/// Build the WRC keep-set for the league-scoped DB replace, and prune superseded
+/// placeholders from `fresh` in place.
+///
+/// WRC's feed is fully enumerated each poll, but only the *active* rally is
+/// expanded into per-stage rows; every other rally is a date-only placeholder. A
+/// naive "keep just this poll's WRC ids" drops a *finished* rally's stages (no
+/// longer re-fetched) and lets its placeholder reappear beside any it still has.
+/// So: gather the rallies that have stage rows (this poll's `fresh` plus the
+/// previously-cached `prev_wrc_stages`), drop from `fresh` any placeholder for
+/// such a rally (the detailed rows stand in for the generic line), and keep both
+/// this poll's WRC rows and the carried-forward stages. A stage carries a
+/// non-empty `session_id`; a placeholder an empty one (both now DB-persisted).
+fn reconcile_wrc(
+    fresh: &mut Vec<NormalizedMatch>,
+    prev_wrc_stages: &[NormalizedMatch],
+) -> Vec<i64> {
+    let expanded: std::collections::HashSet<String> = fresh
+        .iter()
+        .chain(prev_wrc_stages.iter())
+        .filter_map(|m| m.motor_result_ref.as_ref())
+        .filter(|r| !r.session_id.is_empty())
+        .map(|r| r.event_id.clone())
+        .collect();
+    fresh.retain(|m| {
+        m.league != "WRC"
+            || m.motor_result_ref
+                .as_ref()
+                .is_none_or(|r| !r.session_id.is_empty() || !expanded.contains(&r.event_id))
+    });
+    let mut keep: Vec<i64> = fresh
+        .iter()
+        .filter(|m| m.league == "WRC")
+        .map(|m| m.id)
+        .collect();
+    keep.extend(prev_wrc_stages.iter().map(|m| m.id));
+    keep
+}
+
 /// Persist freshly polled matches (if a store is present) and refresh the
 /// in-memory snapshot. Synchronous — no `.await` while touching the DB.
 fn apply_poll(
@@ -1152,15 +1203,26 @@ fn apply_poll(
         // Upsert successes; matches for an errored sport stay in the DB (we only
         // prune by age), so the reload below preserves them. WRC is the exception:
         // its season feed is complete every poll, so it's league-scoped replaced —
-        // a rally placeholder superseded by its stages (or a finished rally's stale
-        // stages) is dropped rather than retained. Empty keep = no WRC this poll
-        // (skipped in the store), so a failed fetch never clears the league.
+        // a rally placeholder superseded by its stages is dropped rather than
+        // retained. `reconcile_wrc` builds the keep-set so a *finished* rally's
+        // already-fetched stages (this poll only re-fetches the active rally) are
+        // carried forward instead of pruned. Empty keep = no WRC this poll (skipped
+        // in the store), so a failed fetch never clears the league.
         if any_ok {
-            let wrc_keep: Vec<i64> = fresh
-                .iter()
-                .filter(|m| m.league == "WRC")
-                .map(|m| m.id)
-                .collect();
+            let prev_wrc_stages: Vec<NormalizedMatch> = {
+                let snap = SNAPSHOT.read().unwrap_or_else(PoisonError::into_inner);
+                snap.matches
+                    .iter()
+                    .filter(|m| {
+                        m.league == "WRC"
+                            && m.motor_result_ref
+                                .as_ref()
+                                .is_some_and(|r| !r.session_id.is_empty())
+                    })
+                    .cloned()
+                    .collect()
+            };
+            let wrc_keep = reconcile_wrc(&mut fresh, &prev_wrc_stages);
             if let Err(e) = crate::store::upsert_and_prune(
                 conn,
                 &fresh,
@@ -1174,31 +1236,24 @@ fn apply_poll(
         match crate::store::load_all(conn) {
             Ok(mut all) => {
                 all.sort_by_key(|m| m.begin_at);
-                // Streams/broadcasts, the MLB series ref, and the motorsport
-                // result ref aren't persisted to the DB, so the reload drops them;
-                // re-attach them from this poll's fresh fetch (keyed by match id)
-                // so the detail page still has them.
-                type LiveExtras = (
-                    Vec<StreamView>,
-                    Option<crate::types::MlbSeriesRef>,
-                    Option<crate::types::MotorResultRef>,
-                );
+                // Streams/broadcasts and the MLB series ref aren't persisted to the
+                // DB, so the reload drops them; re-attach them from this poll's fresh
+                // fetch (keyed by match id) so the detail page still has them. (The
+                // motorsport result ref IS persisted now — see store.rs — so it
+                // survives the reload directly, which is why a finished WRC stage
+                // still renders its results after a restart.)
+                type LiveExtras = (Vec<StreamView>, Option<crate::types::MlbSeriesRef>);
                 let mut live: HashMap<i64, LiveExtras> = fresh
                     .into_iter()
-                    .filter(|m| {
-                        !m.streams.is_empty()
-                            || m.mlb_series.is_some()
-                            || m.motor_result_ref.is_some()
-                    })
-                    .map(|m| (m.id, (m.streams, m.mlb_series, m.motor_result_ref)))
+                    .filter(|m| !m.streams.is_empty() || m.mlb_series.is_some())
+                    .map(|m| (m.id, (m.streams, m.mlb_series)))
                     .collect();
                 for m in &mut all {
-                    if let Some((s, series, motor)) = live.remove(&m.id) {
+                    if let Some((s, series)) = live.remove(&m.id) {
                         if !s.is_empty() {
                             m.streams = s;
                         }
                         m.mlb_series = series;
-                        m.motor_result_ref = motor;
                     }
                 }
                 let mut snap = SNAPSHOT.write().unwrap_or_else(PoisonError::into_inner);
@@ -3766,6 +3821,54 @@ mod tests {
             mlb_series: None,
             motor_result_ref: None,
         }
+    }
+
+    #[test]
+    fn reconcile_wrc_keeps_finished_stages_and_drops_superseded_placeholders() {
+        use crate::types::MotorResultRef;
+        let now = Utc::now();
+        let wrc = |id: i64, event: &str, session: &str| {
+            let mut m = at(now, MatchStatus::Finished);
+            m.id = id;
+            m.sport = Sport::Motorsport;
+            m.league = "WRC".into();
+            m.motor_result_ref = Some(MotorResultRef {
+                series: "WRC".into(),
+                event_id: event.into(),
+                session_id: session.into(),
+            });
+            m
+        };
+        // Rally A finished a previous poll — its stages are cached, not re-fetched.
+        let prev = vec![wrc(11, "A", "a1"), wrc(12, "A", "a2")];
+        // This poll: A's date-only placeholder is back in the feed, rally B is the
+        // active one (expanded into stages), rally C is an untouched upcoming
+        // placeholder, plus a non-WRC row the replace must never touch.
+        let mut fresh = vec![
+            wrc(10, "A", ""),
+            wrc(21, "B", "b1"),
+            wrc(22, "B", "b2"),
+            wrc(30, "C", ""),
+        ];
+        let mut other = at(now, MatchStatus::Upcoming);
+        other.id = 99;
+        other.league = "F1".into();
+        fresh.push(other);
+
+        let keep = reconcile_wrc(&mut fresh, &prev);
+
+        // A's superseded placeholder (10) is pruned from the upsert set; B's
+        // stages, C's placeholder, and the non-WRC row survive.
+        let fresh_ids: std::collections::HashSet<i64> = fresh.iter().map(|m| m.id).collect();
+        assert_eq!(fresh_ids, std::collections::HashSet::from([21, 22, 30, 99]));
+        // The keep-set carries A's finished stages (11, 12) forward alongside this
+        // poll's WRC rows (21, 22, 30) — not the dropped placeholder (10), and not
+        // the F1 row (99), a league this replace doesn't scope.
+        let keep_set: std::collections::HashSet<i64> = keep.into_iter().collect();
+        assert_eq!(
+            keep_set,
+            std::collections::HashSet::from([11, 12, 21, 22, 30])
+        );
     }
 
     #[test]
