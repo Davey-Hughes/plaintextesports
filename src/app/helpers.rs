@@ -641,3 +641,92 @@ pub(crate) fn league_color_class(name: &str) -> String {
     }
     format!("lc-{}", h % LEAGUE_COLORS)
 }
+
+/// Which optional site-icon files exist in the configured `icons_dir`. Drives the
+/// conditional `<head>` links: present files get real `<link>`s; when no favicon
+/// file is present the shell keeps today's empty-data icon placeholder.
+pub(crate) struct IconPresence {
+    pub(crate) ico: bool,
+    pub(crate) svg: bool,
+    pub(crate) apple: bool,
+    pub(crate) manifest: bool,
+}
+
+impl IconPresence {
+    /// Any favicon-family file present (gates the placeholder + theme-color).
+    pub(crate) fn has_favicon(&self) -> bool {
+        self.ico || self.svg || self.apple
+    }
+}
+
+/// Scan `dir` for the optional icon files relevant to the `<head>`. Pure over the
+/// filesystem so it's directly testable. (The 192/512/maskable PNGs are referenced
+/// only by the manifest, not the head, so they aren't scanned here.)
+#[cfg(feature = "ssr")]
+pub(crate) fn scan_icons(dir: &std::path::Path) -> IconPresence {
+    let has = |name: &str| dir.join(name).is_file();
+    IconPresence {
+        ico: has("favicon.ico"),
+        svg: has("favicon.svg"),
+        apple: has("apple-touch-icon.png"),
+        manifest: has("manifest.webmanifest"),
+    }
+}
+
+/// The icon presence for this process, scanned once from `config().icons_dir`.
+/// Cached, so adding/removing icon files is reflected in the `<head>` only after a
+/// restart (the file routes themselves serve live from disk).
+#[cfg(feature = "ssr")]
+pub(crate) fn initial_icons() -> &'static IconPresence {
+    use std::sync::OnceLock;
+    static PRESENCE: OnceLock<IconPresence> = OnceLock::new();
+    PRESENCE.get_or_init(|| scan_icons(std::path::Path::new(&crate::config::config().icons_dir)))
+}
+
+#[cfg(not(feature = "ssr"))]
+pub(crate) fn initial_icons() -> &'static IconPresence {
+    static NONE: IconPresence = IconPresence {
+        ico: false,
+        svg: false,
+        apple: false,
+        manifest: false,
+    };
+    &NONE
+}
+
+#[cfg(all(test, feature = "ssr"))]
+mod icon_tests {
+    use super::scan_icons;
+    use std::fs;
+
+    #[test]
+    fn scan_reports_only_present_files() {
+        let dir = std::env::temp_dir().join(format!("pte_icons_present_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("favicon.ico"), b"x").unwrap();
+        fs::write(dir.join("manifest.webmanifest"), b"{}").unwrap();
+
+        let p = scan_icons(&dir);
+        assert!(p.ico);
+        assert!(!p.svg);
+        assert!(!p.apple);
+        assert!(p.manifest);
+        assert!(p.has_favicon());
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn scan_empty_dir_reports_nothing() {
+        let dir = std::env::temp_dir().join(format!("pte_icons_empty_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+
+        let p = scan_icons(&dir);
+        assert!(!p.has_favicon());
+        assert!(!p.manifest);
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+}
