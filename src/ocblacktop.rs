@@ -880,12 +880,14 @@ pub async fn fetch_motogp_standings(client: &reqwest::Client, key: &str) -> Moto
 
 // ----- Results (WRC stage/overall, MotoGP session) --------------------------
 
-/// A driver/rider name pair from a results row.
+/// A driver/rider name pair from a results row. The names are null-tolerant: a
+/// withdrawn/DNS entry can send `firstName`/`lastName` as JSON `null`, which a
+/// plain `String` would reject and so fail the whole array (see `de_null_default`).
 #[derive(Deserialize, Default)]
 struct Person {
-    #[serde(rename = "firstName", default)]
+    #[serde(rename = "firstName", default, deserialize_with = "de_null_default")]
     first: String,
-    #[serde(rename = "lastName", default)]
+    #[serde(rename = "lastName", default, deserialize_with = "de_null_default")]
     last: String,
 }
 
@@ -897,7 +899,7 @@ impl Person {
 
 #[derive(Deserialize, Default)]
 struct NamedRef {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "de_null_default")]
     name: String,
 }
 
@@ -1617,6 +1619,24 @@ mod tests {
         assert_eq!(out[1].name, "Dani SORDO");
         assert_eq!(out[1].pos, "");
         assert_eq!(out[1].time, "");
+    }
+
+    #[test]
+    fn result_rows_tolerate_null_names_and_team() {
+        // A withdrawn entry can carry null name/team fields (same present-null class
+        // as the times); Person/NamedRef must tolerate them rather than fail the array.
+        let json = r#"[
+          {"position":"1","driver":{"firstName":"Kalle","lastName":"ROVANPERÄ"},
+           "team":{"name":"Toyota"},"stageTime":"2:07.500","diffFirst":"0.000"},
+          {"position":"2","driver":{"firstName":null,"lastName":null},
+           "team":{"name":null},"stageTime":null,"diffFirst":null}
+        ]"#;
+        let rows: Vec<WrcResultRow> = serde_json::from_str(json).unwrap();
+        let out = wrc_result_rows(&rows);
+        assert_eq!(out.len(), 2);
+        // Null first+last → empty name; null team name → empty team — no parse failure.
+        assert_eq!(out[1].name, "");
+        assert_eq!(out[1].team, "");
     }
 
     #[test]
