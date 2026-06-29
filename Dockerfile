@@ -36,11 +36,20 @@ ENV LEPTOS_SITE_ROOT="./site"
 # content-hashed pkg filenames (resolved via the hash.txt copied above) at runtime.
 ENV LEPTOS_HASH_FILES="true"
 ENV DB_PATH="/app/data/cache.db"
-# Mount config.toml (token, vapid, etc.) and the data volume, e.g.:
+# Mount config.toml (token, vapid, etc.), the data volume, and — optionally — the
+# site icons, e.g.:
 #   docker run -p 8080:8080 \
-#     -v ./config.toml:/app/config.toml -v pte-data:/app/data plaintextesports
+#     -v ./config.toml:/app/config.toml -v pte-data:/app/data \
+#     -v "$(pwd)/icons:/app/icons:ro" plaintextesports
 # Individual settings can also be passed as env (e.g. -e PANDASCORE_TOKEN=xxxx).
 # Without a token the app serves demo fixture data.
+#
+# Favicon / PWA icons are optional and read at runtime from `icons_dir` (default
+# "icons", i.e. /app/icons given WORKDIR /app). They are deliberately NOT baked
+# into the image (the rasters are gitignored), so generate them once with
+# scripts/icons/generate.sh and bind-mount that dir at /app/icons as shown above
+# (or point icons_dir / the ICONS_DIR env at another mounted path). With nothing
+# mounted there the site runs fine with no favicon — the prior placeholder.
 
 # Persist the SQLite cache across container restarts.
 VOLUME ["/app/data"]
