@@ -47,6 +47,30 @@ async fn main() {
         }
     }
 
+    /// Serve the web manifest with the icon version stamped into each local
+    /// `icons[].src` (so an installed PWA reads versioned icon URLs and refreshes
+    /// when the icons change — busting even iOS's sticky home-screen icon cache).
+    async fn serve_manifest(dir: std::path::PathBuf) -> axum::response::Response {
+        use axum::http::StatusCode;
+        match tokio::fs::read_to_string(dir.join("manifest.webmanifest")).await {
+            Ok(text) => {
+                let body = plaintextesports::icons::manifest_with_version(
+                    &text,
+                    plaintextesports::icons::version(),
+                );
+                (
+                    [
+                        (header::CONTENT_TYPE, "application/manifest+json"),
+                        (header::CACHE_CONTROL, "public, max-age=86400"),
+                    ],
+                    body,
+                )
+                    .into_response()
+            }
+            Err(_) => StatusCode::NOT_FOUND.into_response(),
+        }
+    }
+
     /// Body of the service worker's `pushsubscriptionchange` POST: the rotated-out
     /// endpoint plus the fresh subscription it was replaced with.
     #[derive(serde::Deserialize)]
@@ -102,8 +126,10 @@ async fn main() {
     plaintextesports::cache::spawn_poller();
     plaintextesports::push::spawn_sender();
 
-    // Optional site-icon / PWA assets, served from `icons_dir` when present.
-    let icon_assets: [(&str, &str, &str); 7] = [
+    // Optional site-icon / PWA assets, served from `icons_dir` when present. The
+    // manifest is served separately (serve_manifest) so its icon `src`s get the
+    // version stamp; the rest are static bytes.
+    let icon_assets: [(&str, &str, &str); 6] = [
         ("/favicon.ico", "favicon.ico", "image/x-icon"),
         ("/favicon.svg", "favicon.svg", "image/svg+xml"),
         ("/apple-touch-icon.png", "apple-touch-icon.png", "image/png"),
@@ -113,11 +139,6 @@ async fn main() {
             "/icon-512-maskable.png",
             "icon-512-maskable.png",
             "image/png",
-        ),
-        (
-            "/manifest.webmanifest",
-            "manifest.webmanifest",
-            "application/manifest+json",
         ),
     ];
     let icons_dir = std::path::PathBuf::from(&plaintextesports::config::config().icons_dir);
@@ -133,6 +154,13 @@ async fn main() {
             axum::routing::get(move || serve_icon(dir.clone(), file, content_type)),
         );
     }
+    app = app.route(
+        "/manifest.webmanifest",
+        axum::routing::get({
+            let dir = icons_dir.clone();
+            move || serve_manifest(dir.clone())
+        }),
+    );
     let app = app
         .route("/sw.js", axum::routing::get(service_worker))
         .route("/api/push-migrate", axum::routing::post(push_migrate))

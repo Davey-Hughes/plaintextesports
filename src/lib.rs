@@ -21,6 +21,8 @@ pub mod feed;
 #[cfg(feature = "ssr")]
 pub mod http;
 #[cfg(feature = "ssr")]
+pub mod icons;
+#[cfg(feature = "ssr")]
 pub mod liquipedia;
 #[cfg(feature = "ssr")]
 pub mod mlb;
