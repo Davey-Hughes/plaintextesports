@@ -694,6 +694,20 @@ pub(crate) fn initial_icons() -> &'static IconPresence {
     &NONE
 }
 
+/// The cache-busting icon version for this render — appended as `?v=…` to icon URLs
+/// in the `<head>` so an icon change yields fresh URLs. Empty when no icons exist
+/// (append nothing). Server-derived (see `crate::icons`); the shell is server-only,
+/// so the non-ssr build just returns "".
+#[cfg(feature = "ssr")]
+pub(crate) fn icon_version() -> &'static str {
+    crate::icons::version()
+}
+
+#[cfg(not(feature = "ssr"))]
+pub(crate) fn icon_version() -> &'static str {
+    ""
+}
+
 #[cfg(all(test, feature = "ssr"))]
 mod icon_tests {
     use super::scan_icons;

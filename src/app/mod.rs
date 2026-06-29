@@ -79,22 +79,31 @@ pub fn shell(options: LeptosOptions) -> impl IntoView {
                 // `initial_icons`.
                 {
                     let icons = initial_icons();
+                    // Cache-bust: append `?v=<token>` (derived from the icon files) so
+                    // an icon change yields fresh URLs that browser / CDN / iOS caches
+                    // can't satisfy from a stale entry. Empty when no icons present.
+                    let q = match icon_version() {
+                        "" => String::new(),
+                        v => format!("?v={v}"),
+                    };
+                    let ico_href = format!("/favicon.ico{q}");
+                    let svg_href = format!("/favicon.svg{q}");
+                    let apple_href = format!("/apple-touch-icon.png{q}");
+                    let manifest_href = format!("/manifest.webmanifest{q}");
                     view! {
                         {(!icons.has_favicon())
                             .then(|| view! { <link rel="icon" href="data:," /> })}
-                        {icons.ico.then(|| {
-                            view! { <link rel="icon" href="/favicon.ico" sizes="32x32" /> }
+                        {icons.ico.then(move || {
+                            view! { <link rel="icon" href=ico_href sizes="32x32" /> }
                         })}
-                        {icons.svg.then(|| {
-                            view! {
-                                <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
-                            }
+                        {icons.svg.then(move || {
+                            view! { <link rel="icon" type="image/svg+xml" href=svg_href /> }
                         })}
-                        {icons.apple.then(|| {
-                            view! { <link rel="apple-touch-icon" href="/apple-touch-icon.png" /> }
+                        {icons.apple.then(move || {
+                            view! { <link rel="apple-touch-icon" href=apple_href /> }
                         })}
-                        {icons.manifest.then(|| {
-                            view! { <link rel="manifest" href="/manifest.webmanifest" /> }
+                        {icons.manifest.then(move || {
+                            view! { <link rel="manifest" href=manifest_href /> }
                         })}
                         {icons.has_favicon()
                             .then(|| view! { <meta name="theme-color" content="#0d0d0d" /> })}
