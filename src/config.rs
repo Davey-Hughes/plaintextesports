@@ -40,6 +40,7 @@ struct FileConfig {
     backfill: Option<bool>,
     rate_limit_floor: Option<u64>,
     db_path: Option<String>,
+    icons_dir: Option<String>,
     resolve_links: Option<bool>,
     vapid: Option<VapidFile>,
     site: Option<SiteFile>,
@@ -119,6 +120,7 @@ impl FileConfig {
             self.rate_limit_floor.map(|n| n.to_string()),
         );
         put("DB_PATH", self.db_path.clone());
+        put("ICONS_DIR", self.icons_dir.clone());
         put(
             "ENABLE_LIQUIPEDIA",
             self.resolve_links.map(|b| b.to_string()),
@@ -194,6 +196,10 @@ pub struct Config {
     pub copyright_url: Option<String>,
     /// Footer links (GitHub, social, …).
     pub links: Vec<SiteLink>,
+    /// Directory the server reads optional site-icon / PWA files from at runtime
+    /// (favicon.ico, favicon.svg, apple-touch-icon.png, icon-192/512[-maskable].png,
+    /// manifest.webmanifest). Missing files are simply not served or linked.
+    pub icons_dir: String,
 }
 
 impl Config {
@@ -357,6 +363,11 @@ impl Config {
         let vapid_private = trimmed("VAPID_PRIVATE_KEY");
         let vapid_subject = trimmed("VAPID_SUBJECT");
 
+        let icons_dir = get("ICONS_DIR")
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| "icons".to_string());
+
         Self {
             token,
             ocblacktop_token,
@@ -383,6 +394,7 @@ impl Config {
             copyright: None,
             copyright_url: None,
             links: Vec::new(),
+            icons_dir,
         }
     }
 }
@@ -542,6 +554,17 @@ mod tests {
     #[test]
     fn blank_token_is_none() {
         assert!(cfg(&[("PANDASCORE_TOKEN", "   ")]).token.is_none());
+    }
+
+    #[test]
+    fn icons_dir_defaults_and_overrides() {
+        assert_eq!(cfg(&[]).icons_dir, "icons");
+        assert_eq!(
+            cfg(&[("ICONS_DIR", "/srv/pte/icons")]).icons_dir,
+            "/srv/pte/icons"
+        );
+        // Blank / whitespace falls back to the default.
+        assert_eq!(cfg(&[("ICONS_DIR", "  ")]).icons_dir, "icons");
     }
 
     #[test]

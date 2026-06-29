@@ -72,6 +72,15 @@ db_path = "data/cache.db"
 # Resolve exact event pages via Liquipedia (cached).
 resolve_links = true
 
+# Directory the server reads optional site-icon / PWA files from at runtime.
+# Drop the output of scripts/icons/generate.sh here (favicon.ico, favicon.svg,
+# apple-touch-icon.png, icon-192.png, icon-512.png, icon-512-maskable.png,
+# manifest.webmanifest). Present files are served and linked in <head>; if the
+# directory is empty the site behaves as before (no favicon, no manifest).
+# Adding/removing files takes effect for the <head> links on the next restart;
+# the files themselves are served live. Default: "icons" (relative to CWD).
+# icons_dir = "icons"
+
 # Web Push reminders. Generate keys once with:
 #   cargo run --example gen_vapid --features ssr
 # All three required to enable reminders.
