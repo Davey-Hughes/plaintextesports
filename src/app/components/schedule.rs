@@ -406,6 +406,18 @@ fn chips_with_selected(
             out.push((name.clone(), sports.get(name).copied()));
         }
     }
+    // Fixed order: by game type (the canonical `Sport::ALL` / tab order), then league
+    // name alphabetically (case-insensitive). A chip with an unknown sport — a
+    // persisted out-of-window selection never seen this session — sorts last.
+    let rank = |s: &Option<Sport>| {
+        s.and_then(|sp| Sport::ALL.iter().position(|x| *x == sp))
+            .unwrap_or(usize::MAX)
+    };
+    out.sort_by(|(an, asp), (bn, bsp)| {
+        rank(asp)
+            .cmp(&rank(bsp))
+            .then_with(|| an.to_lowercase().cmp(&bn.to_lowercase()))
+    });
     out
 }
 
@@ -1649,26 +1661,28 @@ mod tests {
     use std::collections::{HashMap, HashSet};
 
     #[test]
-    fn chips_with_selected_keeps_selected_out_of_window() {
+    fn chips_with_selected_orders_by_sport_then_name_and_keeps_selected() {
+        // Mixed sports + out of order; one selected league is in the window (IEM),
+        // one is out of window with a remembered sport (BLAST → Cs2), one out of
+        // window with an unknown sport (Ghost → None).
         let available = vec![
+            ("Worlds".to_string(), Sport::Lol),
+            ("IEM".to_string(), Sport::Cs2),
             ("LCK".to_string(), Sport::Lol),
-            ("MLB".to_string(), Sport::Mlb),
         ];
-        let selected: HashSet<String> = ["LCK".into(), "IEM Cologne".into(), "Ghost".into()]
+        let selected: HashSet<String> = ["IEM".into(), "BLAST".into(), "Ghost".into()]
             .into_iter()
             .collect();
         let mut sports = HashMap::new();
-        sports.insert("IEM Cologne".to_string(), Sport::Cs2); // remembered from a click
+        sports.insert("BLAST".to_string(), Sport::Cs2); // remembered from a click
         let out = chips_with_selected(&available, &selected, &sports);
-        // Available leagues come first, in order, with their sport.
-        assert_eq!(out[0], ("LCK".to_string(), Some(Sport::Lol)));
-        assert_eq!(out[1], ("MLB".to_string(), Some(Sport::Mlb)));
-        // Selected-but-out-of-window leagues are appended: a known sport carries
-        // through, an unknown one (never seen this session) is None (label-only).
-        let rest: HashMap<String, Option<Sport>> = out[2..].iter().cloned().collect();
-        assert_eq!(rest.get("IEM Cologne"), Some(&Some(Sport::Cs2)));
-        assert_eq!(rest.get("Ghost"), Some(&None));
-        // A league both selected and available isn't duplicated.
-        assert_eq!(out.iter().filter(|(n, _)| n == "LCK").count(), 1);
+        let names: Vec<&str> = out.iter().map(|(n, _)| n.as_str()).collect();
+        // Grouped by game type in Sport::ALL order (CS2 before LoL), alphabetical
+        // within each; an out-of-window selection (BLAST) is sorted in; an
+        // unknown-sport one (Ghost) sorts last; no duplicate for IEM.
+        assert_eq!(names, vec!["BLAST", "IEM", "LCK", "Worlds", "Ghost"]);
+        let by: HashMap<String, Option<Sport>> = out.iter().cloned().collect();
+        assert_eq!(by.get("BLAST"), Some(&Some(Sport::Cs2)));
+        assert_eq!(by.get("Ghost"), Some(&None));
     }
 }
