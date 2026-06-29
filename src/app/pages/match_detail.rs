@@ -99,61 +99,86 @@ pub(crate) fn F1Results(results: Vec<F1Result>, season: i64, round: i64) -> impl
     }
 }
 
-/// A finished WRC stage/rally or MotoGP session classification on the match page —
-/// the ocblacktop counterpart of [`F1Results`], reusing the same row layout and
-/// spoiler reveal. `reveal_key` keeps each match page's reveal state distinct.
+/// Stable in-page anchor for a motorsport result section (e.g. "Overall
+/// classification" → "motorsec-overall-classification"), shared by the section
+/// ids and the event page's jump-to nav.
+pub(crate) fn motor_anchor(name: &str) -> String {
+    format!("motorsec-{}", name.to_lowercase().replace(' ', "-"))
+}
+
+/// A set of finished motorsport classifications (the WRC overall + Power Stage,
+/// or each WEC/MotoGP session) rendered like [`F1Results`]: a "Results" section
+/// with one spoiler-gated sub-section each, reusing the F1 row layout (so the
+/// long-name hover popover on `.f1-driver`/`.f1-con` applies — WEC crews can be
+/// long). `key_prefix` scopes the per-section reveal keys: the event page passes
+/// the edition, a single match page passes its id, so each page's reveals stay
+/// distinct.
 #[component]
-pub(crate) fn MotorResultView(result: MotorResult, reveal_key: String) -> impl IntoView {
-    let MotorResult { title, rows } = result;
-    let (revealed, toggle) = section_reveal(reveal_key);
-    let count = rows.len();
-    let rows = StoredValue::new(rows);
-    // Always render every row so revealing doesn't shift the page; the position
-    // column (a row number) stays, and the names / team / time blank until shown.
-    let order =
-        move || {
-            let show = revealed.get();
-            rows.get_value()
-            .into_iter()
-            .map(|row| {
-                let (name, codriver, team, time, flag) = if show {
-                    (row.name, row.codriver, row.team, row.time, row.flag)
-                } else {
-                    (String::new(), String::new(), String::new(), String::new(), String::new())
-                };
-                view! {
-                    <li class="f1-row">
-                        <span class="f1-pos">{row.pos}</span>
-                        <span class="f1-driver">
-                            {team_logo(&flag, "f1-flag")}{name}
-                            {(!codriver.is_empty())
-                                .then(|| view! { <span class="motor-codriver">{codriver}</span> })}
+pub(crate) fn MotorResultsView(results: Vec<MotorResult>, key_prefix: String) -> impl IntoView {
+    let sections = results
+        .into_iter()
+        .map(|result| {
+            let MotorResult { title, rows } = result;
+            let anchor = motor_anchor(&title);
+            let (revealed, toggle) = section_reveal(format!("{key_prefix}:{title}"));
+            let count = rows.len();
+            let rows = StoredValue::new(rows);
+            // Always render every row so revealing doesn't shift the page; the
+            // position stays, names/team/time blank until revealed.
+            let order = move || {
+                let show = revealed.get();
+                rows.get_value()
+                    .into_iter()
+                    .map(|row| {
+                        let (name, codriver, team, time, flag) = if show {
+                            (row.name, row.codriver, row.team, row.time, row.flag)
+                        } else {
+                            (
+                                String::new(),
+                                String::new(),
+                                String::new(),
+                                String::new(),
+                                String::new(),
+                            )
+                        };
+                        view! {
+                            <li class="f1-row">
+                                <span class="f1-pos">{row.pos}</span>
+                                <span class="f1-driver">
+                                    {team_logo(&flag, "f1-flag")}{name}
+                                    {(!codriver.is_empty())
+                                        .then(|| view! { <span class="motor-codriver">{codriver}</span> })}
+                                </span>
+                                <span class="f1-con">{team}</span>
+                                <span class="f1-detail">{time}</span>
+                            </li>
+                        }
+                    })
+                    .collect_view()
+            };
+            view! {
+                <div class="f1-session" id=anchor>
+                    <button class="f1-session-head" on:click=toggle>
+                        <span class="f1-session-name">{title}</span>
+                        <span class="f1-session-toggle">
+                            {move || {
+                                if revealed.get() {
+                                    "hide results".to_string()
+                                } else {
+                                    format!("show results ({count})")
+                                }
+                            }}
                         </span>
-                        <span class="f1-con">{team}</span>
-                        <span class="f1-detail">{time}</span>
-                    </li>
-                }
-            })
-            .collect_view()
-        };
+                    </button>
+                    <ol class="f1-order">{order}</ol>
+                </div>
+            }
+        })
+        .collect_view();
     view! {
         <section class="detail-section">
             <h2 class="section-title f1-results-title">"Results"</h2>
-            <div class="f1-session">
-                <button class="f1-session-head" on:click=toggle>
-                    <span class="f1-session-name">{title}</span>
-                    <span class="f1-session-toggle">
-                        {move || {
-                            if revealed.get() {
-                                "hide results".to_string()
-                            } else {
-                                format!("show results ({count})")
-                            }
-                        }}
-                    </span>
-                </button>
-                <ol class="f1-order">{order}</ol>
-            </div>
+            {sections}
         </section>
     }
 }
@@ -415,7 +440,7 @@ pub(crate) fn detail_view(d: MatchDetail) -> impl IntoView {
             // spoiler-gated. Absent for upcoming sessions and non-ocblacktop rows.
             {motor_result
                 .map(|r| {
-                    view! { <MotorResultView result=r reveal_key=motor_reveal_key.clone() /> }
+                    view! { <MotorResultsView results=vec![r] key_prefix=motor_reveal_key.clone() /> }
                 })}
             // MLB series between the two teams. Each sport row reveals on its own
             // (shared with the schedule); the record line waits until every played
