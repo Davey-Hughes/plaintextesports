@@ -390,6 +390,7 @@ pub async fn mlb_series(
 
 /// A Grand Prix's finished-session results, fetched on demand and TTL-cached.
 pub async fn f1_results(season: i64, round: i64) -> Vec<crate::types::F1Result> {
+    let key = format!("{season}:{round}");
     {
         let cache = F1_RESULTS.read().unwrap_or_else(PoisonError::into_inner);
         if let Some(c) = cache.get(&(season, round)) {
@@ -398,9 +399,25 @@ pub async fn f1_results(season: i64, round: i64) -> Vec<crate::types::F1Result> 
             }
         }
     }
+    if let Some((results, fetched_at)) =
+        db_cache_get::<Vec<crate::types::F1Result>>("f1_result", &key)
+    {
+        if Utc::now() - fetched_at < Duration::minutes(F1_RESULTS_TTL_MIN) {
+            F1_RESULTS
+                .write()
+                .unwrap_or_else(PoisonError::into_inner)
+                .insert(
+                    (season, round),
+                    CachedF1Results {
+                        results: results.clone(),
+                        fetched_at,
+                    },
+                );
+            return results;
+        }
+    }
+    let now = Utc::now();
     let results = crate::f1::fetch_results(&HTTP, season, round).await;
-    // Cache even an empty result (upcoming GP) so we don't refetch on every view,
-    // but with no entry-less leak — the TTL expires it.
     F1_RESULTS
         .write()
         .unwrap_or_else(PoisonError::into_inner)
@@ -408,9 +425,12 @@ pub async fn f1_results(season: i64, round: i64) -> Vec<crate::types::F1Result> 
             (season, round),
             CachedF1Results {
                 results: results.clone(),
-                fetched_at: Utc::now(),
+                fetched_at: now,
             },
         );
+    if !results.is_empty() {
+        db_cache_put("f1_result", &key, &results, now);
+    }
     results
 }
 
@@ -576,6 +596,7 @@ pub async fn motor_results(event: &str) -> Vec<crate::types::MotorResult> {
 /// The F1 championship standings as of a Grand Prix's round, fetched on demand
 /// and TTL-cached (keyed by the GP's round so each page caches its own).
 pub async fn f1_standings(season: i64, round: i64) -> crate::types::F1Standings {
+    let key = format!("{season}:{round}");
     {
         let cache = F1_STANDINGS.read().unwrap_or_else(PoisonError::into_inner);
         if let Some(c) = cache.get(&(season, round)) {
@@ -584,6 +605,24 @@ pub async fn f1_standings(season: i64, round: i64) -> crate::types::F1Standings 
             }
         }
     }
+    if let Some((standings, fetched_at)) =
+        db_cache_get::<crate::types::F1Standings>("f1_standings", &key)
+    {
+        if Utc::now() - fetched_at < Duration::minutes(F1_STANDINGS_TTL_MIN) {
+            F1_STANDINGS
+                .write()
+                .unwrap_or_else(PoisonError::into_inner)
+                .insert(
+                    (season, round),
+                    CachedF1Standings {
+                        standings: standings.clone(),
+                        fetched_at,
+                    },
+                );
+            return standings;
+        }
+    }
+    let now = Utc::now();
     let standings = crate::f1::fetch_standings(&HTTP, season, round).await;
     F1_STANDINGS
         .write()
@@ -592,9 +631,12 @@ pub async fn f1_standings(season: i64, round: i64) -> crate::types::F1Standings 
             (season, round),
             CachedF1Standings {
                 standings: standings.clone(),
-                fetched_at: Utc::now(),
+                fetched_at: now,
             },
         );
+    if !standings.drivers.is_empty() || !standings.constructors.is_empty() {
+        db_cache_put("f1_standings", &key, &standings, now);
+    }
     standings
 }
 
@@ -2752,6 +2794,22 @@ pub async fn event_info(tournament_id: i64, sport: Sport) -> EventInfo {
             }
         }
     }
+    let key = tournament_id.to_string();
+    if let Some((info, fetched_at)) = db_cache_get::<EventInfo>("event", &key) {
+        if Utc::now() - fetched_at < Duration::minutes(EVENT_TTL_MIN) {
+            EVENTS
+                .write()
+                .unwrap_or_else(PoisonError::into_inner)
+                .insert(
+                    tournament_id,
+                    CachedEvent {
+                        info: info.clone(),
+                        fetched_at,
+                    },
+                );
+            return info;
+        }
+    }
     fetch_event(tournament_id, sport).await
 }
 
@@ -2822,6 +2880,9 @@ async fn fetch_event(tournament_id: i64, sport: Sport) -> EventInfo {
                 fetched_at: now,
             },
         );
+    if !info.is_empty() {
+        db_cache_put("event", &tournament_id.to_string(), &info, now);
+    }
     info
 }
 
