@@ -196,13 +196,14 @@ fn update_soccer_standings<E: std::fmt::Display>(league: &str, raw: Result<Vec<E
 }
 
 /// Per-game MLB series, fetched on demand (detail page) and cached with a short
-/// TTL keyed by "gamePk|tz|hour24" (the tz/12h-24h pref affects the game times),
-/// so repeated page views don't re-hit the MLB API.
-static MLB_SERIES: Lazy<RwLock<HashMap<String, CachedSeries>>> =
+/// TTL keyed by `match_id` (tz-agnostic raw series — formatted on read per
+/// request), so repeated page views don't re-hit the MLB API and the same raw
+/// series is reused across all timezones.
+static MLB_SERIES: Lazy<RwLock<HashMap<i64, CachedRawSeries>>> =
     Lazy::new(|| RwLock::new(HashMap::new()));
 
-struct CachedSeries {
-    series: crate::types::Series,
+struct CachedRawSeries {
+    raw: crate::mlb::RawSeries,
     fetched_at: DateTime<Utc>,
 }
 
@@ -285,11 +286,12 @@ struct CachedF1Standings {
 const F1_STANDINGS_TTL_MIN: i64 = 10;
 
 /// The MLB series between the two teams of `match_id`, fetched on demand and
-/// cached with a short TTL. Each game's time is formatted in the display tz
-/// (`tz_name`/`hour24`), so the cache key folds those in. `None` for esports, an
-/// unknown match, an MLB match with no series ref, or when the fetch fails (the
-/// detail page then omits the section). The snapshot read (for the ref + labels)
-/// is released before the await so the future stays `Send`.
+/// cached with a short TTL. The raw (tz-agnostic) series is keyed by `match_id`
+/// and formatted on read per request tz (`tz_name`/`hour24`), so the same cached
+/// data is reused across timezones. `None` for esports, an unknown match, an MLB
+/// match with no series ref, or when the fetch fails (the detail page then omits
+/// the section). The snapshot read (for the ref + labels) is released before the
+/// await so the future stays `Send`.
 pub async fn mlb_series(
     match_id: i64,
     tz_name: &str,
@@ -297,33 +299,6 @@ pub async fn mlb_series(
 ) -> Option<crate::types::Series> {
     let cfg = config();
     let tz = resolve_tz(tz_name, cfg.tz);
-    // Fold the display-tz preference into the key, since the clock labels differ.
-    let key = format!("{match_id}|{tz}|{hour24}");
-    // Serve a fresh cached series without touching the network.
-    {
-        let cache = MLB_SERIES.read().unwrap_or_else(PoisonError::into_inner);
-        if let Some(c) = cache.get(&key) {
-            if Utc::now() - c.fetched_at < Duration::minutes(SERIES_TTL_MIN) {
-                return Some(c.series.clone());
-            }
-        }
-    }
-    // Pull the series ref + headline orientation from the snapshot, then drop the
-    // lock before any await.
-    let (sref, team_a, team_b, begin_at) = {
-        let snap = SNAPSHOT.read().unwrap_or_else(PoisonError::into_inner);
-        let m = snap
-            .matches
-            .iter()
-            .find(|m| m.id == match_id && m.sport == Sport::Mlb)?;
-        let sref = m.mlb_series?;
-        (
-            sref,
-            m.team_a.label.clone(),
-            m.team_b.label.clone(),
-            m.begin_at,
-        )
-    };
     // Build each game's labels: the date + time in the viewer's tz (always
     // mutually consistent), and the same instant in the ballpark's tz as a full
     // "date · time tz" for the venue toggle, which *swaps* the label. Both states
@@ -362,23 +337,65 @@ pub async fn mlb_series(
             venue,
         }
     };
-    match crate::mlb::fetch_series(
-        &HTTP, match_id, begin_at, &team_a, &team_b, sref, fmt_labels,
-    )
-    .await
+    // 1. Memory tier — keyed by match_id (tz-agnostic); format on read.
     {
-        Ok(series) if !series.games.is_empty() => {
+        let cache = MLB_SERIES.read().unwrap_or_else(PoisonError::into_inner);
+        if let Some(c) = cache.get(&match_id) {
+            if Utc::now() - c.fetched_at < Duration::minutes(SERIES_TTL_MIN) {
+                return Some(crate::mlb::format_series(&c.raw, fmt_labels));
+            }
+        }
+    }
+    // Pull the series ref + headline orientation from the snapshot, then drop the
+    // lock before any await.
+    let (sref, team_a, team_b, begin_at) = {
+        let snap = SNAPSHOT.read().unwrap_or_else(PoisonError::into_inner);
+        let m = snap
+            .matches
+            .iter()
+            .find(|m| m.id == match_id && m.sport == Sport::Mlb)?;
+        let sref = m.mlb_series?;
+        (
+            sref,
+            m.team_a.label.clone(),
+            m.team_b.label.clone(),
+            m.begin_at,
+        )
+    };
+    // 2. DB tier — persist non-empty raw series across restarts.
+    if let Some((raw, fetched_at)) =
+        db_cache_get::<crate::mlb::RawSeries>("mlb_series", &match_id.to_string())
+    {
+        if Utc::now() - fetched_at < Duration::minutes(SERIES_TTL_MIN) {
             MLB_SERIES
                 .write()
                 .unwrap_or_else(PoisonError::into_inner)
                 .insert(
-                    key,
-                    CachedSeries {
-                        series: series.clone(),
-                        fetched_at: Utc::now(),
+                    match_id,
+                    CachedRawSeries {
+                        raw: raw.clone(),
+                        fetched_at,
                     },
                 );
-            Some(series)
+            return Some(crate::mlb::format_series(&raw, fmt_labels));
+        }
+    }
+    // 3. API fetch.
+    let now = Utc::now();
+    match crate::mlb::fetch_series(&HTTP, match_id, begin_at, &team_a, &team_b, sref).await {
+        Ok(raw) if !raw.games.is_empty() => {
+            MLB_SERIES
+                .write()
+                .unwrap_or_else(PoisonError::into_inner)
+                .insert(
+                    match_id,
+                    CachedRawSeries {
+                        raw: raw.clone(),
+                        fetched_at: now,
+                    },
+                );
+            db_cache_put("mlb_series", &match_id.to_string(), &raw, now);
+            Some(crate::mlb::format_series(&raw, fmt_labels))
         }
         Ok(_) => None,
         Err(e) => {
