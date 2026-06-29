@@ -1,13 +1,13 @@
 use crate::bracket;
 use crate::server::{
     get_day, get_event_schedule, get_event_stages, get_event_stages_by_league, get_f1_results,
-    get_f1_standings, get_match_detail, get_motor_results, get_motor_standings, get_notifications,
-    get_range, get_schedule, get_site, get_team_schedule,
+    get_f1_standings, get_match_detail, get_match_results, get_motor_results, get_motor_standings,
+    get_notifications, get_range, get_schedule, get_site, get_team_schedule,
 };
 use crate::types::{
     competition_kind, full_event_name, DayGroup, EventInfo, F1Result, F1Standings, MatchDetail,
-    MatchStatus, MatchView, MotorResult, MotorStandingTable, MotorStandings, ScheduleView, Series,
-    SeriesGame, Sport, StreamView,
+    MatchResults, MatchStatus, MatchView, MotorResult, MotorStandingTable, MotorStandings,
+    ScheduleView, Series, SeriesGame, Sport, StreamView,
 };
 use leptos::prelude::*;
 use leptos_meta::{provide_meta_context, HashedStylesheet, MetaTags, Title};

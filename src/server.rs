@@ -4,8 +4,8 @@
 #[cfg(feature = "ssr")]
 use crate::types::Sport;
 use crate::types::{
-    EventInfo, F1Result, F1Standings, MatchDetail, MotorResult, MotorStandings, ReminderReq,
-    ScheduleView, SiteInfo, SubscribeReq,
+    EventInfo, F1Result, F1Standings, MatchDetail, MatchResults, MotorResult, MotorStandings,
+    ReminderReq, ScheduleView, SiteInfo, SubscribeReq,
 };
 use leptos::prelude::*;
 
@@ -92,7 +92,7 @@ pub async fn get_match_detail(
         let Some((sport, id)) = crate::types::parse_match_uid(&uid) else {
             return Ok(MatchDetail::default());
         };
-        let Some((match_view, streams, tournament_id, league, motor_ref)) =
+        let Some((match_view, streams, tournament_id, league, _motor_ref)) =
             crate::cache::match_basics(id, sport, &tz, hour24)
         else {
             return Ok(MatchDetail::default());
@@ -121,36 +121,9 @@ pub async fn get_match_detail(
         } else {
             crate::types::Series::default()
         };
-        // For a finished F1 session, that session's finishing order — reusing the
-        // GP's TTL-cached results (so the event page and every session page of a
-        // weekend share one fetch) and narrowing to this session by its label.
-        // `None` for upcoming sessions or ones the source doesn't classify.
-        let f1_result = if match_view.sport == Sport::Motorsport
-            && match_view.league == "F1"
-            && matches!(match_view.status, crate::types::MatchStatus::Finished)
-        {
-            let (season, round) = (id / 100_000, (id / 100) % 1000);
-            crate::cache::f1_results(season, round)
-                .await
-                .into_iter()
-                .find(|r| r.session == match_view.team_a.label)
-        } else {
-            None
-        };
-        // For a finished WRC stage/rally or MotoGP session, its classification —
-        // the ocblacktop counterpart of `f1_result`, fetched from the row's
-        // result ref (set by the poller) and TTL-cached. `None` for upcoming
-        // sessions or rows the source doesn't classify.
-        let motor_result = match motor_ref {
-            Some(ref r) if matches!(match_view.status, crate::types::MatchStatus::Finished) => {
-                let rows = crate::cache::motor_result(r).await;
-                (!rows.is_empty()).then(|| crate::types::MotorResult {
-                    title: motor_result_title(r, &match_view.team_a.label),
-                    rows,
-                })
-            }
-            _ => None,
-        };
+        // Results (the F1 session order / motorsport classification) are NOT fetched
+        // here — they go through `get_match_results` on a separate resource, so the
+        // header renders without waiting on a slow (or 500ing) upstream.
         Ok(MatchDetail {
             found: true,
             match_view: Some(match_view),
@@ -158,6 +131,76 @@ pub async fn get_match_detail(
             event,
             stages,
             series,
+        })
+    }
+    #[cfg(not(feature = "ssr"))]
+    {
+        let _ = (uid, tz, hour24);
+        Ok(MatchDetail::default())
+    }
+}
+
+/// The match's on-demand results (an F1 session's finishing order, or a WRC/WEC/
+/// MotoGP classification), fetched separately from `get_match_detail` so the detail
+/// page can show its header/meta before these resolve. `unavailable` flags a
+/// finished, result-bearing session whose results came back empty.
+#[server(GetMatchResults, "/api")]
+pub async fn get_match_results(
+    uid: String,
+    tz: String,
+    hour24: bool,
+) -> Result<MatchResults, ServerFnError> {
+    #[cfg(feature = "ssr")]
+    {
+        let Some((sport, id)) = crate::types::parse_match_uid(&uid) else {
+            return Ok(MatchResults::default());
+        };
+        let Some((match_view, _streams, _tid, _league, motor_ref)) =
+            crate::cache::match_basics(id, sport, &tz, hour24)
+        else {
+            return Ok(MatchResults::default());
+        };
+        let finished = matches!(match_view.status, crate::types::MatchStatus::Finished);
+        // F1: this session's finishing order. Unavailable only when the whole GP's
+        // results are missing (the upstream case) — NOT when this session type just
+        // isn't classified (e.g. Sprint Qualifying), which legitimately has none.
+        let (f1_result, f1_unavailable) =
+            if sport == Sport::Motorsport && match_view.league == "F1" && finished {
+                let (season, round) = (id / 100_000, (id / 100) % 1000);
+                let all = crate::cache::f1_results(season, round).await;
+                let mine = all
+                    .iter()
+                    .find(|r| r.session == match_view.team_a.label)
+                    .cloned();
+                let empty = all.is_empty();
+                (mine, empty)
+            } else {
+                (None, false)
+            };
+        // Motorsport: this row's classification. Unavailable when a finished,
+        // result-bearing (has a ref) session returns no rows (upstream 500 / not
+        // yet posted).
+        let (motor_result, motor_unavailable) = match motor_ref {
+            Some(ref r) if finished => {
+                let rows = crate::cache::motor_result(r).await;
+                if rows.is_empty() {
+                    (None, true)
+                } else {
+                    (
+                        Some(crate::types::MotorResult {
+                            title: motor_result_title(r, &match_view.team_a.label),
+                            rows,
+                        }),
+                        false,
+                    )
+                }
+            }
+            _ => (None, false),
+        };
+        Ok(MatchResults {
+            unavailable: (f1_unavailable || motor_unavailable)
+                && f1_result.is_none()
+                && motor_result.is_none(),
             f1_result,
             motor_result,
         })
@@ -165,7 +208,7 @@ pub async fn get_match_detail(
     #[cfg(not(feature = "ssr"))]
     {
         let _ = (uid, tz, hour24);
-        Ok(MatchDetail::default())
+        Ok(MatchResults::default())
     }
 }
 

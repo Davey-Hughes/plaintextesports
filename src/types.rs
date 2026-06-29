@@ -908,17 +908,26 @@ pub struct MatchDetail {
     /// `#[serde(default)]` so older cached payloads still load.
     #[serde(default)]
     pub series: Series,
-    /// For an F1 session match page, that one session's full finishing order
-    /// (the same TTL-cached classification the GP event page shows, narrowed to
-    /// this session). `None` for non-F1 matches, upcoming sessions, and sessions
-    /// the source doesn't classify (e.g. Sprint Qualifying).
+}
+
+/// The match's on-demand results, fetched separately from the page basics (via
+/// `get_match_results`) so the detail page can render its header without waiting on
+/// a slow — or 500ing — upstream. `unavailable` is true when a finished,
+/// result-bearing session returned nothing to show (so the page can say so rather
+/// than render an empty gap).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MatchResults {
+    /// For an F1 session: that session's full finishing order (`None` for non-F1,
+    /// upcoming, or a session type the source doesn't classify).
     #[serde(default)]
     pub f1_result: Option<F1Result>,
-    /// For a finished WRC stage/rally or MotoGP session, its classification
-    /// (stage times / overall result / session order). The ocblacktop counterpart
-    /// of `f1_result`. `None` for everything else and for upcoming sessions.
+    /// For a finished WRC stage/rally or MotoGP/WEC session: its classification.
     #[serde(default)]
     pub motor_result: Option<MotorResult>,
+    /// A finished, result-bearing session whose results came back empty (upstream
+    /// 500 / not yet posted) — the page shows a "results not available" note.
+    #[serde(default)]
+    pub unavailable: bool,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
