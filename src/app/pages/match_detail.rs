@@ -201,13 +201,19 @@ pub(crate) fn MatchDetailPage() -> impl IntoView {
         move || (uid(), tz.get(), hour24.get()),
         |(uid, tz, h)| async move { get_match_detail(uid, tz, h).await },
     );
+    // The on-demand results load on their own resource so a slow (or 500ing)
+    // upstream never delays the header — see `detail_view`.
+    let results = Resource::new(
+        move || (uid(), tz.get(), hour24.get()),
+        |(uid, tz, h)| async move { get_match_results(uid, tz, h).await.unwrap_or_default() },
+    );
     view! {
         <Suspense fallback=|| view! { <p class="loading">"loading…"</p> }>
             {move || {
                 detail
                     .get()
                     .map(|res| match res {
-                        Ok(d) if d.found => detail_view(d).into_any(),
+                        Ok(d) if d.found => detail_view(d, results).into_any(),
                         _ => view! { <p class="empty">"Match not found."</p> }.into_any(),
                     })
             }}
@@ -215,15 +221,13 @@ pub(crate) fn MatchDetailPage() -> impl IntoView {
     }
 }
 
-pub(crate) fn detail_view(d: MatchDetail) -> impl IntoView {
+pub(crate) fn detail_view(d: MatchDetail, results: Resource<MatchResults>) -> impl IntoView {
     let MatchDetail {
         match_view,
         streams,
         event,
         stages,
         series,
-        f1_result,
-        motor_result,
         ..
     } = d;
     let m = match_view.expect("found implies match_view");
@@ -427,21 +431,48 @@ pub(crate) fn detail_view(d: MatchDetail) -> impl IntoView {
             {(!venue_line.is_empty())
                 .then(|| view! { <div class="detail-venue">{venue_line}</div> })}
             <StreamsList streams=streams />
-            // F1: this session's full finishing order, spoiler-gated per session
-            // (sharing its reveal key with the GP event page). Absent for
-            // upcoming sessions and non-F1 matches.
-            {f1_result
-                .map(|r| {
-                    view! {
-                        <F1Results results=vec![r] season=f1_season round=f1_round />
-                    }
-                })}
-            // WRC stage/rally or MotoGP session: this row's classification,
-            // spoiler-gated. Absent for upcoming sessions and non-ocblacktop rows.
-            {motor_result
-                .map(|r| {
-                    view! { <MotorResultsView results=vec![r] key_prefix=motor_reveal_key.clone() /> }
-                })}
+            // Results load on their own resource (not with the header), so a slow or
+            // 500ing upstream never delays the title/meta. F1 → that session's
+            // finishing order; WRC/WEC/MotoGP → its classification; a finished
+            // result-bearing session with nothing to show → "results not available".
+            // Spoiler-gated; absent for upcoming / non-result sessions.
+            {move || {
+                let motor_key = motor_reveal_key.clone();
+                view! {
+                    <Suspense fallback=|| {
+                        view! {
+                            <section class="detail-section">
+                                <p class="loading">"loading…"</p>
+                            </section>
+                        }
+                    }>
+                        {move || {
+                            let motor_key = motor_key.clone();
+                            results
+                                .get()
+                                .map(move |r| {
+                                    if let Some(fr) = r.f1_result {
+                                        view! { <F1Results results=vec![fr] season=f1_season round=f1_round /> }
+                                            .into_any()
+                                    } else if let Some(mr) = r.motor_result {
+                                        view! { <MotorResultsView results=vec![mr] key_prefix=motor_key.clone() /> }
+                                            .into_any()
+                                    } else if r.unavailable {
+                                        view! {
+                                            <section class="detail-section">
+                                                <h2 class="section-title f1-results-title">"Results"</h2>
+                                                <p class="empty">"results not available"</p>
+                                            </section>
+                                        }
+                                            .into_any()
+                                    } else {
+                                        ().into_any()
+                                    }
+                                })
+                        }}
+                    </Suspense>
+                }
+            }}
             // MLB series between the two teams. Each sport row reveals on its own
             // (shared with the schedule); the record line waits until every played
             // sport is revealed, so it never leaks the leader ahead of the scores.
