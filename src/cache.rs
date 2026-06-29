@@ -17,7 +17,7 @@ use chrono::{DateTime, Datelike, Duration, NaiveDate, TimeZone, Timelike, Utc};
 use chrono_tz::Tz;
 use once_cell::sync::Lazy;
 use std::collections::HashMap;
-use std::sync::{PoisonError, RwLock};
+use std::sync::{Mutex, PoisonError, RwLock};
 
 struct Snapshot {
     matches: Vec<NormalizedMatch>,
@@ -419,6 +419,7 @@ pub async fn f1_results(season: i64, round: i64) -> Vec<crate::types::F1Result> 
 /// token is set or the source returns nothing.
 pub async fn motor_result(r: &crate::types::MotorResultRef) -> Vec<crate::types::MotorResultRow> {
     let cache_key = format!("{}|{}|{}", r.series, r.event_id, r.session_id);
+    // 1. in-memory hot tier (still negative-caches errors/empties).
     {
         let cache = MOTOR_RESULTS.read().unwrap_or_else(PoisonError::into_inner);
         if let Some(c) = cache.get(&cache_key) {
@@ -427,13 +428,35 @@ pub async fn motor_result(r: &crate::types::MotorResultRef) -> Vec<crate::types:
             }
         }
     }
+    // 2. durable tier: the DB only holds non-empty results (errored: false).
+    if let Some((rows, fetched_at)) =
+        db_cache_get::<Vec<crate::types::MotorResultRow>>("motor_result", &cache_key)
+    {
+        let c = CachedMotorResult {
+            rows,
+            fetched_at,
+            errored: false,
+        };
+        if motor_cache_fresh(&c, Utc::now()) {
+            MOTOR_RESULTS
+                .write()
+                .unwrap_or_else(PoisonError::into_inner)
+                .insert(
+                    cache_key.clone(),
+                    CachedMotorResult {
+                        rows: c.rows.clone(),
+                        fetched_at,
+                        errored: false,
+                    },
+                );
+            return c.rows;
+        }
+    }
+    // 3. API, then write through to memory (always) and the DB (durable only).
     let Some(token) = config().ocblacktop_token.as_deref() else {
         return Vec::new();
     };
-    // Cache the outcome either way: a successful response (even an empty one —
-    // results not posted yet) keyed to its TTL, OR a failure, negative-cached for
-    // a short window so a slow-failing endpoint isn't re-fetched on every view
-    // (it returns slow ~11 s 500s) — it still recovers once the short TTL lapses.
+    let now = Utc::now();
     let (rows, errored) = match crate::ocblacktop::fetch_motor_result(&HTTP, token, r).await {
         Some(rows) => (rows, false),
         None => (Vec::new(), true),
@@ -442,13 +465,16 @@ pub async fn motor_result(r: &crate::types::MotorResultRef) -> Vec<crate::types:
         .write()
         .unwrap_or_else(PoisonError::into_inner)
         .insert(
-            cache_key,
+            cache_key.clone(),
             CachedMotorResult {
                 rows: rows.clone(),
-                fetched_at: Utc::now(),
+                fetched_at: now,
                 errored,
             },
         );
+    if !errored && !rows.is_empty() {
+        db_cache_put("motor_result", &cache_key, &rows, now);
+    }
     rows
 }
 
@@ -599,6 +625,62 @@ static HTTP: Lazy<reqwest::Client> = Lazy::new(|| {
         .build()
         .unwrap_or_default()
 });
+
+/// Dedicated connection for the persistent result cache (`store::result_cache`),
+/// used by both the on-demand caches and the poller's standings persistence.
+/// `None` in DEMO mode → every `db_cache_*` helper no-ops and the caches stay
+/// memory-only (today's behaviour). WAL + busy_timeout (set by `store::open`) let
+/// it coexist with the poller's and push sender's connections.
+static CACHE_DB: Lazy<Option<Mutex<rusqlite::Connection>>> = Lazy::new(|| {
+    let cfg = config();
+    if cfg.demo {
+        return None;
+    }
+    crate::store::open(&cfg.db_path).ok().map(Mutex::new)
+});
+
+/// Read a typed value from `result_cache`. `None` when there's no DB, the row is
+/// absent, or it doesn't decode.
+fn db_cache_get<T: serde::de::DeserializeOwned>(ns: &str, key: &str) -> Option<(T, DateTime<Utc>)> {
+    let conn = CACHE_DB
+        .as_ref()?
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner);
+    let entry = crate::store::cache_get(&conn, ns, key).ok().flatten()?;
+    let value = serde_json::from_str::<T>(&entry.value).ok()?;
+    let fetched_at = DateTime::from_timestamp_millis(entry.fetched_at_ms)?;
+    Some((value, fetched_at))
+}
+
+/// Write a typed value through to `result_cache` (best-effort; logs on error,
+/// never fails the caller).
+fn db_cache_put<T: serde::Serialize>(ns: &str, key: &str, value: &T, fetched_at: DateTime<Utc>) {
+    let Some(db) = CACHE_DB.as_ref() else { return };
+    let Ok(json) = serde_json::to_string(value) else {
+        return;
+    };
+    let conn = db.lock().unwrap_or_else(PoisonError::into_inner);
+    if let Err(e) = crate::store::cache_put(&conn, ns, key, &json, fetched_at.timestamp_millis()) {
+        leptos::logging::log!("result_cache put failed ({ns}/{key}): {e}");
+    }
+}
+
+/// Every row of a namespace, decoded (for Pattern B startup load).
+fn db_cache_get_ns<T: serde::de::DeserializeOwned>(ns: &str) -> Vec<(String, T, DateTime<Utc>)> {
+    let Some(db) = CACHE_DB.as_ref() else {
+        return Vec::new();
+    };
+    let conn = db.lock().unwrap_or_else(PoisonError::into_inner);
+    crate::store::cache_get_ns(&conn, ns)
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|(k, e)| {
+            let v = serde_json::from_str::<T>(&e.value).ok()?;
+            let f = DateTime::from_timestamp_millis(e.fetched_at_ms)?;
+            Some((k, v, f))
+        })
+        .collect()
+}
 
 /// Start the background poller. Loads any persisted matches first (so a restart
 /// serves data immediately), then either polls PandaScore or, with no token,
