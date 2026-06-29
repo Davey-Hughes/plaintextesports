@@ -10,7 +10,7 @@ use crate::feed::{NormalizedMatch, NormalizedTeam};
 use crate::types::{MatchStatus, MotorResultRef, Sport};
 use chrono::{DateTime, Utc};
 use once_cell::sync::OnceCell;
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
 use std::collections::HashSet;
 use std::path::Path;
 use std::sync::{Mutex, PoisonError};
@@ -168,6 +168,13 @@ pub fn open(path: &str) -> rusqlite::Result<Connection> {
             -- Subscriber's 12h/24h pref, for formatting reminder bodies; 0 ⇒ 12h.
             hour24      INTEGER NOT NULL DEFAULT 0,
             PRIMARY KEY (endpoint, scope_kind, scope_value)
+        );
+        CREATE TABLE IF NOT EXISTS result_cache (
+            ns            TEXT    NOT NULL,
+            key           TEXT    NOT NULL,
+            value         TEXT    NOT NULL,
+            fetched_at_ms INTEGER NOT NULL,
+            PRIMARY KEY (ns, key)
         );",
     )?;
     // Column renames game->sport and serie_name->series_name (the data model is
@@ -526,6 +533,61 @@ pub fn set_event_link(
         "INSERT INTO event_links (key, url, checked_at_ms) VALUES (?1, ?2, ?3)
          ON CONFLICT(key) DO UPDATE SET url=excluded.url, checked_at_ms=excluded.checked_at_ms",
         params![key, url, checked_at_ms],
+    )?;
+    Ok(())
+}
+
+/// One row of the generic `result_cache` (JSON `value` + when it was fetched).
+pub struct CacheEntry {
+    pub value: String,
+    pub fetched_at_ms: i64,
+}
+
+/// Read one cached payload by `(ns, key)`. `None` when absent.
+pub fn cache_get(conn: &Connection, ns: &str, key: &str) -> rusqlite::Result<Option<CacheEntry>> {
+    conn.query_row(
+        "SELECT value, fetched_at_ms FROM result_cache WHERE ns = ?1 AND key = ?2",
+        rusqlite::params![ns, key],
+        |row| {
+            Ok(CacheEntry {
+                value: row.get(0)?,
+                fetched_at_ms: row.get(1)?,
+            })
+        },
+    )
+    .optional()
+}
+
+/// Every row of a namespace, ordered by key (for Pattern B startup load).
+pub fn cache_get_ns(conn: &Connection, ns: &str) -> rusqlite::Result<Vec<(String, CacheEntry)>> {
+    let mut stmt = conn
+        .prepare("SELECT key, value, fetched_at_ms FROM result_cache WHERE ns = ?1 ORDER BY key")?;
+    let rows = stmt
+        .query_map(rusqlite::params![ns], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                CacheEntry {
+                    value: row.get(1)?,
+                    fetched_at_ms: row.get(2)?,
+                },
+            ))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(rows)
+}
+
+/// Upsert one payload (replace on the `(ns, key)` primary key).
+pub fn cache_put(
+    conn: &Connection,
+    ns: &str,
+    key: &str,
+    value: &str,
+    fetched_at_ms: i64,
+) -> rusqlite::Result<()> {
+    conn.execute(
+        "INSERT INTO result_cache (ns, key, value, fetched_at_ms) VALUES (?1, ?2, ?3, ?4)
+         ON CONFLICT(ns, key) DO UPDATE SET value = excluded.value, fetched_at_ms = excluded.fetched_at_ms",
+        rusqlite::params![ns, key, value, fetched_at_ms],
     )?;
     Ok(())
 }
@@ -1679,5 +1741,38 @@ mod tests {
         // Upsert updates in place (no duplicate).
         set_event_link(&conn, "cs2|XSE|2026", Some("https://liquipedia.net/y"), 300).unwrap();
         assert_eq!(load_event_links(&conn).unwrap().len(), 2);
+    }
+
+    #[test]
+    fn result_cache_roundtrips_and_upserts() {
+        let conn = open(":memory:").unwrap();
+        cache_put(&conn, "motor_result", "WRC|a|b", "[1,2,3]", 1000).unwrap();
+        let got = cache_get(&conn, "motor_result", "WRC|a|b")
+            .unwrap()
+            .unwrap();
+        assert_eq!(got.value, "[1,2,3]");
+        assert_eq!(got.fetched_at_ms, 1000);
+        // Upsert replaces value + timestamp on the same (ns, key).
+        cache_put(&conn, "motor_result", "WRC|a|b", "[9]", 2000).unwrap();
+        let got = cache_get(&conn, "motor_result", "WRC|a|b")
+            .unwrap()
+            .unwrap();
+        assert_eq!(got.value, "[9]");
+        assert_eq!(got.fetched_at_ms, 2000);
+        // Absent key → None.
+        assert!(cache_get(&conn, "motor_result", "missing")
+            .unwrap()
+            .is_none());
+    }
+
+    #[test]
+    fn result_cache_get_ns_returns_namespace_rows_in_key_order() {
+        let conn = open(":memory:").unwrap();
+        cache_put(&conn, "soccer_standings", "World Cup", "[]", 1).unwrap();
+        cache_put(&conn, "soccer_standings", "Premier League", "[]", 2).unwrap();
+        cache_put(&conn, "mlb_standings", "", "[]", 3).unwrap();
+        let rows = cache_get_ns(&conn, "soccer_standings").unwrap();
+        let keys: Vec<&str> = rows.iter().map(|(k, _)| k.as_str()).collect();
+        assert_eq!(keys, vec!["Premier League", "World Cup"]); // ordered by key
     }
 }
