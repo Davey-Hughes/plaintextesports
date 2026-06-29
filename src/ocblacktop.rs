@@ -86,6 +86,28 @@ fn parse_dt(s: &str) -> Option<DateTime<Utc>> {
         .map(|d| d.with_timezone(&Utc))
 }
 
+/// Deserialize a field the feed may send as JSON `null` (a DNS/DNF row's
+/// `stageTime`/`diffFirst`/`lapTime`, etc.) into `T::default()`. `#[serde(default)]`
+/// alone only covers an *absent* field; a present `null` would otherwise error and
+/// fail the whole array. Pair with `default` so absent fields still work too.
+fn de_null_default<'de, D, T>(d: D) -> Result<T, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Default + serde::Deserialize<'de>,
+{
+    Ok(Option::<T>::deserialize(d)?.unwrap_or_default())
+}
+
+/// A finishing position, blanking the literal string "null" some DNS/DNF rows
+/// carry so it doesn't render as a "null" position.
+fn clean_pos(p: &str) -> String {
+    if p == "null" {
+        String::new()
+    } else {
+        p.to_string()
+    }
+}
+
 // ----- Shared location shape ------------------------------------------------
 
 #[derive(Deserialize, Default)]
@@ -584,7 +606,8 @@ fn sessions_to_matches(
 }
 
 /// Every WEC session of an event as its own row (placeholders for unpublished
-/// rounds). WEC results aren't wired up, so no result links.
+/// rounds). WEC sessions carry results (race / qualifying), so they get result
+/// links — the detail/event pages fetch each session's order on demand.
 fn event_to_matches(e: &Event, now: DateTime<Utc>) -> Vec<NormalizedMatch> {
     sessions_to_matches(
         e,
@@ -592,7 +615,7 @@ fn event_to_matches(e: &Event, now: DateTime<Utc>) -> Vec<NormalizedMatch> {
         WEC_ID_BASE,
         wec_venue_tz(&e.location.country.two_code),
         Duration::hours(8),
-        false,
+        true,
         now,
     )
 }
@@ -857,12 +880,14 @@ pub async fn fetch_motogp_standings(client: &reqwest::Client, key: &str) -> Moto
 
 // ----- Results (WRC stage/overall, MotoGP session) --------------------------
 
-/// A driver/rider name pair from a results row.
+/// A driver/rider name pair from a results row. The names are null-tolerant: a
+/// withdrawn/DNS entry can send `firstName`/`lastName` as JSON `null`, which a
+/// plain `String` would reject and so fail the whole array (see `de_null_default`).
 #[derive(Deserialize, Default)]
 struct Person {
-    #[serde(rename = "firstName", default)]
+    #[serde(rename = "firstName", default, deserialize_with = "de_null_default")]
     first: String,
-    #[serde(rename = "lastName", default)]
+    #[serde(rename = "lastName", default, deserialize_with = "de_null_default")]
     last: String,
 }
 
@@ -874,7 +899,7 @@ impl Person {
 
 #[derive(Deserialize, Default)]
 struct NamedRef {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "de_null_default")]
     name: String,
 }
 
@@ -892,11 +917,11 @@ struct WrcResultRow {
     team: Option<NamedRef>,
     #[serde(default)]
     manufacturer: Option<NamedRef>,
-    #[serde(rename = "totalTime", default)]
+    #[serde(rename = "totalTime", default, deserialize_with = "de_null_default")]
     total_time: String,
-    #[serde(rename = "stageTime", default)]
+    #[serde(rename = "stageTime", default, deserialize_with = "de_null_default")]
     stage_time: String,
-    #[serde(rename = "diffFirst", default)]
+    #[serde(rename = "diffFirst", default, deserialize_with = "de_null_default")]
     diff_first: String,
 }
 
@@ -922,7 +947,7 @@ fn wrc_result_rows(rows: &[WrcResultRow]) -> Vec<crate::types::MotorResultRow> {
                 .or_else(|| r.manufacturer.as_ref().map(|m| m.name.clone()))
                 .unwrap_or_default();
             crate::types::MotorResultRow {
-                pos: r.position.clone(),
+                pos: clean_pos(&r.position),
                 name: r.driver.name(),
                 codriver: r.co_driver.name(),
                 team,
@@ -943,7 +968,7 @@ struct MotoResultRow {
     driver: Person,
     #[serde(default)]
     team: Option<NamedRef>,
-    #[serde(rename = "lapTime", default)]
+    #[serde(rename = "lapTime", default, deserialize_with = "de_null_default")]
     lap_time: String,
     #[serde(default)]
     gap: Option<String>,
@@ -959,7 +984,7 @@ fn motogp_result_rows(rows: &[MotoResultRow]) -> Vec<crate::types::MotorResultRo
                 r.lap_time.clone()
             };
             crate::types::MotorResultRow {
-                pos: r.position.clone(),
+                pos: clean_pos(&r.position),
                 name: r.driver.name(),
                 codriver: String::new(),
                 team: r.team.as_ref().map(|t| t.name.clone()).unwrap_or_default(),
@@ -970,23 +995,88 @@ fn motogp_result_rows(rows: &[MotoResultRow]) -> Vec<crate::types::MotorResultRo
         .collect()
 }
 
+/// A WEC session results row. WEC lists one row per driver, so a crew's 2–3
+/// drivers share a `position`; [`wec_result_rows`] groups them. The leader often
+/// reports only a lap count, so the time falls back through
+/// `gap`/`displayTime`/`lapTime` to "{laps} laps".
+#[derive(Deserialize)]
+struct WecResultRow {
+    #[serde(default)]
+    position: String,
+    #[serde(default)]
+    driver: Person,
+    #[serde(default)]
+    team: Option<NamedRef>,
+    #[serde(default)]
+    laps: Option<i64>,
+    #[serde(rename = "lapTime", default)]
+    lap_time: Option<String>,
+    #[serde(rename = "displayTime", default)]
+    display_time: Option<String>,
+    #[serde(default)]
+    gap: Option<String>,
+}
+
+/// Collapse a WEC session's per-driver rows into one row per car: consecutive
+/// rows sharing a `position` are one crew (driver names joined with " · "),
+/// carrying the team and a single time. Time prefers the gap to the leader, then
+/// an absolute display/lap time, then the lap count.
+fn wec_result_rows(rows: &[WecResultRow]) -> Vec<crate::types::MotorResultRow> {
+    let nonempty = |s: &str| !s.is_empty() && s != "0.000";
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < rows.len() {
+        let pos = &rows[i].position;
+        let mut j = i;
+        let mut names = Vec::new();
+        while j < rows.len() && rows[j].position == *pos {
+            names.push(rows[j].driver.name());
+            j += 1;
+        }
+        let head = &rows[i];
+        let team = head
+            .team
+            .as_ref()
+            .map(|t| t.name.clone())
+            .unwrap_or_default();
+        let time = head
+            .gap
+            .clone()
+            .filter(|s| nonempty(s))
+            .or_else(|| head.display_time.clone().filter(|s| nonempty(s)))
+            .or_else(|| head.lap_time.clone().filter(|s| nonempty(s)))
+            .or_else(|| head.laps.map(|l| format!("{l} laps")))
+            .unwrap_or_default();
+        out.push(crate::types::MotorResultRow {
+            pos: clean_pos(pos),
+            name: names.join(" · "),
+            codriver: String::new(),
+            team,
+            time,
+            flag: String::new(),
+        });
+        i = j;
+    }
+    out
+}
+
 /// Fetch the classification a [`crate::types::MotorResultRef`] points at: a WRC
-/// rally's overall result (empty session), a single WRC stage's times, or a
-/// MotoGP session's finishing order. One request; empty on any failure. The caller
-/// caches the result (finished classifications never change) so this stays well
-/// within the daily quota even though it's fetched on demand.
+/// rally's overall result (empty session), a single WRC stage's times, a WEC or
+/// MotoGP session's finishing order. `None` on a fetch/parse error (so the caller
+/// doesn't cache a transient failure); `Some(rows)` on success — `rows` is empty
+/// only when the source genuinely returned nothing. One request.
 pub async fn fetch_motor_result(
     client: &reqwest::Client,
     key: &str,
     r: &crate::types::MotorResultRef,
-) -> Vec<crate::types::MotorResultRow> {
+) -> Option<Vec<crate::types::MotorResultRow>> {
     match (r.series.as_str(), r.session_id.is_empty()) {
         ("WRC", true) => {
             let url = format!("{BASE}/wrc/rallies/{}/classification", r.event_id);
             get::<Vec<WrcResultRow>>(client, key, &url)
                 .await
                 .map(|rows| wrc_result_rows(&rows))
-                .unwrap_or_default()
+                .ok()
         }
         ("WRC", false) => {
             // The stage detail carries its results inline.
@@ -999,7 +1089,17 @@ pub async fn fetch_motor_result(
             get::<StageDetail>(client, key, &url)
                 .await
                 .map(|d| wrc_result_rows(&d.results))
-                .unwrap_or_default()
+                .ok()
+        }
+        ("WEC", _) => {
+            let url = format!(
+                "{BASE}/wec/events/{}/sessions/{}/results",
+                r.event_id, r.session_id
+            );
+            get::<Vec<WecResultRow>>(client, key, &url)
+                .await
+                .map(|rows| wec_result_rows(&rows))
+                .ok()
         }
         ("MotoGP", _) => {
             let url = format!(
@@ -1009,9 +1109,9 @@ pub async fn fetch_motor_result(
             get::<Vec<MotoResultRow>>(client, key, &url)
                 .await
                 .map(|rows| motogp_result_rows(&rows))
-                .unwrap_or_default()
+                .ok()
         }
-        _ => Vec::new(),
+        _ => Some(Vec::new()),
     }
 }
 
@@ -1278,6 +1378,31 @@ mod tests {
     }
 
     #[test]
+    fn wec_results_group_crews_and_fall_back_to_laps() {
+        // WEC lists one row per driver; a crew shares a position. The leader here
+        // reports only a lap count (no gap/displayTime/lapTime).
+        let json = r#"[
+          {"position":"1","driver":{"firstName":"Robert","lastName":"Kubica"},"team":{"name":"AF Corse"},"laps":387,"gap":null,"displayTime":null,"lapTime":null},
+          {"position":"1","driver":{"firstName":"Yifei","lastName":"Ye"},"team":{"name":"AF Corse"},"laps":387},
+          {"position":"1","driver":{"firstName":"Phil","lastName":"Hanson"},"team":{"name":"AF Corse"},"laps":387},
+          {"position":"2","driver":{"firstName":"Matt","lastName":"Campbell"},"team":{"name":"Porsche Penske Motorsport"},"laps":387,"gap":"+1 lap"}
+        ]"#;
+        let rows: Vec<WecResultRow> = serde_json::from_str(json).unwrap();
+        let out = wec_result_rows(&rows);
+        // Three drivers of the winning car collapse to one crew row.
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[0].pos, "1");
+        assert_eq!(out[0].name, "Robert Kubica · Yifei Ye · Phil Hanson");
+        assert_eq!(out[0].codriver, "");
+        assert_eq!(out[0].team, "AF Corse");
+        // Leader: no gap/time → fall back to the lap count.
+        assert_eq!(out[0].time, "387 laps");
+        // Runner-up: the gap to the leader.
+        assert_eq!(out[1].name, "Matt Campbell");
+        assert_eq!(out[1].time, "+1 lap");
+    }
+
+    #[test]
     fn flag_folds_alpha3_japan_to_alpha2() {
         // flagcdn keys on alpha-2, but the feed sends "JPN" for Japan.
         assert_eq!(flag("JPN"), "https://flagcdn.com/jp.svg");
@@ -1471,5 +1596,63 @@ mod tests {
         // Leader shows the absolute time; others the gap.
         assert_eq!(out[0].time, "39:51.297");
         assert_eq!(out[1].time, "+1.803");
+    }
+
+    #[test]
+    fn wrc_results_tolerate_null_times_on_dns_rows() {
+        // A DNS/DNF row sends stageTime/diffFirst as JSON null (present, not absent),
+        // and position as the literal string "null". #[serde(default)] alone errors on
+        // a present null and would drop the whole stage's results.
+        let json = r#"[
+          {"position":"1","driver":{"firstName":"Sébastien","lastName":"OGIER"},
+           "team":{"name":"TOYOTA GAZOO RACING WRT"},"stageTime":"11:10.909","diffFirst":"0.000"},
+          {"position":"null","status":"DNS","driver":{"firstName":"Dani","lastName":"SORDO"},
+           "team":{"name":"Hyundai"},"stageTime":null,"diffFirst":null}
+        ]"#;
+        let rows: Vec<WrcResultRow> = serde_json::from_str(json).unwrap();
+        let out = wrc_result_rows(&rows);
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[0].name, "Sébastien OGIER");
+        assert_eq!(out[0].time, "11:10.909");
+        // The DNS row parses (instead of failing the whole array): blank position,
+        // empty time.
+        assert_eq!(out[1].name, "Dani SORDO");
+        assert_eq!(out[1].pos, "");
+        assert_eq!(out[1].time, "");
+    }
+
+    #[test]
+    fn result_rows_tolerate_null_names_and_team() {
+        // A withdrawn entry can carry null name/team fields (same present-null class
+        // as the times); Person/NamedRef must tolerate them rather than fail the array.
+        let json = r#"[
+          {"position":"1","driver":{"firstName":"Kalle","lastName":"ROVANPERÄ"},
+           "team":{"name":"Toyota"},"stageTime":"2:07.500","diffFirst":"0.000"},
+          {"position":"2","driver":{"firstName":null,"lastName":null},
+           "team":{"name":null},"stageTime":null,"diffFirst":null}
+        ]"#;
+        let rows: Vec<WrcResultRow> = serde_json::from_str(json).unwrap();
+        let out = wrc_result_rows(&rows);
+        assert_eq!(out.len(), 2);
+        // Null first+last → empty name; null team name → empty team — no parse failure.
+        assert_eq!(out[1].name, "");
+        assert_eq!(out[1].team, "");
+    }
+
+    #[test]
+    fn motogp_results_tolerate_null_lap_time() {
+        // A DNF rider can send lapTime as null; it must not fail the whole session.
+        let json = r#"[
+          {"position":"1","driver":{"firstName":"Marc","lastName":"Marquez"},
+           "team":{"name":"Ducati Lenovo Team"},"lapTime":"39:51.297","gap":null},
+          {"position":"null","driver":{"firstName":"Joan","lastName":"Mir"},
+           "team":{"name":"Honda HRC"},"lapTime":null,"gap":null}
+        ]"#;
+        let rows: Vec<MotoResultRow> = serde_json::from_str(json).unwrap();
+        let out = motogp_result_rows(&rows);
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[1].name, "Joan Mir");
+        assert_eq!(out[1].pos, "");
+        assert_eq!(out[1].time, "");
     }
 }

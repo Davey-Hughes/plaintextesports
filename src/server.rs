@@ -4,8 +4,8 @@
 #[cfg(feature = "ssr")]
 use crate::types::Sport;
 use crate::types::{
-    EventInfo, F1Result, F1Standings, MatchDetail, MotorStandings, ReminderReq, ScheduleView,
-    SiteInfo, SubscribeReq,
+    EventInfo, F1Result, F1Standings, MatchDetail, MotorResult, MotorStandings, ReminderReq,
+    ScheduleView, SiteInfo, SubscribeReq,
 };
 use leptos::prelude::*;
 
@@ -306,6 +306,23 @@ pub async fn get_motor_standings(league: String) -> Result<MotorStandings, Serve
     {
         let _ = league;
         Ok(MotorStandings::default())
+    }
+}
+
+/// Every result section for a motorsport event page (the WRC overall
+/// classification + Power Stage, or each finished WEC/MotoGP session), by full
+/// edition name. Empty for F1 / non-motorsport editions and not-yet-finished
+/// events.
+#[server(GetMotorResults, "/api")]
+pub async fn get_motor_results(event: String) -> Result<Vec<MotorResult>, ServerFnError> {
+    #[cfg(feature = "ssr")]
+    {
+        Ok(crate::cache::motor_results(&event).await)
+    }
+    #[cfg(not(feature = "ssr"))]
+    {
+        let _ = event;
+        Ok(Vec::new())
     }
 }
 

@@ -406,18 +406,120 @@ pub async fn motor_result(r: &crate::types::MotorResultRef) -> Vec<crate::types:
     let Some(token) = config().ocblacktop_token.as_deref() else {
         return Vec::new();
     };
-    let rows = crate::ocblacktop::fetch_motor_result(&HTTP, token, r).await;
-    MOTOR_RESULTS
-        .write()
-        .unwrap_or_else(PoisonError::into_inner)
-        .insert(
-            cache_key,
-            CachedMotorResult {
-                rows: rows.clone(),
-                fetched_at: Utc::now(),
+    // Cache a *successful* response (even an empty one — results not posted yet);
+    // a transient fetch/parse error (`None`) is NOT cached, so a flaky upstream
+    // 500 doesn't hide a result for the full TTL — the next view retries.
+    match crate::ocblacktop::fetch_motor_result(&HTTP, token, r).await {
+        Some(rows) => {
+            MOTOR_RESULTS
+                .write()
+                .unwrap_or_else(PoisonError::into_inner)
+                .insert(
+                    cache_key,
+                    CachedMotorResult {
+                        rows: rows.clone(),
+                        fetched_at: Utc::now(),
+                    },
+                );
+            rows
+        }
+        None => Vec::new(),
+    }
+}
+
+/// The ordered (section title, result ref) list a motorsport event page shows,
+/// from that edition's rows. WRC → the overall classification then the Power
+/// Stage, once the rally's last session has finished; WEC/MotoGP → each finished
+/// classified session in start order. Pure (no I/O), so it's unit-tested;
+/// [`motor_results`] fetches what it returns.
+fn motor_result_plan(rows: &[NormalizedMatch]) -> Vec<(String, crate::types::MotorResultRef)> {
+    let series = rows
+        .iter()
+        .map(|m| m.league.as_str())
+        .find(|l| matches!(*l, "WRC" | "WEC" | "MotoGP"));
+    match series {
+        Some("WRC") => wrc_result_plan(rows),
+        Some("WEC" | "MotoGP") => session_result_plan(rows),
+        _ => Vec::new(),
+    }
+}
+
+/// WRC: the overall classification (synthesized from the rally's event id, so it
+/// survives the placeholder's removal during stage expansion) then the Power
+/// Stage — shown only once the rally's latest-starting row has finished.
+fn wrc_result_plan(rows: &[NormalizedMatch]) -> Vec<(String, crate::types::MotorResultRef)> {
+    let wrc = || rows.iter().filter(|m| m.league == "WRC");
+    let finished = wrc()
+        .max_by_key(|m| m.begin_at)
+        .is_some_and(|m| m.status == MatchStatus::Finished);
+    if !finished {
+        return Vec::new();
+    }
+    let mut plan = Vec::new();
+    if let Some(event_id) =
+        wrc().find_map(|m| m.motor_result_ref.as_ref().map(|r| r.event_id.clone()))
+    {
+        plan.push((
+            "Overall classification".to_string(),
+            crate::types::MotorResultRef {
+                series: "WRC".to_string(),
+                event_id,
+                session_id: String::new(),
             },
-        );
-    rows
+        ));
+    }
+    if let Some(ps) = wrc().find(|m| m.team_a.label.contains("Power Stage")) {
+        if let Some(r) = &ps.motor_result_ref {
+            plan.push((ps.team_a.label.clone(), r.clone()));
+        }
+    }
+    plan
+}
+
+/// WEC/MotoGP: each finished session that carries a results ref, in start order.
+fn session_result_plan(rows: &[NormalizedMatch]) -> Vec<(String, crate::types::MotorResultRef)> {
+    let mut sessions: Vec<&NormalizedMatch> = rows
+        .iter()
+        .filter(|m| {
+            m.status == MatchStatus::Finished
+                && m.motor_result_ref
+                    .as_ref()
+                    .is_some_and(|r| !r.session_id.is_empty())
+        })
+        .collect();
+    sessions.sort_by_key(|m| m.begin_at);
+    sessions
+        .into_iter()
+        .map(|m| (m.team_a.label.clone(), m.motor_result_ref.clone().unwrap()))
+        .collect()
+}
+
+/// Every result section for a motorsport event page, by full edition name: the
+/// classifications [`motor_result_plan`] selects, each fetched on demand (and
+/// cached indefinitely once non-empty) and concurrently. Empty sections — and
+/// F1 / non-motorsport editions — drop out. The snapshot lock is released before
+/// the awaits so the future stays `Send`.
+pub async fn motor_results(event: &str) -> Vec<crate::types::MotorResult> {
+    let plan = {
+        let snap = SNAPSHOT.read().unwrap_or_else(PoisonError::into_inner);
+        let rows: Vec<NormalizedMatch> = snap
+            .matches
+            .iter()
+            .filter(|m| m.sport == Sport::Motorsport)
+            .filter(|m| event_name_eq(&m.league, &m.series_name, event))
+            .cloned()
+            .collect();
+        motor_result_plan(&rows)
+    };
+    if plan.is_empty() {
+        return Vec::new();
+    }
+    let fetched = futures::future::join_all(plan.iter().map(|(_, r)| motor_result(r))).await;
+    plan.into_iter()
+        .zip(fetched)
+        .filter(|(_, rows)| !rows.is_empty())
+        .map(|((title, _), rows)| crate::types::MotorResult { title, rows })
+        .collect()
 }
 
 /// The F1 championship standings as of a Grand Prix's round, fetched on demand
@@ -4628,5 +4730,121 @@ mod tests {
         let vs = to_view(&sess, &la, now, false);
         assert!(!vs.clock_label.is_empty());
         assert!(!vs.venue_label.is_empty());
+    }
+
+    #[test]
+    fn motor_plan_wrc_overall_then_power_when_finished() {
+        use crate::types::MotorResultRef;
+        let now = Utc::now();
+        let stage = |label: &str, sess: &str, status: MatchStatus, begin: DateTime<Utc>| {
+            let mut m = at(begin, status);
+            m.sport = Sport::Motorsport;
+            m.league = "WRC".into();
+            m.team_a.label = label.into();
+            m.motor_result_ref = Some(MotorResultRef {
+                series: "WRC".into(),
+                event_id: "rally-1".into(),
+                session_id: sess.into(),
+            });
+            m
+        };
+        let rows = vec![
+            stage(
+                "SS1 Kuragaike",
+                "s1",
+                MatchStatus::Finished,
+                now - Duration::hours(3),
+            ),
+            stage(
+                "SS19 Loutraki Power Stage",
+                "ps",
+                MatchStatus::Finished,
+                now - Duration::hours(1),
+            ),
+        ];
+        let plan = motor_result_plan(&rows);
+        // Overall (synthesized, empty session) first, then the Power Stage row.
+        assert_eq!(plan.len(), 2);
+        assert_eq!(plan[0].0, "Overall classification");
+        assert_eq!(plan[0].1.event_id, "rally-1");
+        assert_eq!(plan[0].1.session_id, "");
+        assert!(plan[1].0.contains("Power Stage"));
+        assert_eq!(plan[1].1.session_id, "ps");
+    }
+
+    #[test]
+    fn motor_plan_wrc_empty_until_rally_finishes() {
+        use crate::types::MotorResultRef;
+        let now = Utc::now();
+        let mk = |label: &str, sess: &str, status: MatchStatus, begin: DateTime<Utc>| {
+            let mut m = at(begin, status);
+            m.sport = Sport::Motorsport;
+            m.league = "WRC".into();
+            m.team_a.label = label.into();
+            m.motor_result_ref = Some(MotorResultRef {
+                series: "WRC".into(),
+                event_id: "r".into(),
+                session_id: sess.into(),
+            });
+            m
+        };
+        // The latest-starting row (the power stage) is still upcoming → nothing yet.
+        let rows = vec![
+            mk("SS1", "s1", MatchStatus::Finished, now - Duration::hours(1)),
+            mk(
+                "SS19 Power Stage",
+                "ps",
+                MatchStatus::Upcoming,
+                now + Duration::hours(2),
+            ),
+        ];
+        assert!(motor_result_plan(&rows).is_empty());
+    }
+
+    #[test]
+    fn motor_plan_sessions_in_start_order_finished_only() {
+        use crate::types::MotorResultRef;
+        let now = Utc::now();
+        let sess = |label: &str, id: &str, status: MatchStatus, begin: DateTime<Utc>| {
+            let mut m = at(begin, status);
+            m.sport = Sport::Motorsport;
+            m.league = "WEC".into();
+            m.team_a.label = label.into();
+            m.motor_result_ref = Some(MotorResultRef {
+                series: "WEC".into(),
+                event_id: "lm".into(),
+                session_id: id.into(),
+            });
+            m
+        };
+        let rows = vec![
+            sess("Race", "race", MatchStatus::Finished, now),
+            sess(
+                "Qualifying HYPERCAR",
+                "q",
+                MatchStatus::Finished,
+                now - Duration::hours(5),
+            ),
+            sess(
+                "Warm Up",
+                "wu",
+                MatchStatus::Upcoming,
+                now + Duration::hours(1),
+            ),
+        ];
+        let plan = motor_result_plan(&rows);
+        // Finished only, sorted by start: quali (earlier) before race; warm-up dropped.
+        assert_eq!(plan.len(), 2);
+        assert_eq!(plan[0].0, "Qualifying HYPERCAR");
+        assert_eq!(plan[1].0, "Race");
+    }
+
+    #[test]
+    fn motor_plan_empty_for_f1() {
+        let now = Utc::now();
+        let mut m = at(now, MatchStatus::Finished);
+        m.sport = Sport::Motorsport;
+        m.league = "F1".into(); // F1 carries no motor_result_ref
+        assert!(motor_result_plan(&[m]).is_empty());
     }
 }
