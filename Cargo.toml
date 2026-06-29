@@ -55,7 +55,9 @@ serde_json = { version = "1.0", optional = true }
 base64 = "0.22"
 # DEFLATE (pure-Rust miniz_oxide backend) to compact the export string. Used on
 # the client too, so keep it non-optional and off the C backend.
-flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
+flate2 = { version = "1", default-features = false, features = [
+  "rust_backend",
+] }
 reqwest = { version = "0.12", default-features = false, features = [
   "json",
   "rustls-tls",
