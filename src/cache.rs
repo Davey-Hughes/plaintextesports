@@ -237,11 +237,39 @@ static MOTOR_RESULTS: Lazy<RwLock<HashMap<String, CachedMotorResult>>> =
 struct CachedMotorResult {
     rows: Vec<crate::types::MotorResultRow>,
     fetched_at: DateTime<Utc>,
+    /// The last fetch failed (HTTP/parse error) rather than returning an empty
+    /// list. Negative-cached briefly so a slow-failing endpoint isn't re-hit on
+    /// every page view (Orange Cat Blacktop returns slow ~11 s 500s for some
+    /// sessions — e.g. several at one WEC round), while still recovering quickly
+    /// if the failure was transient.
+    errored: bool,
 }
 
 /// Re-check an as-yet-empty motorsport result at most this often (a non-empty one
 /// is immutable and kept until restart).
 const MOTOR_RESULT_TTL_MIN: i64 = 15;
+
+/// Re-check a *failed* fetch at most this often. Shorter than the empty TTL so a
+/// transient error recovers fast, but long enough that a persistently-failing
+/// (slow) endpoint doesn't block every page load — the page still shows every
+/// other session that did succeed.
+const MOTOR_RESULT_ERR_TTL_MIN: i64 = 5;
+
+/// Whether a cached motorsport result is still fresh enough to serve without a
+/// refetch: a non-empty (finished, immutable) result always is; an errored or an
+/// empty one only until its TTL lapses (errors re-check sooner). Pure, so it's
+/// unit-tested.
+fn motor_cache_fresh(c: &CachedMotorResult, now: DateTime<Utc>) -> bool {
+    if !c.rows.is_empty() {
+        return true;
+    }
+    let ttl = if c.errored {
+        MOTOR_RESULT_ERR_TTL_MIN
+    } else {
+        MOTOR_RESULT_TTL_MIN
+    };
+    now - c.fetched_at < Duration::minutes(ttl)
+}
 
 /// On-demand F1 championship standings, keyed by the (season, round) of the GP
 /// whose page asked for them.
@@ -394,11 +422,7 @@ pub async fn motor_result(r: &crate::types::MotorResultRef) -> Vec<crate::types:
     {
         let cache = MOTOR_RESULTS.read().unwrap_or_else(PoisonError::into_inner);
         if let Some(c) = cache.get(&cache_key) {
-            // A non-empty (finished) result never changes — keep it indefinitely;
-            // an empty one re-checks after the TTL in case it's now posted.
-            if !c.rows.is_empty()
-                || Utc::now() - c.fetched_at < Duration::minutes(MOTOR_RESULT_TTL_MIN)
-            {
+            if motor_cache_fresh(c, Utc::now()) {
                 return c.rows.clone();
             }
         }
@@ -406,25 +430,26 @@ pub async fn motor_result(r: &crate::types::MotorResultRef) -> Vec<crate::types:
     let Some(token) = config().ocblacktop_token.as_deref() else {
         return Vec::new();
     };
-    // Cache a *successful* response (even an empty one — results not posted yet);
-    // a transient fetch/parse error (`None`) is NOT cached, so a flaky upstream
-    // 500 doesn't hide a result for the full TTL — the next view retries.
-    match crate::ocblacktop::fetch_motor_result(&HTTP, token, r).await {
-        Some(rows) => {
-            MOTOR_RESULTS
-                .write()
-                .unwrap_or_else(PoisonError::into_inner)
-                .insert(
-                    cache_key,
-                    CachedMotorResult {
-                        rows: rows.clone(),
-                        fetched_at: Utc::now(),
-                    },
-                );
-            rows
-        }
-        None => Vec::new(),
-    }
+    // Cache the outcome either way: a successful response (even an empty one —
+    // results not posted yet) keyed to its TTL, OR a failure, negative-cached for
+    // a short window so a slow-failing endpoint isn't re-fetched on every view
+    // (it returns slow ~11 s 500s) — it still recovers once the short TTL lapses.
+    let (rows, errored) = match crate::ocblacktop::fetch_motor_result(&HTTP, token, r).await {
+        Some(rows) => (rows, false),
+        None => (Vec::new(), true),
+    };
+    MOTOR_RESULTS
+        .write()
+        .unwrap_or_else(PoisonError::into_inner)
+        .insert(
+            cache_key,
+            CachedMotorResult {
+                rows: rows.clone(),
+                fetched_at: Utc::now(),
+                errored,
+            },
+        );
+    rows
 }
 
 /// The ordered (section title, result ref) list a motorsport event page shows,
@@ -563,10 +588,14 @@ const PREWARM_TTL_MIN: i64 = 11;
 /// the API budget; the rest catch up over the next cycles.
 const MAX_PREWARM_PER_CYCLE: usize = 8;
 
-/// Shared HTTP client for on-demand standings/bracket fetches.
+/// Shared HTTP client for on-demand standings/bracket/result fetches. A request
+/// timeout caps a hung/slow upstream so a single bad endpoint can't stall a page
+/// indefinitely (Orange Cat Blacktop returns slow ~11 s 500s for some sessions);
+/// set generously so it only catches true hangs, not slow-but-valid responses.
 static HTTP: Lazy<reqwest::Client> = Lazy::new(|| {
     reqwest::Client::builder()
         .user_agent(crate::http::USER_AGENT)
+        .timeout(std::time::Duration::from_secs(15))
         .build()
         .unwrap_or_default()
 });
@@ -4846,5 +4875,40 @@ mod tests {
         m.sport = Sport::Motorsport;
         m.league = "F1".into(); // F1 carries no motor_result_ref
         assert!(motor_result_plan(&[m]).is_empty());
+    }
+
+    #[test]
+    fn motor_cache_negative_ttl_refetches_errors_sooner_than_empties() {
+        use crate::types::MotorResultRow;
+        let now = Utc::now();
+        let cached = |rows: Vec<MotorResultRow>, errored: bool, age_min: i64| CachedMotorResult {
+            rows,
+            fetched_at: now - Duration::minutes(age_min),
+            errored,
+        };
+        let row = MotorResultRow::default();
+        // A non-empty (finished, immutable) result is fresh forever.
+        assert!(motor_cache_fresh(&cached(vec![row], false, 10_000), now));
+        // A failed fetch is negative-cached: fresh briefly, then re-checked once
+        // the short error TTL lapses (so a slow-failing endpoint isn't re-hit on
+        // every view, but recovers quickly).
+        assert!(motor_cache_fresh(
+            &cached(vec![], true, MOTOR_RESULT_ERR_TTL_MIN - 1),
+            now
+        ));
+        assert!(!motor_cache_fresh(
+            &cached(vec![], true, MOTOR_RESULT_ERR_TTL_MIN + 1),
+            now
+        ));
+        // An empty *success* (results not posted yet) stays fresh longer than an
+        // error — past the error TTL, up to the longer empty TTL.
+        assert!(motor_cache_fresh(
+            &cached(vec![], false, MOTOR_RESULT_ERR_TTL_MIN + 1),
+            now
+        ));
+        assert!(!motor_cache_fresh(
+            &cached(vec![], false, MOTOR_RESULT_TTL_MIN + 1),
+            now
+        ));
     }
 }
