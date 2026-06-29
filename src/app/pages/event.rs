@@ -218,6 +218,26 @@ pub(crate) fn EventPage() -> impl IntoView {
             }
         },
     );
+    // WRC/WEC/MotoGP: each finished session's results (and the WRC overall),
+    // shown inline like an F1 GP's. Keyed on the edition name, and only fetched
+    // for an actual motorsport series (empty edition string → F1 / non-motor).
+    let motor_results = Resource::new(
+        move || {
+            schedule
+                .get()
+                .and_then(Result::ok)
+                .filter(|s| !motor_series(s).is_empty())
+                .map(|_| league())
+                .unwrap_or_default()
+        },
+        |ev| async move {
+            if ev.is_empty() {
+                Vec::new()
+            } else {
+                get_motor_results(ev).await.unwrap_or_default()
+            }
+        },
+    );
     setup_autorefresh(schedule);
 
     // Keep the global sport mode in sync with the event being viewed, so the
@@ -261,6 +281,8 @@ pub(crate) fn EventPage() -> impl IntoView {
                         provide_context(RevealEnd(reveal_end));
                         // The route segment is already the full edition name.
                         let title = lg_name.clone();
+                        // Reveal-key prefix for this edition's result sections.
+                        let motor_key_prefix = format!("motorres:{title}");
                         // The sport this event belongs to (all its matches share
                         // one). Computed before the schedule is windowed below, with
                         // the standings as a fallback for when there are no matches
@@ -459,6 +481,45 @@ pub(crate) fn EventPage() -> impl IntoView {
                                 </nav>
                             })
                         };
+                        // WRC/WEC/MotoGP event pages get a jump-to nav (schedule +
+                        // each result section + standings), built as results load.
+                        // Empty for F1 / non-motorsport editions.
+                        let motor_nav = {
+                            let motor_league = motor_league.clone();
+                            move || {
+                                if motor_league.is_empty() {
+                                    return None;
+                                }
+                                let titles: Vec<String> = motor_results
+                                    .get()
+                                    .unwrap_or_default()
+                                    .into_iter()
+                                    .map(|r| r.title)
+                                    .collect();
+                                let has_standings = motor_standings
+                                    .get()
+                                    .is_some_and(|s| !s.tables.is_empty());
+                                if titles.is_empty() && !has_standings {
+                                    return None;
+                                }
+                                let links = titles
+                                    .into_iter()
+                                    .map(|t| {
+                                        let anchor = motor_anchor(&t);
+                                        view! { <a href=format!("#{anchor}")>{t.to_lowercase()}</a> }
+                                    })
+                                    .collect_view();
+                                Some(view! {
+                                    <nav class="event-nav">
+                                        <span class="event-nav-label">"jump to"</span>
+                                        <a href="#sched">"schedule"</a>
+                                        {links}
+                                        {has_standings
+                                            .then(|| view! { <a href="#motorsec-standings">"standings"</a> })}
+                                    </nav>
+                                })
+                            }
+                        };
                         view! {
                             <article class="detail">
                                 <A href="/">"← schedule"</A>
@@ -467,6 +528,7 @@ pub(crate) fn EventPage() -> impl IntoView {
                                 {watch}
                                 {nav}
                                 {f1_nav}
+                                {motor_nav}
                                 <div id="sched" class="spy">
                                     {render_schedule(s, false, push, true, windowed)}
                                 </div>
@@ -499,6 +561,20 @@ pub(crate) fn EventPage() -> impl IntoView {
                                                     season=season
                                                     round=round
                                                 />
+                                            }
+                                        })
+                                }}
+                                // WRC/WEC/MotoGP: each finished session's results
+                                // (and the WRC overall), inline like F1's. Empty
+                                // for F1 / non-motorsport / not-yet-finished events.
+                                {move || {
+                                    let key_prefix = motor_key_prefix.clone();
+                                    motor_results
+                                        .get()
+                                        .filter(|r| !r.is_empty())
+                                        .map(move |results| {
+                                            view! {
+                                                <MotorResultsView results=results key_prefix=key_prefix />
                                             }
                                         })
                                 }}
