@@ -12,13 +12,15 @@ ROOT="$(cd "$SRC/../.." && pwd)"
 OUT="${1:-$ROOT/icons}"
 mkdir -p "$OUT"
 
-# PWA rasters from the standard square mark.
-rsvg-convert -w 512 -h 512 "$SRC/pte.svg" -o "$OUT/icon-512.png"
-rsvg-convert -w 192 -h 192 "$SRC/pte.svg" -o "$OUT/icon-192.png"
-# Apple touch icon from the rounded-frame mark: iOS masks it to a squircle, so the
-# grey border is rounded + inset to follow that shape instead of being clipped.
-rsvg-convert -w 180 -h 180 "$SRC/pte-apple.svg" -o "$OUT/apple-touch-icon.png"
-# Maskable (Android) from the safe-zone mark.
+# Installable app icons — apple-touch (iOS) AND the manifest "any" icons (192/512)
+# — all use the rounded-frame mark. iOS uses the MANIFEST icons (not the
+# apple-touch-icon link) for an installed PWA, so 192/512 must be rounded too, or
+# the saved home-screen icon shows a clipped square border. Every install surface
+# masks the icon, so a rounded inset border follows that shape instead of clipping.
+rsvg-convert -w 512 -h 512 "$SRC/pte-app.svg" -o "$OUT/icon-512.png"
+rsvg-convert -w 192 -h 192 "$SRC/pte-app.svg" -o "$OUT/icon-192.png"
+rsvg-convert -w 180 -h 180 "$SRC/pte-app.svg" -o "$OUT/apple-touch-icon.png"
+# Maskable (Android adaptive) from the full-bleed safe-zone mark.
 rsvg-convert -w 512 -h 512 "$SRC/pte-maskable.svg" -o "$OUT/icon-512-maskable.png"
 optipng -quiet -o2 "$OUT/icon-512.png" "$OUT/icon-192.png" \
   "$OUT/apple-touch-icon.png" "$OUT/icon-512-maskable.png"

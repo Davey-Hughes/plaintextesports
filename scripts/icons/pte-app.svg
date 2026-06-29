@@ -4,7 +4,7 @@
        radius (114 - 48) ≈ 66 keeps it parallel to and inside the rounded edge,
        so the corners aren't clipped on the home screen. -->
   <rect x="48" y="48" width="416" height="416" rx="66" ry="66"
-        fill="none" stroke="#555555" stroke-width="12" />
+        fill="none" stroke="#d4d4d4" stroke-width="12" />
   <text x="256" y="256" fill="#d4d4d4"
         font-family="ui-monospace, 'SFMono-Regular', Menlo, Consolas, 'Liberation Mono', monospace"
         font-size="176" font-weight="600" text-anchor="middle"
