@@ -1,6 +1,7 @@
 //! The schedule view: filter tabs/chips, the day/league sections, the up-next
 //! bar, and the match-row rendering + progressive-reveal machinery.
 use crate::app::*;
+use std::collections::HashMap;
 
 /// Keeps the schedule filter (games + events) in sync with the URL query so a
 /// filtered view is shareable — `?g=cs2&e=<event>`; no filter ⇒ a clean URL. On
@@ -285,9 +286,12 @@ pub(crate) fn FilterTabs(
 
 #[component]
 pub(crate) fn LeagueChips(
-    leagues: Vec<(String, Sport)>,
+    leagues: Vec<(String, Option<Sport>)>,
     selected: RwSignal<HashSet<String>>,
 ) -> impl IntoView {
+    // Remember the sport of a league when its chip is selected, so the chip (and
+    // its ★) survives the league's events leaving the windowed view.
+    let sports = use_context::<SelectedSports>().map(|s| s.0);
     // Multi-select: no active chip means all events. Click a chip's label to
     // include its league in the filter; click again to drop it. The embedded ★
     // subscribes to the whole chip via the `league` scope. For a single-edition
@@ -300,8 +304,13 @@ pub(crate) fn LeagueChips(
             let lc = league_color_class(&name);
             let sel_name = name.clone();
             let click_name = name.clone();
-            let sub_value = name.clone();
             let is_active = move || selected.with(|s| s.contains(&sel_name));
+            // The ★ only when we know the league's sport — a persistent chip whose
+            // events have left the window (and was never seen this session) renders
+            // label-only, still clickable to clear.
+            let star = sport.map(|sp| {
+                view! { <SubscribeStar kind="league" sport=sp value=name.clone() /> }
+            });
             view! {
                 <span class=format!("chip chip-with-star {lc}") class:active=is_active>
                     <button
@@ -311,6 +320,13 @@ pub(crate) fn LeagueChips(
                                 .update(|s| {
                                     if !s.remove(&click_name) {
                                         s.insert(click_name.clone());
+                                        // Remember the sport so the chip survives the
+                                        // league's events leaving the window.
+                                        if let (Some(sp), Some(ss)) = (sport, sports) {
+                                            ss.update(|m| {
+                                                m.insert(click_name.clone(), sp);
+                                            });
+                                        }
                                     }
                                 });
                             #[cfg(feature = "hydrate")]
@@ -319,7 +335,7 @@ pub(crate) fn LeagueChips(
                     >
                         {name}
                     </button>
-                    <SubscribeStar kind="league" sport=sport value=sub_value />
+                    {star}
                 </span>
             }
         })
@@ -370,6 +386,27 @@ fn chip_state(
         !available.is_empty()
     };
     (available, show_chips)
+}
+
+/// The chip list for the row: every available league (with its sport), then a chip
+/// for each *selected* league that isn't in the current window — using its
+/// remembered sport when known (full chip with ★), else `None` (label-only). So a
+/// selected filter never disappears just because its events scrolled out of view.
+fn chips_with_selected(
+    available: &[(String, Sport)],
+    selected: &HashSet<String>,
+    sports: &HashMap<String, Sport>,
+) -> Vec<(String, Option<Sport>)> {
+    let mut out: Vec<(String, Option<Sport>)> = available
+        .iter()
+        .map(|(n, s)| (n.clone(), Some(*s)))
+        .collect();
+    for name in selected {
+        if !available.iter().any(|(n, _)| n == name) {
+            out.push((name.clone(), sports.get(name).copied()));
+        }
+    }
+    out
 }
 
 /// Order-independent fingerprint of the editions-with-upcoming set.
@@ -577,7 +614,16 @@ pub(crate) fn ScheduleSection(
                 match resource.get() {
                     Some(Ok(s)) => {
                         let games_set = games.get();
-                        let (available, show_chips) = chip_state(&s, &games_set, trad);
+                        let (available, mut show_chips) = chip_state(&s, &games_set, trad);
+                        // Keep a chip for every selected league, even one whose
+                        // events have left the window, so the filter never vanishes
+                        // until you clear it (and the row stays shown while selected).
+                        let sel = leagues.get();
+                        let sel_sports = use_context::<SelectedSports>()
+                            .map(|s| s.0.get())
+                            .unwrap_or_default();
+                        let chip_list = chips_with_selected(&available, &sel, &sel_sports);
+                        show_chips = show_chips || !sel.is_empty();
                         if let Some(LastUpdated(lu)) = use_context::<LastUpdated>() {
                             lu.set(Some(s.fetched_label.clone()));
                         }
@@ -605,7 +651,7 @@ pub(crate) fn ScheduleSection(
                         let note = notes.join(" · ");
                         view! {
                             {if show_chips {
-                                view! { <LeagueChips leagues=available selected=leagues /> }
+                                view! { <LeagueChips leagues=chip_list selected=leagues /> }
                                     .into_any()
                             } else if !games_set.is_empty() {
                                 // A game filter is active but matched no competition
@@ -1595,4 +1641,34 @@ pub(crate) fn MatchRow(m: MatchView, show_bo: bool, push: bool) -> impl IntoView
         </div>
     }
     .into_any()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::{HashMap, HashSet};
+
+    #[test]
+    fn chips_with_selected_keeps_selected_out_of_window() {
+        let available = vec![
+            ("LCK".to_string(), Sport::Lol),
+            ("MLB".to_string(), Sport::Mlb),
+        ];
+        let selected: HashSet<String> = ["LCK".into(), "IEM Cologne".into(), "Ghost".into()]
+            .into_iter()
+            .collect();
+        let mut sports = HashMap::new();
+        sports.insert("IEM Cologne".to_string(), Sport::Cs2); // remembered from a click
+        let out = chips_with_selected(&available, &selected, &sports);
+        // Available leagues come first, in order, with their sport.
+        assert_eq!(out[0], ("LCK".to_string(), Some(Sport::Lol)));
+        assert_eq!(out[1], ("MLB".to_string(), Some(Sport::Mlb)));
+        // Selected-but-out-of-window leagues are appended: a known sport carries
+        // through, an unknown one (never seen this session) is None (label-only).
+        let rest: HashMap<String, Option<Sport>> = out[2..].iter().cloned().collect();
+        assert_eq!(rest.get("IEM Cologne"), Some(&Some(Sport::Cs2)));
+        assert_eq!(rest.get("Ghost"), Some(&None));
+        // A league both selected and available isn't duplicated.
+        assert_eq!(out.iter().filter(|(n, _)| n == "LCK").count(), 1);
+    }
 }

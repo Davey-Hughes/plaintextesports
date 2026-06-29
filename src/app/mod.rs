@@ -214,6 +214,10 @@ struct LaterDays(RwSignal<i64>);
 struct Games(RwSignal<HashSet<String>>);
 #[derive(Clone, Copy)]
 struct Leagues(RwSignal<HashSet<String>>);
+/// The sport of each league a filter chip was selected for, remembered so a chip
+/// stays renderable (with its ★) even after its events leave the windowed view.
+#[derive(Clone, Copy)]
+struct SelectedSports(RwSignal<std::collections::HashMap<String, Sport>>);
 /// The server's data-freshness time, shown in the header (None until a schedule
 /// loads). A bump of `RefreshTrigger` makes the schedule refetch from the server.
 #[derive(Clone, Copy)]
@@ -267,6 +271,7 @@ pub fn App() -> impl IntoView {
     // link paints already-filtered, with no flash of the full schedule.
     let games = RwSignal::new(initial_games());
     let leagues = RwSignal::new(initial_leagues());
+    let selected_sports = RwSignal::new(std::collections::HashMap::<String, Sport>::new());
     // Header data-freshness label + a manual-refresh trigger.
     let last_updated = RwSignal::new(None::<String>);
     let refresh_trigger = RwSignal::new(0u64);
@@ -291,6 +296,7 @@ pub fn App() -> impl IntoView {
     provide_context(LaterDays(later));
     provide_context(Games(games));
     provide_context(Leagues(leagues));
+    provide_context(SelectedSports(selected_sports));
     provide_context(LastUpdated(last_updated));
     provide_context(RefreshTrigger(refresh_trigger));
     provide_context(SportMode(traditional));
