@@ -12,10 +12,12 @@ ROOT="$(cd "$SRC/../.." && pwd)"
 OUT="${1:-$ROOT/icons}"
 mkdir -p "$OUT"
 
-# PWA / apple-touch rasters from the standard mark.
+# PWA rasters from the standard square mark.
 rsvg-convert -w 512 -h 512 "$SRC/pte.svg" -o "$OUT/icon-512.png"
 rsvg-convert -w 192 -h 192 "$SRC/pte.svg" -o "$OUT/icon-192.png"
-rsvg-convert -w 180 -h 180 "$SRC/pte.svg" -o "$OUT/apple-touch-icon.png"
+# Apple touch icon from the rounded-frame mark: iOS masks it to a squircle, so the
+# grey border is rounded + inset to follow that shape instead of being clipped.
+rsvg-convert -w 180 -h 180 "$SRC/pte-apple.svg" -o "$OUT/apple-touch-icon.png"
 # Maskable (Android) from the safe-zone mark.
 rsvg-convert -w 512 -h 512 "$SRC/pte-maskable.svg" -o "$OUT/icon-512-maskable.png"
 optipng -quiet -o2 "$OUT/icon-512.png" "$OUT/icon-192.png" \
