@@ -86,6 +86,28 @@ fn parse_dt(s: &str) -> Option<DateTime<Utc>> {
         .map(|d| d.with_timezone(&Utc))
 }
 
+/// Deserialize a field the feed may send as JSON `null` (a DNS/DNF row's
+/// `stageTime`/`diffFirst`/`lapTime`, etc.) into `T::default()`. `#[serde(default)]`
+/// alone only covers an *absent* field; a present `null` would otherwise error and
+/// fail the whole array. Pair with `default` so absent fields still work too.
+fn de_null_default<'de, D, T>(d: D) -> Result<T, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Default + serde::Deserialize<'de>,
+{
+    Ok(Option::<T>::deserialize(d)?.unwrap_or_default())
+}
+
+/// A finishing position, blanking the literal string "null" some DNS/DNF rows
+/// carry so it doesn't render as a "null" position.
+fn clean_pos(p: &str) -> String {
+    if p == "null" {
+        String::new()
+    } else {
+        p.to_string()
+    }
+}
+
 // ----- Shared location shape ------------------------------------------------
 
 #[derive(Deserialize, Default)]
@@ -893,11 +915,11 @@ struct WrcResultRow {
     team: Option<NamedRef>,
     #[serde(default)]
     manufacturer: Option<NamedRef>,
-    #[serde(rename = "totalTime", default)]
+    #[serde(rename = "totalTime", default, deserialize_with = "de_null_default")]
     total_time: String,
-    #[serde(rename = "stageTime", default)]
+    #[serde(rename = "stageTime", default, deserialize_with = "de_null_default")]
     stage_time: String,
-    #[serde(rename = "diffFirst", default)]
+    #[serde(rename = "diffFirst", default, deserialize_with = "de_null_default")]
     diff_first: String,
 }
 
@@ -923,7 +945,7 @@ fn wrc_result_rows(rows: &[WrcResultRow]) -> Vec<crate::types::MotorResultRow> {
                 .or_else(|| r.manufacturer.as_ref().map(|m| m.name.clone()))
                 .unwrap_or_default();
             crate::types::MotorResultRow {
-                pos: r.position.clone(),
+                pos: clean_pos(&r.position),
                 name: r.driver.name(),
                 codriver: r.co_driver.name(),
                 team,
@@ -944,7 +966,7 @@ struct MotoResultRow {
     driver: Person,
     #[serde(default)]
     team: Option<NamedRef>,
-    #[serde(rename = "lapTime", default)]
+    #[serde(rename = "lapTime", default, deserialize_with = "de_null_default")]
     lap_time: String,
     #[serde(default)]
     gap: Option<String>,
@@ -960,7 +982,7 @@ fn motogp_result_rows(rows: &[MotoResultRow]) -> Vec<crate::types::MotorResultRo
                 r.lap_time.clone()
             };
             crate::types::MotorResultRow {
-                pos: r.position.clone(),
+                pos: clean_pos(&r.position),
                 name: r.driver.name(),
                 codriver: String::new(),
                 team: r.team.as_ref().map(|t| t.name.clone()).unwrap_or_default(),
@@ -1024,7 +1046,7 @@ fn wec_result_rows(rows: &[WecResultRow]) -> Vec<crate::types::MotorResultRow> {
             .or_else(|| head.laps.map(|l| format!("{l} laps")))
             .unwrap_or_default();
         out.push(crate::types::MotorResultRow {
-            pos: pos.clone(),
+            pos: clean_pos(pos),
             name: names.join(" · "),
             codriver: String::new(),
             team,
@@ -1572,5 +1594,45 @@ mod tests {
         // Leader shows the absolute time; others the gap.
         assert_eq!(out[0].time, "39:51.297");
         assert_eq!(out[1].time, "+1.803");
+    }
+
+    #[test]
+    fn wrc_results_tolerate_null_times_on_dns_rows() {
+        // A DNS/DNF row sends stageTime/diffFirst as JSON null (present, not absent),
+        // and position as the literal string "null". #[serde(default)] alone errors on
+        // a present null and would drop the whole stage's results.
+        let json = r#"[
+          {"position":"1","driver":{"firstName":"Sébastien","lastName":"OGIER"},
+           "team":{"name":"TOYOTA GAZOO RACING WRT"},"stageTime":"11:10.909","diffFirst":"0.000"},
+          {"position":"null","status":"DNS","driver":{"firstName":"Dani","lastName":"SORDO"},
+           "team":{"name":"Hyundai"},"stageTime":null,"diffFirst":null}
+        ]"#;
+        let rows: Vec<WrcResultRow> = serde_json::from_str(json).unwrap();
+        let out = wrc_result_rows(&rows);
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[0].name, "Sébastien OGIER");
+        assert_eq!(out[0].time, "11:10.909");
+        // The DNS row parses (instead of failing the whole array): blank position,
+        // empty time.
+        assert_eq!(out[1].name, "Dani SORDO");
+        assert_eq!(out[1].pos, "");
+        assert_eq!(out[1].time, "");
+    }
+
+    #[test]
+    fn motogp_results_tolerate_null_lap_time() {
+        // A DNF rider can send lapTime as null; it must not fail the whole session.
+        let json = r#"[
+          {"position":"1","driver":{"firstName":"Marc","lastName":"Marquez"},
+           "team":{"name":"Ducati Lenovo Team"},"lapTime":"39:51.297","gap":null},
+          {"position":"null","driver":{"firstName":"Joan","lastName":"Mir"},
+           "team":{"name":"Honda HRC"},"lapTime":null,"gap":null}
+        ]"#;
+        let rows: Vec<MotoResultRow> = serde_json::from_str(json).unwrap();
+        let out = motogp_result_rows(&rows);
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[1].name, "Joan Mir");
+        assert_eq!(out[1].pos, "");
+        assert_eq!(out[1].time, "");
     }
 }
