@@ -282,20 +282,24 @@ impl Config {
             .filter(|s| !s.is_empty());
         // Per-series, proximity-driven cadence sized for the free tier's 250
         // req/day across WRC + WEC + MotoGP. Each series is polled only as fast as
-        // its nearest event warrants: off-season at the slow `idle` tier (a daily
-        // tick just to catch schedule changes), ramping to `near` within ~2 weeks
-        // of an event, and `live` only while a session of THAT series is running or
-        // imminent. So a quiet day costs a handful of requests and even a race day
-        // stays well under the cap — versus a flat hourly poll of all three, which
-        // burned ~120-144/day around the clock. Standings change only post-round,
-        // so they sit on a daily floor and refresh sooner right after a round.
+        // its nearest event warrants: off-season at the slow `idle` tier (a
+        // ~2-day tick just to catch schedule changes), ramping to `near` within
+        // ~2 weeks of an event, and `live` only while a session of THAT series is
+        // running or imminent. So a quiet day costs a handful of requests and even
+        // a race day stays well under the cap — versus a flat hourly poll of all
+        // three, which burned ~120-144/day around the clock. Standings change only
+        // post-round, so they sit on a multi-day floor and refresh right after a
+        // round via the edge-trigger. The idle + standings cadences were lengthened
+        // (24h → 48h / 72h) once results + standings became DB-persisted — a
+        // restart now reloads them from the cache rather than re-polling, so the
+        // periodic floor only needs to catch genuine between-poll changes.
         let ocblacktop_live_poll = Duration::from_secs(secs("OCBLACKTOP_LIVE_POLL_SECS", 300, 60));
         let ocblacktop_near_poll =
             Duration::from_secs(secs("OCBLACKTOP_NEAR_POLL_SECS", 10800, 300));
         let ocblacktop_idle_poll =
-            Duration::from_secs(secs("OCBLACKTOP_IDLE_POLL_SECS", 86400, 3600));
+            Duration::from_secs(secs("OCBLACKTOP_IDLE_POLL_SECS", 172800, 3600));
         let ocblacktop_standings_poll =
-            Duration::from_secs(secs("OCBLACKTOP_STANDINGS_POLL_SECS", 86400, 3600));
+            Duration::from_secs(secs("OCBLACKTOP_STANDINGS_POLL_SECS", 259200, 3600));
         let ocblacktop_daily_cap = secs("OCBLACKTOP_DAILY_CAP", 240, 0);
 
         let tz = get("DISPLAY_TZ")
@@ -403,8 +407,8 @@ mod tests {
         assert!(c.ocblacktop_token.is_none());
         assert_eq!(c.ocblacktop_live_poll.as_secs(), 300);
         assert_eq!(c.ocblacktop_near_poll.as_secs(), 10800);
-        assert_eq!(c.ocblacktop_idle_poll.as_secs(), 86400);
-        assert_eq!(c.ocblacktop_standings_poll.as_secs(), 86400);
+        assert_eq!(c.ocblacktop_idle_poll.as_secs(), 172800);
+        assert_eq!(c.ocblacktop_standings_poll.as_secs(), 259200);
         assert_eq!(c.ocblacktop_daily_cap, 240);
         assert_eq!(c.tz, chrono_tz::America::Los_Angeles);
         assert_eq!(c.idle_poll.as_secs(), 1200);
@@ -458,7 +462,7 @@ mod tests {
             cfg(&[("OCBLACKTOP_STANDINGS_POLL_SECS", "100")])
                 .ocblacktop_standings_poll
                 .as_secs(),
-            86400 // below min 3600 -> default
+            259200 // below min 3600 -> default
         );
     }
 
