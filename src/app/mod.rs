@@ -72,7 +72,34 @@ pub fn shell(options: LeptosOptions) -> impl IntoView {
             <head>
                 <meta charset="utf-8" />
                 <meta name="viewport" content="width=device-width, initial-scale=1" />
-                <link rel="icon" href="data:," />
+                // Optional site icons + PWA manifest, loaded at runtime from
+                // `icons_dir`. Emit real links only for files present at startup;
+                // when no favicon file exists, keep the empty-data icon (suppresses
+                // the default /favicon.ico probe) exactly as before. See
+                // `initial_icons`.
+                {
+                    let icons = initial_icons();
+                    view! {
+                        {(!icons.has_favicon())
+                            .then(|| view! { <link rel="icon" href="data:," /> })}
+                        {icons.ico.then(|| {
+                            view! { <link rel="icon" href="/favicon.ico" sizes="32x32" /> }
+                        })}
+                        {icons.svg.then(|| {
+                            view! {
+                                <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+                            }
+                        })}
+                        {icons.apple.then(|| {
+                            view! { <link rel="apple-touch-icon" href="/apple-touch-icon.png" /> }
+                        })}
+                        {icons.manifest.then(|| {
+                            view! { <link rel="manifest" href="/manifest.webmanifest" /> }
+                        })}
+                        {icons.has_favicon()
+                            .then(|| view! { <meta name="theme-color" content="#0d0d0d" /> })}
+                    }
+                }
                 // The VAPID public key (when Web Push is configured) so the client
                 // can render the subscribe ★s on the first paint without a fetch.
                 {initial_vapid().map(|k| view! { <meta name="pte-vapid" content=k /> })}
