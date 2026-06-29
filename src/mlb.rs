@@ -405,7 +405,7 @@ pub async fn fetch_schedule(
 /// viewer's tz (always mutually consistent), plus the same instant in the
 /// ballpark's local tz as a full "date · time tz" string (empty when the venue tz
 /// is unknown or identical to the viewer's). Built by the caller, which owns the
-/// tz preference; see [`build_series`].
+/// tz preference; see [`format_series`].
 #[derive(Default)]
 pub struct SeriesLabels {
     pub day: String,
@@ -413,26 +413,45 @@ pub struct SeriesLabels {
     pub venue: String,
 }
 
-/// Build the [`Series`] view for the headline game `game_pk`, given the raw games
+/// A tz-agnostic series (cacheable, keyed by match id) — the raw data
+/// `format_series` turns into a display [`crate::types::Series`] per request tz.
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
+pub struct RawSeries {
+    pub games: Vec<RawSeriesGame>,
+    pub game_label: String,
+    pub record_label: String,
+}
+
+/// One game of a [`RawSeries`], with the UTC start + venue tz kept raw.
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
+pub struct RawSeriesGame {
+    pub match_id: i64,
+    pub begin_at: Option<DateTime<Utc>>,
+    pub venue_tz: Option<String>,
+    pub team_a: String,
+    pub team_b: String,
+    pub score_a: Option<i64>,
+    pub score_b: Option<i64>,
+    pub winner: String,
+    pub status: MatchStatus,
+    pub current: bool,
+}
+
+/// Build the [`RawSeries`] for the headline game `game_pk`, given the raw games
 /// of the series (already fetched, in any order) and the headline orientation:
 /// `(team_a_id, team_a_label)` is the headline's left side, `team_b_label` the
 /// right (any game side that isn't `team_a_id` is team B). Games are oriented to
 /// the headline (so each row reads `team_a` vs `team_b` consistently), ordered by
 /// series game number, the current game flagged, and the spoiler-bearing record
-/// computed from finished games. `fmt_labels` turns a game's UTC start (+ the
-/// venue tz, if known) into its `(date, time, venue)` labels (supplied by the
-/// caller, which owns the tz/12h-24h preference), so the date and time on a row
-/// always agree and the time can toggle to the ballpark's local time.
-fn build_series(
+/// computed from finished games. The UTC start + venue tz are kept raw so the
+/// series can be cached once and re-formatted per request via [`format_series`].
+fn build_raw_series(
     games: Vec<RawGame>,
     game_pk: i64,
     team_a_id: i64,
     team_a_label: &str,
     team_b_label: &str,
-    fmt_labels: impl Fn(DateTime<Utc>, Option<&str>) -> SeriesLabels,
-) -> crate::types::Series {
-    use crate::types::SeriesGame;
-
+) -> RawSeries {
     // Keep only games of *this* series (same length + a real series number), so a
     // padded window can't pull in an adjacent series between the same two teams.
     let anchor_len = games
@@ -455,7 +474,7 @@ fn build_series(
             .then_with(|| x.game_pk.cmp(&y.game_pk))
     });
 
-    let mut games_out: Vec<SeriesGame> = Vec::with_capacity(raw.len());
+    let mut games_out: Vec<RawSeriesGame> = Vec::with_capacity(raw.len());
     // Series record from the headline-A side's perspective, counting only final
     // games (ties don't move the count).
     let (mut wins_a, mut wins_b) = (0i32, 0i32);
@@ -481,18 +500,14 @@ fn build_series(
                 }
             }
         }
-        // Format the date+time in the viewer's tz (so they always agree) and the
-        // ballpark's local time for the venue toggle. The venue tz is per-game
-        // (a series can move cities, e.g. a neutral-site game).
-        let venue_tz = Some(g.venue.time_zone.id.as_str()).filter(|s| !s.is_empty());
-        let labels = DateTime::parse_from_rfc3339(&g.game_date)
+        let venue_tz = Some(g.venue.time_zone.id.clone()).filter(|s| !s.is_empty());
+        let begin_at = DateTime::parse_from_rfc3339(&g.game_date)
             .ok()
-            .map(|d| fmt_labels(d.with_timezone(&Utc), venue_tz))
-            .unwrap_or_default();
-        games_out.push(SeriesGame {
-            day_label: labels.day,
-            clock_label: labels.clock,
-            venue_label: labels.venue,
+            .map(|d| d.with_timezone(&Utc));
+        games_out.push(RawSeriesGame {
+            match_id: g.game_pk,
+            begin_at,
+            venue_tz,
             team_a: team_a_label.to_string(),
             team_b: team_b_label.to_string(),
             score_a: sa,
@@ -500,7 +515,6 @@ fn build_series(
             winner,
             status,
             current: g.game_pk == game_pk,
-            match_id: g.game_pk,
         });
     }
 
@@ -514,10 +528,49 @@ fn build_series(
         .map(|(n, total)| format!("Game {n} of {total}"))
         .unwrap_or_default();
 
-    crate::types::Series {
+    RawSeries {
         games: games_out,
         game_label,
         record_label: series_record_label(wins_a, wins_b, team_a_label, team_b_label, anchor_len),
+    }
+}
+
+/// Turn a [`RawSeries`] into the display [`crate::types::Series`], formatting each
+/// game's date/time labels with `fmt_labels` (the caller owns the display-tz /
+/// 12h-24h preference). Pure — no I/O — so the raw series can be cached once and
+/// re-formatted per request.
+pub fn format_series(
+    raw: &RawSeries,
+    fmt_labels: impl Fn(DateTime<Utc>, Option<&str>) -> SeriesLabels,
+) -> crate::types::Series {
+    use crate::types::SeriesGame;
+    let games = raw
+        .games
+        .iter()
+        .map(|g| {
+            let labels = g
+                .begin_at
+                .map(|utc| fmt_labels(utc, g.venue_tz.as_deref()))
+                .unwrap_or_default();
+            SeriesGame {
+                day_label: labels.day,
+                clock_label: labels.clock,
+                venue_label: labels.venue,
+                team_a: g.team_a.clone(),
+                team_b: g.team_b.clone(),
+                score_a: g.score_a,
+                score_b: g.score_b,
+                winner: g.winner.clone(),
+                status: g.status,
+                current: g.current,
+                match_id: g.match_id,
+            }
+        })
+        .collect();
+    crate::types::Series {
+        games,
+        game_label: raw.game_label.clone(),
+        record_label: raw.record_label.clone(),
     }
 }
 
@@ -549,13 +602,12 @@ fn series_record_label(
     }
 }
 
-/// Fetch the whole series between the two teams for the headline game and build
-/// its [`Series`] view. `begin_at` anchors a tight date window (the series can't
-/// span more than `games_in_series` days plus a doubleheader, so pad generously).
-/// `team_a`/`team_b` are the headline's away/home labels; `series` carries the
-/// team ids + this game's series position. `fmt_labels` turns a game's UTC start
-/// (and the venue's IANA tz, if known) into the `(date, time, venue)` labels for
-/// the row — the caller owns the display-tz/12h-24h preference.
+/// Fetch the whole series between the two teams for the headline game and return
+/// the tz-agnostic [`RawSeries`]. `begin_at` anchors a tight date window (the
+/// series can't span more than `games_in_series` days plus a doubleheader, so pad
+/// generously). `team_a`/`team_b` are the headline's away/home labels; `series`
+/// carries the team ids + this game's series position. Call [`format_series`] on
+/// the result to produce per-request display labels.
 pub async fn fetch_series(
     client: &reqwest::Client,
     game_pk: i64,
@@ -563,12 +615,11 @@ pub async fn fetch_series(
     team_a_label: &str,
     team_b_label: &str,
     series: crate::types::MlbSeriesRef,
-    fmt_labels: impl Fn(DateTime<Utc>, Option<&str>) -> SeriesLabels,
-) -> Result<crate::types::Series, reqwest::Error> {
+) -> Result<RawSeries, reqwest::Error> {
     let date = begin_at.date_naive();
     // The series spans from (this game - (n-1)) to (this game + (total-n)) days.
-    // Pad ±1 day for late-night/cross-midnight starts; build_series then filters
-    // to the contiguous series of the right length.
+    // Pad ±1 day for late-night/cross-midnight starts; build_raw_series then
+    // filters to the contiguous series of the right length.
     let before = i64::from((series.game_number - 1).max(0)) + 1;
     let after = i64::from((series.games_in_series - series.game_number).max(0)) + 1;
     let start = date - chrono::Duration::days(before);
@@ -588,13 +639,12 @@ pub async fn fetch_series(
         .json()
         .await?;
     let games: Vec<RawGame> = resp.dates.into_iter().flat_map(|d| d.games).collect();
-    Ok(build_series(
+    Ok(build_raw_series(
         games,
         game_pk,
         series.team_id_a,
         team_a_label,
         team_b_label,
-        fmt_labels,
     ))
 }
 
@@ -894,14 +944,14 @@ mod tests {
     #[test]
     fn series_orients_to_headline_orders_and_flags_current() {
         // Headline is G2 (gamePk 822799); team_a = away Astros(117), team_b = home Jays(141).
-        let series = build_series(
+        let raw = build_raw_series(
             raw_series_games(sample_series_json()),
             822799,
             117,
             "Astros",
             "Blue Jays",
-            utc_labels,
         );
+        let series = format_series(&raw, utc_labels);
         assert_eq!(series.games.len(), 3);
         // Ordered by series game number; each row oriented to the headline (a=Astros).
         assert_eq!(series.games[0].day_label, "Mon, Jun 22");
@@ -936,14 +986,14 @@ mod tests {
     #[test]
     fn series_orients_when_headline_team_a_is_home() {
         // Flip the headline orientation: team_a = home Jays(141), team_b = away Astros(117).
-        let series = build_series(
+        let raw = build_raw_series(
             raw_series_games(sample_series_json()),
             822799,
             141,
             "Blue Jays",
             "Astros",
-            utc_labels,
         );
+        let series = format_series(&raw, utc_labels);
         // G1: Jays beat Astros 4-2 → a=4, b=2, winner "a".
         assert_eq!(
             (series.games[0].score_a, series.games[0].score_b),
@@ -994,7 +1044,8 @@ mod tests {
             broadcasts: Vec::new(),
             venue: RawVenue::default(),
         });
-        let series = build_series(games, 822799, 117, "Astros", "Blue Jays", utc_labels);
+        let raw = build_raw_series(games, 822799, 117, "Astros", "Blue Jays");
+        let series = format_series(&raw, utc_labels);
         // Only the three 3-game-series games survive.
         assert_eq!(series.games.len(), 3);
         assert!(series.games.iter().all(|g| g.match_id != 999999));
@@ -1026,6 +1077,43 @@ mod tests {
         assert_eq!(
             series_record_label(2, 0, "A", "B", 2),
             "A win series 2\u{2013}0"
+        );
+    }
+
+    #[test]
+    fn format_series_applies_labels_and_keeps_raw_fields() {
+        let raw = RawSeries {
+            game_label: "Game 1 of 3".to_string(),
+            record_label: String::new(),
+            games: vec![RawSeriesGame {
+                match_id: 42,
+                begin_at: "2026-06-23T23:10:00Z".parse::<DateTime<Utc>>().ok(),
+                venue_tz: Some("America/New_York".to_string()),
+                team_a: "NYY".to_string(),
+                team_b: "BOS".to_string(),
+                score_a: Some(5),
+                score_b: Some(3),
+                winner: "a".to_string(),
+                status: MatchStatus::Finished,
+                current: true,
+            }],
+        };
+        // A trivial formatter: prove the closure receives the UTC start + venue tz,
+        // and its output lands in the SeriesGame labels.
+        let series = format_series(&raw, |utc, tz| SeriesLabels {
+            day: utc.format("%Y-%m-%d").to_string(),
+            clock: utc.format("%H:%M").to_string(),
+            venue: tz.unwrap_or("").to_string(),
+        });
+        assert_eq!(series.game_label, "Game 1 of 3");
+        let g = &series.games[0];
+        assert_eq!(g.match_id, 42);
+        assert_eq!(g.day_label, "2026-06-23");
+        assert_eq!(g.clock_label, "23:10");
+        assert_eq!(g.venue_label, "America/New_York");
+        assert_eq!(
+            (g.score_a, g.score_b, g.winner.as_str(), g.current),
+            (Some(5), Some(3), "a", true)
         );
     }
 }
