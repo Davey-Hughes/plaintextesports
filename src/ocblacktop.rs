@@ -584,7 +584,8 @@ fn sessions_to_matches(
 }
 
 /// Every WEC session of an event as its own row (placeholders for unpublished
-/// rounds). WEC results aren't wired up, so no result links.
+/// rounds). WEC sessions carry results (race / qualifying), so they get result
+/// links — the detail/event pages fetch each session's order on demand.
 fn event_to_matches(e: &Event, now: DateTime<Utc>) -> Vec<NormalizedMatch> {
     sessions_to_matches(
         e,
@@ -592,7 +593,7 @@ fn event_to_matches(e: &Event, now: DateTime<Utc>) -> Vec<NormalizedMatch> {
         WEC_ID_BASE,
         wec_venue_tz(&e.location.country.two_code),
         Duration::hours(8),
-        false,
+        true,
         now,
     )
 }
@@ -970,6 +971,71 @@ fn motogp_result_rows(rows: &[MotoResultRow]) -> Vec<crate::types::MotorResultRo
         .collect()
 }
 
+/// A WEC session results row. WEC lists one row per driver, so a crew's 2–3
+/// drivers share a `position`; [`wec_result_rows`] groups them. The leader often
+/// reports only a lap count, so the time falls back through
+/// `gap`/`displayTime`/`lapTime` to "{laps} laps".
+#[derive(Deserialize)]
+struct WecResultRow {
+    #[serde(default)]
+    position: String,
+    #[serde(default)]
+    driver: Person,
+    #[serde(default)]
+    team: Option<NamedRef>,
+    #[serde(default)]
+    laps: Option<i64>,
+    #[serde(rename = "lapTime", default)]
+    lap_time: Option<String>,
+    #[serde(rename = "displayTime", default)]
+    display_time: Option<String>,
+    #[serde(default)]
+    gap: Option<String>,
+}
+
+/// Collapse a WEC session's per-driver rows into one row per car: consecutive
+/// rows sharing a `position` are one crew (driver names joined with " · "),
+/// carrying the team and a single time. Time prefers the gap to the leader, then
+/// an absolute display/lap time, then the lap count.
+fn wec_result_rows(rows: &[WecResultRow]) -> Vec<crate::types::MotorResultRow> {
+    let nonempty = |s: &str| !s.is_empty() && s != "0.000";
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < rows.len() {
+        let pos = &rows[i].position;
+        let mut j = i;
+        let mut names = Vec::new();
+        while j < rows.len() && rows[j].position == *pos {
+            names.push(rows[j].driver.name());
+            j += 1;
+        }
+        let head = &rows[i];
+        let team = head
+            .team
+            .as_ref()
+            .map(|t| t.name.clone())
+            .unwrap_or_default();
+        let time = head
+            .gap
+            .clone()
+            .filter(|s| nonempty(s))
+            .or_else(|| head.display_time.clone().filter(|s| nonempty(s)))
+            .or_else(|| head.lap_time.clone().filter(|s| nonempty(s)))
+            .or_else(|| head.laps.map(|l| format!("{l} laps")))
+            .unwrap_or_default();
+        out.push(crate::types::MotorResultRow {
+            pos: pos.clone(),
+            name: names.join(" · "),
+            codriver: String::new(),
+            team,
+            time,
+            flag: String::new(),
+        });
+        i = j;
+    }
+    out
+}
+
 /// Fetch the classification a [`crate::types::MotorResultRef`] points at: a WRC
 /// rally's overall result (empty session), a single WRC stage's times, or a
 /// MotoGP session's finishing order. One request; empty on any failure. The caller
@@ -999,6 +1065,16 @@ pub async fn fetch_motor_result(
             get::<StageDetail>(client, key, &url)
                 .await
                 .map(|d| wrc_result_rows(&d.results))
+                .unwrap_or_default()
+        }
+        ("WEC", _) => {
+            let url = format!(
+                "{BASE}/wec/events/{}/sessions/{}/results",
+                r.event_id, r.session_id
+            );
+            get::<Vec<WecResultRow>>(client, key, &url)
+                .await
+                .map(|rows| wec_result_rows(&rows))
                 .unwrap_or_default()
         }
         ("MotoGP", _) => {
@@ -1275,6 +1351,31 @@ mod tests {
         // Anything off-calendar simply has no toggle.
         assert_eq!(wec_venue_tz("DE"), None);
         assert_eq!(wec_venue_tz(""), None);
+    }
+
+    #[test]
+    fn wec_results_group_crews_and_fall_back_to_laps() {
+        // WEC lists one row per driver; a crew shares a position. The leader here
+        // reports only a lap count (no gap/displayTime/lapTime).
+        let json = r#"[
+          {"position":"1","driver":{"firstName":"Robert","lastName":"Kubica"},"team":{"name":"AF Corse"},"laps":387,"gap":null,"displayTime":null,"lapTime":null},
+          {"position":"1","driver":{"firstName":"Yifei","lastName":"Ye"},"team":{"name":"AF Corse"},"laps":387},
+          {"position":"1","driver":{"firstName":"Phil","lastName":"Hanson"},"team":{"name":"AF Corse"},"laps":387},
+          {"position":"2","driver":{"firstName":"Matt","lastName":"Campbell"},"team":{"name":"Porsche Penske Motorsport"},"laps":387,"gap":"+1 lap"}
+        ]"#;
+        let rows: Vec<WecResultRow> = serde_json::from_str(json).unwrap();
+        let out = wec_result_rows(&rows);
+        // Three drivers of the winning car collapse to one crew row.
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[0].pos, "1");
+        assert_eq!(out[0].name, "Robert Kubica · Yifei Ye · Phil Hanson");
+        assert_eq!(out[0].codriver, "");
+        assert_eq!(out[0].team, "AF Corse");
+        // Leader: no gap/time → fall back to the lap count.
+        assert_eq!(out[0].time, "387 laps");
+        // Runner-up: the gap to the leader.
+        assert_eq!(out[1].name, "Matt Campbell");
+        assert_eq!(out[1].time, "+1 lap");
     }
 
     #[test]
