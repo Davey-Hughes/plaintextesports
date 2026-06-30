@@ -180,6 +180,22 @@ a {
   flex: 1 0 auto;
 }
 
+// Router navigation crossfade (`<Routes transition=true>` → the View Transition
+// API). The UA default is ~0.25s, which drags on every click; shorten it to a
+// quick swap that still masks the load-state flash. Honour reduced-motion by
+// cutting straight to the new page.
+::view-transition-old(root),
+::view-transition-new(root) {
+  animation-duration: 0.1s;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  ::view-transition-old(root),
+  ::view-transition-new(root) {
+    animation: none;
+  }
+}
+
 // The brand and the back-to-top arrow share the first slot of the sticky toggle
 // bar; `margin-right: auto` pushes the controls to the right. The slot reserves
 // its own space (no overlap at any width), and the bar's `align-items: center`
