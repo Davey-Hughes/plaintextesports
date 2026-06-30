@@ -111,6 +111,7 @@ ssr = [
 [dev-dependencies]
 getrandom = "0.2"
 criterion = "0.5"
+dhat = "0.3"
 
 # Hot-path microbenchmarks. Run: `cargo bench --features ssr`.
 # `tiering::is_tier_one` is the per-match filter the poller runs thousands of
@@ -130,6 +131,12 @@ required-features = ["ssr"]
 # VAPID key generator (cargo run --example gen_vapid --features ssr).
 [[example]]
 name = "gen_vapid"
+required-features = ["ssr"]
+
+# Allocation profile of one homepage render (dhat global allocator).
+# Run: `cargo run --release --example alloc_profile --features ssr`.
+[[example]]
+name = "alloc_profile"
 required-features = ["ssr"]
 
 [profile.wasm-release]
