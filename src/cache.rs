@@ -6,7 +6,7 @@
 //! they never touch the network. When no API token is configured we populate a
 //! demo fixture (relative to "now") so the UI is always usable.
 
-use crate::config::config;
+use crate::config::{config, Config};
 use crate::feed::{FetchResult, NormalizedMatch, NormalizedTeam};
 use crate::pandascore::fetch_game;
 use crate::types::{
@@ -19,7 +19,8 @@ use once_cell::sync::Lazy;
 use std::collections::HashMap;
 use std::sync::{Mutex, PoisonError, RwLock};
 
-struct Snapshot {
+#[doc(hidden)]
+pub struct Snapshot {
     matches: Vec<NormalizedMatch>,
     fetched_at: DateTime<Utc>,
     stale: bool,
@@ -1889,7 +1890,8 @@ fn effective_status(m: &NormalizedMatch, now: DateTime<Utc>) -> MatchStatus {
     }
 }
 
-fn to_view(m: &NormalizedMatch, tz: &Tz, now: DateTime<Utc>, hour24: bool) -> MatchView {
+#[doc(hidden)]
+pub fn to_view(m: &NormalizedMatch, tz: &Tz, now: DateTime<Utc>, hour24: bool) -> MatchView {
     let local = m.begin_at.with_timezone(tz);
     let status = effective_status(m, now);
 
@@ -2071,7 +2073,8 @@ fn pct_encode(s: &str) -> String {
 /// Group already-time-sorted views into per-day buckets, and within each day
 /// into per-league groups (leagues ordered by their earliest match). A league
 /// group's `bo` is set only when every match in it shares the same best-of.
-fn group_days(views: Vec<MatchView>, tz: &Tz) -> Vec<DayGroup> {
+#[doc(hidden)]
+pub fn group_days(views: Vec<MatchView>, tz: &Tz) -> Vec<DayGroup> {
     let mut days: Vec<DayGroup> = Vec::new();
     for v in views {
         let local = DateTime::from_timestamp_millis(v.begin_at_ms)
@@ -2146,7 +2149,8 @@ fn group_days(views: Vec<MatchView>, tz: &Tz) -> Vec<DayGroup> {
 /// sessions, every other sport — pass straight through. Output is re-sorted by
 /// start time, which also reorders any events `next_motorsport_events` appended
 /// out of window. Idempotent on input with no timed WRC stages.
-fn collapse_wrc_days(views: Vec<MatchView>, tz: &Tz, snap: &Snapshot) -> Vec<MatchView> {
+#[doc(hidden)]
+pub fn collapse_wrc_days(views: Vec<MatchView>, tz: &Tz, snap: &Snapshot) -> Vec<MatchView> {
     use std::collections::{BTreeSet, HashMap, HashSet};
 
     let is_stage = |m: &MatchView| {
@@ -2246,8 +2250,9 @@ fn day_status(stages: &[MatchView]) -> MatchStatus {
     }
 }
 
+#[doc(hidden)]
 #[allow(clippy::too_many_arguments)]
-fn matches_in_window(
+pub fn matches_in_window(
     snap: &Snapshot,
     traditional: bool,
     sport: Option<Sport>,
@@ -2286,29 +2291,75 @@ fn resolve_tz(name: &str, default: Tz) -> Tz {
     name.parse::<Tz>().unwrap_or(default)
 }
 
-/// Homepage: live matches pinned, then the next `upcoming_days` grouped by day.
-#[must_use]
-pub fn homepage_view(game_filter: &str, tz_name: &str, hour24: bool) -> ScheduleView {
-    let cfg = config();
-    let tz = resolve_tz(tz_name, cfg.tz);
+/// Freshness metadata copied out of the snapshot before the read lock is
+/// released, so the post-lock assembly doesn't borrow the snapshot.
+struct FreshMeta {
+    fetched_at: DateTime<Utc>,
+    stale: bool,
+    using_fixture: bool,
+}
+
+/// Build the final `ScheduleView` from grouped days + freshness meta. Shared by
+/// every schedule builder so the wire shape stays identical across them; only the
+/// date-navigation trio differs per view.
+#[allow(clippy::too_many_arguments)]
+fn assemble_schedule_view(
+    days: Vec<DayGroup>,
+    tz: &Tz,
+    now: DateTime<Utc>,
+    meta: FreshMeta,
+    demo: bool,
+    hour24: bool,
+    date_label: Option<String>,
+    prev_date: Option<String>,
+    next_date: Option<String>,
+) -> ScheduleView {
+    ScheduleView {
+        days,
+        today_key: now
+            .with_timezone(tz)
+            .date_naive()
+            .format("%Y-%m-%d")
+            .to_string(),
+        fetched_at_ms: meta.fetched_at.timestamp_millis(),
+        fetched_label: time_label(meta.fetched_at.with_timezone(tz), hour24),
+        stale: meta.stale,
+        using_fixture: meta.using_fixture,
+        demo_forced: demo,
+        date_label,
+        prev_date,
+        next_date,
+    }
+}
+
+/// The snapshot-dependent phase of the homepage view: filter the window, surface
+/// each motorsport series' current/next event, and collapse rally stages — every
+/// step that borrows `snap`. Returns owned rows + freshness meta so the caller can
+/// drop the read lock before the sort/clone-heavy `group_days`.
+fn homepage_rows(
+    snap: &Snapshot,
+    cfg: &Config,
+    now: DateTime<Utc>,
+    game_filter: &str,
+    tz: &Tz,
+    hour24: bool,
+) -> (Vec<MatchView>, FreshMeta) {
     let (traditional, sport) = mode_filter(game_filter);
-    let now = Utc::now();
-    let today = now.with_timezone(&tz).date_naive();
-    let start = local_day_start(&tz, today);
+    let today = now.with_timezone(tz).date_naive();
+    let start = local_day_start(tz, today);
     // Traditional sports play daily, so cap the default forward window (the
     // client's "show later days" extends it up to TRAD_FORWARD_MAX). Esports
     // show the full upcoming horizon.
     let end = if traditional {
         local_day_start(
-            &tz,
+            tz,
             today + Duration::days(crate::types::TRAD_FORWARD_DAYS + 1),
         )
     } else {
         now + Duration::days(cfg.upcoming_days)
     };
 
-    let snap = SNAPSHOT.read().unwrap_or_else(PoisonError::into_inner);
-    let mut all = matches_in_window(&snap, traditional, sport, start, end, &tz, now, hour24);
+    let mut all = matches_in_window(snap, traditional, sport, start, end, tz, now, hour24);
     // Motorsport is episodic — events are days/weeks apart and span several days,
     // so the short daily window misses them. Always surface each series' (F1/WRC/
     // WEC) current-or-next event in full (MLB etc. stay compact). The client
@@ -2316,42 +2367,74 @@ pub fn homepage_view(game_filter: &str, tz_name: &str, hour24: bool) -> Schedule
     if traditional {
         let start_ms = start.timestamp_millis();
         let have: std::collections::HashSet<i64> = all.iter().map(|m| m.id).collect();
-        for m in next_motorsport_events(&snap) {
-            // Surface the event's today-or-later rows only. Its already-finished
-            // past days (e.g. the opening leg of a rally that's already under way)
-            // belong on the event page, not the main schedule, which runs from
-            // today forward. Rows within the window arrive via matches_in_window;
-            // this only adds what's beyond it (a future event, or later days of one
-            // running past the forward cap). Filter/dedup before to_view so the
-            // dropped past rows never pay for the conversion.
+        for m in next_motorsport_events(snap) {
+            // Surface the event's today-or-later rows only. Filter/dedup before
+            // to_view so the dropped past rows never pay for the conversion.
             if m.begin_at.timestamp_millis() >= start_ms && !have.contains(&m.id) {
-                all.push(to_view(m, &tz, now, hour24));
+                all.push(to_view(m, tz, now, hour24));
             }
         }
     }
-    // Condense each rally's stages into per-day rows and re-sort by start. The
-    // re-sort matters even with no WRC stages: next_motorsport_events appends
-    // events from outside the daily window (e.g. a live multi-day event that began
-    // before today), and group_days needs time-sorted input.
-    let all = collapse_wrc_days(all, &tz, &snap);
-    // Done with the snapshot — copy the freshness metadata out and release the
-    // read lock before group_days (sort + clones) so it doesn't block the poller's
-    // periodic write.
-    let (fetched_at, stale, using_fixture) = (snap.fetched_at, snap.stale, snap.using_fixture);
+    // Condense each rally's stages into per-day rows and re-sort by start.
+    let all = collapse_wrc_days(all, tz, snap);
+    let meta = FreshMeta {
+        fetched_at: snap.fetched_at,
+        stale: snap.stale,
+        using_fixture: snap.using_fixture,
+    };
+    (all, meta)
+}
+
+/// Homepage: live matches pinned, then the next `upcoming_days` grouped by day.
+#[must_use]
+pub fn homepage_view(game_filter: &str, tz_name: &str, hour24: bool) -> ScheduleView {
+    let cfg = config();
+    let tz = resolve_tz(tz_name, cfg.tz);
+    let now = Utc::now();
+
+    let snap = SNAPSHOT.read().unwrap_or_else(PoisonError::into_inner);
+    let (rows, meta) = homepage_rows(&snap, cfg, now, game_filter, &tz, hour24);
+    // Done with the snapshot — release the read lock before group_days (sort +
+    // clones) so it doesn't block the poller's periodic write.
     drop(snap);
 
-    ScheduleView {
-        days: group_days(all, &tz),
-        today_key: today.format("%Y-%m-%d").to_string(),
-        fetched_at_ms: fetched_at.timestamp_millis(),
-        fetched_label: time_label(fetched_at.with_timezone(&tz), hour24),
-        stale,
-        using_fixture,
-        demo_forced: cfg.demo,
-        date_label: None,
-        prev_date: None,
-        next_date: None,
-    }
+    assemble_schedule_view(
+        group_days(rows, &tz),
+        &tz,
+        now,
+        meta,
+        cfg.demo,
+        hour24,
+        None,
+        None,
+        None,
+    )
+}
+
+/// End-to-end homepage render against an explicit snapshot — the prod pipeline
+/// minus the global lock. Used by benches/examples (the lock is uncontended
+/// there, so this measures the same CPU cost a request pays).
+#[doc(hidden)]
+pub fn homepage_render(
+    snap: &Snapshot,
+    cfg: &Config,
+    now: DateTime<Utc>,
+    game_filter: &str,
+    tz: &Tz,
+    hour24: bool,
+) -> ScheduleView {
+    let (rows, meta) = homepage_rows(snap, cfg, now, game_filter, tz, hour24);
+    assemble_schedule_view(
+        group_days(rows, tz),
+        tz,
+        now,
+        meta,
+        cfg.demo,
+        hour24,
+        None,
+        None,
+        None,
+    )
 }
 
 /// Every row of each motorsport series' soonest not-yet-finished event (an F1
@@ -2364,7 +2447,8 @@ pub fn homepage_view(game_filter: &str, tz_name: &str, hour24: bool) -> Schedule
 /// window and de-duplicate *before* paying for the per-row `to_view` conversion
 /// (a rally has up to ~16 stages, most of them already-finished past days the
 /// homepage then drops). Empty off-season.
-fn next_motorsport_events(snap: &Snapshot) -> Vec<&NormalizedMatch> {
+#[doc(hidden)]
+pub fn next_motorsport_events(snap: &Snapshot) -> Vec<&NormalizedMatch> {
     use std::collections::{HashMap, HashSet};
     // One pass: per league, the series_name of its soonest live/upcoming row.
     let mut soonest: HashMap<&str, (DateTime<Utc>, &str)> = HashMap::new();
@@ -2414,22 +2498,21 @@ pub fn day_view(date: &str, game_filter: &str, tz_name: &str, hour24: bool) -> S
         .earliest()
         .unwrap_or_else(|| tz.from_utc_datetime(&day.and_hms_opt(12, 0, 0).unwrap()));
 
-    ScheduleView {
-        days: group_days(all, &tz),
-        today_key: now
-            .with_timezone(&tz)
-            .date_naive()
-            .format("%Y-%m-%d")
-            .to_string(),
-        fetched_at_ms: fetched_at.timestamp_millis(),
-        fetched_label: time_label(fetched_at.with_timezone(&tz), hour24),
-        stale,
-        using_fixture,
-        demo_forced: cfg.demo,
-        date_label: Some(day_label(local_noon)),
-        prev_date: Some((day - Duration::days(1)).format("%Y-%m-%d").to_string()),
-        next_date: Some((day + Duration::days(1)).format("%Y-%m-%d").to_string()),
-    }
+    assemble_schedule_view(
+        group_days(all, &tz),
+        &tz,
+        now,
+        FreshMeta {
+            fetched_at,
+            stale,
+            using_fixture,
+        },
+        cfg.demo,
+        hour24,
+        Some(day_label(local_noon)),
+        Some((day - Duration::days(1)).format("%Y-%m-%d").to_string()),
+        Some((day + Duration::days(1)).format("%Y-%m-%d").to_string()),
+    )
 }
 
 /// Schedule for an inclusive date range `[start_date, end_date]` (ISO dates in
@@ -2461,22 +2544,21 @@ pub fn range_view(
     let (fetched_at, stale, using_fixture) = (snap.fetched_at, snap.stale, snap.using_fixture);
     drop(snap);
 
-    ScheduleView {
-        days: group_days(all, &tz),
-        today_key: now
-            .with_timezone(&tz)
-            .date_naive()
-            .format("%Y-%m-%d")
-            .to_string(),
-        fetched_at_ms: fetched_at.timestamp_millis(),
-        fetched_label: time_label(fetched_at.with_timezone(&tz), hour24),
-        stale,
-        using_fixture,
-        demo_forced: cfg.demo,
-        date_label: None,
-        prev_date: None,
-        next_date: None,
-    }
+    assemble_schedule_view(
+        group_days(all, &tz),
+        &tz,
+        now,
+        FreshMeta {
+            fetched_at,
+            stale,
+            using_fixture,
+        },
+        cfg.demo,
+        hour24,
+        None,
+        None,
+        None,
+    )
 }
 
 /// All cached matches for one event/league (past + upcoming), grouped by day.
@@ -3981,6 +4063,88 @@ fn demo_matches(now: DateTime<Utc>) -> Vec<NormalizedMatch> {
     out
 }
 
+// ----- Bench/profile fixtures (server-only, doc-hidden) --------------------
+
+/// Build a `Snapshot` from explicit rows (bench/example helper).
+#[doc(hidden)]
+#[must_use]
+pub fn snapshot_from(matches: Vec<NormalizedMatch>, now: DateTime<Utc>) -> Snapshot {
+    Snapshot {
+        matches,
+        fetched_at: now,
+        stale: false,
+        using_fixture: false,
+    }
+}
+
+/// Deterministic synthetic match set of size `n` for benches/profiling: rows
+/// spread across ±10 days around `now`, cycling sports/leagues/statuses, plus one
+/// multi-stage WRC rally so `collapse_wrc_days` does real work. Index-seeded (no
+/// RNG) so runs are comparable.
+#[doc(hidden)]
+#[must_use]
+pub fn synthetic_matches(n: usize, now: DateTime<Utc>) -> Vec<NormalizedMatch> {
+    use MatchStatus::{Finished, Live, Upcoming};
+    let sports = [
+        Sport::Cs2,
+        Sport::Lol,
+        Sport::Mlb,
+        Sport::Nhl,
+        Sport::Soccer,
+    ];
+    let leagues = ["LEC", "LCK", "IEM", "MLB", "NHL", "EPL"];
+    let mut out = Vec::with_capacity(n);
+    for i in 0..n {
+        let idx = i as i64;
+        let sport = sports[i % sports.len()];
+        let league = leagues[i % leagues.len()];
+        let begin_at = now + Duration::days((idx % 20) - 5) + Duration::minutes((idx % 24) * 30);
+        let status = match i % 7 {
+            0 => Live,
+            1 | 2 => Finished,
+            _ => Upcoming,
+        };
+        let score = matches!(status, Finished | Live).then_some(idx % 5);
+        let tier = if i % 3 == 0 { "s" } else { "a" };
+        out.push(demo_match(
+            idx,
+            sport,
+            league,
+            tier,
+            begin_at,
+            status,
+            3,
+            demo_team(&format!("T{idx}A"), score),
+            demo_team(&format!("T{idx}B"), score.map(|s| 5 - s)),
+        ));
+    }
+    // One multi-stage rally (12 stages over 4 days) to exercise collapse_wrc_days.
+    let series = "Synthetic Rally 2026";
+    for stage in 0..12i64 {
+        let day = stage / 3; // ~3 stages/day across 4 days
+        let mut m = NormalizedMatch::team_sport(
+            1_000_000 + stage,
+            Sport::Motorsport,
+            "WRC",
+            now + Duration::days(day) + Duration::hours(2 + (stage % 3)),
+            if stage < 3 { Finished } else { Upcoming },
+            demo_team(&format!("SS{}", stage + 1), None),
+            demo_team("", None),
+        );
+        m.series_name = series.to_string();
+        m.venue_tz = Some("Europe/Athens".to_string());
+        out.push(m);
+    }
+    out
+}
+
+/// `synthetic_matches` wrapped in a `Snapshot` anchored at `now`.
+#[doc(hidden)]
+#[must_use]
+pub fn synthetic_snapshot(n: usize, now: DateTime<Utc>) -> Snapshot {
+    snapshot_from(synthetic_matches(n, now), now)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -5115,5 +5279,74 @@ mod tests {
             &cached(vec![], false, MOTOR_RESULT_TTL_MIN + 1),
             now
         ));
+    }
+
+    #[test]
+    fn homepage_rows_windows_and_includes_live() {
+        let now = "2026-06-30T18:00:00Z".parse::<DateTime<Utc>>().unwrap();
+        let tz: Tz = "America/New_York".parse().unwrap();
+        let cfg = config();
+
+        // A live match (in window), a far-future match (past the esports horizon),
+        // and a canceled one (always dropped).
+        let mut live = demo_match(
+            1,
+            Sport::Cs2,
+            "IEM",
+            "s",
+            now,
+            MatchStatus::Live,
+            3,
+            demo_team("A", Some(1)),
+            demo_team("B", Some(0)),
+        );
+        live.series_name = "Katowice 2026".to_string();
+        let far = demo_match(
+            2,
+            Sport::Cs2,
+            "IEM",
+            "s",
+            now + Duration::days(400),
+            MatchStatus::Upcoming,
+            3,
+            demo_team("C", None),
+            demo_team("D", None),
+        );
+        let mut canceled = demo_match(
+            3,
+            Sport::Cs2,
+            "IEM",
+            "s",
+            now,
+            MatchStatus::Canceled,
+            3,
+            demo_team("E", None),
+            demo_team("F", None),
+        );
+        canceled.series_name = "Katowice 2026".to_string();
+
+        let snap = snapshot_from(vec![live, far, canceled], now);
+        let (rows, meta) = homepage_rows(&snap, cfg, now, "all", &tz, false);
+        let ids: Vec<i64> = rows.iter().map(|m| m.id).collect();
+        assert!(ids.contains(&1), "live match should be in window");
+        assert!(!ids.contains(&2), "match past horizon should be excluded");
+        assert!(!ids.contains(&3), "canceled match should be dropped");
+        assert!(!meta.stale);
+    }
+
+    #[test]
+    fn homepage_render_groups_synthetic_snapshot_in_day_order() {
+        let now = "2026-06-30T18:00:00Z".parse::<DateTime<Utc>>().unwrap();
+        let tz: Tz = "America/New_York".parse().unwrap();
+        let cfg = config();
+        let snap = synthetic_snapshot(300, now);
+
+        let view = homepage_render(&snap, cfg, now, "all", &tz, false);
+        assert!(!view.days.is_empty(), "expected grouped days");
+        // Day groups must be in ascending day order.
+        let keys: Vec<&str> = view.days.iter().map(|d| d.day_key.as_str()).collect();
+        let mut sorted = keys.clone();
+        sorted.sort_unstable();
+        assert_eq!(keys, sorted, "day groups should be time-sorted");
     }
 }
