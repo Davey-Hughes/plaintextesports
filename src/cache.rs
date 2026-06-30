@@ -1851,24 +1851,51 @@ fn time_label(local: DateTime<Tz>, hour24: bool) -> String {
     }
 }
 
+// Weekday/month names looked up directly rather than via chrono's `format()`,
+// which allocates several temporaries per call. `day_label` is the hottest
+// allocator on a schedule render — `to_view` calls it once per row for
+// `date_label` — so this is pure allocation savings; the output is byte-identical
+// to the old `%A`/`%a`/`%B`/`%b` formatting.
+const WEEKDAYS_FULL: [&str; 7] = [
+    "Monday",
+    "Tuesday",
+    "Wednesday",
+    "Thursday",
+    "Friday",
+    "Saturday",
+    "Sunday",
+];
+const WEEKDAYS_SHORT: [&str; 7] = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+const MONTHS_FULL: [&str; 12] = [
+    "January",
+    "February",
+    "March",
+    "April",
+    "May",
+    "June",
+    "July",
+    "August",
+    "September",
+    "October",
+    "November",
+    "December",
+];
+const MONTHS_SHORT: [&str; 12] = [
+    "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+];
+
 fn day_label(local: DateTime<Tz>) -> String {
-    format!(
-        "{}, {} {}",
-        local.format("%A"),
-        local.format("%B"),
-        local.day()
-    )
+    let wd = WEEKDAYS_FULL[local.weekday().num_days_from_monday() as usize];
+    let mo = MONTHS_FULL[local.month0() as usize];
+    format!("{wd}, {mo} {}", local.day())
 }
 
 /// Compact day label, e.g. "Mon, Jun 23" — used by the series rows, where the
 /// date sits inline with the time rather than as a day heading.
 fn short_day_label(local: DateTime<Tz>) -> String {
-    format!(
-        "{}, {} {}",
-        local.format("%a"),
-        local.format("%b"),
-        local.day()
-    )
+    let wd = WEEKDAYS_SHORT[local.weekday().num_days_from_monday() as usize];
+    let mo = MONTHS_SHORT[local.month0() as usize];
+    format!("{wd}, {mo} {}", local.day())
 }
 
 /// Resolve the effective view status, applying the "started but not marked
@@ -5382,6 +5409,42 @@ mod tests {
             ids.contains(&100),
             "far-future F1 session should be surfaced by next_motorsport_events append; ids={ids:?}"
         );
+    }
+
+    #[test]
+    fn day_labels_match_strftime_over_a_year() {
+        let tz: Tz = "America/New_York".parse().unwrap();
+        // 2026-06-24 is a Wednesday (sanity anchor).
+        let anchor = "2026-06-24T16:00:00Z"
+            .parse::<DateTime<Utc>>()
+            .unwrap()
+            .with_timezone(&tz);
+        assert_eq!(day_label(anchor), "Wednesday, June 24");
+        assert_eq!(short_day_label(anchor), "Wed, Jun 24");
+        // The static-table lookups must stay byte-identical to chrono's strftime
+        // across every weekday and month.
+        let base = "2026-01-01T12:00:00Z".parse::<DateTime<Utc>>().unwrap();
+        for d in 0..400 {
+            let local = (base + Duration::days(d)).with_timezone(&tz);
+            assert_eq!(
+                day_label(local),
+                format!(
+                    "{}, {} {}",
+                    local.format("%A"),
+                    local.format("%B"),
+                    local.day()
+                ),
+            );
+            assert_eq!(
+                short_day_label(local),
+                format!(
+                    "{}, {} {}",
+                    local.format("%a"),
+                    local.format("%b"),
+                    local.day()
+                ),
+            );
+        }
     }
 
     #[test]
