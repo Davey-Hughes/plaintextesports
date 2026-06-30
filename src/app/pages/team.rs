@@ -33,6 +33,13 @@ pub(crate) fn TeamPage() -> impl IntoView {
     );
     setup_autorefresh(schedule);
 
+    // Persist the pinned "up next" bar's scroll-visibility across the per-refetch
+    // subtree rebuild so a refresh doesn't flash the bar back on. See `UpNextSeen`.
+    provide_context(UpNextSeen {
+        day: RwSignal::new(false),
+        foot: RwSignal::new(false),
+    });
+
     // Keep the global sport mode in sync with the team being viewed, so the
     // header toggle/footer/windowing agree (client-only; never persisted).
     Effect::new(move |_| {
@@ -41,8 +48,11 @@ pub(crate) fn TeamPage() -> impl IntoView {
         }
     });
 
+    // Transition, not Suspense: the 60s auto-refresh and the header button
+    // refetch the schedule in place, and Transition keeps the current page
+    // visible while it reloads (Suspense would flash back to the fallback).
     view! {
-        <Suspense fallback=|| {
+        <Transition fallback=|| {
             view! {
                 <article class="detail">
                     <A href="/">"← schedule"</A>
@@ -107,6 +117,6 @@ pub(crate) fn TeamPage() -> impl IntoView {
                     }
                 }
             }}
-        </Suspense>
+        </Transition>
     }
 }

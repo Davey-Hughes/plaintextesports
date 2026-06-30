@@ -240,6 +240,15 @@ pub(crate) fn EventPage() -> impl IntoView {
     );
     setup_autorefresh(schedule);
 
+    // The pinned "up next" bar lives inside the content subtree that gets rebuilt
+    // wholesale on every refetch. Hoist its scroll-visibility signals up here (the
+    // page body runs once, the subtree doesn't) so a refreshed bar mounts in its
+    // last-known state rather than flashing back to visible. See `UpNextSeen`.
+    provide_context(UpNextSeen {
+        day: RwSignal::new(false),
+        foot: RwSignal::new(false),
+    });
+
     // Keep the global sport mode in sync with the event being viewed, so the
     // header toggle, footer, and the windowing controls agree with the data
     // (you reach an MLB event from MLB mode, but a direct link should match too).
@@ -250,11 +259,14 @@ pub(crate) fn EventPage() -> impl IntoView {
         }
     });
 
-    // Render the whole page from inside one Suspense (awaiting both resources),
-    // mirroring the match-detail page — so nothing reactive sits at the
-    // synchronous top level to throw off hydration.
+    // Render the whole page from inside one async boundary (awaiting both
+    // resources), mirroring the match-detail page — so nothing reactive sits at
+    // the synchronous top level to throw off hydration. Transition, not
+    // Suspense: the header button and 60s auto-refresh refetch the schedule
+    // resource in place, and Transition keeps the current page on screen while
+    // it reloads (Suspense would drop back to the fallback and flash).
     view! {
-        <Suspense fallback=|| {
+        <Transition fallback=|| {
             view! {
                 <article class="detail">
                     <A href="/">"← schedule"</A>
@@ -606,6 +618,6 @@ pub(crate) fn EventPage() -> impl IntoView {
                     }
                 }
             }}
-        </Suspense>
+        </Transition>
     }
 }

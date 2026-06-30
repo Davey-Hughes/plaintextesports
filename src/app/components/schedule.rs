@@ -142,7 +142,10 @@ pub(crate) fn EventSection(leagues: RwSignal<HashSet<String>>) -> impl IntoView 
         },
     );
     view! {
-        <Suspense>
+        // Transition, not Suspense: `stages` re-keys when the single-event filter
+        // changes, so keep the current standings/bracket on screen while the next
+        // event's load instead of flashing the panel out and back in.
+        <Transition>
             {move || {
                 stages
                     .get()
@@ -150,7 +153,7 @@ pub(crate) fn EventSection(leagues: RwSignal<HashSet<String>>) -> impl IntoView 
                     .filter(|v| !v.is_empty())
                     .map(|v| view! { <EventStages stages=v /> })
             }}
-        </Suspense>
+        </Transition>
     }
 }
 
@@ -741,8 +744,10 @@ pub(crate) fn ScheduleSection(
         // Likewise, a single traditional league shows its division/group tables.
         <TraditionalStandings league=trad_standings_league />
         // F1 has no league table — when narrowed to it, show the current
-        // drivers' + constructors' championship standings instead.
-        <Suspense>
+        // drivers' + constructors' championship standings instead. Transition
+        // (not Suspense) so re-keying on the season signal keeps the table up
+        // while the next loads instead of blanking it.
+        <Transition>
             {move || {
                 let season = f1_home_season.get()?;
                 let s = f1_home_standings.get()?;
@@ -751,9 +756,9 @@ pub(crate) fn ScheduleSection(
                     view! { <F1StandingsView standings=s season=season round=round /> }
                 })
             }}
-        </Suspense>
+        </Transition>
         // WRC/WEC get their championship tables (from ocblacktop) the same way.
-        <Suspense>
+        <Transition>
             {move || {
                 let lg = motor_home_league.get();
                 if lg.is_empty() {
@@ -762,7 +767,7 @@ pub(crate) fn ScheduleSection(
                 let s = motor_home_standings.get()?;
                 (!s.tables.is_empty()).then(|| view! { <MotorStandingsView standings=s league=lg /> })
             }}
-        </Suspense>
+        </Transition>
     }
 }
 
@@ -813,6 +818,20 @@ pub(crate) fn filter_schedule(
     s
 }
 
+/// Persists the up-next bar's "scrolled past" visibility across the event/team
+/// page's per-refetch subtree rebuilds. Those pages rebuild their whole content
+/// subtree when the schedule resource resolves, which re-creates [`UpNextBar`]
+/// with fresh signals — defaulting to *visible* until its IntersectionObservers
+/// re-fire a frame later, so a scrolled-past (hidden) bar would blink back on
+/// every 60s refresh / manual refresh. Providing these signals from the page
+/// (which is itself *not* rebuilt) lets a fresh bar mount in the last-known state
+/// instead of flashing.
+#[derive(Clone, Copy)]
+pub(crate) struct UpNextSeen {
+    pub(crate) day: RwSignal<bool>,
+    pub(crate) foot: RwSignal<bool>,
+}
+
 /// A compact "up next" bar pinned to the bottom of the event page, previewing
 /// the current/next day's matches. Clicking it scrolls to that day in the list;
 /// it hides once that day scrolls into view, so it never duplicates what's shown.
@@ -821,8 +840,16 @@ pub(crate) fn UpNextBar(day: DayGroup) -> impl IntoView {
     let anchor = format!("day-{}", day.day_key);
     // The bar hides when its target day scrolls into view (you're already there)
     // or when the footer does (so it never covers the footer at the page bottom).
-    let day_seen = RwSignal::new(false);
-    let foot_seen = RwSignal::new(false);
+    // Prefer the page-provided signals (event/team pages) so this state survives
+    // the page's per-refetch subtree rebuild — a fresh bar then mounts already in
+    // its hidden state instead of flashing visible for a frame. See [`UpNextSeen`].
+    let UpNextSeen {
+        day: day_seen,
+        foot: foot_seen,
+    } = use_context::<UpNextSeen>().unwrap_or_else(|| UpNextSeen {
+        day: RwSignal::new(false),
+        foot: RwSignal::new(false),
+    });
     // Flatten the day's matches (time + teams), capped so the bar stays slim.
     const CAP: usize = 4;
     let all: Vec<MatchView> = day.leagues.into_iter().flat_map(|lg| lg.matches).collect();
