@@ -395,6 +395,31 @@ pub fn App() -> impl IntoView {
         }
     });
 
+    // Re-arm this browser's server-side reminders whenever the viewer flips the
+    // 12/24h clock, so already-scheduled notifications switch to the chosen
+    // format right away instead of only on the next page load. The reconcile
+    // reads the just-saved preference and re-renders each reminder body. Skips
+    // its first run (the post-hydration settle) so it doesn't double up with the
+    // on-load reconcile above; a no-op `set` to the same value re-runs but the
+    // `p != h` guard short-circuits it.
+    Effect::new(move |prev: Option<bool>| {
+        let h = hour24.get();
+        #[cfg(feature = "hydrate")]
+        if prev.is_some_and(|p| p != h) {
+            reconcile_notifications(
+                subscribed.get_untracked(),
+                starred.get_untracked(),
+                excluded.get_untracked(),
+                global_timers.get_untracked(),
+                overrides.get_untracked(),
+                vapid.get_untracked(),
+            );
+        }
+        #[cfg(not(feature = "hydrate"))]
+        let _ = prev;
+        h
+    });
+
     view! {
         <Title text="plaintextesports" />
         <Router>
