@@ -177,7 +177,10 @@ pub(crate) fn TraditionalStandings(league: Memo<String>) -> impl IntoView {
         },
     );
     view! {
-        <Suspense>
+        // Transition, not Suspense: `stages` re-keys whenever the home filter
+        // narrows to a different single league, so keep the current table visible
+        // while the next loads instead of blanking it out between selections.
+        <Transition>
             {move || {
                 stages
                     .get()
@@ -185,6 +188,6 @@ pub(crate) fn TraditionalStandings(league: Memo<String>) -> impl IntoView {
                     .filter(|v| !v.is_empty())
                     .map(|v| view! { <EventStages stages=v /> })
             }}
-        </Suspense>
+        </Transition>
     }
 }

@@ -208,7 +208,10 @@ pub(crate) fn MatchDetailPage() -> impl IntoView {
         |(uid, tz, h)| async move { get_match_results(uid, tz, h).await.unwrap_or_default() },
     );
     view! {
-        <Suspense fallback=|| view! { <p class="loading">"loading…"</p> }>
+        // Transition, not Suspense: the resource is keyed on tz/hour24, so toggling
+        // the timezone or 12/24h clock while reading a match refetches in place —
+        // Transition keeps the match on screen instead of flashing "loading…".
+        <Transition fallback=|| view! { <p class="loading">"loading…"</p> }>
             {move || {
                 detail
                     .get()
@@ -217,7 +220,7 @@ pub(crate) fn MatchDetailPage() -> impl IntoView {
                         _ => view! { <p class="empty">"Match not found."</p> }.into_any(),
                     })
             }}
-        </Suspense>
+        </Transition>
     }
 }
 
@@ -439,7 +442,10 @@ pub(crate) fn detail_view(d: MatchDetail, results: Resource<MatchResults>) -> im
             {move || {
                 let motor_key = motor_reveal_key.clone();
                 view! {
-                    <Suspense fallback=|| {
+                    // Transition, not Suspense: `results` is keyed on tz/hour24 too,
+                    // so a clock/timezone toggle refetches it in place — keep the
+                    // results section visible rather than flashing its loading state.
+                    <Transition fallback=|| {
                         view! {
                             <section class="detail-section">
                                 <p class="loading">"loading…"</p>
@@ -470,7 +476,7 @@ pub(crate) fn detail_view(d: MatchDetail, results: Resource<MatchResults>) -> im
                                     }
                                 })
                         }}
-                    </Suspense>
+                    </Transition>
                 }
             }}
             // MLB series between the two teams. Each sport row reveals on its own
