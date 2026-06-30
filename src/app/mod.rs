@@ -427,7 +427,16 @@ pub fn App() -> impl IntoView {
             <div class="page">
                 <SiteHeader />
                 <main class="main">
-                    <Routes fallback=|| view! { <p class="empty">"Page not found."</p> }>
+                    // `transition` wraps each client-side navigation in the browser's
+                    // View Transition API: it snapshots the current page and crossfades
+                    // to the next once its data resolves, instead of letting the
+                    // destination collapse to a short "loading…" state first (which
+                    // flashed the footer up from the bottom and popped the fixed
+                    // "up next" bar). Degrades to a plain swap where unsupported.
+                    <Routes
+                        transition=true
+                        fallback=|| view! { <p class="empty">"Page not found."</p> }
+                    >
                         <Route path=StaticSegment("") view=HomePage />
                         <Route path=(StaticSegment("day"), ParamSegment("date")) view=DayPage />
                         <Route
