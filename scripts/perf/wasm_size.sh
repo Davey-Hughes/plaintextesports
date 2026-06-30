@@ -9,16 +9,21 @@ if [ -z "${WASM:-}" ]; then
   exit 1
 fi
 
-raw=$(stat -c%s "$WASM")
+raw=$(wc -c < "$WASM")
 gz=$(gzip -9 -c "$WASM" | wc -c)
 br="(install brotli)"
 if command -v brotli >/dev/null 2>&1; then
-  br="$(brotli -q 11 -c "$WASM" | wc -c) bytes"
+  br_bytes=$(brotli -q 11 -c "$WASM" | wc -c || true)
+  br="${br_bytes} bytes ($(( (br_bytes + 1023) / 1024 )) KiB)"
 fi
 gz_kb=$(( (gz + 1023) / 1024 ))
 
 budget_file="$ROOT/scripts/perf/wasm-budget.txt"
-budget=$(grep -E '^gzip_kb=' "$budget_file" | cut -d= -f2)
+budget=$(grep -E '^gzip_kb=' "$budget_file" 2>/dev/null | cut -d= -f2 || true)
+if [ -z "${budget:-}" ]; then
+  echo "Budget not found in $budget_file — set gzip_kb=<N> there (see the budget-init step)." >&2
+  exit 1
+fi
 
 printf 'wasm:        %s\n' "$WASM"
 printf 'raw:         %d bytes (%d KiB)\n' "$raw" "$((raw / 1024))"
