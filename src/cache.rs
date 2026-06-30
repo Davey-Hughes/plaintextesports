@@ -4078,7 +4078,7 @@ pub fn snapshot_from(matches: Vec<NormalizedMatch>, now: DateTime<Utc>) -> Snaps
 }
 
 /// Deterministic synthetic match set of size `n` for benches/profiling: rows
-/// spread across ±10 days around `now`, cycling sports/leagues/statuses, plus one
+/// spread across −5..+14 days around `now`, cycling sports/leagues/statuses, plus one
 /// multi-stage WRC rally so `collapse_wrc_days` does real work. Index-seeded (no
 /// RNG) so runs are comparable.
 #[doc(hidden)]
@@ -5332,6 +5332,56 @@ mod tests {
         assert!(!ids.contains(&2), "match past horizon should be excluded");
         assert!(!ids.contains(&3), "canceled match should be dropped");
         assert!(!meta.stale);
+    }
+
+    #[test]
+    fn homepage_rows_trad_surfaces_far_future_motorsport_via_next_event_append() {
+        // An F1 session 30 days out is well past TRAD_FORWARD_DAYS (2) and so
+        // `matches_in_window` drops it. The traditional branch must still surface
+        // it via the `next_motorsport_events` append loop — this test proves that
+        // branch runs and produces the expected row.
+        let now = "2026-06-30T18:00:00Z".parse::<DateTime<Utc>>().unwrap();
+        let tz: Tz = "America/New_York".parse().unwrap();
+        let cfg = config();
+
+        // F1 session far beyond the short traditional window.
+        let mut f1 = demo_match(
+            100,
+            Sport::Motorsport,
+            "F1",
+            "s",
+            now + Duration::days(30),
+            MatchStatus::Upcoming,
+            1,
+            demo_team("Race", None),
+            demo_team("", None),
+        );
+        f1.series_name = "British Grand Prix 2026".to_string();
+
+        // An in-window MLB game so the snapshot has traditional content and the
+        // dedup path is exercised.
+        let mlb = demo_match(
+            101,
+            Sport::Mlb,
+            "MLB",
+            "s",
+            now + Duration::hours(2),
+            MatchStatus::Upcoming,
+            1,
+            demo_team("NYY", None),
+            demo_team("BOS", None),
+        );
+
+        let snap = snapshot_from(vec![f1, mlb], now);
+        let (rows, _meta) = homepage_rows(&snap, cfg, now, "trad", &tz, false);
+        let ids: Vec<i64> = rows.iter().map(|m| m.id).collect();
+
+        assert!(ids.contains(&101), "in-window MLB game should be present");
+        // The far-future F1 session must appear via the motorsport-append branch.
+        assert!(
+            ids.contains(&100),
+            "far-future F1 session should be surfaced by next_motorsport_events append; ids={ids:?}"
+        );
     }
 
     #[test]

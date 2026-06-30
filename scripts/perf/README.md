@@ -6,6 +6,12 @@ and builds a `ScheduleView` — requests never touch SQLite.** So per-request co
 is snapshot processing + clones + JSON serialization, and that is what these
 tools measure.
 
+**Note on reproducibility.** Benchmark and allocation-profile numbers assume the
+default configuration (empty `.env` / no overriding `config.toml`). The
+`config()` function's `upcoming_days` and `tz` values influence the esports
+window size and therefore row counts, so cross-machine comparisons should use
+the same config to get comparable results.
+
 ## Benchmarks (criterion)
 
 ```sh
