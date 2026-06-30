@@ -120,6 +120,13 @@ name = "tiering"
 harness = false
 required-features = ["ssr"]
 
+# Per-request view-pipeline benchmarks (snapshot -> ScheduleView -> JSON).
+# Run: `cargo bench --features ssr`.
+[[bench]]
+name = "request_pipeline"
+harness = false
+required-features = ["ssr"]
+
 # VAPID key generator (cargo run --example gen_vapid --features ssr).
 [[example]]
 name = "gen_vapid"
