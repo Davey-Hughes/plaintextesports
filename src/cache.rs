@@ -2008,7 +2008,7 @@ pub fn to_view(m: &NormalizedMatch, tz: &Tz, now: DateTime<Utc>, hour24: bool) -
         best_of: m.best_of.map(|n| format!("Bo{n}")).unwrap_or_default(),
         team_a,
         team_b,
-        event_url: resolved_event_url(m.sport, &m.league, m.begin_at, m.league_url.as_deref()),
+        league_url: m.league_url.clone().unwrap_or_default(),
         begin_at_ms: m.begin_at.timestamp_millis(),
         row_href: None,
     }
@@ -2143,10 +2143,18 @@ pub fn group_days(views: Vec<MatchView>, tz: &Tz) -> Vec<DayGroup> {
                 .unwrap_or_default();
             let uniform = !first.is_empty() && lg.matches.iter().all(|m| m.best_of == first);
             lg.bo = uniform.then_some(first);
+            // Resolve the event link once per league-group from its first row,
+            // rather than for every row in `to_view` (only this value is ever
+            // used — see `MatchView::league_url`).
             lg.event_url = lg
                 .matches
                 .first()
-                .map(|m| m.event_url.clone())
+                .map(|m| {
+                    let begin =
+                        DateTime::from_timestamp_millis(m.begin_at_ms).unwrap_or_else(Utc::now);
+                    let official = (!m.league_url.is_empty()).then_some(m.league_url.as_str());
+                    resolved_event_url(m.sport, &m.league, begin, official)
+                })
                 .unwrap_or_default();
         }
         // Keep each sport's events together within the day (CS2, then LoL).
@@ -4574,7 +4582,7 @@ mod tests {
                 logo: String::new(),
                 abbrev: String::new(),
             },
-            event_url: String::new(),
+            league_url: String::new(),
             begin_at_ms: at_ms,
             row_href: None,
         };
@@ -4631,7 +4639,7 @@ mod tests {
                 logo: String::new(),
                 abbrev: String::new(),
             },
-            event_url: String::new(),
+            league_url: String::new(),
             begin_at_ms: at_ms,
             row_href: None,
         };
@@ -4684,7 +4692,7 @@ mod tests {
                 logo: String::new(),
                 abbrev: String::new(),
             },
-            event_url: String::new(),
+            league_url: String::new(),
             begin_at_ms: at_ms,
             row_href: None,
         };

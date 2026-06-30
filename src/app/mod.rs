@@ -543,7 +543,7 @@ mod tests {
                 logo: String::new(),
                 abbrev: String::new(),
             },
-            event_url: String::new(),
+            league_url: String::new(),
             begin_at_ms: 0,
             row_href: None,
         }

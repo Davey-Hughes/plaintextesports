@@ -291,12 +291,12 @@ pub struct MatchView {
     pub best_of: String,
     pub team_a: TeamView,
     pub team_b: TeamView,
-    /// Link to the event page: official site when known, else a Liquipedia search.
-    /// Computed server-side and folded into the enclosing `LeagueGroup`
-    /// ([`group_days`]); never read per-row on the client, so it's skipped on the
-    /// wire instead of repeated on every match.
+    /// The source's official league/event URL (often empty). Carried so
+    /// [`group_days`] can resolve each `LeagueGroup`'s event link once from its
+    /// first row, instead of every row paying for the resolve. Never read per-row
+    /// on the client, so it's skipped on the wire.
     #[serde(skip)]
-    pub event_url: String,
+    pub league_url: String,
     pub begin_at_ms: i64,
     /// When set, the whole row links here instead of its own `/match` page. The
     /// WRC schedule's collapsed "Day N" rows use it to jump to that day on the
