@@ -124,6 +124,13 @@ Mount a volume at `/app/data` (as above) so the SQLite cache survives container
 recreation. Without it the cache is ephemeral — the container still works, but
 it rebuilds the cache from scratch on the first poll after each redeploy.
 
+## Performance
+
+Benchmarks and profiling tooling live in [`scripts/perf/`](scripts/perf/README.md):
+criterion benches for the per-request view pipeline (`cargo bench --features ssr`),
+a dhat allocation profile, a WASM bundle-size budget check, an SSR load test, and
+a CPU-profiling recipe.
+
 ## Limitations
 
 The PandaScore free tier has no real-time score feed, so "live" is inferred
