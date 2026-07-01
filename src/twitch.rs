@@ -10,10 +10,15 @@ use serde::Deserialize;
 use std::collections::HashMap;
 use std::sync::{PoisonError, RwLock};
 
-/// One outbound client (connection pool) reused across calls.
+/// One outbound client (connection pool) reused across calls. Timeouts keep a
+/// hung upstream (Helix / id.twitch.tv / gql.twitch.tv) from pinning the
+/// enrichment task and a pooled connection indefinitely — reqwest has none by
+/// default. Shared by the discovery + GQL modules too (`client()`).
 static CLIENT: Lazy<reqwest::Client> = Lazy::new(|| {
     reqwest::Client::builder()
         .user_agent(USER_AGENT)
+        .connect_timeout(std::time::Duration::from_secs(4))
+        .timeout(std::time::Duration::from_secs(8))
         .build()
         .unwrap_or_default()
 });
