@@ -216,10 +216,10 @@ struct CachedRawSeries {
 /// scores stay fresh, long enough that a burst of views is one fetch.
 const SERIES_TTL_MIN: i64 = 2;
 
-/// Request-time cache of a match's live-enriched streams, keyed by match id, so a
-/// burst of views / refetches is one Twitch call. Short TTL — live status is
-/// volatile.
-static STREAM_STATUS: Lazy<RwLock<HashMap<i64, CachedStreams>>> =
+/// Request-time cache of a match's live-enriched streams, keyed by `(sport, id)`
+/// — the same key `live_streams_for` looks the match up by — so a burst of views /
+/// refetches is one Twitch call. Short TTL — live status is volatile.
+static STREAM_STATUS: Lazy<RwLock<HashMap<(Sport, i64), CachedStreams>>> =
     Lazy::new(|| RwLock::new(HashMap::new()));
 
 struct CachedStreams {
@@ -241,18 +241,14 @@ pub async fn live_streams_for(sport: Sport, id: i64) -> Vec<StreamView> {
             None => return Vec::new(),
         }
     };
-    let seeds: Vec<String> = config()
-        .costreamers
-        .get(&league)
-        .cloned()
-        .unwrap_or_default();
+    let seeds = costreamer_seeds(&config().costreamers, &league, sport);
     let base_logins: Vec<String> = base.iter().filter_map(|s| login_of(&s.url)).collect();
     if base_logins.is_empty() && seeds.is_empty() {
         return base;
     }
     {
         let g = STREAM_STATUS.read().unwrap_or_else(PoisonError::into_inner);
-        if let Some(c) = g.get(&id) {
+        if let Some(c) = g.get(&(sport, id)) {
             if c.fetched_at + Duration::seconds(STREAM_STATUS_TTL_SECS) > Utc::now() {
                 return c.streams.clone();
             }
@@ -266,7 +262,7 @@ pub async fn live_streams_for(sport: Sport, id: i64) -> Vec<StreamView> {
         .write()
         .unwrap_or_else(PoisonError::into_inner)
         .insert(
-            id,
+            (sport, id),
             CachedStreams {
                 streams: enriched.clone(),
                 fetched_at: Utc::now(),
@@ -3890,6 +3886,29 @@ fn game_needle(sport: Sport) -> &'static str {
     }
 }
 
+/// The curated co-streamer logins that apply to a match, merging the entry keyed
+/// by its game (the sport slug, e.g. "lol" — applies to every league of that
+/// game) with the entry keyed by its specific league (e.g. "LCK" — league-only
+/// extras). Game seeds lead; league seeds follow; duplicates are dropped so a
+/// login listed under both is queried once.
+fn costreamer_seeds(
+    costreamers: &HashMap<String, Vec<String>>,
+    league: &str,
+    sport: Sport,
+) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let mut push = |logins: Option<&Vec<String>>| {
+        for l in logins.into_iter().flatten() {
+            if !out.iter().any(|e| e.eq_ignore_ascii_case(l)) {
+                out.push(l.clone());
+            }
+        }
+    };
+    push(costreamers.get(sport.slug()));
+    push(costreamers.get(league));
+    out
+}
+
 /// Merge Twitch live status into a match's base streams and append live seeded
 /// co-streamers. `live` maps lowercased login → info; `seeds` are the league's
 /// curated co-streamer logins; `game_needle` filters co-streamers to the match's
@@ -5837,5 +5856,36 @@ mod tests {
         .collect();
         let out = enrich_streams(Vec::new(), &live, &["x".to_string()], "");
         assert!(out.is_empty());
+    }
+
+    #[test]
+    fn costreamer_seeds_merges_game_and_league_deduped() {
+        let mut cs: std::collections::HashMap<String, Vec<String>> =
+            std::collections::HashMap::new();
+        cs.insert(
+            "lol".to_string(),
+            vec!["caedrel".to_string(), "sneaky".to_string()],
+        );
+        cs.insert(
+            "LCK".to_string(),
+            vec!["Sneaky".to_string(), "cvmax".to_string()],
+        );
+        // Game seeds ("lol") lead; league extras ("LCK") follow; "sneaky" (in both,
+        // case-insensitively) is deduped so it's queried once.
+        assert_eq!(
+            costreamer_seeds(&cs, "LCK", Sport::Lol),
+            vec![
+                "caedrel".to_string(),
+                "sneaky".to_string(),
+                "cvmax".to_string()
+            ]
+        );
+        // A LoL league with no league-specific entry still gets the game-wide list.
+        assert_eq!(
+            costreamer_seeds(&cs, "LEC", Sport::Lol),
+            vec!["caedrel".to_string(), "sneaky".to_string()]
+        );
+        // A game/league with no entry → empty.
+        assert!(costreamer_seeds(&cs, "IEM", Sport::Cs2).is_empty());
     }
 }

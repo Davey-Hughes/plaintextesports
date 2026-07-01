@@ -17,11 +17,16 @@ ocblacktop_token = ""
 twitch_client_id = ""
 twitch_client_secret = ""
 
-# Curated co-streamers per league (Twitch logins), shown when live and streaming
-# that league's game. Keyed by the league name exactly as it appears on the site.
+# Curated co-streamers (Twitch logins), shown on a match's page when they're live
+# and streaming that match's game. Two kinds of key, merged for each match:
+#   - a game key = the sport slug ("lol" or "cs2") applies to EVERY league of that
+#     game (the usual case);
+#   - a league key = the league name exactly as it appears on the site (e.g. "LCK",
+#     "PGL Major") adds league-specific extras on top.
 # [costreamers]
-# LCK = ["login1", "login2"]
-# "PGL Major" = ["login3"]
+# lol = ["caedrel", "doublelift", "sneaky"]
+# cs2 = ["ohnepixel"]
+# LCK = ["extra_login_just_for_lck"]
 
 # Poll cadence (seconds). Each series (WRC, WEC, MotoGP) is polled independently,
 # only as fast as its nearest event warrants, so a quiet day costs a handful of
