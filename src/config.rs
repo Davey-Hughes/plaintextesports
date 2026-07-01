@@ -9,6 +9,17 @@ use serde::Deserialize;
 use std::collections::HashMap;
 use std::time::Duration;
 
+/// `[twitch_discovery]` table shape (all optional).
+#[derive(Debug, Default, Deserialize)]
+struct TwitchDiscoveryFile {
+    enabled_sports: Option<Vec<String>>,
+    languages: Option<Vec<String>>,
+    min_viewers: Option<u64>,
+    max_per_match: Option<usize>,
+    game_ids: Option<HashMap<String, String>>,
+    gql_costreamers: Option<bool>,
+}
+
 /// `config.toml` shape. Everything is optional; missing values fall back to
 /// defaults (or a matching env var, which takes precedence).
 #[derive(Debug, Default, Deserialize)]
@@ -24,6 +35,10 @@ struct FileConfig {
     /// YouTube Data API v3 key.
     youtube_api_key: Option<String>,
     youtube_costreamers: Option<HashMap<String, Vec<String>>>,
+    /// Twitch category-discovery of unlisted co-streamers.
+    twitch_discovery: Option<TwitchDiscoveryFile>,
+    /// League name → Twitch title keywords for discovery attribution.
+    twitch_league_aliases: Option<HashMap<String, Vec<String>>>,
     /// Calendar poll interval (s) for a series with a session live or starting
     /// within the hour — the fast tier (only the in-window series pays it).
     ocblacktop_live_poll_secs: Option<u64>,
@@ -145,6 +160,24 @@ impl FileConfig {
     }
 }
 
+/// Twitch category-discovery settings. `enabled_sports` empty ⇒ feature off.
+#[derive(Clone, Debug, Default)]
+pub struct TwitchDiscovery {
+    /// Sport slugs the discovery runs for (e.g. "lol", "cs2"). Empty ⇒ off.
+    pub enabled_sports: Vec<String>,
+    /// Stream languages to include (ISO-639-1). Defaults to ["en"].
+    pub languages: Vec<String>,
+    /// Skip discovered streams below this viewer count.
+    pub min_viewers: u64,
+    /// Cap on co-streams appended per match (highest-viewer first).
+    pub max_per_match: usize,
+    /// Optional sport-slug → Twitch category id override (else built-in table).
+    pub game_ids: HashMap<String, String>,
+    /// Phase 2: read the official co-streamer list from the unofficial GQL API.
+    /// Off until validated against a live co-streamed event.
+    pub gql_costreamers: bool,
+}
+
 #[derive(Debug, Clone)]
 pub struct Config {
     /// PandaScore API token. `None` => serve demo fixture data.
@@ -166,6 +199,12 @@ pub struct Config {
     /// Curated YouTube co-streamers per game (sport slug) or league — channel
     /// handles/URLs, surfaced when live (not game-filtered). Empty when unset.
     pub youtube_costreamers: HashMap<String, Vec<String>>,
+    /// Twitch category-discovery of unlisted co-streamers. Off when
+    /// `enabled_sports` is empty.
+    pub twitch_discovery: TwitchDiscovery,
+    /// League name → Twitch title keywords for attributing discovered streams
+    /// (e.g. "Mid-Season Invitational" → ["MSI"]). Empty when unconfigured.
+    pub twitch_league_aliases: HashMap<String, Vec<String>>,
     /// Calendar poll interval for a series with a session live or starting within
     /// the hour (fast tier; only the in-window series uses it).
     pub ocblacktop_live_poll: Duration,
@@ -282,7 +321,14 @@ impl Config {
                 .filter(|s| !s.trim().is_empty())
                 .or_else(|| map.get(k).cloned())
         });
-        // Site/footer settings aren't string-flat, so apply them directly.
+        // Structured (non-string-flat) settings apply directly.
+        Self::patch_from_file(&mut cfg, file);
+        cfg
+    }
+
+    /// Apply a parsed file's structured tables (site / co-streamers / discovery)
+    /// onto a base config built from env/flat vars.
+    fn patch_from_file(cfg: &mut Config, file: FileConfig) {
         if let Some(site) = file.site {
             cfg.copyright = site.copyright;
             cfg.copyright_url = site.copyright_url;
@@ -294,6 +340,39 @@ impl Config {
         if let Some(yc) = file.youtube_costreamers {
             cfg.youtube_costreamers = yc;
         }
+        if let Some(td) = file.twitch_discovery {
+            cfg.twitch_discovery = TwitchDiscovery {
+                enabled_sports: td.enabled_sports.unwrap_or_default(),
+                languages: td
+                    .languages
+                    .filter(|v| !v.is_empty())
+                    .unwrap_or_else(|| vec!["en".to_string()]),
+                min_viewers: td.min_viewers.unwrap_or(300),
+                max_per_match: td.max_per_match.unwrap_or(6),
+                game_ids: td.game_ids.unwrap_or_default(),
+                gql_costreamers: td.gql_costreamers.unwrap_or(false),
+            };
+        }
+        if let Some(al) = file.twitch_league_aliases {
+            cfg.twitch_league_aliases = al;
+        }
+    }
+
+    /// True when Twitch discovery is enabled for `sport`.
+    #[must_use]
+    pub fn discovery_enabled(&self, sport: crate::types::Sport) -> bool {
+        self.twitch_discovery
+            .enabled_sports
+            .iter()
+            .any(|s| s == sport.slug())
+    }
+
+    /// Test helper: build a config from a parsed file only (no env), applying the
+    /// same structured-table patches as `load`.
+    #[cfg(test)]
+    fn from_file_for_test(file: FileConfig) -> Self {
+        let mut cfg = Config::from_vars(|_| None);
+        Config::patch_from_file(&mut cfg, file);
         cfg
     }
 
@@ -437,6 +516,8 @@ impl Config {
             copyright: None,
             copyright_url: None,
             links: Vec::new(),
+            twitch_discovery: TwitchDiscovery::default(),
+            twitch_league_aliases: HashMap::new(),
             icons_dir,
         }
     }
@@ -648,6 +729,56 @@ mod tests {
             &vec!["caedrel".to_string(), "ludwig".to_string()]
         );
         assert_eq!(cs.get("PGL Major").unwrap(), &vec!["gaules".to_string()]);
+    }
+
+    #[test]
+    fn parses_twitch_discovery_and_aliases() {
+        let toml = r#"
+            [twitch_discovery]
+            enabled_sports = ["lol", "cs2"]
+            languages = ["en", "ko"]
+            min_viewers = 500
+            max_per_match = 4
+            gql_costreamers = true
+            [twitch_discovery.game_ids]
+            lol = "21779"
+            [twitch_league_aliases]
+            "Mid-Season Invitational" = ["MSI"]
+        "#;
+        let fc: FileConfig = toml::from_str(toml).expect("parse");
+        let cfg = Config::from_file_for_test(fc);
+        assert_eq!(cfg.twitch_discovery.enabled_sports, vec!["lol", "cs2"]);
+        assert_eq!(cfg.twitch_discovery.languages, vec!["en", "ko"]);
+        assert_eq!(cfg.twitch_discovery.min_viewers, 500);
+        assert_eq!(cfg.twitch_discovery.max_per_match, 4);
+        assert!(cfg.twitch_discovery.gql_costreamers);
+        assert_eq!(
+            cfg.twitch_discovery.game_ids.get("lol").map(String::as_str),
+            Some("21779")
+        );
+        assert_eq!(
+            cfg.twitch_league_aliases.get("Mid-Season Invitational"),
+            Some(&vec!["MSI".to_string()])
+        );
+        assert!(cfg.discovery_enabled(crate::types::Sport::Lol));
+        assert!(!cfg.discovery_enabled(crate::types::Sport::Mlb));
+    }
+
+    #[test]
+    fn twitch_discovery_defaults_when_sparse_and_off_when_absent() {
+        // Present but sparse: languages default to ["en"], numeric defaults apply.
+        let fc: FileConfig =
+            toml::from_str("[twitch_discovery]\nenabled_sports = [\"lol\"]\n").unwrap();
+        let cfg = Config::from_file_for_test(fc);
+        assert_eq!(cfg.twitch_discovery.languages, vec!["en"]);
+        assert_eq!(cfg.twitch_discovery.min_viewers, 300);
+        assert_eq!(cfg.twitch_discovery.max_per_match, 6);
+        assert!(!cfg.twitch_discovery.gql_costreamers);
+        // Absent entirely: disabled.
+        let empty: FileConfig = toml::from_str("").unwrap();
+        let cfg2 = Config::from_file_for_test(empty);
+        assert!(cfg2.twitch_discovery.enabled_sports.is_empty());
+        assert!(!cfg2.discovery_enabled(crate::types::Sport::Lol));
     }
 
     #[test]
