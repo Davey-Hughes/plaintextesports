@@ -62,9 +62,9 @@ youtube_api_key = ""
 
 # League name (exactly as stored) -> Twitch title keywords, so a stream titled
 # "MSI ..." attaches to the "Mid-Season Invitational" league. Most leagues already
-# ARE the acronym streamers type (LCK, LEC, LPL, IEM), so they match with no alias
-# via the raw-league-name fallback; add an entry only where the stored name differs
-# from what streamers write.
+# ARE the term streamers type — LCK, LEC, LPL, IEM, Worlds — so they match with no
+# alias via the raw-league-name fallback; add an entry only where the stored name
+# differs from what streamers write (MSI is the main one).
 # [twitch_league_aliases]
 # "Mid-Season Invitational" = ["MSI"]
 
