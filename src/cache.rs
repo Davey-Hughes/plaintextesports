@@ -11,7 +11,7 @@ use crate::feed::{FetchResult, NormalizedMatch, NormalizedTeam};
 use crate::pandascore::fetch_game;
 use crate::types::{
     event_name_eq, full_event_name, BracketMatch, BracketRound, DayGroup, EventInfo, LeagueGroup,
-    MatchStatus, MatchView, ScheduleView, Sport, StandingRow, StreamView, TeamView,
+    MatchStatus, MatchView, ScheduleView, SourceLink, Sport, StandingRow, StreamView, TeamView,
 };
 use chrono::{DateTime, Datelike, Duration, NaiveDate, TimeZone, Timelike, Utc};
 use chrono_tz::Tz;
@@ -2095,6 +2095,85 @@ fn pct_encode(s: &str) -> String {
         }
     }
     out
+}
+
+/// ESPN gamecast URL slug for the leagues we pull from ESPN. `None` for sports
+/// we don't fetch from ESPN (so they fall through to the event-page fallback).
+fn espn_slug(sport: Sport) -> Option<&'static str> {
+    match sport {
+        Sport::Nhl => Some("nhl"),
+        Sport::Nba => Some("nba"),
+        Sport::Nfl => Some("nfl"),
+        _ => None,
+    }
+}
+
+/// Human host label for a fallback event/series URL — the anchor text's source
+/// name. `None` for an empty or unrecognized host, so the page shows no link
+/// rather than an anchor with no sensible label.
+fn source_label(url: &str) -> Option<&'static str> {
+    if url.is_empty() {
+        return None;
+    }
+    Some(if url.contains("liquipedia.net") {
+        "Liquipedia"
+    } else if url.contains("formula1.com") {
+        "Formula 1"
+    } else if url.contains("wrc.com") {
+        "WRC"
+    } else if url.contains("fiawec.com") {
+        "WEC"
+    } else if url.contains("motogp.com") {
+        "MotoGP"
+    } else if url.contains("mlb.com") {
+        "MLB"
+    } else if url.contains("nhl.com") {
+        "NHL"
+    } else if url.contains("nba.com") {
+        "NBA"
+    } else if url.contains("nfl.com") {
+        "NFL"
+    } else if url.contains("premierleague.com") {
+        "Premier League"
+    } else if url.contains("fifa.com") {
+        "FIFA"
+    } else {
+        return None;
+    })
+}
+
+/// The best external "view this game" link for a match: a precise per-game page
+/// (ESPN gamecast, MLB Gameday) built from the match id when we have one, else the
+/// event/series page from [`resolved_event_url`]. `None` when no labelled link
+/// fits. `id == 0` (demo/fixtures) never builds a per-game URL.
+pub(crate) fn match_source_link(
+    sport: Sport,
+    id: i64,
+    league: &str,
+    begin_at_ms: i64,
+    official: Option<&str>,
+) -> Option<SourceLink> {
+    if id > 0 {
+        if let Some(slug) = espn_slug(sport) {
+            return Some(SourceLink {
+                url: format!("https://www.espn.com/{slug}/game/_/gameId/{id}"),
+                label: "ESPN".to_string(),
+            });
+        }
+        if sport == Sport::Mlb {
+            return Some(SourceLink {
+                url: format!("https://www.mlb.com/gameday/{id}"),
+                label: "MLB".to_string(),
+            });
+        }
+    }
+    let begin_at = DateTime::from_timestamp_millis(begin_at_ms).unwrap_or_else(Utc::now);
+    let url = resolved_event_url(sport, league, begin_at, official);
+    let label = source_label(&url)?;
+    Some(SourceLink {
+        url,
+        label: label.to_string(),
+    })
 }
 
 /// Group already-time-sorted views into per-day buckets, and within each day
@@ -4183,6 +4262,74 @@ pub fn synthetic_snapshot(n: usize, now: DateTime<Utc>) -> Snapshot {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn source_link_espn_sports_build_gamecast_urls() {
+        for (sport, slug) in [
+            (Sport::Nhl, "nhl"),
+            (Sport::Nba, "nba"),
+            (Sport::Nfl, "nfl"),
+        ] {
+            let s = match_source_link(sport, 401688573, "NHL", 0, None).unwrap();
+            assert_eq!(
+                s.url,
+                format!("https://www.espn.com/{slug}/game/_/gameId/401688573")
+            );
+            assert_eq!(s.label, "ESPN");
+        }
+    }
+
+    #[test]
+    fn source_link_mlb_builds_gameday_url() {
+        let s = match_source_link(Sport::Mlb, 745444, "MLB", 0, None).unwrap();
+        assert_eq!(s.url, "https://www.mlb.com/gameday/745444");
+        assert_eq!(s.label, "MLB");
+    }
+
+    #[test]
+    fn source_link_zero_id_falls_back_to_event_page() {
+        // id 0 (demo/fixtures) must NOT build a bogus per-game URL; NHL falls back to
+        // the league page, labelled by host.
+        let s = match_source_link(Sport::Nhl, 0, "NHL", 0, None).unwrap();
+        assert!(s.url.contains("nhl.com"), "got {}", s.url);
+        assert_eq!(s.label, "NHL");
+    }
+
+    #[test]
+    fn source_link_esports_uses_official_then_liquipedia() {
+        // An official URL from the source is used as-is, labelled by host.
+        let s = match_source_link(
+            Sport::Cs2,
+            123,
+            "IEM",
+            0,
+            Some("https://liquipedia.net/counterstrike/IEM_Cologne"),
+        )
+        .unwrap();
+        assert_eq!(s.url, "https://liquipedia.net/counterstrike/IEM_Cologne");
+        assert_eq!(s.label, "Liquipedia");
+        // With no official URL, falls back to a Liquipedia search (still Liquipedia).
+        let s2 = match_source_link(Sport::Cs2, 123, "IEM", 0, None).unwrap();
+        assert!(s2.url.contains("liquipedia.net"), "got {}", s2.url);
+        assert_eq!(s2.label, "Liquipedia");
+    }
+
+    #[test]
+    fn source_link_motorsport_series_fallbacks() {
+        let f1 = match_source_link(Sport::Motorsport, 0, "F1", 0, None).unwrap();
+        assert!(f1.url.contains("formula1.com"), "got {}", f1.url);
+        assert_eq!(f1.label, "Formula 1");
+        let wrc = match_source_link(Sport::Motorsport, 0, "WRC", 0, None).unwrap();
+        assert_eq!(wrc.label, "WRC");
+        let wec = match_source_link(Sport::Motorsport, 0, "WEC", 0, None).unwrap();
+        assert_eq!(wec.label, "WEC");
+    }
+
+    #[test]
+    fn source_label_unknown_or_empty_is_none() {
+        assert_eq!(source_label(""), None);
+        assert_eq!(source_label("https://example.com/whatever"), None);
+    }
 
     /// A WRC stage row (real start + venue tz) for the collapse test.
     fn wrc_stage(id: i64, label: &str, series: &str, begin: &str) -> NormalizedMatch {

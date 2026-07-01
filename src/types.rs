@@ -536,6 +536,16 @@ pub struct StreamView {
     pub group: String,
 }
 
+/// The best external "view this game" link for a match: a precise per-game page
+/// (ESPN gamecast, MLB Gameday) when we can build one from the match id, else the
+/// event/series page. `label` is the human host name shown in the anchor (e.g.
+/// "ESPN", "Liquipedia").
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SourceLink {
+    pub url: String,
+    pub label: String,
+}
+
 /// One row of a group-stage / Swiss standings table.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StandingRow {
