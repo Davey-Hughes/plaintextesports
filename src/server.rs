@@ -5,7 +5,7 @@
 use crate::types::Sport;
 use crate::types::{
     EventInfo, F1Result, F1Standings, MatchDetail, MatchResults, MotorResult, MotorStandings,
-    ReminderReq, ScheduleView, SiteInfo, SubscribeReq,
+    ReminderReq, ScheduleView, SiteInfo, StreamView, SubscribeReq,
 };
 use leptos::prelude::*;
 
@@ -219,6 +219,26 @@ pub async fn get_match_results(
     {
         let _ = (uid, tz, hour24);
         Ok(MatchResults::default())
+    }
+}
+
+/// A match's streams enriched with Twitch live status + seeded co-streamers,
+/// loaded on its own resource so the page renders before Twitch responds. Returns
+/// the base streams unchanged when Twitch isn't configured or there's nothing to
+/// enrich. Esports only — the client only spawns this for CS2/LoL matches.
+#[server(GetLiveStreams, "/api")]
+pub async fn get_live_streams(uid: String) -> Result<Vec<StreamView>, ServerFnError> {
+    #[cfg(feature = "ssr")]
+    {
+        let Some((sport, id)) = crate::types::parse_match_uid(&uid) else {
+            return Ok(Vec::new());
+        };
+        Ok(crate::cache::live_streams_for(sport, id).await)
+    }
+    #[cfg(not(feature = "ssr"))]
+    {
+        let _ = uid;
+        Ok(Vec::new())
     }
 }
 
