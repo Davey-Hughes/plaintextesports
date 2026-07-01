@@ -21,12 +21,16 @@ twitch_client_secret = ""
 # and streaming that match's game. Two kinds of key, merged for each match:
 #   - a game key = the sport slug ("lol" or "cs2") applies to EVERY league of that
 #     game (the usual case);
-#   - a league key = the league name exactly as it appears on the site (e.g. "LCK",
-#     "PGL Major") adds league-specific extras on top.
+#   - a league key = the league name exactly as it appears on the site adds
+#     league-specific extras on top. Most useful for a league whose own broadcast
+#     ISN'T on Twitch (so it never shows natively) — e.g. LPL streams on Huya, so
+#     its official English Twitch cast is worth adding here. A league that already
+#     streams on Twitch (LCK/LEC/LCS) needs no entry — its channel shows and gets
+#     the live badge on its own.
 # [costreamers]
 # lol = ["caedrel", "doublelift", "sneaky"]
 # cs2 = ["ohnepixel"]
-# LCK = ["extra_login_just_for_lck"]
+# LPL = ["lpl"]
 
 # Poll cadence (seconds). Each series (WRC, WEC, MotoGP) is polled independently,
 # only as fast as its nearest event warrants, so a quiet day costs a handful of
