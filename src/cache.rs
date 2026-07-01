@@ -311,6 +311,47 @@ pub async fn live_streams_for(sport: Sport, id: i64) -> Vec<StreamView> {
         }
     }
 
+    // Phase 2 (opt-in, off by default): official co-streamers via the unofficial
+    // GQL API, keyed off the match's official Twitch broadcast channel(s).
+    if config().twitch_discovery.gql_costreamers
+        && matches!(status, MatchStatus::Live)
+        && matches!(sport, Sport::Cs2 | Sport::Lol)
+    {
+        let officials: Vec<String> = enriched
+            .iter()
+            .filter(|s| s.official)
+            .filter_map(|s| login_of(&s.url))
+            .collect();
+        let mut cand: Vec<String> = Vec::new();
+        for ch in &officials {
+            for cs in crate::twitch_gql::costreamers(ch).await {
+                if !cand.contains(&cs) {
+                    cand.push(cs);
+                }
+            }
+        }
+        if !cand.is_empty() {
+            let live = crate::twitch::live_streams(&cand).await;
+            let present: std::collections::HashSet<String> =
+                enriched.iter().filter_map(|s| login_of(&s.url)).collect();
+            for login in cand {
+                if present.contains(&login) {
+                    continue;
+                }
+                if let Some(info) = live.get(&login) {
+                    enriched.push(StreamView {
+                        url: format!("https://www.twitch.tv/{login}"),
+                        live: true,
+                        viewers: Some(info.viewers),
+                        official: false,
+                        group: "costream".to_string(),
+                        ..Default::default()
+                    });
+                }
+            }
+        }
+    }
+
     STREAM_STATUS
         .write()
         .unwrap_or_else(PoisonError::into_inner)
