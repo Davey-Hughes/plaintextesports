@@ -3978,6 +3978,79 @@ fn enrich_streams(
     base
 }
 
+/// Twitch title keywords for a league: its configured aliases (lowercased) plus
+/// the raw league token as a fallback. Empty league / no alias behaves sensibly
+/// (raw token only, or nothing).
+fn league_keywords(
+    league: &str,
+    aliases: &std::collections::HashMap<String, Vec<String>>,
+) -> Vec<String> {
+    let mut out: Vec<String> = aliases
+        .get(league)
+        .into_iter()
+        .flatten()
+        .map(|s| s.to_ascii_lowercase())
+        .collect();
+    let raw = league.trim().to_ascii_lowercase();
+    if !raw.is_empty() && !out.iter().any(|k| k == &raw) {
+        out.push(raw);
+    }
+    out
+}
+
+/// True when `kw` appears in `hay` as a whole token (not merely a substring), so
+/// short abbreviations like "lec" don't match inside "collector". Both args must
+/// already be lowercased.
+fn contains_token(hay: &str, kw: &str) -> bool {
+    if kw.is_empty() {
+        return false;
+    }
+    hay.match_indices(kw).any(|(i, _)| {
+        let before = hay[..i].chars().next_back();
+        let after = hay[i + kw.len()..].chars().next();
+        before.is_none_or(|c| !c.is_alphanumeric()) && after.is_none_or(|c| !c.is_alphanumeric())
+    })
+}
+
+/// Attribute discovered streams to a league's match: keep those whose title or a
+/// tag contains a league keyword (as a token), that clear `min_viewers`, and
+/// whose login isn't already present; sort by viewers desc, take `max`, map to
+/// `costream` StreamViews.
+fn attribute_costreams(
+    scan: &[crate::twitch_discover::DiscoveredStream],
+    keywords: &[String],
+    present: &std::collections::HashSet<String>,
+    min_viewers: u64,
+    max: usize,
+) -> Vec<StreamView> {
+    let mut hits: Vec<&crate::twitch_discover::DiscoveredStream> = scan
+        .iter()
+        .filter(|d| d.viewers >= min_viewers)
+        .filter(|d| !present.contains(&d.login.to_ascii_lowercase()))
+        .filter(|d| {
+            let title = d.title.to_ascii_lowercase();
+            keywords.iter().any(|k| {
+                contains_token(&title, k)
+                    || d.tags
+                        .iter()
+                        .any(|t| contains_token(&t.to_ascii_lowercase(), k))
+            })
+        })
+        .collect();
+    hits.sort_by(|a, b| b.viewers.cmp(&a.viewers));
+    hits.into_iter()
+        .take(max)
+        .map(|d| StreamView {
+            url: format!("https://www.twitch.tv/{}", d.login.to_ascii_lowercase()),
+            live: true,
+            viewers: Some(d.viewers),
+            official: false,
+            group: "costream".to_string(),
+            ..Default::default()
+        })
+        .collect()
+}
+
 /// A watchable YouTube URL for a channel ident (`@handle` or `UC…`).
 fn youtube_url_for(ident: &str) -> String {
     if ident.starts_with("UC") {
@@ -5927,6 +6000,90 @@ mod tests {
         .collect();
         let out = enrich_streams(Vec::new(), &live, &["x".to_string()], "");
         assert!(out.is_empty());
+    }
+
+    #[test]
+    fn league_keywords_alias_plus_raw_token() {
+        let mut al = std::collections::HashMap::new();
+        al.insert(
+            "Mid-Season Invitational".to_string(),
+            vec!["MSI".to_string()],
+        );
+        let k = league_keywords("Mid-Season Invitational", &al);
+        assert!(k.contains(&"msi".to_string()));
+        assert!(k.contains(&"mid-season invitational".to_string()));
+        // No alias → raw league token only (lowercased).
+        assert_eq!(
+            league_keywords("LEC", &std::collections::HashMap::new()),
+            vec!["lec".to_string()]
+        );
+        // Empty league → no keywords.
+        assert!(league_keywords("", &std::collections::HashMap::new()).is_empty());
+    }
+
+    #[test]
+    fn attribute_costreams_filters_dedups_and_marks_costream() {
+        use crate::twitch_discover::DiscoveredStream;
+        let ds = |login: &str, v: u64, title: &str, tags: &[&str]| DiscoveredStream {
+            login: login.to_string(),
+            viewers: v,
+            title: title.to_string(),
+            tags: tags.iter().map(|s| s.to_string()).collect(),
+        };
+        let scan = vec![
+            ds("caedrel", 40000, "MSI Watchparty Day 3", &[]), // title hit
+            ds("tagonly", 5000, "just chatting", &["MSI"]),    // tag hit
+            ds("tiny", 100, "MSI co-stream", &[]),             // below floor
+            ds("unrelated", 40000, "ranked grind", &[]),       // no keyword
+            ds("official", 40000, "MSI main", &[]),            // already present
+        ];
+        let keywords = vec!["msi".to_string()];
+        let mut present = std::collections::HashSet::new();
+        present.insert("official".to_string());
+        let out = attribute_costreams(&scan, &keywords, &present, 300, 6);
+        let logins: Vec<String> = out.iter().filter_map(|s| login_of(&s.url)).collect();
+        assert!(logins.contains(&"caedrel".to_string()));
+        assert!(logins.contains(&"tagonly".to_string()));
+        assert!(!logins.contains(&"tiny".to_string())); // viewer floor
+        assert!(!logins.contains(&"unrelated".to_string())); // no keyword
+        assert!(!logins.contains(&"official".to_string())); // dedup
+        assert!(out
+            .iter()
+            .all(|s| s.group == "costream" && s.live && !s.official));
+        assert_eq!(
+            out.iter()
+                .find(|s| login_of(&s.url).as_deref() == Some("caedrel"))
+                .unwrap()
+                .viewers,
+            Some(40000)
+        );
+    }
+
+    #[test]
+    fn attribute_costreams_token_boundary_and_cap_ordering() {
+        use crate::twitch_discover::DiscoveredStream;
+        let ds = |login: &str, v: u64, title: &str| DiscoveredStream {
+            login: login.to_string(),
+            viewers: v,
+            title: title.to_string(),
+            tags: vec![],
+        };
+        let scan = vec![
+            ds("nope", 90000, "rare card collector stream"), // "lec" only inside "collector"
+            ds("a", 100000, "LEC Summer finals"),
+            ds("b", 200000, "LEC watch party"),
+            ds("c", 50000, "LEC co-stream"),
+        ];
+        let out = attribute_costreams(
+            &scan,
+            &["lec".to_string()],
+            &std::collections::HashSet::new(),
+            300,
+            2,
+        );
+        let logins: Vec<String> = out.iter().filter_map(|s| login_of(&s.url)).collect();
+        assert!(!logins.iter().any(|l| l == "nope")); // token boundary, not substring
+        assert_eq!(logins, vec!["b".to_string(), "a".to_string()]); // top-2 by viewers desc
     }
 
     #[test]
