@@ -137,6 +137,14 @@ fn country_flag(country: &str) -> String {
 /// The formula1.com race-page slug for a circuit (verified against the 2026
 /// calendar). `None` for circuits we haven't confirmed — the caller then uses the
 /// Jolpica Wikipedia URL, so a new/renamed circuit never yields a broken link.
+///
+/// Slugs are country/location names that can shift between seasons (`yas_marina`
+/// has differed year to year); re-verify each entry against
+/// `formula1.com/en/racing/{season}/{slug}` when advancing the season. This is the
+/// one case the Wikipedia fallback does NOT catch — a *mapped* circuit whose slug
+/// went stale yields a wrong/404 link rather than falling back. Keep the circuit
+/// list in sync with [`circuit_tz`] (same `circuit_id`s; `madring` is deliberately
+/// only in `circuit_tz`, so it falls back to Wikipedia here).
 fn circuit_slug(circuit_id: &str) -> Option<&'static str> {
     Some(match circuit_id {
         "albert_park" => "australia",
@@ -179,7 +187,8 @@ fn race_page_url(circuit_id: &str, season: i64, wiki_url: &str) -> Option<String
 
 /// The IANA timezone of each Grand Prix circuit (Jolpica gives only a locality,
 /// not a tz), so the schedule can show the local time at the track. Keyed on the
-/// stable `circuitId`.
+/// stable `circuitId`. Adding a circuit means updating [`circuit_slug`] too (its
+/// race-page slug), unless — like `madring` — it should fall back to Wikipedia.
 fn circuit_tz(circuit_id: &str) -> Option<&'static str> {
     Some(match circuit_id {
         "albert_park" => "Australia/Melbourne",
