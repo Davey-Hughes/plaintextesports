@@ -8,7 +8,7 @@
 //! toggle (like esports); the start time still shows in the viewer's zone.
 
 use crate::feed::{NormalizedMatch, NormalizedTeam};
-use crate::types::{EventInfo, MatchStatus, Sport, StandingRow};
+use crate::types::{EventInfo, MatchStatus, Sport, StandingRow, StreamView};
 use chrono::{DateTime, Datelike, NaiveDate, NaiveDateTime, Utc};
 use serde::Deserialize;
 
@@ -154,6 +154,36 @@ struct Competition {
     competitors: Vec<Competitor>,
     #[serde(default)]
     venue: Venue,
+    #[serde(rename = "geoBroadcasts", default)]
+    geo_broadcasts: Vec<GeoBroadcast>,
+}
+
+#[derive(Deserialize, Default)]
+struct GeoBroadcast {
+    #[serde(rename = "type", default)]
+    kind: GeoKind,
+    #[serde(default)]
+    market: GeoMarket,
+    #[serde(default)]
+    media: GeoMedia,
+}
+
+#[derive(Deserialize, Default)]
+struct GeoKind {
+    #[serde(rename = "shortName", default)]
+    short_name: String, // "TV" | "Radio" | "Streaming" | …
+}
+
+#[derive(Deserialize, Default)]
+struct GeoMarket {
+    #[serde(rename = "type", default)]
+    kind: String, // "National" | "Home" | "Away"
+}
+
+#[derive(Deserialize, Default)]
+struct GeoMedia {
+    #[serde(rename = "shortName", default)]
+    short_name: String, // network name
 }
 
 #[derive(Deserialize, Default)]
@@ -313,6 +343,73 @@ fn status_of(state: &str, name: &str) -> MatchStatus {
     }
 }
 
+/// Sort key so the most useful "where to watch" entries lead: video before
+/// radio, national before local (home before away).
+fn geo_rank(g: &GeoBroadcast) -> (i32, i32) {
+    let radio = if g.kind.short_name.eq_ignore_ascii_case("Radio") {
+        1
+    } else {
+        0
+    };
+    let side = match g.market.kind.as_str() {
+        "National" => 0,
+        "Home" => 1,
+        "Away" => 2,
+        _ => 3,
+    };
+    (radio, side)
+}
+
+/// Turn ESPN's `geoBroadcasts` into [`StreamView`]s: national networks carry a
+/// watch link, local RSNs / radio are text (ESPN provides no per-network URL).
+/// Deduped by name+medium; grouped video (`tv`) then radio. Radio is the only
+/// non-video medium; TV/Streaming/Web all read as watchable video.
+fn broadcasts(raw: &[GeoBroadcast]) -> Vec<StreamView> {
+    let mut sorted: Vec<&GeoBroadcast> = raw.iter().collect();
+    sorted.sort_by_key(|g| geo_rank(g));
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut out = Vec::new();
+    for g in sorted {
+        let name = g.media.short_name.trim();
+        if name.is_empty() {
+            continue;
+        }
+        let is_radio = g.kind.short_name.eq_ignore_ascii_case("Radio");
+        let medium = if is_radio { "radio" } else { "TV" };
+        if !seen.insert(format!("{name}|{medium}")) {
+            continue;
+        }
+        let (scope, national) = match g.market.kind.as_str() {
+            "National" => ("national", true),
+            "Home" => ("home", false),
+            "Away" => ("away", false),
+            _ => ("", false),
+        };
+        let tag = if scope.is_empty() {
+            medium.to_string()
+        } else {
+            format!("{scope} · {medium}")
+        };
+        let url = if national {
+            crate::watch::national_watch_url(name)
+                .unwrap_or_default()
+                .to_string()
+        } else {
+            String::new()
+        };
+        out.push(StreamView {
+            url,
+            language: String::new(),
+            official: national,
+            main: !is_radio,
+            name: name.to_string(),
+            tag,
+            group: if is_radio { "radio" } else { "tv" }.to_string(),
+        });
+    }
+    out
+}
+
 fn to_match(e: Event, lg: &EspnLeague) -> Option<NormalizedMatch> {
     let id = e.id.parse::<i64>().ok()?;
     let begin_at = parse_date(&e.date)?;
@@ -353,6 +450,7 @@ fn to_match(e: Event, lg: &EspnLeague) -> Option<NormalizedMatch> {
     if lg.dated_event {
         m.series_name = begin_at.year().to_string();
     }
+    m.streams = broadcasts(&comp.geo_broadcasts);
     Some(m)
 }
 
@@ -596,5 +694,40 @@ mod tests {
         let nov_2026 = "2026-11-15T00:00:00Z".parse::<DateTime<Utc>>().unwrap();
         assert_eq!(season_year(Sport::Nfl, nov_2026), 2026);
         assert_eq!(season_year(Sport::Nba, nov_2026), 2027);
+    }
+
+    #[test]
+    fn geo_broadcasts_map_to_streams() {
+        let raw: Vec<GeoBroadcast> = serde_json::from_str(
+            r#"[
+              {"type":{"shortName":"TV"},"market":{"type":"National"},"media":{"shortName":"ESPN"}},
+              {"type":{"shortName":"TV"},"market":{"type":"Home"},"media":{"shortName":"NBC Sports BA"}},
+              {"type":{"shortName":"Radio"},"market":{"type":"Away"},"media":{"shortName":"WFAN"}},
+              {"type":{"shortName":"TV"},"market":{"type":"National"},"media":{"shortName":"ESPN"}}
+            ]"#,
+        )
+        .unwrap();
+        let sv = broadcasts(&raw);
+        // National TV leads, deduped; ESPN national gets a watch URL.
+        assert_eq!(sv.len(), 3);
+        assert_eq!(sv[0].name, "ESPN");
+        assert_eq!(sv[0].tag, "national · TV");
+        assert_eq!(sv[0].group, "tv");
+        assert!(sv[0].url.contains("espn.com"), "national should link");
+        assert!(sv[0].official);
+        // Local RSN: no URL, home tag.
+        let rsn = sv.iter().find(|s| s.name == "NBC Sports BA").unwrap();
+        assert!(rsn.url.is_empty(), "local RSN must not link");
+        assert_eq!(rsn.tag, "home · TV");
+        assert!(!rsn.official);
+        // Radio grouped separately.
+        let radio = sv.iter().find(|s| s.name == "WFAN").unwrap();
+        assert_eq!(radio.group, "radio");
+        assert_eq!(radio.tag, "away · radio");
+    }
+
+    #[test]
+    fn empty_geo_broadcasts_yield_no_streams() {
+        assert!(broadcasts(&[]).is_empty());
     }
 }
