@@ -1,5 +1,6 @@
 //! The match-detail page: the detail view, streams, per-game series rows, and
 //! the F1 / motorsport result views.
+use crate::app::pages::home::motorsport_watch;
 use crate::app::*;
 
 #[derive(Params, PartialEq, Clone)]
@@ -254,6 +255,10 @@ pub(crate) fn detail_view(d: MatchDetail, results: Resource<MatchResults>) -> im
     // click (blue), like the schedule rows. Lead = event name; the middle is the
     // clickable when; trail = best-of + status.
     let event_name = full_event_name(&m.league, &m.series_name);
+    // Motorsport series have no per-event broadcast data; show the stable
+    // per-series service link(s) (F1 TV, Rally.TV, WEC on YouTube, MotoGP
+    // VideoPass) — the same links the event page carries. Empty for other sports.
+    let motor_watch: Vec<(&'static str, &'static str)> = motorsport_watch(&m.league).to_vec();
     let when_local = [m.date_label.clone(), m.clock_label.clone()]
         .into_iter()
         .filter(|s| !s.is_empty())
@@ -440,6 +445,19 @@ pub(crate) fn detail_view(d: MatchDetail, results: Resource<MatchResults>) -> im
                         {format!("view on {} ↗", s.label)}
                     </a>
                 </p>
+            })}
+            {(!motor_watch.is_empty()).then(|| {
+                let links = motor_watch
+                    .iter()
+                    .enumerate()
+                    .map(|(i, (name, url))| view! {
+                        {(i > 0).then(|| view! { <span class="sep">" · "</span> })}
+                        <a href=*url target="_blank" rel="noreferrer">
+                            {format!("{name} ↗")}
+                        </a>
+                    })
+                    .collect_view();
+                view! { <p class="event-link event-watch">"watch · "{links}</p> }
             })}
             <StreamsList streams=streams />
             // Results load on their own resource (not with the header), so a slow or
