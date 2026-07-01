@@ -3,9 +3,13 @@
 //! for auth/client. Unconfigured / any error ⇒ empty, so the page never depends
 //! on it.
 
+use crate::config::config;
 use crate::types::Sport;
+use chrono::{DateTime, Duration, Utc};
+use once_cell::sync::Lazy;
 use serde::Deserialize;
 use std::collections::HashMap;
+use std::sync::{PoisonError, RwLock};
 
 /// A live stream found by category discovery (title/tags kept for attribution).
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -74,6 +78,79 @@ pub fn parse_discover_page(json: &str) -> (Vec<DiscoveredStream>, Option<String>
         })
         .collect();
     (streams, resp.pagination.cursor)
+}
+
+/// Per-game cache of the last category scan, keyed by game_id. One scan per game
+/// per TTL serves every live match of that game.
+static DISCOVER_CACHE: Lazy<RwLock<HashMap<String, (DateTime<Utc>, Vec<DiscoveredStream>)>>> =
+    Lazy::new(|| RwLock::new(HashMap::new()));
+const DISCOVER_TTL_SECS: i64 = 120;
+/// Pages of 100 to pull (top streams are viewer-sorted, so 1–2 pages suffice).
+const MAX_PAGES: usize = 2;
+
+/// Live streams in a Twitch category, filtered to `langs`, sorted by viewers
+/// desc. Cached ~120s per game_id. Empty when Twitch is unconfigured or on any
+/// error — callers degrade to no discovery.
+pub async fn discover(game_id: &str, langs: &[String]) -> Vec<DiscoveredStream> {
+    {
+        let g = DISCOVER_CACHE
+            .read()
+            .unwrap_or_else(PoisonError::into_inner);
+        if let Some((at, v)) = g.get(game_id) {
+            if *at + Duration::seconds(DISCOVER_TTL_SECS) > Utc::now() {
+                return v.clone();
+            }
+        }
+    }
+    let Some(id) = config().twitch_client_id.clone().filter(|s| !s.is_empty()) else {
+        return Vec::new();
+    };
+    let Some(token) = crate::twitch::app_token().await else {
+        return Vec::new();
+    };
+    let client = crate::twitch::client();
+    let mut out: Vec<DiscoveredStream> = Vec::new();
+    let mut cursor: Option<String> = None;
+    for _ in 0..MAX_PAGES {
+        let mut q: Vec<(&str, String)> = vec![
+            ("game_id", game_id.to_string()),
+            ("first", "100".to_string()),
+        ];
+        for l in langs {
+            q.push(("language", l.clone()));
+        }
+        if let Some(c) = &cursor {
+            q.push(("after", c.clone()));
+        }
+        let resp = match client
+            .get("https://api.twitch.tv/helix/streams")
+            .query(&q)
+            .header("Client-Id", &id)
+            .bearer_auth(&token)
+            .send()
+            .await
+        {
+            Ok(r) => r,
+            Err(_) => break,
+        };
+        if !resp.status().is_success() {
+            break;
+        }
+        let Ok(body) = resp.text().await else {
+            break;
+        };
+        let (mut page, next) = parse_discover_page(&body);
+        out.append(&mut page);
+        match next {
+            Some(c) if !c.is_empty() => cursor = Some(c),
+            _ => break,
+        }
+    }
+    DISCOVER_CACHE
+        .write()
+        .unwrap_or_else(PoisonError::into_inner)
+        .insert(game_id.to_string(), (Utc::now(), out.clone()));
+    out
 }
 
 #[cfg(test)]
