@@ -1845,7 +1845,10 @@ a {
 
 .event-link {
   font-size: 12px;
-  margin: 0.2rem 0 0.8rem;
+  // Negative top pulls the link up so it hugs the meta/venue line above and reads
+  // as part of the same block (that line's 1.2rem bottom margin otherwise
+  // collapses to leave too big a gap).
+  margin: -1rem 0 0.8rem;
 }
 
 // The motorsport "watch" link sits just under the event-page link.
