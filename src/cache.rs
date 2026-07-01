@@ -216,6 +216,65 @@ struct CachedRawSeries {
 /// scores stay fresh, long enough that a burst of views is one fetch.
 const SERIES_TTL_MIN: i64 = 2;
 
+/// Request-time cache of a match's live-enriched streams, keyed by match id, so a
+/// burst of views / refetches is one Twitch call. Short TTL — live status is
+/// volatile.
+static STREAM_STATUS: Lazy<RwLock<HashMap<i64, CachedStreams>>> =
+    Lazy::new(|| RwLock::new(HashMap::new()));
+
+struct CachedStreams {
+    streams: Vec<StreamView>,
+    fetched_at: DateTime<Utc>,
+}
+
+const STREAM_STATUS_TTL_SECS: i64 = 90;
+
+/// A match's streams with Twitch live status + seeded co-streamers merged in.
+/// Returns the base streams unchanged when there's nothing to enrich (no Twitch
+/// logins and no seeds) or when Twitch is unconfigured/erroring. The `SNAPSHOT`
+/// read lock is dropped before any network await.
+pub async fn live_streams_for(sport: Sport, id: i64) -> Vec<StreamView> {
+    let (base, league) = {
+        let snap = SNAPSHOT.read().unwrap_or_else(PoisonError::into_inner);
+        match snap.matches.iter().find(|m| m.id == id && m.sport == sport) {
+            Some(m) => (m.streams.clone(), m.league.clone()),
+            None => return Vec::new(),
+        }
+    };
+    let seeds: Vec<String> = config()
+        .costreamers
+        .get(&league)
+        .cloned()
+        .unwrap_or_default();
+    let base_logins: Vec<String> = base.iter().filter_map(|s| login_of(&s.url)).collect();
+    if base_logins.is_empty() && seeds.is_empty() {
+        return base;
+    }
+    {
+        let g = STREAM_STATUS.read().unwrap_or_else(PoisonError::into_inner);
+        if let Some(c) = g.get(&id) {
+            if c.fetched_at + Duration::seconds(STREAM_STATUS_TTL_SECS) > Utc::now() {
+                return c.streams.clone();
+            }
+        }
+    }
+    let mut logins = base_logins;
+    logins.extend(seeds.iter().cloned());
+    let live = crate::twitch::live_streams(&logins).await;
+    let enriched = enrich_streams(base, &live, &seeds, game_needle(sport));
+    STREAM_STATUS
+        .write()
+        .unwrap_or_else(PoisonError::into_inner)
+        .insert(
+            id,
+            CachedStreams {
+                streams: enriched.clone(),
+                fetched_at: Utc::now(),
+            },
+        );
+    enriched
+}
+
 /// On-demand F1 results, keyed by (season, round). Fetched when a GP event page
 /// is viewed; once a session is final its result is stable, so a longer TTL is
 /// fine.

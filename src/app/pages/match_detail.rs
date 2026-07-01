@@ -298,6 +298,7 @@ pub(crate) fn detail_view(d: MatchDetail, results: Resource<MatchResults>) -> im
     };
 
     let muid = m.uid();
+    let is_esports = matches!(m.sport, Sport::Cs2 | Sport::Lol);
     let (sa, sb) = (m.team_a.score, m.team_b.score);
     let has_score = sa.is_some() && sb.is_some();
     // "Played" = under way or done (an upcoming match can still carry a 0-0
@@ -349,7 +350,7 @@ pub(crate) fn detail_view(d: MatchDetail, results: Resource<MatchResults>) -> im
         })
     };
     // Per-match reveal button (hidden when the global toggle already shows all).
-    let toggle = reveal_toggler(revealed, muid, m.begin_at_ms);
+    let toggle = reveal_toggler(revealed, muid.clone(), m.begin_at_ms);
     // Hide the reveal toggle when the global toggle already shows all, or when
     // the match hasn't been played yet (nothing to reveal).
     let toggle_hidden = move || global.is_some_and(|g| g.get()) || !played;
@@ -459,7 +460,34 @@ pub(crate) fn detail_view(d: MatchDetail, results: Resource<MatchResults>) -> im
                     .collect_view();
                 view! { <p class="event-link event-watch">"watch · "{links}</p> }
             })}
-            <StreamsList streams=streams />
+            {if is_esports {
+                let base = streams.clone();
+                let uid_key = muid.clone();
+                let live = Resource::new(
+                    move || uid_key.clone(),
+                    |uid| async move { get_live_streams(uid).await.unwrap_or_default() },
+                );
+                let fallback_base = base.clone();
+                view! {
+                    // Transition: the snapshot streams show immediately; when the
+                    // Twitch resource resolves, swap to the enriched list (live
+                    // badges + co-streamers) without flashing a loader.
+                    <Transition fallback=move || {
+                        view! { <StreamsList streams=fallback_base.clone() /> }
+                    }>
+                        {move || {
+                            let base = base.clone();
+                            live.get().map(move |enriched| {
+                                let list = if enriched.is_empty() { base.clone() } else { enriched };
+                                view! { <StreamsList streams=list /> }
+                            })
+                        }}
+                    </Transition>
+                }
+                .into_any()
+            } else {
+                view! { <StreamsList streams=streams /> }.into_any()
+            }}
             // Results load on their own resource (not with the header), so a slow or
             // 500ing upstream never delays the title/meta. F1 → that session's
             // finishing order; WRC/WEC/MotoGP → its classification; a finished
@@ -647,6 +675,10 @@ pub(crate) fn StreamsList(streams: Vec<StreamView>) -> impl IntoView {
                 <li class=cls>
                     {body}
                     {(!tags.is_empty()).then(|| view! { <span class="stream-tags">{tags}</span> })}
+                    {s.live.then(|| {
+                        let v = s.viewers.map(|n| format!(" · {}", fmt_viewers(n))).unwrap_or_default();
+                        view! { <span class="stream-live">"● live"{v}</span> }
+                    })}
                 </li>
             }
         })
