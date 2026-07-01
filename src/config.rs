@@ -16,6 +16,11 @@ struct FileConfig {
     pandascore_token: Option<String>,
     /// Orange Cat Blacktop API key (WRC + WEC + MotoGP). `x-api-key` header.
     ocblacktop_token: Option<String>,
+    /// Twitch app credentials for esports live-stream enrichment.
+    twitch_client_id: Option<String>,
+    twitch_client_secret: Option<String>,
+    /// Curated co-streamers per league: league name → Twitch logins.
+    costreamers: Option<HashMap<String, Vec<String>>>,
     /// Calendar poll interval (s) for a series with a session live or starting
     /// within the hour — the fast tier (only the in-window series pays it).
     ocblacktop_live_poll_secs: Option<u64>,
@@ -74,6 +79,8 @@ impl FileConfig {
         };
         put("PANDASCORE_TOKEN", self.pandascore_token.clone());
         put("OCBLACKTOP_TOKEN", self.ocblacktop_token.clone());
+        put("TWITCH_CLIENT_ID", self.twitch_client_id.clone());
+        put("TWITCH_CLIENT_SECRET", self.twitch_client_secret.clone());
         put(
             "OCBLACKTOP_LIVE_POLL_SECS",
             self.ocblacktop_live_poll_secs.map(|n| n.to_string()),
@@ -143,6 +150,13 @@ pub struct Config {
     /// cadence (fast only near a live event), so the daily quota covers all three
     /// with room to spare.
     pub ocblacktop_token: Option<String>,
+    /// Twitch app credentials (client-credentials flow). Both must be set to
+    /// enable esports live-stream enrichment; otherwise it's a no-op.
+    pub twitch_client_id: Option<String>,
+    pub twitch_client_secret: Option<String>,
+    /// Curated co-streamers per league (league name → Twitch logins), surfaced
+    /// when live and streaming the match's game. Empty when unconfigured.
+    pub costreamers: HashMap<String, Vec<String>>,
     /// Calendar poll interval for a series with a session live or starting within
     /// the hour (fast tier; only the in-window series uses it).
     pub ocblacktop_live_poll: Duration,
@@ -265,6 +279,9 @@ impl Config {
             cfg.copyright_url = site.copyright_url;
             cfg.links = site.links;
         }
+        if let Some(cs) = file.costreamers {
+            cfg.costreamers = cs;
+        }
         cfg
     }
 
@@ -284,6 +301,12 @@ impl Config {
             .filter(|s| !s.is_empty());
 
         let ocblacktop_token = get("OCBLACKTOP_TOKEN")
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
+        let twitch_client_id = get("TWITCH_CLIENT_ID")
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
+        let twitch_client_secret = get("TWITCH_CLIENT_SECRET")
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty());
         // Per-series, proximity-driven cadence sized for the free tier's 250
@@ -371,6 +394,9 @@ impl Config {
         Self {
             token,
             ocblacktop_token,
+            twitch_client_id,
+            twitch_client_secret,
+            costreamers: HashMap::new(),
             ocblacktop_live_poll,
             ocblacktop_near_poll,
             ocblacktop_idle_poll,
@@ -565,6 +591,30 @@ mod tests {
         );
         // Blank / whitespace falls back to the default.
         assert_eq!(cfg(&[("ICONS_DIR", "  ")]).icons_dir, "icons");
+    }
+
+    #[test]
+    fn parses_twitch_creds_and_costreamers() {
+        let src = r#"
+            twitch_client_id = "cid"
+            twitch_client_secret = "csecret"
+            [costreamers]
+            LCK = ["caedrel", "ludwig"]
+            "PGL Major" = ["gaules"]
+        "#;
+        let fc: FileConfig = toml::from_str(src).unwrap();
+        let m = fc.to_map();
+        assert_eq!(m.get("TWITCH_CLIENT_ID").map(String::as_str), Some("cid"));
+        assert_eq!(
+            m.get("TWITCH_CLIENT_SECRET").map(String::as_str),
+            Some("csecret")
+        );
+        let cs = fc.costreamers.expect("costreamers");
+        assert_eq!(
+            cs.get("LCK").unwrap(),
+            &vec!["caedrel".to_string(), "ludwig".to_string()]
+        );
+        assert_eq!(cs.get("PGL Major").unwrap(), &vec!["gaules".to_string()]);
     }
 
     #[test]
