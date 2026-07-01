@@ -18,9 +18,13 @@ const UPLOADS_DEPTH: usize = 15;
 /// In-memory daily unit ceiling — well under the 10k/day quota, headroom to spare.
 pub const YT_DAILY_BUDGET: u32 = 8000;
 
+/// Timeouts keep a hung googleapis.com from pinning the enrichment task and a
+/// pooled connection indefinitely — reqwest sets none by default.
 static CLIENT: Lazy<reqwest::Client> = Lazy::new(|| {
     reqwest::Client::builder()
         .user_agent(USER_AGENT)
+        .connect_timeout(std::time::Duration::from_secs(4))
+        .timeout(std::time::Duration::from_secs(8))
         .build()
         .unwrap_or_default()
 });

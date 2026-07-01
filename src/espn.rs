@@ -415,6 +415,11 @@ fn broadcasts(raw: &[GeoBroadcast]) -> Vec<StreamView> {
 /// simulcast free on Amazon's Twitch channel; no feed flags it, so add it when an
 /// NFL game already carries a Prime/Amazon broadcast.
 fn append_tnf_twitch(streams: &mut Vec<StreamView>, sport: Sport) {
+    // Only NFL games get the Prime→Twitch simulcast; gate before the scan so
+    // NHL/NBA (the bulk of ESPN games) don't pay the per-stream uppercase allocs.
+    if sport != Sport::Nfl {
+        return;
+    }
     let has_prime = streams.iter().any(|s| {
         let n = s.name.to_ascii_uppercase();
         n.contains("PRIME") || n.contains("AMAZON")
@@ -422,7 +427,7 @@ fn append_tnf_twitch(streams: &mut Vec<StreamView>, sport: Sport) {
     let has_twitch = streams
         .iter()
         .any(|s| s.name.eq_ignore_ascii_case("Twitch"));
-    if sport == Sport::Nfl && has_prime && !has_twitch {
+    if has_prime && !has_twitch {
         streams.push(StreamView {
             url: "https://www.twitch.tv/primevideo".to_string(),
             official: true,

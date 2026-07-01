@@ -302,9 +302,17 @@ pub async fn fetch_schedule(
         let Some(resp) = resp else { continue };
         for day in resp.game_week {
             for g in day.games {
+                // Dedup on the raw id before parsing: overlapping week windows
+                // return the same games repeatedly, and to_match now does real
+                // work (broadcast sort/dedup) we'd otherwise repeat then discard.
+                // begin_at derives only from `g`, so a game's in-range status is
+                // invariant across its appearances — deduping first is safe.
+                if !seen.insert(g.id) {
+                    continue;
+                }
                 if let Some(m) = to_match(g) {
                     let d = m.begin_at.date_naive();
-                    if d >= start && d <= end && seen.insert(m.id) {
+                    if d >= start && d <= end {
                         out.push(m);
                     }
                 }
