@@ -17,6 +17,12 @@ ocblacktop_token = ""
 twitch_client_id = ""
 twitch_client_secret = ""
 
+# Curated co-streamers per league (Twitch logins), shown when live and streaming
+# that league's game. Keyed by the league name exactly as it appears on the site.
+# [costreamers]
+# LCK = ["login1", "login2"]
+# "PGL Major" = ["login3"]
+
 # Poll cadence (seconds). Each series (WRC, WEC, MotoGP) is polled independently,
 # only as fast as its nearest event warrants, so a quiet day costs a handful of
 # requests and even a race day stays well under the free tier's 250/day. The
