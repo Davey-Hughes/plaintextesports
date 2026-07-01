@@ -2138,6 +2138,8 @@ fn source_label(url: &str) -> Option<&'static str> {
         "Premier League"
     } else if url.contains("fifa.com") {
         "FIFA"
+    } else if url.contains("wikipedia.org") {
+        "Wikipedia"
     } else {
         return None;
     })
@@ -4333,6 +4335,14 @@ mod tests {
     fn source_label_unknown_or_empty_is_none() {
         assert_eq!(source_label(""), None);
         assert_eq!(source_label("https://example.com/whatever"), None);
+    }
+
+    #[test]
+    fn source_label_recognizes_wikipedia() {
+        assert_eq!(
+            source_label("https://en.wikipedia.org/wiki/2026_Madrid_Grand_Prix"),
+            Some("Wikipedia")
+        );
     }
 
     /// A WRC stage row (real start + venue tz) for the collapse test.
