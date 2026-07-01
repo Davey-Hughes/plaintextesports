@@ -405,6 +405,7 @@ fn broadcasts(raw: &[GeoBroadcast]) -> Vec<StreamView> {
             name: name.to_string(),
             tag,
             group: if is_radio { "radio" } else { "tv" }.to_string(),
+            ..Default::default()
         });
     }
     out

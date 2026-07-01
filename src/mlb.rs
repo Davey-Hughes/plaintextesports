@@ -267,6 +267,7 @@ fn broadcasts(raw: &[RawBroadcast]) -> Vec<StreamView> {
             name,
             tag,
             group: if is_tv { "tv" } else { "radio" }.to_string(),
+            ..Default::default()
         };
         if is_tv {
             tv.push(sv);
@@ -284,6 +285,7 @@ fn broadcasts(raw: &[RawBroadcast]) -> Vec<StreamView> {
         name: "MLB.tv".to_string(),
         tag: "streaming".to_string(),
         group: "streaming".to_string(),
+        ..Default::default()
     };
     let mut out = tv;
     out.push(mlb_tv);

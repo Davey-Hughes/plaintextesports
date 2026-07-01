@@ -9,6 +9,7 @@
 use crate::config::{config, Config};
 use crate::feed::{FetchResult, NormalizedMatch, NormalizedTeam};
 use crate::pandascore::fetch_game;
+use crate::twitch::{login_of, LiveInfo};
 use crate::types::{
     event_name_eq, full_event_name, BracketMatch, BracketRound, DayGroup, EventInfo, LeagueGroup,
     MatchStatus, MatchView, ScheduleView, SourceLink, Sport, StandingRow, StreamView, TeamView,
@@ -3819,6 +3820,61 @@ fn demo_tournament_id(league: &str) -> i64 {
     9000 + i64::from(league.bytes().map(u32::from).sum::<u32>() % 900)
 }
 
+/// The Twitch game-category substring for an esports sport (case-insensitive
+/// match), or "" for sports with no co-stream enrichment. `contains` tolerates
+/// "Counter-Strike" vs "Counter-Strike 2".
+fn game_needle(sport: Sport) -> &'static str {
+    match sport {
+        Sport::Cs2 => "counter-strike",
+        Sport::Lol => "league of legends",
+        _ => "",
+    }
+}
+
+/// Merge Twitch live status into a match's base streams and append live seeded
+/// co-streamers. `live` maps lowercased login → info; `seeds` are the league's
+/// curated co-streamer logins; `game_needle` filters co-streamers to the match's
+/// game (empty ⇒ append none). Base streams keep their order; co-streamers append.
+fn enrich_streams(
+    mut base: Vec<StreamView>,
+    live: &HashMap<String, LiveInfo>,
+    seeds: &[String],
+    game_needle: &str,
+) -> Vec<StreamView> {
+    let mut present: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for s in &mut base {
+        if let Some(login) = login_of(&s.url) {
+            present.insert(login.clone());
+            if let Some(info) = live.get(&login) {
+                s.live = true;
+                s.viewers = Some(info.viewers);
+            }
+        }
+    }
+    if !game_needle.is_empty() {
+        for seed in seeds {
+            let login = seed.to_ascii_lowercase();
+            if present.contains(&login) {
+                continue;
+            }
+            if let Some(info) = live.get(&login) {
+                if info.game.to_ascii_lowercase().contains(game_needle) {
+                    present.insert(login.clone());
+                    base.push(StreamView {
+                        url: format!("https://www.twitch.tv/{login}"),
+                        live: true,
+                        viewers: Some(info.viewers),
+                        official: false,
+                        group: "costream".to_string(),
+                        ..Default::default()
+                    });
+                }
+            }
+        }
+    }
+    base
+}
+
 /// A handful of demo broadcasts (official + a language variant + a co-streamer).
 fn demo_streams() -> Vec<StreamView> {
     let s = |url: &str, language: &str, official: bool, main: bool| StreamView {
@@ -5630,5 +5686,97 @@ mod tests {
         let mut sorted = keys.clone();
         sorted.sort_unstable();
         assert_eq!(keys, sorted, "day groups should be time-sorted");
+    }
+
+    #[test]
+    fn enrich_streams_marks_live_and_appends_costreamers() {
+        use crate::twitch::LiveInfo;
+        let base = vec![
+            StreamView {
+                url: "https://www.twitch.tv/esl_csgo".into(),
+                official: true,
+                group: "official".into(),
+                ..Default::default()
+            },
+            StreamView {
+                url: "https://www.twitch.tv/offline_chan".into(),
+                group: "official".into(),
+                ..Default::default()
+            },
+        ];
+        let live: std::collections::HashMap<String, LiveInfo> = [
+            (
+                "esl_csgo".to_string(),
+                LiveInfo {
+                    viewers: 5000,
+                    game: "Counter-Strike".into(),
+                },
+            ),
+            (
+                "caedrel".to_string(),
+                LiveInfo {
+                    viewers: 20000,
+                    game: "Counter-Strike 2".into(),
+                },
+            ),
+            (
+                "gaules".to_string(),
+                LiveInfo {
+                    viewers: 375,
+                    game: "Back 4 Blood".into(),
+                },
+            ),
+            (
+                "esl_csgo".to_string(),
+                LiveInfo {
+                    viewers: 5000,
+                    game: "Counter-Strike".into(),
+                },
+            ),
+        ]
+        .into_iter()
+        .collect();
+        let seeds = vec![
+            "caedrel".to_string(),
+            "gaules".to_string(),
+            "esl_csgo".to_string(),
+        ];
+        let out = enrich_streams(base, &live, &seeds, "counter-strike");
+
+        // Base official stream marked live with viewers.
+        assert!(out[0].live && out[0].viewers == Some(5000));
+        // Offline base stream untouched.
+        assert!(!out[1].live && out[1].viewers.is_none());
+        // caedrel (live, matching game) appended as a costream.
+        let caedrel = out
+            .iter()
+            .find(|s| s.url.contains("caedrel"))
+            .expect("caedrel appended");
+        assert!(
+            caedrel.live
+                && caedrel.viewers == Some(20000)
+                && caedrel.group == "costream"
+                && !caedrel.official
+        );
+        // gaules live but on the wrong game → NOT appended.
+        assert!(out.iter().all(|s| !s.url.contains("gaules")));
+        // esl_csgo is already a base stream → not double-appended as a costream.
+        assert_eq!(out.iter().filter(|s| s.url.contains("esl_csgo")).count(), 1);
+    }
+
+    #[test]
+    fn enrich_streams_empty_needle_appends_no_costreamers() {
+        use crate::twitch::LiveInfo;
+        let live: std::collections::HashMap<String, LiveInfo> = [(
+            "x".to_string(),
+            LiveInfo {
+                viewers: 1,
+                game: "whatever".into(),
+            },
+        )]
+        .into_iter()
+        .collect();
+        let out = enrich_streams(Vec::new(), &live, &["x".to_string()], "");
+        assert!(out.is_empty());
     }
 }
