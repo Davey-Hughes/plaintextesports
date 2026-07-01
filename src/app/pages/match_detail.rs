@@ -584,6 +584,15 @@ pub(crate) fn stream_tags(s: &StreamView) -> String {
     tags.join(" · ")
 }
 
+/// Humanize a viewer count: `375` → "375", `12400` → "12.4k".
+fn fmt_viewers(n: u64) -> String {
+    if n >= 1000 {
+        format!("{:.1}k", n as f64 / 1000.0)
+    } else {
+        n.to_string()
+    }
+}
+
 #[component]
 pub(crate) fn StreamsList(streams: Vec<StreamView>) -> impl IntoView {
     if streams.is_empty() {
@@ -800,5 +809,19 @@ pub(crate) fn SeriesRow(game: SeriesGame) -> impl IntoView {
             {status_bar(status)}
             {body}
         </div>
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fmt_viewers_humanizes() {
+        assert_eq!(fmt_viewers(0), "0");
+        assert_eq!(fmt_viewers(375), "375");
+        assert_eq!(fmt_viewers(999), "999");
+        assert_eq!(fmt_viewers(1000), "1.0k");
+        assert_eq!(fmt_viewers(12400), "12.4k");
     }
 }

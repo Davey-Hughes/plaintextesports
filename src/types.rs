@@ -534,6 +534,14 @@ pub struct StreamView {
     /// producers emit entries already ordered by group.
     #[serde(default)]
     pub group: String,
+    /// True when this stream's Twitch channel is live right now (esports only;
+    /// set request-time by the Twitch enrichment). `#[serde(default)]` for
+    /// back-compat with cached payloads.
+    #[serde(default)]
+    pub live: bool,
+    /// Current viewer count when `live`. `None` otherwise.
+    #[serde(default)]
+    pub viewers: Option<u64>,
 }
 
 /// The best external "view this game" link for a match: a precise per-game page
