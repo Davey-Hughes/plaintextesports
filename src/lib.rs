@@ -41,6 +41,8 @@ pub mod store;
 #[cfg(feature = "ssr")]
 pub mod tiering;
 #[cfg(feature = "ssr")]
+pub mod twitch;
+#[cfg(feature = "ssr")]
 pub mod watch;
 
 #[cfg(feature = "hydrate")]
