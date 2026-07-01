@@ -5,7 +5,7 @@
 //! walks it a week at a time and de-dupes.
 
 use crate::feed::{NormalizedMatch, NormalizedTeam};
-use crate::types::{EventInfo, MatchStatus, Sport, StandingRow};
+use crate::types::{EventInfo, MatchStatus, Sport, StandingRow, StreamView};
 use chrono::{DateTime, Duration, NaiveDate, Utc};
 use serde::Deserialize;
 use std::collections::HashSet;
@@ -46,6 +46,8 @@ struct RawGame {
     away_team: RawTeam,
     #[serde(rename = "homeTeam", default)]
     home_team: RawTeam,
+    #[serde(rename = "tvBroadcasts", default)]
+    tv_broadcasts: Vec<RawBroadcast>,
 }
 
 #[derive(Deserialize, Default)]
@@ -67,6 +69,19 @@ struct RawTeam {
 struct LangStr {
     #[serde(default)]
     default: String,
+}
+
+#[derive(Deserialize, Default)]
+struct RawBroadcast {
+    #[serde(default)]
+    network: String,
+    /// "N" national, "H" home, "A" away.
+    #[serde(default)]
+    market: String,
+    #[serde(rename = "countryCode", default)]
+    country: String,
+    #[serde(rename = "sequenceNumber", default)]
+    sequence: i64,
 }
 
 impl RawTeam {
@@ -115,6 +130,89 @@ fn series_name(game_type: i64) -> String {
     }
 }
 
+/// Friendly display name for a *national* NHL carrier's feed abbreviation; unknown
+/// (local RSN) abbrevs pass through unchanged so they render as plain text.
+fn nhl_network(abbrev: &str) -> &str {
+    let a = abbrev.trim();
+    let up = a.to_ascii_uppercase();
+    if up == "TVAS" {
+        return "TVA Sports";
+    }
+    if up == "CBC" {
+        return "CBC";
+    }
+    if up.starts_with("SN") {
+        // The Sportsnet family (SN, SNP, SNE, SNW, SNO, SN1, …) — all national CA.
+        return "Sportsnet";
+    }
+    match up.as_str() {
+        "ESPN" => "ESPN",
+        "ESPN2" => "ESPN2",
+        "ABC" => "ABC",
+        "TNT" => "TNT",
+        "TBS" => "TBS",
+        "TRUTV" => "truTV",
+        "NHLN" => "NHL Network",
+        _ => a,
+    }
+}
+
+/// NHL TV carriers as [`StreamView`]s, mirroring the MLB/ESPN model: national
+/// carriers (US + Canadian) get a watch link, local RSNs render as text; non-US
+/// entries carry a country marker. This feed is TV-only (no radio).
+fn broadcasts(raw: &[RawBroadcast]) -> Vec<StreamView> {
+    let market_rank = |m: &str| match m {
+        "N" => 0,
+        "H" => 1,
+        "A" => 2,
+        _ => 3,
+    };
+    let mut sorted: Vec<&RawBroadcast> = raw.iter().collect();
+    sorted.sort_by_key(|x| (market_rank(&x.market), x.sequence));
+    let mut seen: HashSet<String> = HashSet::new();
+    let mut out = Vec::new();
+    for x in sorted {
+        let name = nhl_network(&x.network);
+        if name.is_empty() {
+            continue;
+        }
+        let (scope, national) = match x.market.as_str() {
+            "N" => ("national", true),
+            "H" => ("home", false),
+            "A" => ("away", false),
+            _ => ("", false),
+        };
+        if !seen.insert(format!("{name}|{}", x.market)) {
+            continue;
+        }
+        let mut tag = if scope.is_empty() {
+            "TV".to_string()
+        } else {
+            format!("{scope} · TV")
+        };
+        if !x.country.is_empty() && !x.country.eq_ignore_ascii_case("US") {
+            tag.push_str(&format!(" · {}", x.country.to_ascii_uppercase()));
+        }
+        let url = if national {
+            crate::watch::national_watch_url(name)
+                .unwrap_or_default()
+                .to_string()
+        } else {
+            String::new()
+        };
+        out.push(StreamView {
+            url,
+            official: national,
+            main: true,
+            name: name.to_string(),
+            tag,
+            group: "tv".to_string(),
+            ..Default::default()
+        });
+    }
+    out
+}
+
 fn to_match(g: RawGame) -> Option<NormalizedMatch> {
     let begin_at = DateTime::parse_from_rfc3339(&g.start_time_utc)
         .ok()?
@@ -148,6 +246,7 @@ fn to_match(g: RawGame) -> Option<NormalizedMatch> {
     // The NHL schedule carries each team's SVG logo URL directly.
     m.team_a_logo = g.away_team.logo;
     m.team_b_logo = g.home_team.logo;
+    m.streams = broadcasts(&g.tv_broadcasts);
     Some(m)
 }
 
@@ -314,6 +413,64 @@ pub async fn fetch_standings(client: &reqwest::Client) -> Result<Vec<EventInfo>,
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn b(network: &str, market: &str, country: &str, seq: i64) -> RawBroadcast {
+        RawBroadcast {
+            network: network.into(),
+            market: market.into(),
+            country: country.into(),
+            sequence: seq,
+        }
+    }
+
+    #[test]
+    fn nhl_network_maps_nationals_passes_through_rsn() {
+        assert_eq!(nhl_network("ESPN"), "ESPN");
+        assert_eq!(nhl_network("TNT"), "TNT");
+        assert_eq!(nhl_network("ABC"), "ABC");
+        assert_eq!(nhl_network("NHLN"), "NHL Network");
+        assert_eq!(nhl_network("SNP"), "Sportsnet");
+        assert_eq!(nhl_network("SNW"), "Sportsnet");
+        assert_eq!(nhl_network("TVAS"), "TVA Sports");
+        assert_eq!(nhl_network("CBC"), "CBC");
+        assert_eq!(nhl_network("FDSNSO"), "FDSNSO"); // unknown RSN → raw abbrev
+    }
+
+    #[test]
+    fn broadcasts_national_us_ca_and_local_rsn() {
+        let raw = vec![
+            b("NESN", "H", "US", 405),
+            b("ESPN", "N", "US", 10),
+            b("SNP", "N", "CA", 33),
+            b("MSG", "A", "US", 417),
+        ];
+        let sv = broadcasts(&raw);
+        // National first (by sequence): ESPN then Sportsnet, then home, then away.
+        assert_eq!(sv[0].name, "ESPN");
+        assert!(sv[0].official && sv[0].url.contains("espn.com"));
+        assert_eq!(sv[0].tag, "national · TV");
+        assert_eq!(sv[1].name, "Sportsnet");
+        assert!(sv[1].official && sv[1].url.contains("sportsnet.ca"));
+        assert_eq!(sv[1].tag, "national · TV · CA"); // non-US marker
+        let home = sv.iter().find(|s| s.name == "NESN").unwrap();
+        assert!(!home.official && home.url.is_empty());
+        assert_eq!(home.tag, "home · TV");
+        assert_eq!(
+            sv.iter().find(|s| s.name == "MSG").unwrap().tag,
+            "away · TV"
+        );
+        assert!(sv.iter().all(|s| s.group == "tv"));
+    }
+
+    #[test]
+    fn broadcasts_dedups_and_empty() {
+        // Two ESPN national entries collapse to one; empty input → empty.
+        assert_eq!(
+            broadcasts(&[b("ESPN", "N", "US", 1), b("ESPN", "N", "US", 2)]).len(),
+            1
+        );
+        assert!(broadcasts(&[]).is_empty());
+    }
 
     #[test]
     fn parses_a_scheduled_and_a_final_game() {
