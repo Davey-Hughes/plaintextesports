@@ -45,6 +45,8 @@ pub mod twitch;
 #[cfg(feature = "ssr")]
 pub mod twitch_discover;
 #[cfg(feature = "ssr")]
+pub mod twitch_gql;
+#[cfg(feature = "ssr")]
 pub mod watch;
 #[cfg(feature = "ssr")]
 pub mod youtube;
