@@ -437,7 +437,11 @@ fn editions_signature(e: &HashSet<(Sport, String, String)>) -> u64 {
 }
 
 /// Fingerprint of a day's render-affecting content: its leagues and, per match,
-/// the id + the mutable status/scores the 60s refresh changes.
+/// the id + the mutable status/scores the 60s refresh changes, plus the formatted
+/// time labels. The labels are re-formatted when the viewer flips the 12h/24h
+/// clock (or changes timezone) — both re-key the schedule resource — so they must
+/// be in the key, else the keyed `<For>` reuses the row and the on-screen times
+/// go stale.
 fn day_content_hash(d: &DayGroup) -> u64 {
     use std::hash::{Hash, Hasher};
     let mut h = std::collections::hash_map::DefaultHasher::new();
@@ -449,6 +453,10 @@ fn day_content_hash(d: &DayGroup) -> u64 {
             std::mem::discriminant(&m.status).hash(&mut h);
             m.team_a.score.hash(&mut h);
             m.team_b.score.hash(&mut h);
+            // Time-format/timezone-dependent display strings (the reveal-on-click
+            // venue time included, so it too refreshes after a toggle).
+            m.clock_label.hash(&mut h);
+            m.venue_label.hash(&mut h);
         }
     }
     h.finish()
@@ -1685,6 +1693,7 @@ pub(crate) fn MatchRow(m: MatchView, show_bo: bool, push: bool) -> impl IntoView
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::types::{LeagueGroup, TeamView};
     use std::collections::{HashMap, HashSet};
 
     #[test]
@@ -1711,5 +1720,59 @@ mod tests {
         let by: HashMap<String, Option<Sport>> = out.iter().cloned().collect();
         assert_eq!(by.get("BLAST"), Some(&Some(Sport::Cs2)));
         assert_eq!(by.get("Ghost"), Some(&None));
+    }
+
+    /// A one-match day differing only in its formatted start time(s).
+    fn day_with_time(clock: &str, venue: &str) -> DayGroup {
+        let team = |label: &str| TeamView {
+            label: label.into(),
+            name: label.into(),
+            score: None,
+            winner: false,
+            logo: String::new(),
+            abbrev: String::new(),
+        };
+        DayGroup {
+            day_key: "2026-06-21".into(),
+            day_label: "Sunday, June 21".into(),
+            leagues: vec![LeagueGroup {
+                league: "LCK".into(),
+                series_name: String::new(),
+                event_url: String::new(),
+                bo: None,
+                matches: vec![MatchView {
+                    id: 1,
+                    sport: Sport::Lol,
+                    league: "LCK".into(),
+                    series_name: String::new(),
+                    status: MatchStatus::Upcoming,
+                    clock_label: clock.into(),
+                    date_label: String::new(),
+                    venue_label: venue.into(),
+                    venue_name: String::new(),
+                    venue_location: String::new(),
+                    best_of: "Bo3".into(),
+                    team_a: team("A"),
+                    team_b: team("B"),
+                    league_url: String::new(),
+                    begin_at_ms: 0,
+                    row_href: None,
+                }],
+            }],
+        }
+    }
+
+    #[test]
+    fn day_content_hash_reflects_time_format() {
+        // Flipping the 12h/24h clock reformats every row's time (e.g. "6:00 PM" →
+        // "18:00"). The homepage `<For>` re-renders a day only when its content
+        // hash changes, so the hash MUST fold in the formatted time — otherwise
+        // toggling the clock leaves the on-screen times stale (the reported bug).
+        let twelve = day_content_hash(&day_with_time("6:00 PM", "6:00 PM EDT"));
+        let twenty_four = day_content_hash(&day_with_time("18:00", "18:00 EDT"));
+        assert_ne!(
+            twelve, twenty_four,
+            "the formatted time must affect the day content hash"
+        );
     }
 }
