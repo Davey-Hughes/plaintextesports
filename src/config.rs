@@ -21,6 +21,9 @@ struct FileConfig {
     twitch_client_secret: Option<String>,
     /// Curated co-streamers per league: league name → Twitch logins.
     costreamers: Option<HashMap<String, Vec<String>>>,
+    /// YouTube Data API v3 key.
+    youtube_api_key: Option<String>,
+    youtube_costreamers: Option<HashMap<String, Vec<String>>>,
     /// Calendar poll interval (s) for a series with a session live or starting
     /// within the hour — the fast tier (only the in-window series pays it).
     ocblacktop_live_poll_secs: Option<u64>,
@@ -81,6 +84,7 @@ impl FileConfig {
         put("OCBLACKTOP_TOKEN", self.ocblacktop_token.clone());
         put("TWITCH_CLIENT_ID", self.twitch_client_id.clone());
         put("TWITCH_CLIENT_SECRET", self.twitch_client_secret.clone());
+        put("YOUTUBE_API_KEY", self.youtube_api_key.clone());
         put(
             "OCBLACKTOP_LIVE_POLL_SECS",
             self.ocblacktop_live_poll_secs.map(|n| n.to_string()),
@@ -157,6 +161,11 @@ pub struct Config {
     /// Curated co-streamers per league (league name → Twitch logins), surfaced
     /// when live and streaming the match's game. Empty when unconfigured.
     pub costreamers: HashMap<String, Vec<String>>,
+    /// YouTube Data API v3 key. `None` ⇒ YouTube enrichment is a no-op.
+    pub youtube_api_key: Option<String>,
+    /// Curated YouTube co-streamers per game (sport slug) or league — channel
+    /// handles/URLs, surfaced when live (not game-filtered). Empty when unset.
+    pub youtube_costreamers: HashMap<String, Vec<String>>,
     /// Calendar poll interval for a series with a session live or starting within
     /// the hour (fast tier; only the in-window series uses it).
     pub ocblacktop_live_poll: Duration,
@@ -282,6 +291,9 @@ impl Config {
         if let Some(cs) = file.costreamers {
             cfg.costreamers = cs;
         }
+        if let Some(yc) = file.youtube_costreamers {
+            cfg.youtube_costreamers = yc;
+        }
         cfg
     }
 
@@ -307,6 +319,9 @@ impl Config {
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty());
         let twitch_client_secret = get("TWITCH_CLIENT_SECRET")
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
+        let youtube_api_key = get("YOUTUBE_API_KEY")
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty());
         // Per-series, proximity-driven cadence sized for the free tier's 250
@@ -397,6 +412,8 @@ impl Config {
             twitch_client_id,
             twitch_client_secret,
             costreamers: HashMap::new(),
+            youtube_api_key,
+            youtube_costreamers: HashMap::new(),
             ocblacktop_live_poll,
             ocblacktop_near_poll,
             ocblacktop_idle_poll,
@@ -591,6 +608,22 @@ mod tests {
         );
         // Blank / whitespace falls back to the default.
         assert_eq!(cfg(&[("ICONS_DIR", "  ")]).icons_dir, "icons");
+    }
+
+    #[test]
+    fn parses_youtube_key_and_costreamers() {
+        let src = r#"
+            youtube_api_key = "yt-key"
+            [youtube_costreamers]
+            lol = ["@caedrel", "https://www.youtube.com/@sneaky"]
+        "#;
+        let fc: FileConfig = toml::from_str(src).unwrap();
+        assert_eq!(
+            fc.to_map().get("YOUTUBE_API_KEY").map(String::as_str),
+            Some("yt-key")
+        );
+        let yc = fc.youtube_costreamers.expect("youtube_costreamers");
+        assert_eq!(yc.get("lol").unwrap().len(), 2);
     }
 
     #[test]

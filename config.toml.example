@@ -24,6 +24,12 @@ twitch_client_secret = ""
 # budget. Omit to skip YouTube enrichment.
 youtube_api_key = ""
 
+# Curated YouTube co-streamers, same game/league keys as [costreamers] (values are
+# channel handles or URLs). Shown when live; NOT game-filtered (YouTube has no
+# reliable game signal), so curate per game.
+# [youtube_costreamers]
+# lol = ["@caedrel", "https://www.youtube.com/@sneaky"]
+
 # Curated co-streamers (Twitch logins), shown on a match's page when they're live
 # and streaming that match's game. Two kinds of key, merged for each match:
 #   - a game key = the sport slug ("lol" or "cs2") applies to EVERY league of that
