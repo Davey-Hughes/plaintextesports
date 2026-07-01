@@ -9,6 +9,14 @@ pandascore_token = ""
 # MotoGP. Free tier is 250 req/day; these series are polled conservatively
 # (schedule first) and served from cache, so it fits easily. Omit to skip them.
 ocblacktop_token = ""
+
+# Twitch app credentials (https://dev.twitch.tv/console/apps — free) for the
+# esports live-stream enrichment: live status + viewer counts on match streams,
+# plus optional curated co-streamers. Server-to-server client-credentials flow;
+# both are required to activate it. Omit to skip Twitch enrichment.
+twitch_client_id = ""
+twitch_client_secret = ""
+
 # Poll cadence (seconds). Each series (WRC, WEC, MotoGP) is polled independently,
 # only as fast as its nearest event warrants, so a quiet day costs a handful of
 # requests and even a race day stays well under the free tier's 250/day. The
