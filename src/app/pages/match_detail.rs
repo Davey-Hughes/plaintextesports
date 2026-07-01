@@ -411,6 +411,20 @@ pub(crate) fn detail_view(d: MatchDetail, results: Resource<MatchResults>) -> im
                     .into_any()
                 }}
                 </h1>
+                // The per-match reveal toggle rides at the right end of the
+                // matchup row (played matches only; never with the ★, which is
+                // upcoming-only), instead of crowding the meta line below.
+                {move || {
+                    let toggle = toggle.clone();
+                    (!toggle_hidden())
+                        .then(move || {
+                            view! {
+                                <button class="toggle detail-scores-toggle" on:click=toggle>
+                                    {move || if reveal.get() { "hide scores" } else { "show scores" }}
+                                </button>
+                            }
+                        })
+                }}
             </div>
             <div class="detail-meta">
                 <span class="detail-meta-line">
@@ -437,17 +451,6 @@ pub(crate) fn detail_view(d: MatchDetail, results: Resource<MatchResults>) -> im
                     }}
                     {(!trail.is_empty()).then(|| format!(" · {trail}"))}
                 </span>
-                {move || {
-                    let toggle = toggle.clone();
-                    (!toggle_hidden())
-                        .then(move || {
-                            view! {
-                                <button class="toggle" on:click=toggle>
-                                    {move || if reveal.get() { "hide scores" } else { "show scores" }}
-                                </button>
-                            }
-                        })
-                }}
             </div>
             {(!venue_line.is_empty())
                 .then(|| view! { <div class="detail-venue">{venue_line}</div> })}

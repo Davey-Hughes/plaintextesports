@@ -1329,6 +1329,13 @@ a {
     transform: translateY(-3px);
     font-size: 19px;
   }
+
+  // The "show/hide scores" toggle rides at the far right of the matchup row,
+  // aligned with the team names instead of crowding the meta line below. On a
+  // narrow screen it wraps to its own line (still right-aligned).
+  .detail-scores-toggle {
+    margin-left: auto;
+  }
 }
 
 // Reserve the matchup line's height for the team logo (`team-logo-lg`, 1.6em) so
