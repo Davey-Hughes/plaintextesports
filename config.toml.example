@@ -66,7 +66,9 @@ youtube_api_key = ""
 # alias via the raw-league-name fallback; add an entry only where the stored name
 # differs from what streamers write (MSI is the main one).
 # [twitch_league_aliases]
-# "Mid-Season Invitational" = ["MSI"]
+# "Mid-Season Invitational" = ["MSI"]   # LoL
+# "ESL Pro League" = ["EPL"]            # CS2
+# "BLAST Premier" = ["BLAST"]           # CS2
 
 # Poll cadence (seconds). Each series (WRC, WEC, MotoGP) is polled independently,
 # only as fast as its nearest event warrants, so a quiet day costs a handful of
