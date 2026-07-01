@@ -259,6 +259,17 @@ pub(crate) fn detail_view(d: MatchDetail, results: Resource<MatchResults>) -> im
     // per-series service link(s) (F1 TV, Rally.TV, WEC on YouTube, MotoGP
     // VideoPass) — the same links the event page carries. Empty for other sports.
     let motor_watch: Vec<(&'static str, &'static str)> = motorsport_watch(&m.league).to_vec();
+    // WEC's race broadcast is its YouTube channel; live-badge it during a session.
+    let wec_live = (m.league == "WEC").then(|| {
+        Resource::new(
+            || (),
+            |_| async move {
+                get_youtube_live("@FIAWEC".to_string())
+                    .await
+                    .unwrap_or_default()
+            },
+        )
+    });
     let when_local = [m.date_label.clone(), m.clock_label.clone()]
         .into_iter()
         .filter(|s| !s.is_empty())
@@ -458,7 +469,15 @@ pub(crate) fn detail_view(d: MatchDetail, results: Resource<MatchResults>) -> im
                         </a>
                     })
                     .collect_view();
-                view! { <p class="event-link event-watch">"watch · "{links}</p> }
+                let wec_badge = wec_live.map(|res| view! {
+                    <Transition fallback=|| ().into_any()>
+                        {move || res.get().flatten().map(|v| {
+                            let n = (v > 0).then(|| format!(" · {}", fmt_viewers(v))).unwrap_or_default();
+                            view! { <span class="stream-live">"● live"{n}</span> }
+                        })}
+                    </Transition>
+                });
+                view! { <p class="event-link event-watch">"watch · "{links}{wec_badge}</p> }
             })}
             {if is_esports {
                 let base = streams.clone();

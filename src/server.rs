@@ -242,6 +242,25 @@ pub async fn get_live_streams(uid: String) -> Result<Vec<StreamView>, ServerFnEr
     }
 }
 
+/// Concurrent viewers when a YouTube channel is live (0 = live but hidden count),
+/// else `None`. Used to live-badge WEC's YouTube broadcast link. Never errors.
+#[server(GetYoutubeLive, "/api")]
+pub async fn get_youtube_live(handle: String) -> Result<Option<u64>, ServerFnError> {
+    #[cfg(feature = "ssr")]
+    {
+        let Some(ident) = crate::youtube::channel_ident(&handle) else {
+            return Ok(None);
+        };
+        let live = crate::youtube::live_status(&[ident.clone()]).await;
+        Ok(live.get(&ident).map(|i| i.viewers.unwrap_or(0)))
+    }
+    #[cfg(not(feature = "ssr"))]
+    {
+        let _ = handle;
+        Ok(None)
+    }
+}
+
 /// All cached matches for one event/league (past + upcoming), for the event page.
 #[server(GetEventSchedule, "/api")]
 pub async fn get_event_schedule(
