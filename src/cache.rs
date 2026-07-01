@@ -2067,10 +2067,11 @@ fn traditional_event_url(sport: Sport, league: &str) -> String {
         Sport::Nhl => "https://www.nhl.com/scores",
         Sport::Nba => "https://www.nba.com/games",
         Sport::Nfl => "https://www.nfl.com/scores",
-        // The series' official site, by league (F1 / WRC / WEC).
+        // The series' official site, by league (F1 / WRC / WEC / MotoGP).
         Sport::Motorsport => match league {
             "WRC" => "https://www.wrc.com/",
             "WEC" => "https://www.fiawec.com/",
+            "MotoGP" => "https://www.motogp.com/",
             _ => "https://www.formula1.com/en/racing.html",
         },
         Sport::Soccer => match league {
@@ -4323,6 +4324,9 @@ mod tests {
         assert_eq!(wrc.label, "WRC");
         let wec = match_source_link(Sport::Motorsport, 0, "WEC", 0, None).unwrap();
         assert_eq!(wec.label, "WEC");
+        let moto = match_source_link(Sport::Motorsport, 0, "MotoGP", 0, None).unwrap();
+        assert!(moto.url.contains("motogp.com"), "got {}", moto.url);
+        assert_eq!(moto.label, "MotoGP");
     }
 
     #[test]
