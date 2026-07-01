@@ -411,6 +411,30 @@ fn broadcasts(raw: &[GeoBroadcast]) -> Vec<StreamView> {
     out
 }
 
+/// Every Prime Video NFL game (all TNF + Amazon's Black Friday/playoff games) is
+/// simulcast free on Amazon's Twitch channel; no feed flags it, so add it when an
+/// NFL game already carries a Prime/Amazon broadcast.
+fn append_tnf_twitch(streams: &mut Vec<StreamView>, sport: Sport) {
+    let has_prime = streams.iter().any(|s| {
+        let n = s.name.to_ascii_uppercase();
+        n.contains("PRIME") || n.contains("AMAZON")
+    });
+    let has_twitch = streams
+        .iter()
+        .any(|s| s.name.eq_ignore_ascii_case("Twitch"));
+    if sport == Sport::Nfl && has_prime && !has_twitch {
+        streams.push(StreamView {
+            url: "https://www.twitch.tv/primevideo".to_string(),
+            official: true,
+            main: true,
+            name: "Twitch".to_string(),
+            tag: "national · streaming".to_string(),
+            group: "tv".to_string(),
+            ..Default::default()
+        });
+    }
+}
+
 fn to_match(e: Event, lg: &EspnLeague) -> Option<NormalizedMatch> {
     let id = e.id.parse::<i64>().ok()?;
     let begin_at = parse_date(&e.date)?;
@@ -452,6 +476,7 @@ fn to_match(e: Event, lg: &EspnLeague) -> Option<NormalizedMatch> {
         m.series_name = begin_at.year().to_string();
     }
     m.streams = broadcasts(&comp.geo_broadcasts);
+    append_tnf_twitch(&mut m.streams, lg.sport);
     Some(m)
 }
 
@@ -730,5 +755,31 @@ mod tests {
     #[test]
     fn empty_geo_broadcasts_yield_no_streams() {
         assert!(broadcasts(&[]).is_empty());
+    }
+
+    #[test]
+    fn tnf_twitch_appended_for_nfl_prime_only() {
+        let sv = |name: &str| StreamView {
+            name: name.to_string(),
+            ..Default::default()
+        };
+        // NFL + a Prime broadcast → one Twitch link appended.
+        let mut s = vec![sv("Prime Video")];
+        append_tnf_twitch(&mut s, Sport::Nfl);
+        let tw: Vec<_> = s.iter().filter(|x| x.name == "Twitch").collect();
+        assert_eq!(tw.len(), 1);
+        assert_eq!(tw[0].url, "https://www.twitch.tv/primevideo");
+        assert!(tw[0].official);
+        // Idempotent — running again does not double-append.
+        append_tnf_twitch(&mut s, Sport::Nfl);
+        assert_eq!(s.iter().filter(|x| x.name == "Twitch").count(), 1);
+        // NFL without Prime → no Twitch.
+        let mut s2 = vec![sv("CBS")];
+        append_tnf_twitch(&mut s2, Sport::Nfl);
+        assert!(!s2.iter().any(|x| x.name == "Twitch"));
+        // NBA with Prime → no Twitch (rule is NFL-only).
+        let mut s3 = vec![sv("Prime Video")];
+        append_tnf_twitch(&mut s3, Sport::Nba);
+        assert!(!s3.iter().any(|x| x.name == "Twitch"));
     }
 }
