@@ -241,9 +241,23 @@ pub async fn live_streams_for(sport: Sport, id: i64) -> Vec<StreamView> {
             None => return Vec::new(),
         }
     };
-    let seeds = costreamer_seeds(&config().costreamers, &league, sport);
+    let tw_seeds = costreamer_seeds(&config().costreamers, &league, sport);
     let base_logins: Vec<String> = base.iter().filter_map(|s| login_of(&s.url)).collect();
-    if base_logins.is_empty() && seeds.is_empty() {
+
+    // YouTube idents: any youtube base stream + curated youtube co-streamers.
+    let yt_seed_idents: Vec<String> =
+        costreamer_seeds(&config().youtube_costreamers, &league, sport)
+            .iter()
+            .filter_map(|s| crate::youtube::channel_ident(s))
+            .collect();
+    let yt_base_idents: Vec<String> = base
+        .iter()
+        .filter_map(|s| crate::youtube::channel_ident(&s.url))
+        .collect();
+    let yt_enabled = config().youtube_api_key.is_some()
+        && (!yt_seed_idents.is_empty() || !yt_base_idents.is_empty());
+
+    if base_logins.is_empty() && tw_seeds.is_empty() && !yt_enabled {
         return base;
     }
     {
@@ -254,10 +268,21 @@ pub async fn live_streams_for(sport: Sport, id: i64) -> Vec<StreamView> {
             }
         }
     }
-    let mut logins = base_logins;
-    logins.extend(seeds.iter().cloned());
-    let live = crate::twitch::live_streams(&logins).await;
-    let enriched = enrich_streams(base, &live, &seeds, game_needle(sport));
+
+    // Twitch (from #3).
+    let mut tw_logins = base_logins;
+    tw_logins.extend(tw_seeds.iter().cloned());
+    let tw_live = crate::twitch::live_streams(&tw_logins).await;
+    let mut enriched = enrich_streams(base, &tw_live, &tw_seeds, game_needle(sport));
+
+    // YouTube.
+    if yt_enabled {
+        let mut idents = yt_base_idents;
+        idents.extend(yt_seed_idents.iter().cloned());
+        let yt_live = crate::youtube::live_status(&idents).await;
+        enriched = enrich_youtube(enriched, &yt_live, &yt_seed_idents);
+    }
+
     STREAM_STATUS
         .write()
         .unwrap_or_else(PoisonError::into_inner)
@@ -3953,6 +3978,52 @@ fn enrich_streams(
     base
 }
 
+/// A watchable YouTube URL for a channel ident (`@handle` or `UC…`).
+fn youtube_url_for(ident: &str) -> String {
+    if ident.starts_with("UC") {
+        format!("https://www.youtube.com/channel/{ident}")
+    } else {
+        format!("https://www.youtube.com/{ident}")
+    }
+}
+
+/// Merge YouTube live status into a match's streams: mark any base YouTube stream
+/// live+viewers, and append each live seed ident (not already present) as a
+/// co-stream. Keyed entirely by channel ident (pure); NOT game-filtered.
+fn enrich_youtube(
+    mut streams: Vec<StreamView>,
+    yt_live: &HashMap<String, crate::youtube::LiveInfo>,
+    seed_idents: &[String],
+) -> Vec<StreamView> {
+    let mut present: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for s in &mut streams {
+        if let Some(ident) = crate::youtube::channel_ident(&s.url) {
+            present.insert(ident.clone());
+            if let Some(info) = yt_live.get(&ident) {
+                s.live = true;
+                s.viewers = info.viewers;
+            }
+        }
+    }
+    for ident in seed_idents {
+        if present.contains(ident) {
+            continue;
+        }
+        if let Some(info) = yt_live.get(ident) {
+            present.insert(ident.clone());
+            streams.push(StreamView {
+                url: youtube_url_for(ident),
+                live: true,
+                viewers: info.viewers,
+                official: false,
+                group: "costream".to_string(),
+                ..Default::default()
+            });
+        }
+    }
+    streams
+}
+
 /// A handful of demo broadcasts (official + a language variant + a co-streamer).
 fn demo_streams() -> Vec<StreamView> {
     let s = |url: &str, language: &str, official: bool, main: bool| StreamView {
@@ -5856,6 +5927,67 @@ mod tests {
         .collect();
         let out = enrich_streams(Vec::new(), &live, &["x".to_string()], "");
         assert!(out.is_empty());
+    }
+
+    #[test]
+    fn enrich_youtube_marks_and_appends() {
+        use crate::youtube::LiveInfo;
+        let base = vec![StreamView {
+            url: "https://www.twitch.tv/riotgames".into(),
+            group: "official".into(),
+            ..Default::default()
+        }];
+        let yt_live: std::collections::HashMap<String, LiveInfo> = [
+            (
+                "@caedrel".to_string(),
+                LiveInfo {
+                    viewers: Some(3700),
+                },
+            ),
+            ("@sneaky".to_string(), LiveInfo { viewers: None }),
+        ]
+        .into_iter()
+        .collect();
+        let seeds = vec![
+            "@caedrel".to_string(),
+            "@sneaky".to_string(),
+            "@offline".to_string(),
+        ];
+        let out = enrich_youtube(base, &yt_live, &seeds);
+        // Two live seeds appended as costreams; offline one not.
+        let caedrel = out
+            .iter()
+            .find(|s| s.url.contains("@caedrel"))
+            .expect("caedrel appended");
+        assert!(caedrel.live && caedrel.viewers == Some(3700) && caedrel.group == "costream");
+        let sneaky = out
+            .iter()
+            .find(|s| s.url.contains("@sneaky"))
+            .expect("sneaky appended");
+        assert!(sneaky.live && sneaky.viewers.is_none()); // live, hidden count
+        assert!(out.iter().all(|s| !s.url.contains("@offline")));
+        assert_eq!(out.len(), 3); // twitch base + 2 live yt
+    }
+
+    #[test]
+    fn enrich_youtube_marks_a_base_youtube_stream() {
+        use crate::youtube::LiveInfo;
+        let base = vec![StreamView {
+            url: "https://www.youtube.com/@FIAWEC/streams".into(),
+            group: "official".into(),
+            ..Default::default()
+        }];
+        let yt_live: std::collections::HashMap<String, LiveInfo> = [(
+            "@fiawec".to_string(),
+            LiveInfo {
+                viewers: Some(12000),
+            },
+        )]
+        .into_iter()
+        .collect();
+        let out = enrich_youtube(base, &yt_live, &[]);
+        assert!(out[0].live && out[0].viewers == Some(12000));
+        assert_eq!(out.len(), 1); // marked in place, not appended
     }
 
     #[test]
