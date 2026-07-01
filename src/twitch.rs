@@ -117,6 +117,16 @@ async fn token() -> Option<String> {
     Some(token)
 }
 
+/// The shared Helix HTTP client, reused by the discovery + GQL modules.
+pub(crate) fn client() -> &'static reqwest::Client {
+    &CLIENT
+}
+
+/// A valid app token for sibling modules (delegates to the cached `token()`).
+pub(crate) async fn app_token() -> Option<String> {
+    token().await
+}
+
 /// Live status for `logins` (offline/unknown channels are absent). Empty map when
 /// Twitch is unconfigured or on any network/auth error — callers degrade to "no
 /// live info", so the page never breaks.
