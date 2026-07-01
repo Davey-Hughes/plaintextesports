@@ -44,6 +44,8 @@ pub mod tiering;
 pub mod twitch;
 #[cfg(feature = "ssr")]
 pub mod watch;
+#[cfg(feature = "ssr")]
+pub mod youtube;
 
 #[cfg(feature = "hydrate")]
 #[wasm_bindgen::prelude::wasm_bindgen]
