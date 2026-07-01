@@ -231,6 +231,7 @@ pub(crate) fn detail_view(d: MatchDetail, results: Resource<MatchResults>) -> im
         event,
         stages,
         series,
+        source_link,
         ..
     } = d;
     let m = match_view.expect("found implies match_view");
@@ -433,6 +434,13 @@ pub(crate) fn detail_view(d: MatchDetail, results: Resource<MatchResults>) -> im
             </div>
             {(!venue_line.is_empty())
                 .then(|| view! { <div class="detail-venue">{venue_line}</div> })}
+            {source_link.map(|s| view! {
+                <p class="event-link">
+                    <a href=s.url target="_blank" rel="noreferrer">
+                        {format!("view on {} ↗", s.label)}
+                    </a>
+                </p>
+            })}
             <StreamsList streams=streams />
             // Results load on their own resource (not with the header), so a slow or
             // 500ing upstream never delays the title/meta. F1 → that session's
