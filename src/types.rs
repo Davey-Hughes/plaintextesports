@@ -918,6 +918,11 @@ pub struct MatchDetail {
     /// `#[serde(default)]` so older cached payloads still load.
     #[serde(default)]
     pub series: Series,
+    /// The best external "view this game" link (ESPN gamecast / MLB Gameday /
+    /// event page), resolved server-side. `None` when no labelled link fits.
+    /// `#[serde(default)]` so older cached payloads still load.
+    #[serde(default)]
+    pub source_link: Option<SourceLink>,
 }
 
 /// The match's on-demand results, fetched separately from the page basics (via
