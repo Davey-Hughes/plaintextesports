@@ -40,6 +40,8 @@ pub mod push;
 pub mod store;
 #[cfg(feature = "ssr")]
 pub mod tiering;
+#[cfg(feature = "ssr")]
+pub mod watch;
 
 #[cfg(feature = "hydrate")]
 #[wasm_bindgen::prelude::wasm_bindgen]

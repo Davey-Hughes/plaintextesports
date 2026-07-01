@@ -219,34 +219,6 @@ fn broadcast_rank(b: &RawBroadcast) -> (i32, i32, i32) {
     (tv, nat, side)
 }
 
-/// A national broadcaster's "where to watch" URL, when it's one we recognize.
-/// Only applied to national broadcasts (so a local "FOX Sports <city>" RSN
-/// isn't mislinked to FOX's national page); the API itself provides no URLs.
-fn watch_url(name: &str) -> Option<&'static str> {
-    let n = name.to_ascii_uppercase();
-    Some(if n.contains("ESPN") {
-        "https://www.espn.com/watch/"
-    } else if n.contains("MLB NETWORK") {
-        "https://www.mlb.com/network"
-    } else if n.contains("FOX") || n.contains("FS1") {
-        "https://www.foxsports.com/live"
-    } else if n.contains("TBS") {
-        "https://www.tbs.com/watchtbs/now"
-    } else if n.contains("APPLE") {
-        "https://tv.apple.com/"
-    } else if n.contains("ROKU") {
-        "https://therokuchannel.roku.com/"
-    } else if n.contains("PRIME") || n.contains("AMAZON") {
-        "https://www.amazon.com/gp/video/storefront"
-    } else if n.contains("PEACOCK") {
-        "https://www.peacocktv.com/"
-    } else if n.contains("NETFLIX") {
-        "https://www.netflix.com/"
-    } else {
-        return None;
-    })
-}
-
 /// Turn the API's broadcast list into [`StreamView`]s, plus MLB.tv (every game
 /// streams there). Deduped by name+medium and grouped TV → streaming → radio;
 /// national broadcasters carry a watch link, local networks/radio are text
@@ -281,7 +253,9 @@ fn broadcasts(raw: &[RawBroadcast]) -> Vec<StreamView> {
             format!("{scope} · {medium}")
         };
         let url = if b.is_national {
-            watch_url(&name).unwrap_or_default().to_string()
+            crate::watch::national_watch_url(&name)
+                .unwrap_or_default()
+                .to_string()
         } else {
             String::new()
         };
