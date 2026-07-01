@@ -11,7 +11,13 @@
 /// another: check the more specific/streaming brand first so it wins.
 pub fn national_watch_url(name: &str) -> Option<&'static str> {
     let n = name.to_ascii_uppercase();
-    Some(if n.contains("PEACOCK") {
+    Some(if n.contains("SPORTSNET") {
+        "https://www.sportsnet.ca/"
+    } else if n.contains("TVA") {
+        "https://www.tvasports.ca/"
+    } else if n.contains("CBC") {
+        "https://www.cbc.ca/sports/hockey/nhl"
+    } else if n.contains("PEACOCK") {
         "https://www.peacocktv.com/"
     } else if n.contains("PARAMOUNT") {
         "https://www.paramountplus.com/"
@@ -84,6 +90,21 @@ mod tests {
             let url = national_watch_url(name).unwrap_or_else(|| panic!("no url for {name}"));
             assert!(url.contains(needle), "{name} -> {url}, expected {needle}");
         }
+    }
+
+    #[test]
+    fn maps_canadian_nationals() {
+        for (name, needle) in [
+            ("Sportsnet", "sportsnet.ca"),
+            ("TVA Sports", "tvasports.ca"),
+            ("CBC", "cbc.ca"),
+        ] {
+            let url = national_watch_url(name).unwrap_or_else(|| panic!("no url for {name}"));
+            assert!(url.contains(needle), "{name} -> {url}, expected {needle}");
+        }
+        // Existing US mappings still resolve (no regression from the new branches).
+        assert!(national_watch_url("ESPN").unwrap().contains("espn.com"));
+        assert!(national_watch_url("CBS").unwrap().contains("cbssports.com"));
     }
 
     // The helper is name-based; telling a national network from a local RSN is the
