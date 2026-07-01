@@ -17,6 +17,13 @@ ocblacktop_token = ""
 twitch_client_id = ""
 twitch_client_secret = ""
 
+# YouTube Data API v3 key (https://console.cloud.google.com — free, quota-limited,
+# billing not required) for YouTube live-stream enrichment: live status + viewer
+# counts on YouTube streams / co-streamers, and WEC's YouTube broadcast. Live
+# checks are cheap (uploads + videos.list) and capped by a persisted daily-unit
+# budget. Omit to skip YouTube enrichment.
+youtube_api_key = ""
+
 # Curated co-streamers (Twitch logins), shown on a match's page when they're live
 # and streaming that match's game. Two kinds of key, merged for each match:
 #   - a game key = the sport slug ("lol" or "cs2") applies to EVERY league of that
