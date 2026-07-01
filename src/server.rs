@@ -124,6 +124,15 @@ pub async fn get_match_detail(
         // Results (the F1 session order / motorsport classification) are NOT fetched
         // here — they go through `get_match_results` on a separate resource, so the
         // header renders without waiting on a slow (or 500ing) upstream.
+        let source_link = crate::cache::match_source_link(
+            match_view.sport,
+            match_view.id,
+            &match_view.league,
+            match_view.begin_at_ms,
+            // `MatchView::league_url` is a `String` (empty when the source gave
+            // none); pass `Some(&str)` only when non-empty.
+            Some(match_view.league_url.as_str()).filter(|s| !s.trim().is_empty()),
+        );
         Ok(MatchDetail {
             found: true,
             match_view: Some(match_view),
@@ -131,6 +140,7 @@ pub async fn get_match_detail(
             event,
             stages,
             series,
+            source_link,
         })
     }
     #[cfg(not(feature = "ssr"))]
