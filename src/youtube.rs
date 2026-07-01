@@ -5,7 +5,7 @@
 
 use crate::config::config;
 use crate::http::USER_AGENT;
-use chrono::{NaiveDate, Utc};
+use chrono::{DateTime, Duration, NaiveDate, Utc};
 use once_cell::sync::Lazy;
 use serde::Deserialize;
 use std::collections::HashMap;
@@ -29,6 +29,11 @@ static BUDGET: Lazy<RwLock<(NaiveDate, u32)>> =
     Lazy::new(|| RwLock::new((Utc::now().date_naive(), 0)));
 /// `@handle` → `UC…` channel id, cached forever (a channel id is permanent).
 static ID_CACHE: Lazy<RwLock<HashMap<String, String>>> = Lazy::new(|| RwLock::new(HashMap::new()));
+/// Single-channel live-status cache (~90s TTL) for the WEC watch-line badge, so
+/// repeated views during a session don't re-hit the API.
+static LIVE_CACHE: Lazy<RwLock<HashMap<String, (DateTime<Utc>, Option<LiveInfo>)>>> =
+    Lazy::new(|| RwLock::new(HashMap::new()));
+const LIVE_CACHE_TTL_SECS: i64 = 90;
 
 /// Live viewer count for a channel that's streaming now (`None` = hidden count).
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -191,13 +196,13 @@ pub async fn live_status(idents: &[String]) -> HashMap<String, LiveInfo> {
         let Some(cid) = resolve_channel_id(ident, &key).await else {
             continue;
         };
-        if cid.len() < 2 {
+        let Some(tail) = cid.strip_prefix("UC") else {
             continue;
-        }
+        };
         if !spend(1) {
             break;
         }
-        let uploads = format!("UU{}", &cid[2..]);
+        let uploads = format!("UU{tail}");
         let url = format!(
             "{API}/playlistItems?part=contentDetails&maxResults={UPLOADS_DEPTH}&playlistId={uploads}&key={key}"
         );
@@ -240,6 +245,26 @@ pub async fn live_status(idents: &[String]) -> HashMap<String, LiveInfo> {
         }
     }
     out
+}
+
+/// Cached live status for a single channel ident (~90s TTL). Used by the WEC
+/// watch-line badge. Returns the channel's `LiveInfo` when live, else `None`.
+pub async fn live_one(ident: &str) -> Option<LiveInfo> {
+    {
+        let g = LIVE_CACHE.read().unwrap_or_else(PoisonError::into_inner);
+        if let Some((at, v)) = g.get(ident) {
+            if *at + Duration::seconds(LIVE_CACHE_TTL_SECS) > Utc::now() {
+                return v.clone();
+            }
+        }
+    }
+    let map = live_status(std::slice::from_ref(&ident.to_string())).await;
+    let v = map.get(ident).cloned();
+    LIVE_CACHE
+        .write()
+        .unwrap_or_else(PoisonError::into_inner)
+        .insert(ident.to_string(), (Utc::now(), v.clone()));
+    v
 }
 
 #[cfg(test)]

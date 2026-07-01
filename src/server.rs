@@ -251,8 +251,8 @@ pub async fn get_youtube_live(handle: String) -> Result<Option<u64>, ServerFnErr
         let Some(ident) = crate::youtube::channel_ident(&handle) else {
             return Ok(None);
         };
-        let live = crate::youtube::live_status(&[ident.clone()]).await;
-        Ok(live.get(&ident).map(|i| i.viewers.unwrap_or(0)))
+        let live = crate::youtube::live_one(&ident).await;
+        Ok(live.map(|i| i.viewers.unwrap_or(0)))
     }
     #[cfg(not(feature = "ssr"))]
     {
