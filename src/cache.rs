@@ -234,10 +234,10 @@ const STREAM_STATUS_TTL_SECS: i64 = 90;
 /// logins and no seeds) or when Twitch is unconfigured/erroring. The `SNAPSHOT`
 /// read lock is dropped before any network await.
 pub async fn live_streams_for(sport: Sport, id: i64) -> Vec<StreamView> {
-    let (base, league) = {
+    let (base, league, status) = {
         let snap = SNAPSHOT.read().unwrap_or_else(PoisonError::into_inner);
         match snap.matches.iter().find(|m| m.id == id && m.sport == sport) {
-            Some(m) => (m.streams.clone(), m.league.clone()),
+            Some(m) => (m.streams.clone(), m.league.clone(), m.status),
             None => return Vec::new(),
         }
     };
@@ -257,7 +257,12 @@ pub async fn live_streams_for(sport: Sport, id: i64) -> Vec<StreamView> {
     let yt_enabled = config().youtube_api_key.is_some()
         && (!yt_seed_idents.is_empty() || !yt_base_idents.is_empty());
 
-    if base_logins.is_empty() && tw_seeds.is_empty() && !yt_enabled {
+    // Twitch category discovery runs only for a live esports match with the sport
+    // enabled — so an otherwise-inert match still triggers a scan when it's on.
+    let discovery_on = matches!(status, MatchStatus::Live)
+        && matches!(sport, Sport::Cs2 | Sport::Lol)
+        && config().discovery_enabled(sport);
+    if base_logins.is_empty() && tw_seeds.is_empty() && !yt_enabled && !discovery_on {
         return base;
     }
     {
@@ -281,6 +286,29 @@ pub async fn live_streams_for(sport: Sport, id: i64) -> Vec<StreamView> {
         idents.extend(yt_seed_idents.iter().cloned());
         let yt_live = crate::youtube::live_status(&idents).await;
         enriched = enrich_youtube(enriched, &yt_live, &yt_seed_idents);
+    }
+
+    // Twitch category discovery (opt-in): surface unlisted co-streamers for a
+    // live esports match, attributed by league keyword.
+    if discovery_on {
+        let cfg = config();
+        if let Some(gid) = crate::twitch_discover::game_id(sport, &cfg.twitch_discovery.game_ids) {
+            let scan =
+                crate::twitch_discover::discover(&gid, &cfg.twitch_discovery.languages).await;
+            if !scan.is_empty() {
+                let keywords = league_keywords(&league, &cfg.twitch_league_aliases);
+                let present: std::collections::HashSet<String> =
+                    enriched.iter().filter_map(|s| login_of(&s.url)).collect();
+                let extra = attribute_costreams(
+                    &scan,
+                    &keywords,
+                    &present,
+                    cfg.twitch_discovery.min_viewers,
+                    cfg.twitch_discovery.max_per_match,
+                );
+                enriched.extend(extra);
+            }
+        }
     }
 
     STREAM_STATUS
