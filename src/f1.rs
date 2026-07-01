@@ -37,6 +37,8 @@ struct RawRace {
     round: String,
     #[serde(rename = "raceName")]
     race_name: String,
+    #[serde(default)]
+    url: String, // Jolpica's Wikipedia race-page URL
     #[serde(rename = "Circuit", default)]
     circuit: RawCircuit,
     /// The race session's own date/time.
@@ -130,6 +132,49 @@ fn country_flag(country: &str) -> String {
         _ => return String::new(),
     };
     format!("https://flagcdn.com/{code}.svg")
+}
+
+/// The formula1.com race-page slug for a circuit (verified against the 2026
+/// calendar). `None` for circuits we haven't confirmed — the caller then uses the
+/// Jolpica Wikipedia URL, so a new/renamed circuit never yields a broken link.
+fn circuit_slug(circuit_id: &str) -> Option<&'static str> {
+    Some(match circuit_id {
+        "albert_park" => "australia",
+        "shanghai" => "china",
+        "suzuka" => "japan",
+        "miami" => "miami",
+        "villeneuve" => "canada",
+        "monaco" => "monaco",
+        "catalunya" => "spain",
+        "red_bull_ring" => "austria",
+        "silverstone" => "great-britain",
+        "spa" => "belgium",
+        "hungaroring" => "hungary",
+        "zandvoort" => "netherlands",
+        "monza" => "italy",
+        "baku" => "azerbaijan",
+        "marina_bay" => "singapore",
+        "americas" => "united-states",
+        "rodriguez" => "mexico",
+        "interlagos" => "brazil",
+        "vegas" => "las-vegas",
+        "losail" => "qatar",
+        "yas_marina" => "united-arab-emirates",
+        _ => return None,
+    })
+}
+
+/// The best race-page URL for a Grand Prix: the official formula1.com page when
+/// we have a verified slug for the circuit, else the Jolpica Wikipedia URL.
+/// `None` only when both are unavailable.
+fn race_page_url(circuit_id: &str, season: i64, wiki_url: &str) -> Option<String> {
+    if let Some(slug) = circuit_slug(circuit_id) {
+        return Some(format!(
+            "https://www.formula1.com/en/racing/{season}/{slug}"
+        ));
+    }
+    let w = wiki_url.trim();
+    (!w.is_empty()).then(|| w.to_string())
 }
 
 /// The IANA timezone of each Grand Prix circuit (Jolpica gives only a locality,
@@ -257,6 +302,7 @@ fn to_matches(r: &RawRace, now: DateTime<Utc>) -> Vec<NormalizedMatch> {
             m.venue_location = r.circuit.location.label();
             // F1 has no teams; use the GP host country's flag as the session icon.
             m.team_a_logo = country_flag(&r.circuit.location.country);
+            m.league_url = race_page_url(&r.circuit.circuit_id, season, &r.url);
             Some(m)
         })
         .collect()
@@ -839,5 +885,39 @@ mod tests {
         assert_eq!(rows[0].name, "Mercedes");
         assert_eq!(rows[0].detail, "");
         assert_eq!(rows[0].points, "245");
+    }
+
+    #[test]
+    fn race_url_prefers_formula1_for_mapped_circuits() {
+        let u = race_page_url(
+            "silverstone",
+            2026,
+            "https://en.wikipedia.org/wiki/2026_British_Grand_Prix",
+        );
+        assert_eq!(
+            u.as_deref(),
+            Some("https://www.formula1.com/en/racing/2026/great-britain")
+        );
+        let u2 = race_page_url("yas_marina", 2026, "https://en.wikipedia.org/wiki/x");
+        assert_eq!(
+            u2.as_deref(),
+            Some("https://www.formula1.com/en/racing/2026/united-arab-emirates")
+        );
+    }
+
+    #[test]
+    fn race_url_falls_back_to_wikipedia_for_unmapped_circuits() {
+        // A circuit not in the slug map (e.g. the new 2026 Madrid round) → Wikipedia.
+        let u = race_page_url(
+            "madring",
+            2026,
+            "https://en.wikipedia.org/wiki/2026_Madrid_Grand_Prix",
+        );
+        assert_eq!(
+            u.as_deref(),
+            Some("https://en.wikipedia.org/wiki/2026_Madrid_Grand_Prix")
+        );
+        // Unmapped AND no Wikipedia url → None.
+        assert_eq!(race_page_url("madring", 2026, ""), None);
     }
 }
