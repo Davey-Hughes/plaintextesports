@@ -60,12 +60,13 @@ youtube_api_key = ""
 # lol = "21779"
 # cs2 = "32399"
 
-# League name -> Twitch title keywords, so a stream titled "MSI ..." attaches to
-# the "Mid-Season Invitational 2026" league. Without an alias, discovery falls
-# back to matching the league name itself (fine for short names like "LEC").
+# League name (exactly as stored) -> Twitch title keywords, so a stream titled
+# "MSI ..." attaches to the "Mid-Season Invitational" league. Most leagues already
+# ARE the acronym streamers type (LCK, LEC, LPL, IEM), so they match with no alias
+# via the raw-league-name fallback; add an entry only where the stored name differs
+# from what streamers write.
 # [twitch_league_aliases]
 # "Mid-Season Invitational" = ["MSI"]
-# "LEC" = ["LEC"]
 
 # Poll cadence (seconds). Each series (WRC, WEC, MotoGP) is polled independently,
 # only as fast as its nearest event warrants, so a quiet day costs a handful of
