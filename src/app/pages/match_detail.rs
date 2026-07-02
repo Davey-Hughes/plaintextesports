@@ -614,22 +614,46 @@ pub(crate) fn stream_parts(url: &str) -> (String, String) {
         .trim_end_matches('/');
     let (domain, path) = after.split_once('/').unwrap_or((after, ""));
     let domain = domain.trim_start_matches("www.");
-    let site = if domain.contains("twitch") {
-        "Twitch"
-    } else if domain.contains("youtube") || domain.contains("youtu.be") {
-        "YouTube"
-    } else if domain.contains("kick") {
-        "Kick"
-    } else if domain.contains("afreeca") || domain.contains("sooplive") || domain.contains("soop") {
-        "SOOP"
-    } else if domain.contains("bilibili") {
-        "Bilibili"
-    } else {
-        domain
-    };
     // The channel/handle is the path (drop any query string).
     let channel = path.split('?').next().unwrap_or("").trim_matches('/');
-    (site.to_string(), channel.to_string())
+    if domain.contains("twitch") {
+        ("Twitch".into(), channel.into())
+    } else if domain.contains("youtube") || domain.contains("youtu.be") {
+        ("YouTube".into(), youtube_channel(domain, channel))
+    } else if domain.contains("kick") {
+        ("Kick".into(), channel.into())
+    } else if domain.contains("afreeca") || domain.contains("sooplive") || domain.contains("soop") {
+        ("SOOP".into(), channel.into())
+    } else if domain.contains("bilibili") {
+        ("Bilibili".into(), channel.into())
+    } else {
+        (domain.into(), channel.into())
+    }
+}
+
+/// The channel name to show for a YouTube stream URL, or "" when the link carries
+/// none. PandaScore hands us per-video live links (`/watch?v=…`, `/embed/…`,
+/// `/live/…`, `/shorts/…`, or a `youtu.be/<id>` short link) whose path is a
+/// reserved word or an opaque id — not an account name. Showing "/watch" as if it
+/// were the channel is the bug this guards against; a real handle or custom name
+/// still comes through.
+fn youtube_channel(domain: &str, channel: &str) -> String {
+    // youtu.be/<id> is always an opaque video id, never a channel name.
+    if domain.contains("youtu.be") {
+        return String::new();
+    }
+    let mut segs = channel.split('/').filter(|s| !s.is_empty());
+    let first = segs.next().unwrap_or("");
+    match first {
+        // /c/<name> and /user/<name> put the readable name in the next segment.
+        "c" | "user" => segs.next().unwrap_or("").to_string(),
+        // Reserved content paths (and /channel/<UC…>, an opaque id) — no name.
+        "watch" | "embed" | "live" | "shorts" | "playlist" | "results" | "feed" | "channel" => {
+            String::new()
+        }
+        // An @handle or a legacy custom-name channel URL.
+        other => other.to_string(),
+    }
 }
 
 /// Language + main/official tags for a stream, e.g. "EN · main".
@@ -889,5 +913,56 @@ mod tests {
         assert_eq!(fmt_viewers(999), "999");
         assert_eq!(fmt_viewers(1000), "1.0k");
         assert_eq!(fmt_viewers(12400), "12.4k");
+    }
+
+    #[test]
+    fn stream_parts_extracts_site_and_channel() {
+        // Twitch and YouTube handle links carry the channel in the path.
+        assert_eq!(
+            stream_parts("https://www.twitch.tv/esl_csgo"),
+            ("Twitch".into(), "esl_csgo".into())
+        );
+        assert_eq!(
+            stream_parts("https://www.youtube.com/@Caedrel"),
+            ("YouTube".into(), "@Caedrel".into())
+        );
+        assert_eq!(
+            stream_parts("https://kick.com/someone"),
+            ("Kick".into(), "someone".into())
+        );
+    }
+
+    #[test]
+    fn stream_parts_youtube_video_links_have_no_channel() {
+        // PandaScore hands us per-video live links whose path is a reserved word
+        // ("watch", "embed", "live", "shorts") or a youtu.be video id — none of
+        // which is a channel name, so we show just "YouTube", not "/watch".
+        for url in [
+            "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+            "https://www.youtube.com/embed/dQw4w9WgXcQ",
+            "https://www.youtube.com/live/dQw4w9WgXcQ",
+            "https://www.youtube.com/shorts/dQw4w9WgXcQ",
+            "https://youtu.be/dQw4w9WgXcQ",
+            "https://www.youtube.com/channel/UCabc123",
+        ] {
+            assert_eq!(
+                stream_parts(url),
+                ("YouTube".into(), String::new()),
+                "url: {url}"
+            );
+        }
+        // Named channel forms still surface the name.
+        assert_eq!(
+            stream_parts("https://www.youtube.com/c/SomeChannel"),
+            ("YouTube".into(), "SomeChannel".into())
+        );
+        assert_eq!(
+            stream_parts("https://www.youtube.com/user/SomeUser"),
+            ("YouTube".into(), "SomeUser".into())
+        );
+        assert_eq!(
+            stream_parts("https://www.youtube.com/LEC"),
+            ("YouTube".into(), "LEC".into())
+        );
     }
 }
