@@ -1082,6 +1082,30 @@ pub struct ScheduleView {
     pub next_date: Option<String>,
 }
 
+/// Parse a stat display value ("312", "53.8%", "24/52", "1,024") to a number:
+/// take the part before any "/", drop a trailing "%" and any commas.
+fn stat_value(s: &str) -> Option<f64> {
+    let head = s.trim().split('/').next().unwrap_or("").trim();
+    let cleaned = head.trim_end_matches('%').replace(',', "");
+    let cleaned = cleaned.trim();
+    if cleaned.is_empty() {
+        return None;
+    }
+    cleaned.parse::<f64>().ok()
+}
+
+/// Away's whole-percent share of the two values, for the comparison lead bar.
+/// `None` when either value isn't numeric or the two sum to zero.
+#[must_use]
+pub fn stat_share(away: &str, home: &str) -> Option<u8> {
+    let (a, h) = (stat_value(away)?, stat_value(home)?);
+    let sum = a + h;
+    if sum <= 0.0 {
+        return None;
+    }
+    Some(((a / sum) * 100.0).round().clamp(0.0, 100.0) as u8)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1301,5 +1325,15 @@ mod tests {
         // Defaults: an empty object deserializes to an all-empty BoxScore.
         let empty: BoxScore = serde_json::from_str("{}").unwrap();
         assert_eq!(empty, BoxScore::default());
+    }
+
+    #[test]
+    fn stat_share_parses_display_values() {
+        assert_eq!(stat_share("312", "289"), Some(52)); // 312/601 = 51.9 → 52
+        assert_eq!(stat_share("53.8%", "46.2%"), Some(54)); // strips %
+        assert_eq!(stat_share("24/52", "28/52"), Some(46)); // ratio → numerator
+        assert_eq!(stat_share("1,024", "976"), Some(51)); // strips commas
+        assert_eq!(stat_share("bad", "5"), None); // non-numeric
+        assert_eq!(stat_share("0", "0"), None); // both zero
     }
 }
