@@ -1107,6 +1107,12 @@ pub fn to_box_score(ls: &RawLinescore, bs: &RawBoxscore) -> BoxScore {
             hp.strike_outs.to_string(),
             true,
         ),
+        cmp(
+            "Pitching BB",
+            ap.walks.to_string(),
+            hp.walks.to_string(),
+            true,
+        ),
         cmp("Team ERA", ap.era.clone(), hp.era.clone(), false),
     ];
 
@@ -1220,6 +1226,10 @@ mod boxscore_tests {
             away_pit.rows[0].values.len(),
             7,
             "pitching row must carry 7 values"
+        );
+        assert!(
+            !out.leaders.is_empty(),
+            "topPerformers should yield leader cards"
         );
     }
 }
