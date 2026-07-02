@@ -784,6 +784,9 @@ pub async fn box_score(sport: crate::types::Sport, id: i64) -> crate::types::Box
                 ),
             }
         }
+        // Soccer is deferred: its ESPN summary needs the specific competition
+        // slug (eng.1 / World Cup / …), which isn't derivable from (sport, id).
+        crate::types::Sport::Soccer => (crate::types::BoxScore::default(), false),
         _ => (crate::types::BoxScore::default(), false),
     };
     BOX_SCORES
