@@ -112,6 +112,7 @@ ssr = [
 getrandom = "0.2"
 criterion = "0.5"
 dhat = "0.3"
+serde_json = "1.0"
 
 # Hot-path microbenchmarks. Run: `cargo bench --features ssr`.
 # `tiering::is_tier_one` is the per-match filter the poller runs thousands of

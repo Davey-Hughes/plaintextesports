@@ -953,6 +953,111 @@ pub struct MatchResults {
     pub unavailable: bool,
 }
 
+/// A sport-agnostic post-game box score, rendered by the shared components in
+/// `src/app/components/boxscore.rs`. Every sport's normalizer produces this; the
+/// UI only ever sees this, so all sports render identically. All fields are
+/// emptyable — a sport fills what it has. Integer shares (not floats) keep the
+/// whole tree `Eq` so it can nest in `MatchResults`.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BoxScore {
+    /// Per-game breakdown for multi-game series (esports maps/games). Empty for
+    /// the single-game traditional sports — present from day one so a future
+    /// esports integration needs no model change.
+    #[serde(default)]
+    pub games: Vec<GameTab>,
+    #[serde(default)]
+    pub line: Option<LineScore>,
+    #[serde(default)]
+    pub leaders: Vec<LeaderCard>,
+    #[serde(default)]
+    pub team_stats: Vec<StatPair>,
+    #[serde(default)]
+    pub player_tables: Vec<PlayerTable>,
+    #[serde(default)]
+    pub timeline: Vec<ScoreEvent>,
+    /// Finished game whose upstream returned nothing usable → show the existing
+    /// "not available" placeholder rather than an empty section.
+    #[serde(default)]
+    pub unavailable: bool,
+}
+
+/// One game/map of a multi-game series (esports). A nested `BoxScore` reuses the
+/// whole render path. Unused by the single-game traditional sports.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GameTab {
+    pub label: String,
+    pub box_score: BoxScore,
+}
+
+/// Teams as rows, game segments as columns, plus totals. Segments are innings
+/// (MLB), periods (NHL), quarters (NBA/NFL), halves (Soccer), maps (esports).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LineScore {
+    pub segments: Vec<String>,
+    pub away: LineRow,
+    pub home: LineRow,
+    /// Aggregate columns to the right of the grid (e.g. R/H/E); each carries the
+    /// away+home values so it renders in the same two-column body.
+    pub totals: Vec<StatPair>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LineRow {
+    pub team: String,
+    pub abbrev: String,
+    /// Per-segment score, aligned to `LineScore::segments`; "" for a segment not
+    /// played (e.g. bottom of the 9th when the home team didn't bat).
+    pub segment_values: Vec<String>,
+    pub total: String,
+}
+
+/// One comparison row: away vs home for a labeled stat, with an optional
+/// proportional lead bar. `away_share` is away's share of the two values as a
+/// whole percent (0..=100); home's share is `100 - away_share`. `None` ⇒ no bar.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StatPair {
+    pub label: String,
+    pub away: String,
+    pub home: String,
+    #[serde(default)]
+    pub away_share: Option<u8>,
+}
+
+/// A headline performer card (top performers / three stars / stat leaders / MVP).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LeaderCard {
+    pub name: String,
+    pub team: String,
+    pub category: String,
+    pub line: String,
+}
+
+/// A collapsible player stat table (one per team per stat group).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PlayerTable {
+    pub title: String,
+    pub team: String,
+    pub columns: Vec<String>,
+    pub rows: Vec<PlayerRow>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PlayerRow {
+    pub name: String,
+    pub note: String,
+    pub values: Vec<String>,
+}
+
+/// A chronological scoring/key event for the timeline.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ScoreEvent {
+    pub segment: String,
+    pub clock: String,
+    pub team: String,
+    pub kind: String,
+    pub description: String,
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ScheduleView {
     pub days: Vec<DayGroup>,
@@ -980,6 +1085,7 @@ pub struct ScheduleView {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json;
 
     #[test]
     fn event_name_eq_agrees_with_full_event_name() {
@@ -1131,5 +1237,69 @@ mod tests {
         assert_eq!(MatchStatus::Finished.row_class(), "final");
         assert_eq!(MatchStatus::Canceled.row_class(), "canceled");
         assert_eq!(MatchStatus::Upcoming.row_class(), "upcoming");
+    }
+
+    #[test]
+    fn box_score_serde_round_trips() {
+        let bs = BoxScore {
+            line: Some(LineScore {
+                segments: vec!["1".into(), "2".into()],
+                away: LineRow {
+                    team: "White Sox".into(),
+                    abbrev: "CWS".into(),
+                    segment_values: vec!["1".into(), "0".into()],
+                    total: "1".into(),
+                },
+                home: LineRow {
+                    team: "Orioles".into(),
+                    abbrev: "BAL".into(),
+                    segment_values: vec!["1".into(), "4".into()],
+                    total: "5".into(),
+                },
+                totals: vec![StatPair {
+                    label: "R".into(),
+                    away: "1".into(),
+                    home: "5".into(),
+                    away_share: None,
+                }],
+            }),
+            team_stats: vec![StatPair {
+                label: "Hits".into(),
+                away: "9".into(),
+                home: "8".into(),
+                away_share: Some(53),
+            }],
+            leaders: vec![LeaderCard {
+                name: "A. Ruiz".into(),
+                team: "BAL".into(),
+                category: "Top performer".into(),
+                line: "3-4, 2 HR".into(),
+            }],
+            player_tables: vec![PlayerTable {
+                title: "Batting — BAL".into(),
+                team: "BAL".into(),
+                columns: vec!["AB".into(), "H".into()],
+                rows: vec![PlayerRow {
+                    name: "A. Ruiz".into(),
+                    note: "SS".into(),
+                    values: vec!["4".into(), "3".into()],
+                }],
+            }],
+            timeline: vec![ScoreEvent {
+                segment: "2nd".into(),
+                clock: "".into(),
+                team: "BAL".into(),
+                kind: "hr".into(),
+                description: "Ruiz HR (2)".into(),
+            }],
+            games: Vec::new(),
+            unavailable: false,
+        };
+        let json = serde_json::to_string(&bs).unwrap();
+        let back: BoxScore = serde_json::from_str(&json).unwrap();
+        assert_eq!(bs, back);
+        // Defaults: an empty object deserializes to an all-empty BoxScore.
+        let empty: BoxScore = serde_json::from_str("{}").unwrap();
+        assert_eq!(empty, BoxScore::default());
     }
 }
