@@ -3,7 +3,10 @@
 //! feeds so it flows through the existing schedule UI unchanged.
 
 use crate::feed::{NormalizedMatch, NormalizedTeam};
-use crate::types::{EventInfo, MatchStatus, Sport, StandingRow, StreamView};
+use crate::types::{
+    stat_share, BoxScore, EventInfo, LeaderCard, LineRow, LineScore, MatchStatus, PlayerRow,
+    PlayerTable, Sport, StandingRow, StatPair, StreamView,
+};
 use chrono::{DateTime, NaiveDate, Utc};
 use serde::Deserialize;
 use std::collections::HashSet;
@@ -752,6 +755,449 @@ pub async fn fetch_standings(
         .json()
         .await?;
     Ok(divisions_from(resp))
+}
+
+// ---- Linescore raw structs ------------------------------------------------
+
+#[derive(Deserialize, Default)]
+pub struct RawLinescore {
+    #[serde(default)]
+    innings: Vec<RawInning>,
+    #[serde(default)]
+    teams: RawLsTeams,
+}
+
+#[derive(Deserialize, Default)]
+struct RawLsTeams {
+    #[serde(default)]
+    home: RawLsSide,
+    #[serde(default)]
+    away: RawLsSide,
+}
+
+#[derive(Deserialize, Default)]
+struct RawLsSide {
+    #[serde(default)]
+    runs: Option<i64>,
+    #[serde(default)]
+    hits: i64,
+    #[serde(default)]
+    errors: i64,
+}
+
+#[derive(Deserialize, Default)]
+struct RawInning {
+    #[serde(default)]
+    home: RawLsSide,
+    #[serde(default)]
+    away: RawLsSide,
+}
+
+// ---- Boxscore raw structs -------------------------------------------------
+
+#[derive(Deserialize, Default)]
+pub struct RawBoxscore {
+    #[serde(default)]
+    teams: RawBsTeams,
+    #[serde(default, rename = "topPerformers")]
+    top_performers: Vec<RawPerformer>,
+}
+
+#[derive(Deserialize, Default)]
+struct RawBsTeams {
+    #[serde(default)]
+    home: RawBsTeam,
+    #[serde(default)]
+    away: RawBsTeam,
+}
+
+#[derive(Deserialize, Default)]
+struct RawBsTeam {
+    #[serde(default)]
+    team: RawBsTeamName,
+    #[serde(default, rename = "teamStats")]
+    team_stats: RawTeamStats,
+    #[serde(default)]
+    players: std::collections::HashMap<String, RawPlayer>,
+    #[serde(default)]
+    batters: Vec<i64>,
+    #[serde(default)]
+    pitchers: Vec<i64>,
+}
+
+#[derive(Deserialize, Default)]
+struct RawBsTeamName {
+    #[serde(default)]
+    name: String,
+    #[serde(default, rename = "abbreviation")]
+    abbrev: String,
+}
+
+#[derive(Deserialize, Default)]
+struct RawTeamStats {
+    #[serde(default)]
+    batting: RawBatTotals,
+    #[serde(default)]
+    pitching: RawPitchTotals,
+}
+
+#[derive(Deserialize, Default)]
+struct RawBatTotals {
+    #[serde(default)]
+    hits: i64,
+    #[serde(default, rename = "homeRuns")]
+    home_runs: i64,
+    #[serde(default, rename = "leftOnBase")]
+    lob: i64,
+    #[serde(default, rename = "strikeOuts")]
+    strike_outs: i64,
+    #[serde(default, rename = "baseOnBalls")]
+    walks: i64,
+    #[serde(default)]
+    avg: String,
+}
+
+#[derive(Deserialize, Default)]
+struct RawPitchTotals {
+    #[serde(default, rename = "strikeOuts")]
+    strike_outs: i64,
+    #[serde(default, rename = "baseOnBalls")]
+    walks: i64,
+    #[serde(default)]
+    era: String,
+}
+
+#[derive(Deserialize, Default)]
+struct RawPlayer {
+    #[serde(default)]
+    person: RawPerson,
+    #[serde(default)]
+    position: RawPos,
+    #[serde(default)]
+    stats: RawSplit,
+    #[serde(default, rename = "seasonStats")]
+    season_stats: RawSplit,
+}
+
+#[derive(Deserialize, Default)]
+struct RawPerson {
+    #[serde(default, rename = "fullName")]
+    full_name: String,
+}
+
+#[derive(Deserialize, Default)]
+struct RawPos {
+    #[serde(default)]
+    abbreviation: String,
+}
+
+#[derive(Deserialize, Default)]
+struct RawSplit {
+    #[serde(default)]
+    batting: RawBatLine,
+    #[serde(default)]
+    pitching: RawPitchLine,
+}
+
+#[derive(Deserialize, Default)]
+struct RawBatLine {
+    #[serde(default, rename = "atBats")]
+    at_bats: Option<i64>,
+    #[serde(default)]
+    runs: Option<i64>,
+    #[serde(default)]
+    hits: Option<i64>,
+    #[serde(default)]
+    rbi: Option<i64>,
+    #[serde(default, rename = "baseOnBalls")]
+    walks: Option<i64>,
+    #[serde(default, rename = "strikeOuts")]
+    strike_outs: Option<i64>,
+    #[serde(default)]
+    avg: Option<String>,
+}
+
+#[derive(Deserialize, Default)]
+struct RawPitchLine {
+    #[serde(default, rename = "inningsPitched")]
+    innings: Option<String>,
+    #[serde(default)]
+    hits: Option<i64>,
+    #[serde(default)]
+    runs: Option<i64>,
+    #[serde(default, rename = "earnedRuns")]
+    earned_runs: Option<i64>,
+    #[serde(default, rename = "baseOnBalls")]
+    walks: Option<i64>,
+    #[serde(default, rename = "strikeOuts")]
+    strike_outs: Option<i64>,
+    #[serde(default)]
+    era: Option<String>,
+}
+
+#[derive(Deserialize, Default)]
+struct RawPerformer {
+    #[serde(default)]
+    player: RawPlayer,
+}
+
+// ---- Fetch ----------------------------------------------------------------
+
+/// Fetch a game's linescore + boxscore (two keyless calls).
+pub async fn fetch_box_score(
+    client: &reqwest::Client,
+    game_pk: i64,
+) -> Result<(RawLinescore, RawBoxscore), reqwest::Error> {
+    let ls = client
+        .get(format!("{BASE}/game/{game_pk}/linescore"))
+        .send()
+        .await?
+        .json::<RawLinescore>()
+        .await?;
+    let bs = client
+        .get(format!("{BASE}/game/{game_pk}/boxscore"))
+        .send()
+        .await?
+        .json::<RawBoxscore>()
+        .await?;
+    Ok((ls, bs))
+}
+
+// ---- Normalizer helpers ---------------------------------------------------
+
+fn i(n: Option<i64>) -> String {
+    n.map(|v| v.to_string()).unwrap_or_default()
+}
+
+fn batting_table(t: &RawBsTeam) -> PlayerTable {
+    let rows = t
+        .batters
+        .iter()
+        .filter_map(|id| t.players.get(&format!("ID{id}")))
+        .map(|p| PlayerRow {
+            name: p.person.full_name.clone(),
+            note: p.position.abbreviation.clone(),
+            values: vec![
+                i(p.stats.batting.at_bats),
+                i(p.stats.batting.runs),
+                i(p.stats.batting.hits),
+                i(p.stats.batting.rbi),
+                i(p.stats.batting.walks),
+                i(p.stats.batting.strike_outs),
+                p.season_stats.batting.avg.clone().unwrap_or_default(),
+            ],
+        })
+        .collect();
+    PlayerTable {
+        title: format!("Batting \u{2014} {}", t.team.abbrev),
+        team: t.team.abbrev.clone(),
+        columns: ["AB", "R", "H", "RBI", "BB", "K", "AVG"]
+            .map(String::from)
+            .to_vec(),
+        rows,
+    }
+}
+
+fn pitching_table(t: &RawBsTeam) -> PlayerTable {
+    let rows = t
+        .pitchers
+        .iter()
+        .filter_map(|id| t.players.get(&format!("ID{id}")))
+        .map(|p| PlayerRow {
+            name: p.person.full_name.clone(),
+            note: p.position.abbreviation.clone(),
+            values: vec![
+                p.stats.pitching.innings.clone().unwrap_or_default(),
+                i(p.stats.pitching.hits),
+                i(p.stats.pitching.runs),
+                i(p.stats.pitching.earned_runs),
+                i(p.stats.pitching.walks),
+                i(p.stats.pitching.strike_outs),
+                p.season_stats.pitching.era.clone().unwrap_or_default(),
+            ],
+        })
+        .collect();
+    PlayerTable {
+        title: format!("Pitching \u{2014} {}", t.team.abbrev),
+        team: t.team.abbrev.clone(),
+        columns: ["IP", "H", "R", "ER", "BB", "K", "ERA"]
+            .map(String::from)
+            .to_vec(),
+        rows,
+    }
+}
+
+/// Normalize a game's linescore + boxscore into the shared `BoxScore`.
+pub fn to_box_score(ls: &RawLinescore, bs: &RawBoxscore) -> BoxScore {
+    let (away, home) = (&bs.teams.away, &bs.teams.home);
+
+    // Line score: runs per inning + R/H/E totals.
+    let segments: Vec<String> = (1..=ls.innings.len()).map(|n| n.to_string()).collect();
+    let seg_vals = |pick: fn(&RawInning) -> &RawLsSide| -> Vec<String> {
+        ls.innings.iter().map(|inn| i(pick(inn).runs)).collect()
+    };
+    let totals = vec![
+        StatPair {
+            label: "R".into(),
+            away: ls.teams.away.runs.unwrap_or(0).to_string(),
+            home: ls.teams.home.runs.unwrap_or(0).to_string(),
+            away_share: None,
+        },
+        StatPair {
+            label: "H".into(),
+            away: ls.teams.away.hits.to_string(),
+            home: ls.teams.home.hits.to_string(),
+            away_share: None,
+        },
+        StatPair {
+            label: "E".into(),
+            away: ls.teams.away.errors.to_string(),
+            home: ls.teams.home.errors.to_string(),
+            away_share: None,
+        },
+    ];
+    let line = LineScore {
+        segments,
+        away: LineRow {
+            team: away.team.name.clone(),
+            abbrev: away.team.abbrev.clone(),
+            segment_values: seg_vals(|inn| &inn.away),
+            total: ls.teams.away.runs.unwrap_or(0).to_string(),
+        },
+        home: LineRow {
+            team: home.team.name.clone(),
+            abbrev: home.team.abbrev.clone(),
+            segment_values: seg_vals(|inn| &inn.home),
+            total: ls.teams.home.runs.unwrap_or(0).to_string(),
+        },
+        totals,
+    };
+
+    // Team-stat comparison (lead bars on the counting stats).
+    let cmp = |label: &str, a: String, h: String, bar: bool| StatPair {
+        away_share: if bar { stat_share(&a, &h) } else { None },
+        label: label.into(),
+        away: a,
+        home: h,
+    };
+    let (ab, hb) = (&away.team_stats.batting, &home.team_stats.batting);
+    let (ap, hp) = (&away.team_stats.pitching, &home.team_stats.pitching);
+    let team_stats = vec![
+        cmp("Hits", ab.hits.to_string(), hb.hits.to_string(), true),
+        cmp(
+            "Home Runs",
+            ab.home_runs.to_string(),
+            hb.home_runs.to_string(),
+            true,
+        ),
+        cmp("Left on Base", ab.lob.to_string(), hb.lob.to_string(), true),
+        cmp("Walks", ab.walks.to_string(), hb.walks.to_string(), true),
+        cmp(
+            "Strikeouts (batting)",
+            ab.strike_outs.to_string(),
+            hb.strike_outs.to_string(),
+            true,
+        ),
+        cmp("Team AVG", ab.avg.clone(), hb.avg.clone(), false),
+        cmp(
+            "Pitching K",
+            ap.strike_outs.to_string(),
+            hp.strike_outs.to_string(),
+            true,
+        ),
+        cmp("Team ERA", ap.era.clone(), hp.era.clone(), false),
+    ];
+
+    // Leaders from the API's curated topPerformers.
+    let leaders: Vec<LeaderCard> = bs
+        .top_performers
+        .iter()
+        .map(|p| {
+            let b = &p.player.stats.batting;
+            let line = if b.hits.is_some() {
+                format!(
+                    "{}-{}, {} R, {} RBI",
+                    i(b.hits),
+                    i(b.at_bats),
+                    i(b.runs),
+                    i(b.rbi)
+                )
+            } else {
+                let pt = &p.player.stats.pitching;
+                format!(
+                    "{} IP, {} K, {} ER",
+                    pt.innings.clone().unwrap_or_default(),
+                    i(pt.strike_outs),
+                    i(pt.earned_runs)
+                )
+            };
+            LeaderCard {
+                name: p.player.person.full_name.clone(),
+                team: String::new(),
+                category: "Top performer".into(),
+                line,
+            }
+        })
+        .collect();
+
+    let player_tables = vec![
+        batting_table(away),
+        pitching_table(away),
+        batting_table(home),
+        pitching_table(home),
+    ];
+
+    BoxScore {
+        line: Some(line),
+        team_stats,
+        leaders,
+        player_tables,
+        timeline: Vec::new(),
+        games: Vec::new(),
+        unavailable: false,
+    }
+}
+
+// ---- Tests ----------------------------------------------------------------
+
+#[cfg(all(test, feature = "ssr"))]
+mod boxscore_tests {
+    use super::*;
+
+    #[test]
+    fn mlb_to_box_score_maps_linescore_stats_and_players() {
+        let ls: RawLinescore =
+            serde_json::from_str(include_str!("testdata/mlb_linescore_824819.json")).unwrap();
+        let bs: RawBoxscore =
+            serde_json::from_str(include_str!("testdata/mlb_boxscore_824819.json")).unwrap();
+        let out = to_box_score(&ls, &bs);
+
+        let line = out.line.expect("line score");
+        assert_eq!(line.segments.len(), 9, "nine innings");
+        // R/H/E totals present as three total columns.
+        let labels: Vec<&str> = line.totals.iter().map(|t| t.label.as_str()).collect();
+        assert_eq!(labels, ["R", "H", "E"]);
+
+        // Team-stat comparison has Hits with a computed lead share.
+        let hits = out
+            .team_stats
+            .iter()
+            .find(|s| s.label == "Hits")
+            .expect("Hits row");
+        assert!(hits.away_share.is_some());
+
+        // Two batting + two pitching tables (one per team).
+        assert_eq!(out.player_tables.len(), 4);
+        assert!(out
+            .player_tables
+            .iter()
+            .any(|t| t.title.starts_with("Batting")));
+        assert!(out
+            .player_tables
+            .iter()
+            .any(|t| t.title.starts_with("Pitching")));
+        assert!(!out.unavailable);
+    }
 }
 
 #[cfg(test)]
