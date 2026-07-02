@@ -404,6 +404,9 @@ struct CachedMotorResult {
 /// is immutable and kept until restart).
 const MOTOR_RESULT_TTL_MIN: i64 = 15;
 
+/// A finished game's box score is immutable, so cache it long.
+const BOXSCORE_TTL_MIN: i64 = 360;
+
 /// Re-check a *failed* fetch at most this often. Shorter than the empty TTL so a
 /// transient error recovers fast, but long enough that a persistently-failing
 /// (slow) endpoint doesn't block every page load — the page still shows every
@@ -667,6 +670,34 @@ pub async fn motor_result(r: &crate::types::MotorResultRef) -> Vec<crate::types:
         db_cache_put("motor_result", &cache_key, &rows, now);
     }
     rows
+}
+
+/// A finished traditional team-sports game's box score. Fetched once from the
+/// sport's upstream API, normalized to `BoxScore`, and persisted to
+/// `result_cache` (namespace `"box_score"`, key `"{slug}:{id}"`). MLB is
+/// supported; other sports fall through to an empty `BoxScore` until their
+/// normalizers land.
+pub async fn box_score(sport: crate::types::Sport, id: i64) -> crate::types::BoxScore {
+    let key = format!("{}:{}", sport.slug(), id);
+    if let Some((bs, at)) = db_cache_get::<crate::types::BoxScore>("box_score", &key) {
+        if Utc::now() - at < Duration::minutes(BOXSCORE_TTL_MIN) {
+            return bs;
+        }
+    }
+    let bs = match sport {
+        crate::types::Sport::Mlb => match crate::mlb::fetch_box_score(&HTTP, id).await {
+            Ok((ls, raw)) => crate::mlb::to_box_score(&ls, &raw),
+            Err(_) => crate::types::BoxScore {
+                unavailable: true,
+                ..Default::default()
+            },
+        },
+        _ => crate::types::BoxScore::default(),
+    };
+    if !bs.unavailable && bs.line.is_some() {
+        db_cache_put("box_score", &key, &bs, Utc::now());
+    }
+    bs
 }
 
 /// The ordered (section title, result ref) list a motorsport event page shows,

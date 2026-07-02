@@ -207,12 +207,19 @@ pub async fn get_match_results(
             }
             _ => (None, false),
         };
+        // Traditional team sports: a finished game's shared box score.
+        let box_score = if sport.traditional() && !sport.single_entity() && finished {
+            Some(crate::cache::box_score(sport, id).await)
+        } else {
+            None
+        };
         Ok(MatchResults {
             unavailable: (f1_unavailable || motor_unavailable)
                 && f1_result.is_none()
                 && motor_result.is_none(),
             f1_result,
             motor_result,
+            box_score,
         })
     }
     #[cfg(not(feature = "ssr"))]
