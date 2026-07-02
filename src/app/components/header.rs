@@ -76,6 +76,12 @@ pub(crate) fn RefreshButton() -> impl IntoView {
 #[component]
 pub(crate) fn BrandSlot() -> impl IntoView {
     let scrolled = RwSignal::new(false);
+    // The brand links home but carries the current top-level mode, so clicking it
+    // from the sports view doesn't silently drop `?mode=sports` from the URL. (The
+    // schedule's query mirror only re-runs on a path change, so it wouldn't restore
+    // the param after a bare `/` navigation.) esports is the default, so only the
+    // sports mode needs spelling out.
+    let traditional = use_context::<SportMode>().expect("sport mode context").0;
     Effect::new(move |_| {
         #[cfg(feature = "hydrate")]
         {
@@ -107,7 +113,9 @@ pub(crate) fn BrandSlot() -> impl IntoView {
     view! {
         <div class="brand-slot">
             <div class="brand" class:brand-off=move || scrolled.get()>
-                <A href="/">"plaintextesports"</A>
+                <A href=move || {
+                    if traditional.get() { "/?mode=sports".to_string() } else { "/".to_string() }
+                }>"plaintextesports"</A>
             </div>
             <button
                 class="toggle scrolltop"
