@@ -27,7 +27,12 @@ pub(crate) fn ThemeToggle() -> impl IntoView {
     };
 
     view! {
-        <button class="toggle theme-toggle" title="Switch color theme" aria-label="Switch color theme" on:click=cycle></button>
+        <button
+            class="toggle theme-toggle"
+            title="Switch color theme"
+            aria-label="Switch color theme"
+            on:click=cycle
+        ></button>
     }
 }
 
@@ -111,8 +116,21 @@ pub(crate) fn apply_theme(theme: &str) {
 #[component]
 pub(crate) fn ClockLink() -> impl IntoView {
     view! {
-        <A href="/notifications" attr:class="toggle clock-link" attr:title="Notifications & time settings" attr:aria-label="Notifications">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <A
+            href="/notifications"
+            attr:class="toggle clock-link"
+            attr:title="Notifications & time settings"
+            attr:aria-label="Notifications"
+        >
+            <svg
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                aria-hidden="true"
+            >
                 <circle cx="12" cy="12" r="9"></circle>
                 <polyline points="12 7 12 12 15.5 14"></polyline>
             </svg>
@@ -131,7 +149,11 @@ pub(crate) fn HourToggle() -> impl IntoView {
         save_hour24_pref(next);
     };
     view! {
-        <button class="toggle" aria-pressed=move || if hour24.get() { "true" } else { "false" } on:click=toggle>
+        <button
+            class="toggle"
+            aria-pressed=move || if hour24.get() { "true" } else { "false" }
+            on:click=toggle
+        >
             {move || if hour24.get() { "24h" } else { "12h" }}
         </button>
     }
@@ -193,7 +215,9 @@ pub(crate) fn SportToggle() -> impl IntoView {
         // width. The visible button hugs its own text and sits at the right of the
         // slot (any slack falls on the left).
         <div class="sport-slot">
-            <span class="toggle sport-sizer" aria-hidden="true">"esports"</span>
+            <span class="toggle sport-sizer" aria-hidden="true">
+                "esports"
+            </span>
             <button
                 class="toggle sport-toggle"
                 class:on=move || traditional.get()

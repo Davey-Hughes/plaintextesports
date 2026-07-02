@@ -110,11 +110,7 @@ pub(crate) fn EventStageCombo(
             <div class="stage-bar">{label}</div>
             // The grid/list toggle sits at the top-right of the views, on the
             // "Bracket"/"Standings" title row (just above its underline).
-            <div class="swiss-views">
-                {tabs}
-                {grid_view}
-                {list_view}
-            </div>
+            <div class="swiss-views">{tabs} {grid_view} {list_view}</div>
             <Bracket rounds=rounds tournament_id sport bracket_only times=times.get_value() />
         </div>
     }
@@ -280,8 +276,6 @@ pub(crate) fn EventPage() -> impl IntoView {
                 let lg_name = league();
                 match sched {
                     Some(Ok(mut s)) => {
-                        // The event's last match is the reveal "end" for its
-                        // standings/bracket reveals — they prune ~a week past it.
                         let reveal_end = s
                             .days
                             .iter()
@@ -291,14 +285,8 @@ pub(crate) fn EventPage() -> impl IntoView {
                             .max()
                             .unwrap_or(0);
                         provide_context(RevealEnd(reveal_end));
-                        // The route segment is already the full edition name.
                         let title = lg_name.clone();
-                        // Reveal-key prefix for this edition's result sections.
                         let motor_key_prefix = format!("motorres:{title}");
-                        // The sport this event belongs to (all its matches share
-                        // one). Computed before the schedule is windowed below, with
-                        // the standings as a fallback for when there are no matches
-                        // to read it from (e.g. an off-season team sport).
                         let event_sport = s
                             .days
                             .iter()
@@ -307,11 +295,6 @@ pub(crate) fn EventPage() -> impl IntoView {
                             .map(|m| m.sport)
                             .next()
                             .or_else(|| stage_list.first().map(|e| e.sport));
-                        // The event's (short league, series) from any of its groups,
-                        // read before windowing. A non-empty series marks a specific
-                        // edition (an F1 GP, an esports split) — subscribed to on its
-                        // own; an empty series is a whole league/season, subscribed
-                        // to via the league scope. Decides the header ★ below.
                         let (event_league, event_series) = s
                             .days
                             .iter()
@@ -319,8 +302,6 @@ pub(crate) fn EventPage() -> impl IntoView {
                             .next()
                             .map(|lg| (lg.league.clone(), lg.series_name.clone()))
                             .unwrap_or_else(|| (title.clone(), String::new()));
-                        // The event's external (Liquipedia/official) link, pulled
-                        // from any of its league groups.
                         let url = s
                             .days
                             .iter()
@@ -329,6 +310,21 @@ pub(crate) fn EventPage() -> impl IntoView {
                             .find(|u| !u.is_empty());
                         let link = url
                             .map(|u| {
+                                // The event's last match is the reveal "end" for its
+                                // standings/bracket reveals — they prune ~a week past it.
+                                // The route segment is already the full edition name.
+                                // Reveal-key prefix for this edition's result sections.
+                                // The sport this event belongs to (all its matches share
+                                // one). Computed before the schedule is windowed below, with
+                                // the standings as a fallback for when there are no matches
+                                // to read it from (e.g. an off-season team sport).
+                                // The event's (short league, series) from any of its groups,
+                                // read before windowing. A non-empty series marks a specific
+                                // edition (an F1 GP, an esports split) — subscribed to on its
+                                // own; an empty series is a whole league/season, subscribed
+                                // to via the league scope. Decides the header ★ below.
+                                // The event's external (Liquipedia/official) link, pulled
+                                // from any of its league groups.
                                 view! {
                                     <p class="event-link">
                                         <a href=u target="_blank" rel="noreferrer">
@@ -337,31 +333,27 @@ pub(crate) fn EventPage() -> impl IntoView {
                                     </p>
                                 }
                             });
-                        // A motorsport series' official live-stream link(s) (no
-                        // per-event broadcast data exists, so it's per-series; F1
-                        // lists both its US and rest-of-world services).
                         let watch_opts = motorsport_watch(&motorsport_league(&s));
-                        let watch = (!watch_opts.is_empty()).then(|| {
-                            let links = watch_opts
-                                .iter()
-                                .enumerate()
-                                .map(|(i, (name, url))| {
-                                    view! {
-                                        {(i > 0).then(|| view! { <span class="sep">" · "</span> })}
-                                        <a href=*url target="_blank" rel="noreferrer">
-                                            {format!("{name} ↗")}
-                                        </a>
-                                    }
-                                })
-                                .collect_view();
-                            view! {
-                                <p class="event-link event-watch">"watch · "{links}</p>
-                            }
-                        });
-                        // Each event match's (day, time), so the bracket can date its
-                        // rounds and show per-match times from the same data.
-                        let mut times: std::collections::HashMap<i64, (String, String)> =
-                            std::collections::HashMap::new();
+                        let watch = (!watch_opts.is_empty())
+                            .then(|| {
+                                let links = watch_opts
+                                    .iter()
+                                    .enumerate()
+                                    .map(|(i, (name, url))| {
+                                        // A motorsport series' official live-stream link(s) (no
+                                        // per-event broadcast data exists, so it's per-series; F1
+                                        // lists both its US and rest-of-world services).
+                                        view! {
+                                            {(i > 0).then(|| view! { <span class="sep">" · "</span> })}
+                                            <a href=*url target="_blank" rel="noreferrer">
+                                                {format!("{name} ↗")}
+                                            </a>
+                                        }
+                                    })
+                                    .collect_view();
+                                view! { <p class="event-link event-watch">"watch · "{links}</p> }
+                            });
+                        let mut times: std::collections::HashMap<i64, (String, String)> = std::collections::HashMap::new();
                         for d in &s.days {
                             for lg in &d.leagues {
                                 for m in &lg.matches {
@@ -369,99 +361,118 @@ pub(crate) fn EventPage() -> impl IntoView {
                                 }
                             }
                         }
-                        // Jump links to each named stage section, for a long event
-                        // page with several stages + a bracket.
                         let nav_items: Vec<(String, String)> = stage_list
                             .iter()
                             .filter(|e| !e.stage.is_empty())
                             .map(|e| (format!("stage-{}", e.tournament_id), e.stage.clone()))
                             .collect();
-                        let nav = (!nav_items.is_empty()).then(|| {
-                            view! {
-                                <nav class="event-nav">
-                                    <span class="event-nav-label">"jump to"</span>
-                                    <a href="#sched">"schedule"</a>
-                                    {nav_items
-                                        .into_iter()
-                                        .map(|(anchor, name)| {
-                                            view! { <a href=format!("#{anchor}")>{name}</a> }
-                                        })
-                                        .collect_view()}
-                                </nav>
-                            }
-                        });
-                        // A dotted rule between the schedule and the brackets below.
+                        let nav = (!nav_items.is_empty())
+                            .then(|| {
+                                // Each event match's (day, time), so the bracket can date its
+                                // rounds and show per-match times from the same data.
+                                // Jump links to each named stage section, for a long event
+                                // page with several stages + a bracket.
+                                view! {
+                                    <nav class="event-nav">
+                                        <span class="event-nav-label">"jump to"</span>
+                                        <a href="#sched">"schedule"</a>
+                                        {nav_items
+                                            .into_iter()
+                                            .map(|(anchor, name)| {
+                                                view! { <a href=format!("#{anchor}")>{name}</a> }
+                                            })
+                                            .collect_view()}
+                                    </nav>
+                                }
+                            });
                         let sep = (!stage_list.is_empty())
-                            .then(|| view! { <hr class="section-sep" /> });
-                        // Traditional sports (MLB) cap their forward horizon like
-                        // the homepage: window the days to [today - earlier,
-                        // today + later-extended] and show the earlier/later
-                        // expanders. Reading earlier/later here re-windows when
-                        // they change. Esports events show their full history.
+                            .then(|| {
+                                // A dotted rule between the schedule and the brackets below.
+                                view! { <hr class="section-sep" /> }
+                            });
                         let windowed = schedule_needs_window(&s);
                         if windowed {
-                            let (lo, hi) =
-                                trad_day_bounds(&s.today_key, earlier.get(), later.get());
-                            s.days.retain(|d| {
-                                d.day_key.as_str() >= lo.as_str()
-                                    && d.day_key.as_str() <= hi.as_str()
-                            });
+                            let (lo, hi) = trad_day_bounds(
+                                &s.today_key,
+                                earlier.get(),
+                                later.get(),
+                            );
+                            s.days
+                                .retain(|d| {
+                                    d.day_key.as_str() >= lo.as_str()
+                                        && d.day_key.as_str() <= hi.as_str()
+                                });
                         }
-                        // Read push here (not at the top) so the ★s appear once the
-                        // VAPID key resolves after hydration — this closure re-runs.
                         let push = use_context::<RwSignal<Option<String>>>()
                             .is_some_and(|v| v.get().is_some());
-                        // (season, round) for an F1 GP — keys its results' reveal.
                         let f1_sr = f1_season_round(&s);
-                        // The series ("WRC"/"WEC") if this is one — for its standings.
                         let motor_league = motor_series(&s);
-                        // An event page carries a header ★ only while it still has an
-                        // upcoming session — a reminder can't fire on a finished or
-                        // live one (same rule as the per-match ★). A wholly-finished
-                        // or only-live event shows the bare title. When the ★ does
-                        // show, it's scoped to what the page is about: a single-league
-                        // team sport (MLB/NHL/NBA/NFL) subscribes to the whole sport —
-                        // its league is 1:1 with the sport, the same scope/key as the
-                        // sport tab's ★ (its schedule drops the per-day league ★). A
-                        // specific edition (an F1 GP, a WEC/WRC round, an esports split
-                        // — anything with a series) subscribes to just that edition. A
-                        // whole league/season (no series) uses the league scope, in
-                        // lock-step with the home page's league ★. The schedule's
-                        // per-day league ★s are suppressed on the event page, so this
-                        // one stands in for them.
                         let star_sport = event_sport.unwrap_or_default();
                         let trad_single = event_sport
                             .filter(|sp| sp.traditional() && !sp.has_sub_leagues());
                         let title_head = if !event_has_upcoming(&s) {
-                            view! { <h1 class="detail-title">{title.clone()}</h1> }.into_any()
+                            // Traditional sports (MLB) cap their forward horizon like
+                            // the homepage: window the days to [today - earlier,
+                            // today + later-extended] and show the earlier/later
+                            // expanders. Reading earlier/later here re-windows when
+                            // they change. Esports events show their full history.
+                            // Read push here (not at the top) so the ★s appear once the
+                            // VAPID key resolves after hydration — this closure re-runs.
+                            // (season, round) for an F1 GP — keys its results' reveal.
+                            // The series ("WRC"/"WEC") if this is one — for its standings.
+                            // An event page carries a header ★ only while it still has an
+                            // upcoming session — a reminder can't fire on a finished or
+                            // live one (same rule as the per-match ★). A wholly-finished
+                            // or only-live event shows the bare title. When the ★ does
+                            // show, it's scoped to what the page is about: a single-league
+                            // team sport (MLB/NHL/NBA/NFL) subscribes to the whole sport —
+                            // its league is 1:1 with the sport, the same scope/key as the
+                            // sport tab's ★ (its schedule drops the per-day league ★). A
+                            // specific edition (an F1 GP, a WEC/WRC round, an esports split
+                            // — anything with a series) subscribes to just that edition. A
+                            // whole league/season (no series) uses the league scope, in
+                            // lock-step with the home page's league ★. The schedule's
+                            // per-day league ★s are suppressed on the event page, so this
+                            // one stands in for them.
+                            view! { <h1 class="detail-title">{title.clone()}</h1> }
+                                .into_any()
                         } else if let Some(sp) = trad_single {
                             view! {
                                 <div class="event-title-head">
-                                    <SubscribeStar kind="sport" sport=sp value=sp.slug().to_string() />
+                                    <SubscribeStar
+                                        kind="sport"
+                                        sport=sp
+                                        value=sp.slug().to_string()
+                                    />
                                     <h1 class="detail-title">{title.clone()}</h1>
                                 </div>
                             }
-                            .into_any()
+                                .into_any()
                         } else if event_series.is_empty() {
                             view! {
                                 <div class="event-title-head">
-                                    <SubscribeStar kind="league" sport=star_sport value=event_league.clone() />
+                                    <SubscribeStar
+                                        kind="league"
+                                        sport=star_sport
+                                        value=event_league.clone()
+                                    />
                                     <h1 class="detail-title">{title.clone()}</h1>
                                 </div>
                             }
-                            .into_any()
+                                .into_any()
                         } else {
                             view! {
                                 <div class="event-title-head">
-                                    <SubscribeStar kind="event" sport=star_sport value=title.clone() />
+                                    <SubscribeStar
+                                        kind="event"
+                                        sport=star_sport
+                                        value=title.clone()
+                                    />
                                     <h1 class="detail-title">{title.clone()}</h1>
                                 </div>
                             }
-                            .into_any()
+                                .into_any()
                         };
-                        // F1 GP pages get their own jump-to nav (schedule + each
-                        // session that has results + standings), built from the
-                        // results as they load. Empty for non-F1 events.
                         let f1_nav = move || {
                             f1_sr?;
                             let sessions: Vec<String> = f1_results
@@ -472,7 +483,9 @@ pub(crate) fn EventPage() -> impl IntoView {
                                 .collect();
                             let has_standings = f1_standings
                                 .get()
-                                .is_some_and(|s| !s.drivers.is_empty() || !s.constructors.is_empty());
+                                .is_some_and(|s| {
+                                    !s.drivers.is_empty() || !s.constructors.is_empty()
+                                });
                             if sessions.is_empty() && !has_standings {
                                 return None;
                             }
@@ -480,22 +493,26 @@ pub(crate) fn EventPage() -> impl IntoView {
                                 .into_iter()
                                 .map(|s| {
                                     let anchor = f1_anchor(&s);
+                                    // F1 GP pages get their own jump-to nav (schedule + each
+                                    // session that has results + standings), built from the
+                                    // results as they load. Empty for non-F1 events.
                                     view! { <a href=format!("#{anchor}")>{s.to_lowercase()}</a> }
                                 })
                                 .collect_view();
-                            Some(view! {
-                                <nav class="event-nav">
-                                    <span class="event-nav-label">"jump to"</span>
-                                    <a href="#sched">"schedule"</a>
-                                    {links}
-                                    {has_standings
-                                        .then(|| view! { <a href="#f1sec-standings">"standings"</a> })}
-                                </nav>
-                            })
+                            Some(
+                                view! {
+                                    <nav class="event-nav">
+                                        <span class="event-nav-label">"jump to"</span>
+                                        <a href="#sched">"schedule"</a>
+                                        {links}
+                                        {has_standings
+                                            .then(|| {
+                                                view! { <a href="#f1sec-standings">"standings"</a> }
+                                            })}
+                                    </nav>
+                                },
+                            )
                         };
-                        // WRC/WEC/MotoGP event pages get a jump-to nav (schedule +
-                        // each result section + standings), built as results load.
-                        // Empty for F1 / non-motorsport editions.
                         let motor_nav = {
                             let motor_league = motor_league.clone();
                             move || {
@@ -518,18 +535,27 @@ pub(crate) fn EventPage() -> impl IntoView {
                                     .into_iter()
                                     .map(|t| {
                                         let anchor = motor_anchor(&t);
-                                        view! { <a href=format!("#{anchor}")>{t.to_lowercase()}</a> }
+                                        // WRC/WEC/MotoGP event pages get a jump-to nav (schedule +
+                                        // each result section + standings), built as results load.
+                                        // Empty for F1 / non-motorsport editions.
+                                        view! {
+                                            <a href=format!("#{anchor}")>{t.to_lowercase()}</a>
+                                        }
                                     })
                                     .collect_view();
-                                Some(view! {
-                                    <nav class="event-nav">
-                                        <span class="event-nav-label">"jump to"</span>
-                                        <a href="#sched">"schedule"</a>
-                                        {links}
-                                        {has_standings
-                                            .then(|| view! { <a href="#motorsec-standings">"standings"</a> })}
-                                    </nav>
-                                })
+                                Some(
+                                    view! {
+                                        <nav class="event-nav">
+                                            <span class="event-nav-label">"jump to"</span>
+                                            <a href="#sched">"schedule"</a>
+                                            {links}
+                                            {has_standings
+                                                .then(|| {
+                                                    view! { <a href="#motorsec-standings">"standings"</a> }
+                                                })}
+                                        </nav>
+                                    },
+                                )
                             }
                         };
                         view! {
@@ -554,7 +580,9 @@ pub(crate) fn EventPage() -> impl IntoView {
                                         .get()
                                         .filter(|r| !r.is_empty())
                                         .map(move |results| {
-                                            view! { <F1Results results=results season=season round=round /> }
+                                            view! {
+                                                <F1Results results=results season=season round=round />
+                                            }
                                         })
                                 }}
                                 // F1: the championship standings as of this round
@@ -600,7 +628,9 @@ pub(crate) fn EventPage() -> impl IntoView {
                                         .get()
                                         .filter(|s| !s.tables.is_empty())
                                         .map(move |standings| {
-                                            view! { <MotorStandingsView standings=standings league=lg /> }
+                                            view! {
+                                                <MotorStandingsView standings=standings league=lg />
+                                            }
                                         })
                                 }}
                             </article>

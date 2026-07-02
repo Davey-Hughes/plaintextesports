@@ -171,7 +171,9 @@ pub(crate) fn LaterControl() -> impl IntoView {
         (traditional.get() && !at_cap).then(|| {
             view! {
                 <div class="history-bar history-bar-later">
-                    <button class="linkish" on:click=on_later>"show later days ›"</button>
+                    <button class="linkish" on:click=on_later>
+                        "show later days ›"
+                    </button>
                 </div>
             }
         })
@@ -202,18 +204,26 @@ pub(crate) fn EarlierControl() -> impl IntoView {
                 if let Some((s, e)) = range.get() {
                     view! {
                         <span class="history-label">{format!("{s} → {e}")}</span>
-                        <button class="linkish" on:click=on_clear>"clear"</button>
+                        <button class="linkish" on:click=on_clear>
+                            "clear"
+                        </button>
                     }
                         .into_any()
                 } else if earlier.get() > 0 {
                     view! {
-                        <button class="linkish" on:click=on_earlier>"‹ show earlier days"</button>
-                        <button class="linkish" on:click=on_reset>"reset"</button>
+                        <button class="linkish" on:click=on_earlier>
+                            "‹ show earlier days"
+                        </button>
+                        <button class="linkish" on:click=on_reset>
+                            "reset"
+                        </button>
                     }
                         .into_any()
                 } else {
                     view! {
-                        <button class="linkish" on:click=on_earlier>"‹ show earlier days"</button>
+                        <button class="linkish" on:click=on_earlier>
+                            "‹ show earlier days"
+                        </button>
                     }
                         .into_any()
                 }
@@ -281,7 +291,13 @@ pub(crate) fn FilterTabs(
             <div class="tabs-list">{tabs}</div>
             {move || {
                 any_active()
-                    .then(|| view! { <button class="filter-clear" on:click=clear>"clear"</button> })
+                    .then(|| {
+                        view! {
+                            <button class="filter-clear" on:click=clear>
+                                "clear"
+                            </button>
+                        }
+                    })
             }}
         </div>
     }
@@ -323,8 +339,6 @@ pub(crate) fn LeagueChips(
                                 .update(|s| {
                                     if !s.remove(&click_name) {
                                         s.insert(click_name.clone());
-                                        // Remember the sport so the chip survives the
-                                        // league's events leaving the window.
                                         if let (Some(sp), Some(ss)) = (sport, sports) {
                                             ss.update(|m| {
                                                 m.insert(click_name.clone(), sp);
@@ -628,7 +642,9 @@ pub(crate) fn ScheduleSection(
         // earlier days" extends the range — keeps the current schedule on screen
         // while the next loads, instead of blanking the page (which flashed the
         // footer up to the top).
-        <Transition fallback=|| view! { <p class="loading">"loading…"</p> }>
+        <Transition fallback=|| {
+            view! { <p class="loading">"loading…"</p> }
+        }>
             // The frame — chips, single-day nav, and the freshness/demo notices.
             // Reruns on any change (cheap: no rows), and reads the resource inside
             // the Transition so loading/refetch behaves as before.
@@ -638,9 +654,6 @@ pub(crate) fn ScheduleSection(
                     Some(Ok(s)) => {
                         let games_set = games.get();
                         let (available, mut show_chips) = chip_state(&s, &games_set, trad);
-                        // Keep a chip for every selected league, even one whose
-                        // events have left the window, so the filter never vanishes
-                        // until you clear it (and the row stays shown while selected).
                         let sel = leagues.get();
                         let sel_sports = use_context::<SelectedSports>()
                             .map(|s| s.0.get())
@@ -650,18 +663,22 @@ pub(crate) fn ScheduleSection(
                         if let Some(LastUpdated(lu)) = use_context::<LastUpdated>() {
                             lu.set(Some(s.fetched_label.clone()));
                         }
-                        let nav = show_nav.then(|| {
-                            let prev = s.prev_date.clone().unwrap_or_default();
-                            let next = s.next_date.clone().unwrap_or_default();
-                            let label = s.date_label.clone().unwrap_or_default();
-                            view! {
-                                <nav class="day-nav">
-                                    <A href=format!("/day/{prev}")>"‹ prev"</A>
-                                    <span class="day-nav-label">{label}</span>
-                                    <A href=format!("/day/{next}")>"next ›"</A>
-                                </nav>
-                            }
-                        });
+                        let nav = show_nav
+                            .then(|| {
+                                let prev = s.prev_date.clone().unwrap_or_default();
+                                let next = s.next_date.clone().unwrap_or_default();
+                                let label = s.date_label.clone().unwrap_or_default();
+                                // Keep a chip for every selected league, even one whose
+                                // events have left the window, so the filter never vanishes
+                                // until you clear it (and the row stays shown while selected).
+                                view! {
+                                    <nav class="day-nav">
+                                        <A href=format!("/day/{prev}")>"‹ prev"</A>
+                                        <span class="day-nav-label">{label}</span>
+                                        <A href=format!("/day/{next}")>"next ›"</A>
+                                    </nav>
+                                }
+                            });
                         let mut notes: Vec<&str> = Vec::new();
                         if s.demo_forced {
                             notes.push("demo mode (forced)");
@@ -681,7 +698,8 @@ pub(crate) fn ScheduleSection(
                                 // — keep a blank chip row (its reserved min-height)
                                 // so the page doesn't shift between a populated and
                                 // an empty filtered result.
-                                view! { <div class="chips"></div> }.into_any()
+                                view! { <div class="chips"></div> }
+                                    .into_any()
                             } else {
                                 ().into_any()
                             }}
@@ -696,8 +714,7 @@ pub(crate) fn ScheduleSection(
                     }
                     None => ().into_any(),
                 }
-            }}
-            // The day list: a keyed <For> so a filter toggle / 60s refresh diffs
+            }} // The day list: a keyed <For> so a filter toggle / 60s refresh diffs
             // (re-rendering only the days whose content key changed) instead of
             // rebuilding every row. `each` reads the resource inside the Transition.
             <For
@@ -713,16 +730,15 @@ pub(crate) fn ScheduleSection(
                     let today = StoredValue::new(pd.today_key);
                     render_day(pd.day, pd.is_first, today, &pd.editions, false, !show_nav, push)
                 }
-            />
-            // Empty-state message + the homepage's earlier/later reveal controls.
+            /> // Empty-state message + the homepage's earlier/later reveal controls.
             {move || {
                 let trad = traditional.get();
                 match resource.get() {
                     Some(Ok(s)) => {
                         let empty = prepare_days(s, &games.get(), &leagues.get(), trad).is_empty();
+                        let show_earlier = !show_nav;
                         // The homepage (no nav) reveals earlier/later days; the
                         // single-day view uses prev/next nav instead.
-                        let show_earlier = !show_nav;
                         view! {
                             {(show_earlier && empty).then(|| view! { <EarlierControl /> })}
                             {empty
@@ -759,10 +775,11 @@ pub(crate) fn ScheduleSection(
             {move || {
                 let season = f1_home_season.get()?;
                 let s = f1_home_standings.get()?;
-                (!s.drivers.is_empty() || !s.constructors.is_empty()).then(|| {
-                    let round = s.round;
-                    view! { <F1StandingsView standings=s season=season round=round /> }
-                })
+                (!s.drivers.is_empty() || !s.constructors.is_empty())
+                    .then(|| {
+                        let round = s.round;
+                        view! { <F1StandingsView standings=s season=season round=round /> }
+                    })
             }}
         </Transition>
         // WRC/WEC get their championship tables (from ocblacktop) the same way.
@@ -773,7 +790,8 @@ pub(crate) fn ScheduleSection(
                     return None;
                 }
                 let s = motor_home_standings.get()?;
-                (!s.tables.is_empty()).then(|| view! { <MotorStandingsView standings=s league=lg /> })
+                (!s.tables.is_empty())
+                    .then(|| view! { <MotorStandingsView standings=s league=lg /> })
             }}
         </Transition>
     }
@@ -886,10 +904,7 @@ pub(crate) fn UpNextBar(day: DayGroup) -> impl IntoView {
             // F1 (single-entity) has no opponent: show just the session label, with
             // no "at"/"vs" separator and no empty second team.
             let teams = if m.sport.single_entity() {
-                view! {
-                    <span class="upnext-team upnext-solo">{m.team_a.label}</span>
-                }
-                .into_any()
+                view! { <span class="upnext-team upnext-solo">{m.team_a.label}</span> }.into_any()
             } else {
                 view! {
                     <span class="upnext-team">{m.team_a.label}</span>
@@ -1109,11 +1124,11 @@ pub(crate) fn render_schedule(
         {day_sections}
         {empty
             .then(|| {
+                let traditional = use_context::<SportMode>().map(|m| m.0);
                 // "tier-1" is an esports framing; the traditional leagues already
                 // imply their scope. An empty *event* page is a traditional
                 // off-season one (its schedule has no matches to infer the mode
                 // from), and on the homepage the sport toggle says which it is.
-                let traditional = use_context::<SportMode>().map(|m| m.0);
                 view! {
                     <p class="empty">
                         {move || {
@@ -1209,10 +1224,8 @@ pub(crate) fn render_day(
                 // groups without drawing anything. The slot is only reserved
                 // when push is on (the ★ is hidden entirely otherwise).
                 let star = if lg_has_upcoming {
-                    view! {
-                        <SubscribeStar kind="league" sport=sport value=league_name.clone() />
-                    }
-                    .into_any()
+                    view! { <SubscribeStar kind="league" sport=sport value=league_name.clone() /> }
+                        .into_any()
                 } else if push {
                     // Invisible stand-in with the IDENTICAL box to a real ★
                     // (same <button class="sub-star">), so the title lines up
@@ -1235,8 +1248,7 @@ pub(crate) fn render_day(
                 };
                 view! {
                     <div class="league-head">
-                        {star}
-                        <h3 class="league-title">
+                        {star} <h3 class="league-title">
                             <A href=event_href>{display}</A>
                         </h3>
                     </div>
@@ -1282,12 +1294,7 @@ pub(crate) fn render_day(
                     view! { <div class=cls>{inner}</div> }
                 })
                 .collect_view();
-            view! {
-                <div class=league_class>
-                    {head}
-                    <div class="rows">{rows}</div>
-                </div>
-            }
+            view! { <div class=league_class>{head} <div class="rows">{rows}</div></div> }
         })
         .collect_view();
     // Grey a past day's heading, highlight today's (keys sort by date).
@@ -1319,11 +1326,12 @@ pub(crate) fn render_day(
                 #[cfg(feature = "hydrate")]
                 if !event_mode {
                     if let Some(h) = web_sys::window().and_then(|w| w.history().ok()) {
-                        let _ = h.replace_state_with_url(
-                            &wasm_bindgen::JsValue::NULL,
-                            "",
-                            Some(&format!("#day-{key}")),
-                        );
+                        let _ = h
+                            .replace_state_with_url(
+                                &wasm_bindgen::JsValue::NULL,
+                                "",
+                                Some(&format!("#day-{key}")),
+                            );
                     }
                 }
                 #[cfg(not(feature = "hydrate"))]
@@ -1332,8 +1340,7 @@ pub(crate) fn render_day(
         >
             {d.day_label}
             {move || {
-                venue_shown()
-                    .then(|| view! { <span class="day-venue-note">"venue time"</span> })
+                venue_shown().then(|| view! { <span class="day-venue-note">"venue time"</span> })
             }}
         </h2>
     };
