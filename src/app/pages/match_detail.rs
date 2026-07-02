@@ -598,7 +598,7 @@ pub(crate) fn detail_view(d: MatchDetail, results: Resource<MatchResults>) -> im
                     results
                         .get()
                         .and_then(|r| r.box_score)
-                        .map(|bs| view! { <BoxScoreView box_score=bs /> })
+                        .map(|bs| view! { <BoxScoreView box_score=bs reveal=reveal /> })
                 }}
             </Transition>
         </article>

@@ -3026,6 +3026,9 @@ a.bk-team-link {
     padding: 0.2rem 0.45rem; text-align: right; white-space: nowrap;
   }
   table.linescore .ls-team, table.player-stats .ps-name { text-align: left; }
+  // Value cells keep a min width so blanked (spoiler-hidden) cells reserve the
+  // same space and revealing doesn't reflow the columns.
+  table.linescore td, table.player-stats td { min-width: 1.6rem; }
   table.linescore .ls-total { font-weight: 600; border-left: 1px solid var(--border, #333); }
   .ps-note { opacity: 0.55; font-weight: 400; margin-left: 0.3rem; font-size: 0.8em; }
 
@@ -3040,10 +3043,13 @@ a.bk-team-link {
   .cmp-bar-home { background: var(--accent-2, #a54); }
 
   .leaders { display: flex; flex-wrap: wrap; gap: 0.5rem; }
-  .leader-card { display: flex; flex-direction: column; gap: 0.1rem; padding: 0.4rem 0.6rem; border: 1px solid var(--border, #333); border-radius: 6px; min-width: 8rem; }
+  // min-height (and per-line min-heights) reserve the card so a spoiler-hidden
+  // card — just its category label — stays the same size as a revealed one.
+  .leader-card { display: flex; flex-direction: column; gap: 0.1rem; padding: 0.4rem 0.6rem; border: 1px solid var(--border, #333); border-radius: 6px; min-width: 8rem; min-height: 3.2em; }
   .leader-cat { font-size: 0.72rem; text-transform: uppercase; opacity: 0.6; }
+  .leader-name { min-height: 1.15em; }
   .leader-team { opacity: 0.6; }
-  .leader-line { font-variant-numeric: tabular-nums; }
+  .leader-line { font-variant-numeric: tabular-nums; min-height: 1.15em; }
 
   .tl-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 0.25rem; }
   .tl-row { display: grid; grid-template-columns: 4rem 3rem 1fr; gap: 0.5rem; }
