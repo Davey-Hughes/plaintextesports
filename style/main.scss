@@ -3017,8 +3017,14 @@ a.bk-team-link {
 }
 
 .boxscore {
+  .boxscore-head { display: flex; align-items: baseline; justify-content: space-between; gap: 0.5rem; flex-wrap: wrap; }
   .boxscore-body { display: flex; flex-direction: column; gap: 1rem; margin-top: 0.75rem; }
   .boxscore-subhead { font-size: 0.85rem; text-transform: uppercase; letter-spacing: 0.03em; opacity: 0.7; margin: 0 0 0.35rem; }
+  // Spoiler values (and the comparison bars, which reveal who leads) render in the
+  // DOM always so column/card sizes are fixed; `.revealed` flips their visibility,
+  // so revealing fills them in with zero layout shift.
+  .boxscore-body:not(.revealed) .bx-spoiler,
+  .boxscore-body:not(.revealed) .cmp-bar { visibility: hidden; }
 
   .ls-wrap, .ps-wrap { overflow-x: auto; }
   table.linescore, table.player-stats { border-collapse: collapse; width: 100%; font-variant-numeric: tabular-nums; }
