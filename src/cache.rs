@@ -407,6 +407,9 @@ const MOTOR_RESULT_TTL_MIN: i64 = 15;
 /// A finished game's box score is immutable, so cache it long.
 const BOXSCORE_TTL_MIN: i64 = 360;
 
+/// Re-check a *failed* box-score fetch at most this often.
+const BOXSCORE_ERR_TTL_MIN: i64 = 5;
+
 /// Re-check a *failed* fetch at most this often. Shorter than the empty TTL so a
 /// transient error recovers fast, but long enough that a persistently-failing
 /// (slow) endpoint doesn't block every page load — the page still shows every
@@ -672,6 +675,34 @@ pub async fn motor_result(r: &crate::types::MotorResultRef) -> Vec<crate::types:
     rows
 }
 
+/// In-memory hot tier for box scores, keyed by `"{slug}:{id}"`. Stores both
+/// successful and errored results so DEMO mode (where the DB cache is a no-op)
+/// still has a cache, and errored results get a short negative-cache backoff.
+static BOX_SCORES: Lazy<std::sync::Mutex<HashMap<String, CachedBoxScore>>> =
+    Lazy::new(|| std::sync::Mutex::new(HashMap::new()));
+
+struct CachedBoxScore {
+    bs: crate::types::BoxScore,
+    fetched_at: DateTime<Utc>,
+    /// True when the last fetch returned an HTTP/parse error.
+    errored: bool,
+}
+
+/// Whether a cached box score is fresh enough to serve: a finished real result
+/// (`!unavailable && line.is_some()`) is kept until process restart; an errored
+/// or still-unavailable one re-checks after its shorter TTL.
+fn box_score_fresh(c: &CachedBoxScore, now: DateTime<Utc>) -> bool {
+    if !c.bs.unavailable && c.bs.line.is_some() {
+        return true;
+    }
+    let ttl = if c.errored {
+        BOXSCORE_ERR_TTL_MIN
+    } else {
+        BOXSCORE_TTL_MIN
+    };
+    now - c.fetched_at < Duration::minutes(ttl)
+}
+
 /// A finished traditional team-sports game's box score. Fetched once from the
 /// sport's upstream API, normalized to `BoxScore`, and persisted to
 /// `result_cache` (namespace `"box_score"`, key `"{slug}:{id}"`). MLB is
@@ -679,23 +710,61 @@ pub async fn motor_result(r: &crate::types::MotorResultRef) -> Vec<crate::types:
 /// normalizers land.
 pub async fn box_score(sport: crate::types::Sport, id: i64) -> crate::types::BoxScore {
     let key = format!("{}:{}", sport.slug(), id);
+    // 1. In-memory hot tier (also negative-caches errors/unavailable).
+    {
+        let cache = BOX_SCORES
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(c) = cache.get(&key) {
+            if box_score_fresh(c, Utc::now()) {
+                return c.bs.clone();
+            }
+        }
+    }
+    // 2. Durable tier: the DB only holds real results (not errors).
     if let Some((bs, at)) = db_cache_get::<crate::types::BoxScore>("box_score", &key) {
         if Utc::now() - at < Duration::minutes(BOXSCORE_TTL_MIN) {
+            let c = CachedBoxScore {
+                bs: bs.clone(),
+                fetched_at: at,
+                errored: false,
+            };
+            BOX_SCORES
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .insert(key.clone(), c);
             return bs;
         }
     }
-    let bs = match sport {
+    // 3. Fetch from upstream, then write through to memory (always) and DB
+    //    (only for real results).
+    let now = Utc::now();
+    let (bs, errored) = match sport {
         crate::types::Sport::Mlb => match crate::mlb::fetch_box_score(&HTTP, id).await {
-            Ok((ls, raw)) => crate::mlb::to_box_score(&ls, &raw),
-            Err(_) => crate::types::BoxScore {
-                unavailable: true,
-                ..Default::default()
-            },
+            Ok((ls, raw)) => (crate::mlb::to_box_score(&ls, &raw), false),
+            Err(_) => (
+                crate::types::BoxScore {
+                    unavailable: true,
+                    ..Default::default()
+                },
+                true,
+            ),
         },
-        _ => crate::types::BoxScore::default(),
+        _ => (crate::types::BoxScore::default(), false),
     };
+    BOX_SCORES
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .insert(
+            key.clone(),
+            CachedBoxScore {
+                bs: bs.clone(),
+                fetched_at: now,
+                errored,
+            },
+        );
     if !bs.unavailable && bs.line.is_some() {
-        db_cache_put("box_score", &key, &bs, Utc::now());
+        db_cache_put("box_score", &key, &bs, now);
     }
     bs
 }

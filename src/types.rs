@@ -1113,7 +1113,6 @@ pub fn stat_share(away: &str, home: &str) -> Option<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json;
 
     #[test]
     fn event_name_eq_agrees_with_full_event_name() {
