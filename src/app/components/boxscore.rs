@@ -1,19 +1,20 @@
 //! The shared, sport-agnostic game-stats renderer. Every traditional sport (and,
 //! later, esports) normalizes to `BoxScore` (`crate::types`), and this module is
-//! the single place it's drawn — so all sports look identical. The section's
-//! structure (headings, tables, rows, labels) always renders so its space is
-//! reserved from first paint; the spoiler VALUES (scores, stat numbers, leader
-//! lines) blank until the match's scores are revealed, so revealing fills them in
-//! place without shifting the layout.
+//! the single place it's drawn — so all sports look identical. The structure and
+//! the values both always render, so column/card sizes are fixed from first paint;
+//! the spoiler values are hidden via CSS `visibility` until scores are revealed, so
+//! revealing never shifts the layout. A per-section "show stats" button reveals
+//! just this box score, independent of the global scores toggle.
 use crate::app::*;
 use crate::types::{BoxScore, LeaderCard, LineRow, LineScore, PlayerTable, ScoreEvent, StatPair};
 
 /// The game-stats section, rendered below the standings. `reveal` is the match's
-/// spoiler state (global scores toggle or this match individually revealed); when
-/// false the structure still renders but the values are blank. Renders nothing
-/// when the box score is empty.
+/// spoiler state (global scores toggle or this match individually revealed); the
+/// header also carries its own "show stats" reveal (`key`-scoped, persisted) so
+/// the values can be shown without revealing the rest of the match. Renders
+/// nothing when the box score is empty.
 #[component]
-pub(crate) fn BoxScoreView(box_score: BoxScore, reveal: Memo<bool>) -> impl IntoView {
+pub(crate) fn BoxScoreView(box_score: BoxScore, reveal: Memo<bool>, key: String) -> impl IntoView {
     // Nothing to show at all → render nothing (the caller also guards, but be safe).
     let empty = box_score.line.is_none()
         && box_score.leaders.is_empty()
@@ -23,45 +24,54 @@ pub(crate) fn BoxScoreView(box_score: BoxScore, reveal: Memo<bool>) -> impl Into
     if empty {
         return ().into_any();
     }
-    // Store the data so the body can re-render (values ↔ blanks) when `reveal`
-    // flips, without changing the row/column structure — so the space never shifts.
-    let content = StoredValue::new(box_score);
+    // Per-section reveal, separate from the global scores toggle and the match's
+    // own reveal. `shown` = any of them.
+    let (section_revealed, toggle) = section_reveal(format!("boxscore:{key}"));
+    let shown = move || reveal.get() || section_revealed.get();
+    let BoxScore {
+        line,
+        leaders,
+        team_stats,
+        player_tables,
+        timeline,
+        ..
+    } = box_score;
     view! {
         <section class="detail-section boxscore">
-            <h2 class="section-title">"Game stats"</h2>
-            {move || {
-                let show = reveal.get();
-                let BoxScore { line, leaders, team_stats, player_tables, timeline, .. } =
-                    content.get_value();
-                view! {
-                    <div class="boxscore-body">
-                        {line.map(|l| view! { <LineScoreGrid line=l show=show /> })}
-                        {(!leaders.is_empty()).then(|| view! { <Leaders leaders=leaders show=show /> })}
-                        {(!team_stats.is_empty())
-                            .then(|| view! { <StatComparison stats=team_stats show=show /> })}
-                        {(!timeline.is_empty())
-                            .then(|| view! { <ScoringTimeline events=timeline show=show /> })}
-                        {(!player_tables.is_empty())
-                            .then(|| view! { <PlayerStatTables tables=player_tables show=show /> })}
-                    </div>
-                }
-            }}
+            <div class="boxscore-head">
+                <h2 class="section-title">"Game stats"</h2>
+                // The button hides once the match is already revealed (global scores
+                // on, or this match revealed) — nothing left for it to do.
+                {move || {
+                    (!reveal.get())
+                        .then(move || {
+                            view! {
+                                <button class="toggle detail-scores-toggle" on:click=toggle>
+                                    {move || {
+                                        if section_revealed.get() { "hide stats" } else { "show stats" }
+                                    }}
+                                </button>
+                            }
+                        })
+                }}
+            </div>
+            // Structure AND values always render (so widths/heights are fixed); the
+            // `.revealed` class flips the values' CSS visibility, so revealing fills
+            // them in with zero layout shift.
+            <div class="boxscore-body" class:revealed=shown>
+                {line.map(|l| view! { <LineScoreGrid line=l /> })}
+                {(!leaders.is_empty()).then(|| view! { <Leaders leaders=leaders /> })}
+                {(!team_stats.is_empty()).then(|| view! { <StatComparison stats=team_stats /> })}
+                {(!timeline.is_empty()).then(|| view! { <ScoringTimeline events=timeline /> })}
+                {(!player_tables.is_empty()).then(|| view! { <PlayerStatTables tables=player_tables /> })}
+            </div>
         </section>
     }
     .into_any()
 }
 
-/// Blank a spoiler value when scores are hidden (keeps the cell, drops the text).
-fn hide(show: bool, v: String) -> String {
-    if show {
-        v
-    } else {
-        String::new()
-    }
-}
-
 #[component]
-fn LineScoreGrid(line: LineScore, show: bool) -> impl IntoView {
+fn LineScoreGrid(line: LineScore) -> impl IntoView {
     let LineScore {
         segments,
         away,
@@ -78,17 +88,17 @@ fn LineScoreGrid(line: LineScore, show: bool) -> impl IntoView {
         .iter()
         .map(|t| view! { <th class="ls-total">{t.label.clone()}</th> })
         .collect_view();
-    let row = move |r: LineRow, totals: &[StatPair], home: bool| {
+    let row = |r: LineRow, totals: &[StatPair], home: bool| {
         let cells = r
             .segment_values
             .into_iter()
-            .map(|v| view! { <td>{hide(show, v)}</td> })
+            .map(|v| view! { <td><span class="bx-spoiler">{v}</span></td> })
             .collect_view();
         let tot = totals
             .iter()
             .map(|t| {
                 let v = if home { t.home.clone() } else { t.away.clone() };
-                view! { <td class="ls-total">{hide(show, v)}</td> }
+                view! { <td class="ls-total"><span class="bx-spoiler">{v}</span></td> }
             })
             .collect_view();
         // The team abbreviation isn't a spoiler — always shown.
@@ -120,17 +130,17 @@ fn LineScoreGrid(line: LineScore, show: bool) -> impl IntoView {
 }
 
 #[component]
-fn StatComparison(stats: Vec<StatPair>, show: bool) -> impl IntoView {
+fn StatComparison(stats: Vec<StatPair>) -> impl IntoView {
     let rows = stats
         .into_iter()
         .map(|s| {
-            // When hidden, the bars sit neutral (50/50) so they don't reveal who
-            // leads, and the values blank — the row keeps its fixed-width columns.
-            let away_share = if show { s.away_share.unwrap_or(50) } else { 50 };
+            let away_share = s.away_share.unwrap_or(50);
             let home_share = 100u8.saturating_sub(away_share);
+            // Values + bars are spoilers (the bar reveals who leads); the label is
+            // not. `.bx-spoiler` / `.cmp-bar` hide via CSS until revealed.
             view! {
                 <div class="cmp-row">
-                    <span class="cmp-val cmp-away">{hide(show, s.away)}</span>
+                    <span class="cmp-val cmp-away bx-spoiler">{s.away}</span>
                     <span class="cmp-mid">
                         <span class="cmp-label">{s.label}</span>
                         <span class="cmp-bars">
@@ -138,7 +148,7 @@ fn StatComparison(stats: Vec<StatPair>, show: bool) -> impl IntoView {
                             <span class="cmp-bar cmp-bar-home" style=format!("width:{home_share}%")></span>
                         </span>
                     </span>
-                    <span class="cmp-val cmp-home">{hide(show, s.home)}</span>
+                    <span class="cmp-val cmp-home bx-spoiler">{s.home}</span>
                 </div>
             }
         })
@@ -147,19 +157,20 @@ fn StatComparison(stats: Vec<StatPair>, show: bool) -> impl IntoView {
 }
 
 #[component]
-fn Leaders(leaders: Vec<LeaderCard>, show: bool) -> impl IntoView {
+fn Leaders(leaders: Vec<LeaderCard>) -> impl IntoView {
     let cards = leaders
         .into_iter()
         .map(|l| {
-            // The category label reserves the card; name + line are spoilers.
+            // The category reserves the card; name + line are spoilers. Rendering
+            // them always (hidden via CSS) keeps each card its final size, so it
+            // doesn't grow when revealed.
             view! {
                 <div class="leader-card">
                     <span class="leader-cat">{l.category}</span>
-                    <span class="leader-name">
-                        {hide(show, l.name)} " "
-                        <span class="leader-team">{hide(show, l.team)}</span>
+                    <span class="leader-name bx-spoiler">
+                        {l.name} " " <span class="leader-team">{l.team}</span>
                     </span>
-                    <span class="leader-line">{hide(show, l.line)}</span>
+                    <span class="leader-line bx-spoiler">{l.line}</span>
                 </div>
             }
         })
@@ -168,7 +179,7 @@ fn Leaders(leaders: Vec<LeaderCard>, show: bool) -> impl IntoView {
 }
 
 #[component]
-fn ScoringTimeline(events: Vec<ScoreEvent>, show: bool) -> impl IntoView {
+fn ScoringTimeline(events: Vec<ScoreEvent>) -> impl IntoView {
     let rows = events
         .into_iter()
         .map(|e| {
@@ -181,8 +192,8 @@ fn ScoringTimeline(events: Vec<ScoreEvent>, show: bool) -> impl IntoView {
             view! {
                 <li class=format!("tl-row tl-{}", e.kind)>
                     <span class="tl-when">{when}</span>
-                    <span class="tl-team">{hide(show, e.team)}</span>
-                    <span class="tl-desc">{hide(show, e.description)}</span>
+                    <span class="tl-team bx-spoiler">{e.team}</span>
+                    <span class="tl-desc bx-spoiler">{e.description}</span>
                 </li>
             }
         })
@@ -196,7 +207,7 @@ fn ScoringTimeline(events: Vec<ScoreEvent>, show: bool) -> impl IntoView {
 }
 
 #[component]
-fn PlayerStatTables(tables: Vec<PlayerTable>, show: bool) -> impl IntoView {
+fn PlayerStatTables(tables: Vec<PlayerTable>) -> impl IntoView {
     let out = tables
         .into_iter()
         .map(|t| {
@@ -214,7 +225,7 @@ fn PlayerStatTables(tables: Vec<PlayerTable>, show: bool) -> impl IntoView {
                     let vals = r
                         .values
                         .into_iter()
-                        .map(|v| view! { <td>{hide(show, v)}</td> })
+                        .map(|v| view! { <td><span class="bx-spoiler">{v}</span></td> })
                         .collect_view();
                     view! {
                         <tr>
