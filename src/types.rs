@@ -951,6 +951,10 @@ pub struct MatchResults {
     /// 500 / not yet posted) — the page shows a "results not available" note.
     #[serde(default)]
     pub unavailable: bool,
+    /// For a finished traditional team-sports game: its shared box score. `None`
+    /// for esports / F1 / motorsport / upcoming.
+    #[serde(default)]
+    pub box_score: Option<BoxScore>,
 }
 
 /// A sport-agnostic post-game box score, rendered by the shared components in

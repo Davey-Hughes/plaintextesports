@@ -517,6 +517,7 @@ pub(crate) fn detail_view(d: MatchDetail, results: Resource<MatchResults>) -> im
             // Spoiler-gated; absent for upcoming / non-result sessions.
             {move || {
                 let motor_key = motor_reveal_key.clone();
+                let boxscore_key = muid.clone();
                 view! {
                     // Transition, not Suspense: `results` is keyed on tz/hour24 too,
                     // so a clock/timezone toggle refetches it in place — keep the
@@ -530,10 +531,11 @@ pub(crate) fn detail_view(d: MatchDetail, results: Resource<MatchResults>) -> im
                     }>
                         {move || {
                             let motor_key = motor_key.clone();
+                            let boxscore_key = boxscore_key.clone();
                             results
                                 .get()
                                 .map(move |r| {
-                                    if let Some(fr) = r.f1_result {
+                                    let result_view = if let Some(fr) = r.f1_result {
                                         view! { <F1Results results=vec![fr] season=f1_season round=f1_round /> }
                                             .into_any()
                                     } else if let Some(mr) = r.motor_result {
@@ -549,7 +551,11 @@ pub(crate) fn detail_view(d: MatchDetail, results: Resource<MatchResults>) -> im
                                             .into_any()
                                     } else {
                                         ().into_any()
-                                    }
+                                    };
+                                    let box_view = r.box_score.map(|bs| {
+                                        view! { <BoxScoreView box_score=bs key=boxscore_key.clone() /> }
+                                    });
+                                    view! { {result_view}{box_view} }
                                 })
                         }}
                     </Transition>
