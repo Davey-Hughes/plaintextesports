@@ -228,10 +228,8 @@ pub(crate) fn team_logo(logo: &str, extra: &str) -> AnyView {
     if logo.is_empty() {
         return ().into_any();
     }
-    view! {
-        <img class=format!("team-logo {extra}") src=logo.to_string() alt="" loading="lazy" />
-    }
-    .into_any()
+    view! { <img class=format!("team-logo {extra}") src=logo.to_string() alt="" loading="lazy" /> }
+        .into_any()
 }
 
 /// An F1 constructor's logo rendered as a `currentColor` CSS mask of F1's official
@@ -243,10 +241,8 @@ pub(crate) fn clogo_icon(logo: &str) -> AnyView {
     if logo.is_empty() {
         return ().into_any();
     }
-    view! {
-        <span class="team-logo f1-clogo" style=format!("--clogo:url('{logo}')")></span>
-    }
-    .into_any()
+    view! { <span class="team-logo f1-clogo" style=format!("--clogo:url('{logo}')")></span> }
+        .into_any()
 }
 
 /// A team's name for a compact row: its label, with the official abbreviation as a

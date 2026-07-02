@@ -12,26 +12,26 @@ pub(crate) fn SiteHeader() -> impl IntoView {
         // sticky `.toggles` bar's containing block stays `.page` (not this header)
         // — the banner landmark is added with zero layout/behavior change.
         <header class="site-header" style="display: contents">
-        <div class="toggles">
-            <BrandSlot />
-            // Display preferences (icons / 24h / theme), grouped so they can sit at
-            // the right of the bar on desktop and share the brand's row on mobile.
-            <div class="toggle-prefs">
-                <IconsToggle />
-                <HourToggle />
-                <ThemeToggle />
+            <div class="toggles">
+                <BrandSlot />
+                // Display preferences (icons / 24h / theme), grouped so they can sit at
+                // the right of the bar on desktop and share the brand's row on mobile.
+                <div class="toggle-prefs">
+                    <IconsToggle />
+                    <HourToggle />
+                    <ThemeToggle />
+                </div>
+                // On narrow screens this forces the controls below onto a second row,
+                // leaving the prefs up beside the brand.
+                <span class="toggles-break" aria-hidden="true"></span>
+                <RefreshButton />
+                <SportToggle />
+                <CalendarPicker />
+                // The notifications link sits with the schedule controls, just right of
+                // the calendar.
+                <ClockLink />
+                <ScoresToggle />
             </div>
-            // On narrow screens this forces the controls below onto a second row,
-            // leaving the prefs up beside the brand.
-            <span class="toggles-break" aria-hidden="true"></span>
-            <RefreshButton />
-            <SportToggle />
-            <CalendarPicker />
-            // The notifications link sits with the schedule controls, just right of
-            // the calendar.
-            <ClockLink />
-            <ScoresToggle />
-        </div>
         </header>
     }
 }

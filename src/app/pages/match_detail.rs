@@ -61,9 +61,7 @@ pub(crate) fn F1Results(results: Vec<F1Result>, season: i64, round: i64) -> impl
                         view! {
                             <li class="f1-row">
                                 <span class="f1-pos">{row.pos}</span>
-                                <span class="f1-driver">
-                                    {team_logo(&flag, "f1-flag")}{driver}
-                                </span>
+                                <span class="f1-driver">{team_logo(&flag, "f1-flag")}{driver}</span>
                                 <span class="f1-con">
                                     {clogo_icon(&clogo)}{team_cell(con, cabbr)}
                                 </span>
@@ -148,7 +146,9 @@ pub(crate) fn MotorResultsView(results: Vec<MotorResult>, key_prefix: String) ->
                                 <span class="f1-driver">
                                     {team_logo(&flag, "f1-flag")}{name}
                                     {(!codriver.is_empty())
-                                        .then(|| view! { <span class="motor-codriver">{codriver}</span> })}
+                                        .then(|| {
+                                            view! { <span class="motor-codriver">{codriver}</span> }
+                                        })}
                                 </span>
                                 <span class="f1-con">{team}</span>
                                 <span class="f1-detail">{time}</span>
@@ -212,7 +212,9 @@ pub(crate) fn MatchDetailPage() -> impl IntoView {
         // Transition, not Suspense: the resource is keyed on tz/hour24, so toggling
         // the timezone or 12/24h clock while reading a match refetches in place —
         // Transition keeps the match on screen instead of flashing "loading…".
-        <Transition fallback=|| view! { <p class="loading">"loading…"</p> }>
+        <Transition fallback=|| {
+            view! { <p class="loading">"loading…"</p> }
+        }>
             {move || {
                 detail
                     .get()
@@ -370,57 +372,57 @@ pub(crate) fn detail_view(d: MatchDetail, results: Resource<MatchResults>) -> im
         <article class="detail">
             <A href="/">"← schedule"</A>
             <div class="detail-title-row">
-                {match_star}
-                <h1 class="detail-title match-title" class:detail-title-solo=is_solo>
-                {if is_solo {
-                    view! {
-                        <span class="detail-team detail-solo">
-                            {team_logo(&logo_a, "team-logo-lg")}
-                            {team_a}
-                        </span>
-                    }
-                    .into_any()
-                } else {
-                    view! {
-                        <span
-                            class="detail-team"
-                            class:winner=move || reveal.get() && win_a
-                            class:loser=move || reveal.get() && win_b
-                        >
-                            {team_logo(&logo_a, "team-logo-lg")}
-                            {team_link(sport, team_a, name_a)}
-                        </span>
-                        <span class="detail-score">
-                            {move || {
-                                if reveal.get() && has_score {
-                                    format!("{} – {}", sa.unwrap_or(0), sb.unwrap_or(0))
-                                } else {
-                                    sep.to_string()
-                                }
-                            }}
-                        </span>
-                        <span
-                            class="detail-team"
-                            class:winner=move || reveal.get() && win_b
-                            class:loser=move || reveal.get() && win_a
-                        >
-                            {team_link(sport, team_b, name_b)}
-                            {team_logo(&logo_b, "team-logo-lg")}
-                        </span>
-                    }
-                    .into_any()
-                }}
+                {match_star} <h1 class="detail-title match-title" class:detail-title-solo=is_solo>
+                    {if is_solo {
+                        view! {
+                            <span class="detail-team detail-solo">
+                                {team_logo(&logo_a, "team-logo-lg")} {team_a}
+                            </span>
+                        }
+                            .into_any()
+                    } else {
+                        view! {
+                            <span
+                                class="detail-team"
+                                class:winner=move || reveal.get() && win_a
+                                class:loser=move || reveal.get() && win_b
+                            >
+                                {team_logo(&logo_a, "team-logo-lg")}
+                                {team_link(sport, team_a, name_a)}
+                            </span>
+                            <span class="detail-score">
+                                {move || {
+                                    if reveal.get() && has_score {
+                                        format!("{} – {}", sa.unwrap_or(0), sb.unwrap_or(0))
+                                    } else {
+                                        sep.to_string()
+                                    }
+                                }}
+                            </span>
+                            <span
+                                class="detail-team"
+                                class:winner=move || reveal.get() && win_b
+                                class:loser=move || reveal.get() && win_a
+                            >
+                                {team_link(sport, team_b, name_b)}
+                                {team_logo(&logo_b, "team-logo-lg")}
+                            </span>
+                        }
+                            .into_any()
+                    }}
                 </h1>
-                // The per-match reveal toggle rides at the right end of the
-                // matchup row (played matches only; never with the ★, which is
-                // upcoming-only), instead of crowding the meta line below.
                 {move || {
                     let toggle = toggle.clone();
                     (!toggle_hidden())
                         .then(move || {
+                            // The per-match reveal toggle rides at the right end of the
+                            // matchup row (played matches only; never with the ★, which is
+                            // upcoming-only), instead of crowding the meta line below.
                             view! {
                                 <button class="toggle detail-scores-toggle" on:click=toggle>
-                                    {move || if reveal.get() { "hide scores" } else { "show scores" }}
+                                    {move || {
+                                        if reveal.get() { "hide scores" } else { "show scores" }
+                                    }}
                                 </button>
                             }
                         })
@@ -445,7 +447,7 @@ pub(crate) fn detail_view(d: MatchDetail, results: Resource<MatchResults>) -> im
                                 {move || if venue_shown() { venue.clone() } else { local.clone() }}
                             </span>
                         }
-                        .into_any()
+                            .into_any()
                     } else {
                         view! { <span>{when_local.clone()}</span> }.into_any()
                     }}
@@ -454,34 +456,51 @@ pub(crate) fn detail_view(d: MatchDetail, results: Resource<MatchResults>) -> im
             </div>
             {(!venue_line.is_empty())
                 .then(|| view! { <div class="detail-venue">{venue_line}</div> })}
-            {source_link.map(|s| view! {
-                <p class="event-link">
-                    <a href=s.url target="_blank" rel="noreferrer">
-                        {format!("view on {} ↗", s.label)}
-                    </a>
-                </p>
-            })}
-            {(!motor_watch.is_empty()).then(|| {
-                let links = motor_watch
-                    .iter()
-                    .enumerate()
-                    .map(|(i, (name, url))| view! {
-                        {(i > 0).then(|| view! { <span class="sep">" · "</span> })}
-                        <a href=*url target="_blank" rel="noreferrer">
-                            {format!("{name} ↗")}
-                        </a>
-                    })
-                    .collect_view();
-                let wec_badge = wec_live.map(|res| view! {
-                    <Transition fallback=|| ().into_any()>
-                        {move || res.get().flatten().map(|v| {
-                            let n = (v > 0).then(|| format!(" · {}", fmt_viewers(v))).unwrap_or_default();
-                            view! { <span class="stream-live">"● live"{n}</span> }
-                        })}
-                    </Transition>
-                });
-                view! { <p class="event-link event-watch">"watch · "{links}{wec_badge}</p> }
-            })}
+            {source_link
+                .map(|s| {
+                    view! {
+                        <p class="event-link">
+                            <a href=s.url target="_blank" rel="noreferrer">
+                                {format!("view on {} ↗", s.label)}
+                            </a>
+                        </p>
+                    }
+                })}
+            {(!motor_watch.is_empty())
+                .then(|| {
+                    let links = motor_watch
+                        .iter()
+                        .enumerate()
+                        .map(|(i, (name, url))| {
+                            view! {
+                                {(i > 0).then(|| view! { <span class="sep">" · "</span> })}
+                                <a href=*url target="_blank" rel="noreferrer">
+                                    {format!("{name} ↗")}
+                                </a>
+                            }
+                        })
+                        .collect_view();
+                    let wec_badge = wec_live
+                        .map(|res| {
+                            view! {
+                                <Transition fallback=|| {
+                                    ().into_any()
+                                }>
+                                    {move || {
+                                        res.get()
+                                            .flatten()
+                                            .map(|v| {
+                                                let n = (v > 0)
+                                                    .then(|| format!(" · {}", fmt_viewers(v)))
+                                                    .unwrap_or_default();
+                                                view! { <span class="stream-live">"● live"{n}</span> }
+                                            })
+                                    }}
+                                </Transition>
+                            }
+                        });
+                    view! { <p class="event-link event-watch">"watch · "{links}{wec_badge}</p> }
+                })}
             {if is_esports {
                 let base = streams.clone();
                 let uid_key = muid.clone();
@@ -499,14 +518,19 @@ pub(crate) fn detail_view(d: MatchDetail, results: Resource<MatchResults>) -> im
                     }>
                         {move || {
                             let base = base.clone();
-                            live.get().map(move |enriched| {
-                                let list = if enriched.is_empty() { base.clone() } else { enriched };
-                                view! { <StreamsList streams=list /> }
-                            })
+                            live.get()
+                                .map(move |enriched| {
+                                    let list = if enriched.is_empty() {
+                                        base.clone()
+                                    } else {
+                                        enriched
+                                    };
+                                    view! { <StreamsList streams=list /> }
+                                })
                         }}
                     </Transition>
                 }
-                .into_any()
+                    .into_any()
             } else {
                 view! { <StreamsList streams=streams /> }.into_any()
             }}
@@ -534,10 +558,21 @@ pub(crate) fn detail_view(d: MatchDetail, results: Resource<MatchResults>) -> im
                                 .get()
                                 .map(move |r| {
                                     let result_view = if let Some(fr) = r.f1_result {
-                                        view! { <F1Results results=vec![fr] season=f1_season round=f1_round /> }
+                                        view! {
+                                            <F1Results
+                                                results=vec![fr]
+                                                season=f1_season
+                                                round=f1_round
+                                            />
+                                        }
                                             .into_any()
                                     } else if let Some(mr) = r.motor_result {
-                                        view! { <MotorResultsView results=vec![mr] key_prefix=motor_key.clone() /> }
+                                        view! {
+                                            <MotorResultsView
+                                                results=vec![mr]
+                                                key_prefix=motor_key.clone()
+                                            />
+                                        }
                                             .into_any()
                                     } else if r.unavailable {
                                         view! {
@@ -561,14 +596,12 @@ pub(crate) fn detail_view(d: MatchDetail, results: Resource<MatchResults>) -> im
             // sport is revealed, so it never leaks the leader ahead of the scores.
             {(!series.games.is_empty())
                 .then(|| {
-                    // Series games are MLB; key by uid like the per-match set.
                     let played_ids: Vec<String> = series
                         .games
                         .iter()
                         .filter(|g| {
                             matches!(g.status, MatchStatus::Live | MatchStatus::Finished)
-                                && g.score_a.is_some()
-                                && g.score_b.is_some()
+                                && g.score_a.is_some() && g.score_b.is_some()
                         })
                         .map(|g| crate::types::match_uid(Sport::Mlb, g.match_id))
                         .collect();
@@ -577,10 +610,12 @@ pub(crate) fn detail_view(d: MatchDetail, results: Resource<MatchResults>) -> im
                     let record_reveal = Memo::new(move |_| {
                         global.is_some_and(|g| g.get())
                             || (!played_ids.is_empty()
-                                && revealed.is_some_and(|r| {
-                                    r.with(|set| played_ids.iter().all(|id| set.contains(id)))
-                                }))
+                                && revealed
+                                    .is_some_and(|r| {
+                                        r.with(|set| played_ids.iter().all(|id| set.contains(id)))
+                                    }))
                     });
+                    // Series games are MLB; key by uid like the per-match set.
                     view! { <SeriesSection series=series record_reveal=record_reveal /> }
                 })}
             // The event's stage combo (Swiss grid/list + playoff bracket), same as
@@ -703,16 +738,26 @@ pub(crate) fn StreamsList(streams: Vec<StreamView>) -> impl IntoView {
             let body = if s.url.is_empty() {
                 label_view.into_any()
             } else {
-                view! { <a href=s.url target="_blank" rel="noreferrer">{label_view}</a> }.into_any()
+                view! {
+                    <a href=s.url target="_blank" rel="noreferrer">
+                        {label_view}
+                    </a>
+                }
+                .into_any()
             };
             view! {
                 <li class=cls>
                     {body}
                     {(!tags.is_empty()).then(|| view! { <span class="stream-tags">{tags}</span> })}
-                    {s.live.then(|| {
-                        let v = s.viewers.map(|n| format!(" · {}", fmt_viewers(n))).unwrap_or_default();
-                        view! { <span class="stream-live">"● live"{v}</span> }
-                    })}
+                    {s
+                        .live
+                        .then(|| {
+                            let v = s
+                                .viewers
+                                .map(|n| format!(" · {}", fmt_viewers(n)))
+                                .unwrap_or_default();
+                            view! { <span class="stream-live">"● live"{v}</span> }
+                        })}
                 </li>
             }
         })
@@ -756,7 +801,9 @@ pub(crate) fn SeriesSection(series: Series, record_reveal: Memo<bool>) -> impl I
     let record = (!record_label.is_empty()).then(|| {
         view! {
             <p class="series-record" class:series-hidden=move || !record_reveal.get()>
-                {move || if record_reveal.get() { record_label.clone() } else { "\u{00a0}".to_string() }}
+                {move || {
+                    if record_reveal.get() { record_label.clone() } else { "\u{00a0}".to_string() }
+                }}
             </p>
         }
     });
@@ -767,9 +814,7 @@ pub(crate) fn SeriesSection(series: Series, record_reveal: Memo<bool>) -> impl I
     let venue_hint = has_venue.then(|| {
         let show_venue = use_context::<ShowVenue>().map(|s| s.0);
         let shown = move || show_venue.is_some_and(|sv| sv.get());
-        view! {
-            {move || shown().then(|| view! { <span class="series-venue-hint">"venue time"</span> })}
-        }
+        view! { {move || shown().then(|| view! { <span class="series-venue-hint">"venue time"</span> })} }
     });
     view! {
         <section class="detail-section">
@@ -862,7 +907,9 @@ pub(crate) fn SeriesRow(game: SeriesGame) -> impl IntoView {
         view! { <span class="row-body">{inner}</span> }.into_any()
     } else {
         view! {
-            <a class="row-body" href=crate::types::match_path(Sport::Mlb, match_id)>{inner}</a>
+            <a class="row-body" href=crate::types::match_path(Sport::Mlb, match_id)>
+                {inner}
+            </a>
         }
         .into_any()
     };
@@ -870,12 +917,7 @@ pub(crate) fn SeriesRow(game: SeriesGame) -> impl IntoView {
     if current {
         row_cls.push_str(" series-current");
     }
-    view! {
-        <div class=format!("{row_cls} has-star")>
-            {status_bar(status)}
-            {body}
-        </div>
-    }
+    view! { <div class=format!("{row_cls} has-star")>{status_bar(status)} {body}</div> }
 }
 
 #[cfg(test)]

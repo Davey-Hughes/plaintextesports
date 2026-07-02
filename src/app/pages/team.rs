@@ -64,10 +64,7 @@ pub(crate) fn TeamPage() -> impl IntoView {
                 let name = team();
                 match schedule.get() {
                     Some(Ok(mut s)) => {
-                        // The team's vector logo (NHL/MLB), from any of its matches.
                         let logo = team_logo_in_schedule(&s, &name);
-                        // The team's sport (it plays one), read from any of its
-                        // matches — scopes both its page URL and its subscribe key.
                         let team_sport = s
                             .days
                             .iter()
@@ -76,26 +73,37 @@ pub(crate) fn TeamPage() -> impl IntoView {
                             .map(|m| m.sport)
                             .next()
                             .unwrap_or_default();
-                        // Traditional-sport teams cap their forward horizon and show
-                        // the earlier/later expanders, like the event page.
                         let windowed = schedule_needs_window(&s);
                         if windowed {
-                            let (lo, hi) =
-                                trad_day_bounds(&s.today_key, earlier.get(), later.get());
-                            s.days.retain(|d| {
-                                d.day_key.as_str() >= lo.as_str()
-                                    && d.day_key.as_str() <= hi.as_str()
-                            });
+                            let (lo, hi) = trad_day_bounds(
+                                &s.today_key,
+                                earlier.get(),
+                                later.get(),
+                            );
+                            s.days
+                                .retain(|d| {
+                                    d.day_key.as_str() >= lo.as_str()
+                                        && d.day_key.as_str() <= hi.as_str()
+                                });
                         }
-                        // Read push here so the ★s appear once the VAPID key
-                        // resolves after hydration (this closure re-runs then).
                         let push = use_context::<RwSignal<Option<String>>>()
                             .is_some_and(|v| v.get().is_some());
+                        // The team's vector logo (NHL/MLB), from any of its matches.
+                        // The team's sport (it plays one), read from any of its
+                        // matches — scopes both its page URL and its subscribe key.
+                        // Traditional-sport teams cap their forward horizon and show
+                        // the earlier/later expanders, like the event page.
+                        // Read push here so the ★s appear once the VAPID key
+                        // resolves after hydration (this closure re-runs then).
                         view! {
                             <article class="detail">
                                 <A href="/">"← schedule"</A>
                                 <div class="team-head">
-                                    <SubscribeStar kind="team" sport=team_sport value=name.clone() />
+                                    <SubscribeStar
+                                        kind="team"
+                                        sport=team_sport
+                                        value=name.clone()
+                                    />
                                     {team_logo(&logo, "team-logo-lg")}
                                     <h1 class="detail-title">{name.clone()}</h1>
                                 </div>
