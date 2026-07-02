@@ -942,6 +942,18 @@ mod boxscore_tests {
             "row aligns to columns"
         );
 
+        let goalies = out
+            .player_tables
+            .iter()
+            .find(|t| t.title.starts_with("Goalies"))
+            .unwrap();
+        assert!(!goalies.rows.is_empty(), "goalie rows populated");
+        assert_eq!(
+            goalies.rows[0].values.len(),
+            goalies.columns.len(),
+            "goalie row aligns to columns"
+        );
+
         // Goals timeline populated for a finished game.
         assert!(!out.timeline.is_empty(), "scoring timeline populated");
         assert!(!out.unavailable);
