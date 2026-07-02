@@ -1,14 +1,14 @@
 //! The shared, sport-agnostic game-stats renderer. Every traditional sport (and,
 //! later, esports) normalizes to `BoxScore` (`crate::types`), and this module is
-//! the single place it's drawn — so all sports look identical. Spoiler-gated: the
-//! whole section stays a "show" button until the viewer opens it.
+//! the single place it's drawn — so all sports look identical. Shown automatically
+//! (no spoiler reveal), under the standings on the match page.
 use crate::app::*;
 use crate::types::{BoxScore, LeaderCard, LineRow, LineScore, PlayerTable, ScoreEvent, StatPair};
 
-/// The game-stats section: one spoiler reveal wrapping the shared sub-views.
-/// `key` scopes the reveal (the match id), tied to `RevealEnd` for pruning.
+/// The game-stats section: renders the shared sub-views directly, shown
+/// automatically (no spoiler reveal). Renders nothing when the box score is empty.
 #[component]
-pub(crate) fn BoxScoreView(box_score: BoxScore, key: String) -> impl IntoView {
+pub(crate) fn BoxScoreView(box_score: BoxScore) -> impl IntoView {
     // Nothing to show at all → render nothing (the caller also guards, but be safe).
     let empty = box_score.line.is_none()
         && box_score.leaders.is_empty()
@@ -18,36 +18,24 @@ pub(crate) fn BoxScoreView(box_score: BoxScore, key: String) -> impl IntoView {
     if empty {
         return ().into_any();
     }
-    let (revealed, toggle) = section_reveal(format!("boxscore:{key}"));
-    let content = StoredValue::new(box_score);
+    let BoxScore {
+        line,
+        leaders,
+        team_stats,
+        player_tables,
+        timeline,
+        ..
+    } = box_score;
     view! {
         <section class="detail-section boxscore">
-            <button class="f1-session-head" on:click=toggle>
-                <span class="f1-session-name">"Game stats"</span>
-                <span class="f1-session-toggle">
-                    {move || if revealed.get() { "hide" } else { "show" }}
-                </span>
-            </button>
-            {move || {
-                revealed
-                    .get()
-                    .then(|| {
-                        let BoxScore { line, leaders, team_stats, player_tables, timeline, .. } =
-                            content.get_value();
-                        view! {
-                            <div class="boxscore-body">
-                                {line.map(|l| view! { <LineScoreGrid line=l /> })}
-                                {(!leaders.is_empty()).then(|| view! { <Leaders leaders=leaders /> })}
-                                {(!team_stats.is_empty())
-                                    .then(|| view! { <StatComparison stats=team_stats /> })}
-                                {(!timeline.is_empty())
-                                    .then(|| view! { <ScoringTimeline events=timeline /> })}
-                                {(!player_tables.is_empty())
-                                    .then(|| view! { <PlayerStatTables tables=player_tables /> })}
-                            </div>
-                        }
-                    })
-            }}
+            <h2 class="section-title">"Game stats"</h2>
+            <div class="boxscore-body">
+                {line.map(|l| view! { <LineScoreGrid line=l /> })}
+                {(!leaders.is_empty()).then(|| view! { <Leaders leaders=leaders /> })}
+                {(!team_stats.is_empty()).then(|| view! { <StatComparison stats=team_stats /> })}
+                {(!timeline.is_empty()).then(|| view! { <ScoringTimeline events=timeline /> })}
+                {(!player_tables.is_empty()).then(|| view! { <PlayerStatTables tables=player_tables /> })}
+            </div>
         </section>
     }
     .into_any()
