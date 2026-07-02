@@ -5,7 +5,10 @@
 //! walks it a week at a time and de-dupes.
 
 use crate::feed::{NormalizedMatch, NormalizedTeam};
-use crate::types::{EventInfo, MatchStatus, Sport, StandingRow, StreamView};
+use crate::types::{
+    stat_share, BoxScore, EventInfo, LeaderCard, LineRow, LineScore, MatchStatus, PlayerRow,
+    PlayerTable, ScoreEvent, Sport, StandingRow, StatPair, StreamView,
+};
 use chrono::{DateTime, Duration, NaiveDate, Utc};
 use serde::Deserialize;
 use std::collections::HashSet;
@@ -416,6 +419,533 @@ pub async fn fetch_standings(client: &reqwest::Client) -> Result<Vec<EventInfo>,
         .json()
         .await?;
     Ok(divisions_from(resp))
+}
+
+// ---- Box score raw structs -------------------------------------------------
+
+#[derive(Deserialize, Default)]
+struct NameDefault {
+    #[serde(default)]
+    default: String,
+}
+#[derive(Deserialize, Default)]
+struct PeriodDescriptor {
+    #[serde(default)]
+    number: i64,
+    #[serde(default, rename = "periodType")]
+    period_type: String,
+}
+
+// ---- landing ----
+#[derive(Deserialize, Default)]
+pub struct RawLanding {
+    #[serde(default, rename = "awayTeam")]
+    away_team: RawNhlTeam,
+    #[serde(default, rename = "homeTeam")]
+    home_team: RawNhlTeam,
+    #[serde(default)]
+    summary: RawSummary,
+}
+#[derive(Deserialize, Default)]
+struct RawNhlTeam {
+    #[serde(default)]
+    abbrev: String,
+    #[serde(default, rename = "commonName")]
+    common_name: NameDefault,
+    #[serde(default, rename = "placeName")]
+    place_name: NameDefault,
+    #[serde(default)]
+    score: i64,
+}
+impl RawNhlTeam {
+    /// Full display name ("Dallas Stars"); falls back to the abbrev when the
+    /// place/common names are absent.
+    fn full_name(&self) -> String {
+        match (
+            self.place_name.default.trim(),
+            self.common_name.default.trim(),
+        ) {
+            (place, common) if !place.is_empty() && !common.is_empty() => {
+                format!("{place} {common}")
+            }
+            (_, common) if !common.is_empty() => common.to_string(),
+            _ => self.abbrev.clone(),
+        }
+    }
+}
+#[derive(Deserialize, Default)]
+struct RawSummary {
+    #[serde(default)]
+    scoring: Vec<RawScoringPeriod>,
+    #[serde(default, rename = "threeStars")]
+    three_stars: Vec<RawStar>,
+}
+#[derive(Deserialize, Default)]
+struct RawScoringPeriod {
+    #[serde(default, rename = "periodDescriptor")]
+    period: PeriodDescriptor,
+    #[serde(default)]
+    goals: Vec<RawGoal>,
+}
+#[derive(Deserialize, Default)]
+struct RawGoal {
+    #[serde(default, rename = "timeInPeriod")]
+    time_in_period: String,
+    #[serde(default, rename = "teamAbbrev")]
+    team_abbrev: TeamAbbrev,
+    #[serde(default, rename = "firstName")]
+    first_name: NameDefault,
+    #[serde(default, rename = "lastName")]
+    last_name: NameDefault,
+    #[serde(default)]
+    assists: Vec<RawAssist>,
+    #[serde(default, rename = "strength")]
+    strength: String,
+}
+#[derive(Deserialize, Default)]
+struct TeamAbbrev {
+    #[serde(default)]
+    default: String,
+}
+#[derive(Deserialize, Default)]
+struct RawAssist {
+    #[serde(default, rename = "firstName")]
+    first_name: NameDefault,
+    #[serde(default, rename = "lastName")]
+    last_name: NameDefault,
+}
+#[derive(Deserialize, Default)]
+struct RawStar {
+    #[serde(default)]
+    star: i64,
+    #[serde(default)]
+    name: NameDefault,
+    #[serde(default, rename = "teamAbbrev")]
+    team_abbrev: String,
+    #[serde(default)]
+    position: String,
+    #[serde(default)]
+    goals: i64,
+    #[serde(default)]
+    assists: i64,
+    #[serde(default)]
+    saves: i64,
+    #[serde(default, rename = "savePctg")]
+    save_pctg: f64,
+}
+
+// ---- right-rail ----
+#[derive(Deserialize, Default)]
+pub struct RawRightRail {
+    #[serde(default)]
+    linescore: RawLine,
+    #[serde(default, rename = "teamGameStats")]
+    team_game_stats: Vec<RawTgs>,
+}
+#[derive(Deserialize, Default)]
+struct RawLine {
+    #[serde(default, rename = "byPeriod")]
+    by_period: Vec<RawLinePeriod>,
+}
+#[derive(Deserialize, Default)]
+struct RawLinePeriod {
+    #[serde(default, rename = "periodDescriptor")]
+    period: PeriodDescriptor,
+    #[serde(default)]
+    away: i64,
+    #[serde(default)]
+    home: i64,
+}
+#[derive(Deserialize, Default)]
+struct RawTgs {
+    #[serde(default)]
+    category: String,
+    // awayValue/homeValue are sometimes a number, sometimes a string ("24/52",
+    // "0/3") — capture as serde_json::Value and render with `val_str` below.
+    #[serde(default, rename = "awayValue")]
+    away_value: serde_json::Value,
+    #[serde(default, rename = "homeValue")]
+    home_value: serde_json::Value,
+}
+
+// ---- boxscore ----
+#[derive(Deserialize, Default)]
+pub struct RawNhlBox {
+    #[serde(default, rename = "playerByGameStats")]
+    players: RawPbg,
+}
+#[derive(Deserialize, Default)]
+struct RawPbg {
+    #[serde(default, rename = "awayTeam")]
+    away: RawPbgTeam,
+    #[serde(default, rename = "homeTeam")]
+    home: RawPbgTeam,
+}
+#[derive(Deserialize, Default)]
+struct RawPbgTeam {
+    #[serde(default)]
+    forwards: Vec<RawSkater>,
+    #[serde(default)]
+    defense: Vec<RawSkater>,
+    #[serde(default)]
+    goalies: Vec<RawGoalie>,
+}
+#[derive(Deserialize, Default)]
+struct RawSkater {
+    #[serde(default)]
+    name: NameDefault,
+    #[serde(default)]
+    position: String,
+    #[serde(default)]
+    goals: i64,
+    #[serde(default)]
+    assists: i64,
+    #[serde(default)]
+    points: i64,
+    #[serde(default, rename = "plusMinus")]
+    plus_minus: i64,
+    #[serde(default)]
+    sog: i64,
+    #[serde(default)]
+    hits: i64,
+    #[serde(default, rename = "blockedShots")]
+    blocked: i64,
+    #[serde(default)]
+    pim: i64,
+    #[serde(default)]
+    toi: String,
+}
+#[derive(Deserialize, Default)]
+struct RawGoalie {
+    #[serde(default)]
+    name: NameDefault,
+    #[serde(default, rename = "saveShotsAgainst")]
+    save_shots_against: String, // "31/33"
+    #[serde(default, rename = "goalsAgainst")]
+    goals_against: i64,
+    #[serde(default)]
+    toi: String,
+}
+
+/// Render an NHL right-rail stat value (number or string like "24/52", 0.538).
+fn val_str(v: &serde_json::Value) -> String {
+    match v {
+        serde_json::Value::String(s) => s.clone(),
+        serde_json::Value::Number(n) => {
+            // Percentages come as a 0..1 float; show whole numbers plainly.
+            if let Some(f) = n.as_f64() {
+                if f.fract() != 0.0 {
+                    format!("{:.1}%", f * 100.0)
+                } else {
+                    format!("{f}")
+                }
+            } else {
+                n.to_string()
+            }
+        }
+        _ => String::new(),
+    }
+}
+
+/// Fetch a game's landing (summary/scoring/stars), right-rail (linescore + team
+/// stats), and boxscore (per-player stats) — three keyless calls.
+pub async fn fetch_box_score(
+    client: &reqwest::Client,
+    game_id: i64,
+) -> Result<(RawLanding, RawRightRail, RawNhlBox), reqwest::Error> {
+    let landing = client
+        .get(format!("{BASE}/gamecenter/{game_id}/landing"))
+        .send()
+        .await?
+        .error_for_status()?
+        .json::<RawLanding>()
+        .await?;
+    let rr = client
+        .get(format!("{BASE}/gamecenter/{game_id}/right-rail"))
+        .send()
+        .await?
+        .error_for_status()?
+        .json::<RawRightRail>()
+        .await?;
+    let bs = client
+        .get(format!("{BASE}/gamecenter/{game_id}/boxscore"))
+        .send()
+        .await?
+        .error_for_status()?
+        .json::<RawNhlBox>()
+        .await?;
+    Ok((landing, rr, bs))
+}
+
+fn period_label(p: &PeriodDescriptor) -> String {
+    match p.period_type.as_str() {
+        "OT" => "OT".to_string(),
+        "SO" => "SO".to_string(),
+        _ => p.number.to_string(),
+    }
+}
+
+fn skater_table(abbrev: &str, team: &RawPbgTeam) -> PlayerTable {
+    let rows = team
+        .forwards
+        .iter()
+        .chain(team.defense.iter())
+        .map(|s| PlayerRow {
+            name: s.name.default.clone(),
+            note: s.position.clone(),
+            values: vec![
+                s.goals.to_string(),
+                s.assists.to_string(),
+                s.points.to_string(),
+                format!("{:+}", s.plus_minus),
+                s.sog.to_string(),
+                s.hits.to_string(),
+                s.blocked.to_string(),
+                s.pim.to_string(),
+                s.toi.clone(),
+            ],
+        })
+        .collect();
+    PlayerTable {
+        title: format!("Skaters — {abbrev}"),
+        team: abbrev.to_string(),
+        columns: ["G", "A", "P", "+/-", "SOG", "HITS", "BLK", "PIM", "TOI"]
+            .map(String::from)
+            .to_vec(),
+        rows,
+    }
+}
+
+fn goalie_table(abbrev: &str, team: &RawPbgTeam) -> PlayerTable {
+    let rows = team
+        .goalies
+        .iter()
+        .map(|g| {
+            let (sv, sa) = g
+                .save_shots_against
+                .split_once('/')
+                .map(|(a, b)| (a.to_string(), b.to_string()))
+                .unwrap_or_default();
+            PlayerRow {
+                name: g.name.default.clone(),
+                note: String::new(),
+                values: vec![sa, sv, g.goals_against.to_string(), g.toi.clone()],
+            }
+        })
+        .collect();
+    PlayerTable {
+        title: format!("Goalies — {abbrev}"),
+        team: abbrev.to_string(),
+        columns: ["SA", "SV", "GA", "TOI"].map(String::from).to_vec(),
+        rows,
+    }
+}
+
+/// Normalize a game's landing + right-rail + boxscore into the shared `BoxScore`.
+pub fn to_box_score(landing: &RawLanding, rr: &RawRightRail, bs: &RawNhlBox) -> BoxScore {
+    let (aw, hm) = (&landing.away_team, &landing.home_team);
+
+    // Line: goals by period + G / SOG totals.
+    let segments: Vec<String> = rr
+        .linescore
+        .by_period
+        .iter()
+        .map(|p| period_label(&p.period))
+        .collect();
+    let sog = rr.team_game_stats.iter().find(|t| t.category == "sog");
+    let totals = vec![
+        StatPair {
+            label: "G".into(),
+            away: aw.score.to_string(),
+            home: hm.score.to_string(),
+            away_share: None,
+        },
+        StatPair {
+            label: "SOG".into(),
+            away: sog.map(|t| val_str(&t.away_value)).unwrap_or_default(),
+            home: sog.map(|t| val_str(&t.home_value)).unwrap_or_default(),
+            away_share: None,
+        },
+    ];
+    let line = LineScore {
+        segments,
+        away: LineRow {
+            team: aw.full_name(),
+            abbrev: aw.abbrev.clone(),
+            segment_values: rr
+                .linescore
+                .by_period
+                .iter()
+                .map(|p| p.away.to_string())
+                .collect(),
+            total: aw.score.to_string(),
+        },
+        home: LineRow {
+            team: hm.full_name(),
+            abbrev: hm.abbrev.clone(),
+            segment_values: rr
+                .linescore
+                .by_period
+                .iter()
+                .map(|p| p.home.to_string())
+                .collect(),
+            total: hm.score.to_string(),
+        },
+        totals,
+    };
+
+    // Team stats comparison.
+    let label_for = |cat: &str| -> Option<&'static str> {
+        Some(match cat {
+            "sog" => "Shots",
+            "faceoffWinningPctg" => "Faceoff %",
+            "powerPlay" => "Power play",
+            "pim" => "Penalty minutes",
+            "hits" => "Hits",
+            "blockedShots" => "Blocked shots",
+            "giveaways" => "Giveaways",
+            "takeaways" => "Takeaways",
+            _ => return None,
+        })
+    };
+    let team_stats = rr
+        .team_game_stats
+        .iter()
+        .filter_map(|t| {
+            let label = label_for(&t.category)?;
+            let (a, h) = (val_str(&t.away_value), val_str(&t.home_value));
+            Some(StatPair {
+                away_share: stat_share(&a, &h),
+                label: label.into(),
+                away: a,
+                home: h,
+            })
+        })
+        .collect();
+
+    // Three stars → leaders.
+    let leaders = landing
+        .summary
+        .three_stars
+        .iter()
+        .map(|s| {
+            let line = if s.position == "G" {
+                format!("{} SV, {:.3} SV%", s.saves, s.save_pctg)
+            } else {
+                format!("{}G {}A", s.goals, s.assists)
+            };
+            LeaderCard {
+                name: s.name.default.clone(),
+                team: s.team_abbrev.clone(),
+                category: format!("★{}", s.star),
+                line,
+            }
+        })
+        .collect();
+
+    // Player tables.
+    let player_tables = vec![
+        skater_table(&aw.abbrev, &bs.players.away),
+        goalie_table(&aw.abbrev, &bs.players.away),
+        skater_table(&hm.abbrev, &bs.players.home),
+        goalie_table(&hm.abbrev, &bs.players.home),
+    ];
+
+    // Goals timeline.
+    let timeline = landing
+        .summary
+        .scoring
+        .iter()
+        .flat_map(|per| {
+            let seg = period_label(&per.period);
+            per.goals.iter().map(move |g| {
+                let scorer = format!("{} {}", g.first_name.default, g.last_name.default);
+                let assists: Vec<String> = g
+                    .assists
+                    .iter()
+                    .map(|a| format!("{} {}", a.first_name.default, a.last_name.default))
+                    .collect();
+                let desc = if assists.is_empty() {
+                    format!("{scorer} ({})", g.strength)
+                } else {
+                    format!("{scorer} ({}) — {}", g.strength, assists.join(", "))
+                };
+                ScoreEvent {
+                    segment: seg.clone(),
+                    clock: g.time_in_period.clone(),
+                    team: g.team_abbrev.default.clone(),
+                    kind: "goal".into(),
+                    description: desc,
+                }
+            })
+        })
+        .collect();
+
+    BoxScore {
+        line: Some(line),
+        team_stats,
+        leaders,
+        player_tables,
+        timeline,
+        games: Vec::new(),
+        unavailable: false,
+    }
+}
+
+#[cfg(all(test, feature = "ssr"))]
+mod boxscore_tests {
+    use super::*;
+
+    #[test]
+    fn nhl_to_box_score_maps_line_stats_stars_and_players() {
+        let landing: RawLanding =
+            serde_json::from_str(include_str!("testdata/nhl_landing_2025021301.json")).unwrap();
+        let rr: RawRightRail =
+            serde_json::from_str(include_str!("testdata/nhl_rightrail_2025021301.json")).unwrap();
+        let bs: RawNhlBox =
+            serde_json::from_str(include_str!("testdata/nhl_boxscore_2025021301.json")).unwrap();
+        let out = to_box_score(&landing, &rr, &bs);
+
+        let line = out.line.expect("line score");
+        assert!(line.segments.len() >= 3, "at least three periods");
+
+        // Team-stat comparison includes Shots with a computed lead share.
+        let shots = out
+            .team_stats
+            .iter()
+            .find(|s| s.label == "Shots")
+            .expect("Shots row");
+        assert!(shots.away_share.is_some());
+
+        // Three stars → leaders.
+        assert!(!out.leaders.is_empty(), "three stars yield leaders");
+
+        // Skater + goalie tables per team (4 total).
+        assert_eq!(out.player_tables.len(), 4);
+        assert!(out
+            .player_tables
+            .iter()
+            .any(|t| t.title.starts_with("Skaters")));
+        assert!(out
+            .player_tables
+            .iter()
+            .any(|t| t.title.starts_with("Goalies")));
+        let skaters = out
+            .player_tables
+            .iter()
+            .find(|t| t.title.starts_with("Skaters"))
+            .unwrap();
+        assert!(!skaters.rows.is_empty(), "skater rows populated");
+        assert_eq!(
+            skaters.rows[0].values.len(),
+            skaters.columns.len(),
+            "row aligns to columns"
+        );
+
+        // Goals timeline populated for a finished game.
+        assert!(!out.timeline.is_empty(), "scoring timeline populated");
+        assert!(!out.unavailable);
+    }
 }
 
 #[cfg(test)]

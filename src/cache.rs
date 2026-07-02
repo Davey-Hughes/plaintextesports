@@ -750,6 +750,16 @@ pub async fn box_score(sport: crate::types::Sport, id: i64) -> crate::types::Box
                 true,
             ),
         },
+        crate::types::Sport::Nhl => match crate::nhl::fetch_box_score(&HTTP, id).await {
+            Ok((landing, rr, bs)) => (crate::nhl::to_box_score(&landing, &rr, &bs), false),
+            Err(_) => (
+                crate::types::BoxScore {
+                    unavailable: true,
+                    ..Default::default()
+                },
+                true,
+            ),
+        },
         _ => (crate::types::BoxScore::default(), false),
     };
     BOX_SCORES
