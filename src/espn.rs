@@ -851,18 +851,22 @@ pub fn to_box_score(s: &RawSummary) -> BoxScore {
                     .map(|l| l.display_value.clone())
                     .collect::<Vec<_>>()
             };
+            let mut away_seg = seg(a);
+            away_seg.resize(segments.len(), String::new());
+            let mut home_seg = seg(h);
+            home_seg.resize(segments.len(), String::new());
             Some(LineScore {
                 segments,
                 away: LineRow {
                     team: a.team.abbreviation.clone(),
                     abbrev: a.team.abbreviation.clone(),
-                    segment_values: seg(a),
+                    segment_values: away_seg,
                     total: a.score.clone(),
                 },
                 home: LineRow {
                     team: h.team.abbreviation.clone(),
                     abbrev: h.team.abbreviation.clone(),
-                    segment_values: seg(h),
+                    segment_values: home_seg,
                     total: h.score.clone(),
                 },
                 totals: vec![StatPair {
@@ -926,7 +930,11 @@ pub fn to_box_score(s: &RawSummary) -> BoxScore {
                 .iter()
                 .filter(|g| !g.athletes.is_empty())
                 .map(move |g| PlayerTable {
-                    title: format!("{} — {}", g.name, abbr),
+                    title: if g.name.is_empty() {
+                        abbr.clone()
+                    } else {
+                        format!("{} — {}", g.name, abbr)
+                    },
                     team: abbr.clone(),
                     columns: g.labels.clone(),
                     rows: g
@@ -1109,6 +1117,11 @@ mod boxscore_tests {
             line.away.segment_values.len(),
             line.segments.len(),
             "line row aligns to segments"
+        );
+        assert_eq!(
+            line.home.segment_values.len(),
+            line.segments.len(),
+            "home line row aligns to segments"
         );
 
         // Team-stat comparison is non-empty and every bar-bearing row has a share
