@@ -703,6 +703,41 @@ fn box_score_fresh(c: &CachedBoxScore, now: DateTime<Utc>) -> bool {
     now - c.fetched_at < Duration::minutes(ttl)
 }
 
+/// Cap on the in-memory box-score hot tier. Each entry is a few KB; this bounds a
+/// long-running process's growth (one entry per unique finished game ever viewed)
+/// without churning hot games. Box scores are immutable once final, so an evicted
+/// one just re-fetches on its next view.
+const BOX_SCORE_CACHE_CAP: usize = 512;
+
+/// Insert into `map`, first evicting the oldest entry (by fetch time) when the map
+/// is at `cap` and the key is new — so it stays bounded. In-place updates of an
+/// existing key never evict.
+fn insert_capped(
+    map: &mut HashMap<String, CachedBoxScore>,
+    key: String,
+    val: CachedBoxScore,
+    cap: usize,
+) {
+    if map.len() >= cap && !map.contains_key(&key) {
+        if let Some(oldest) = map
+            .iter()
+            .min_by_key(|(_, c)| c.fetched_at)
+            .map(|(k, _)| k.clone())
+        {
+            map.remove(&oldest);
+        }
+    }
+    map.insert(key, val);
+}
+
+/// Write a box score into the hot tier under the global cap.
+fn cache_box_score(key: String, val: CachedBoxScore) {
+    let mut map = BOX_SCORES
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    insert_capped(&mut map, key, val, BOX_SCORE_CACHE_CAP);
+}
+
 /// A finished traditional team-sports game's box score. Fetched once from the
 /// sport's upstream API, normalized to `BoxScore`, and persisted to
 /// `result_cache` (namespace `"box_score"`, key `"{slug}:{id}"`). MLB is
@@ -729,10 +764,7 @@ pub async fn box_score(sport: crate::types::Sport, id: i64) -> crate::types::Box
                 fetched_at: at,
                 errored: false,
             };
-            BOX_SCORES
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .insert(key.clone(), c);
+            cache_box_score(key.clone(), c);
             return bs;
         }
     }
@@ -789,17 +821,14 @@ pub async fn box_score(sport: crate::types::Sport, id: i64) -> crate::types::Box
         crate::types::Sport::Soccer => (crate::types::BoxScore::default(), false),
         _ => (crate::types::BoxScore::default(), false),
     };
-    BOX_SCORES
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .insert(
-            key.clone(),
-            CachedBoxScore {
-                bs: bs.clone(),
-                fetched_at: now,
-                errored,
-            },
-        );
+    cache_box_score(
+        key.clone(),
+        CachedBoxScore {
+            bs: bs.clone(),
+            fetched_at: now,
+            errored,
+        },
+    );
     if !bs.unavailable && bs.line.is_some() {
         db_cache_put("box_score", &key, &bs, now);
     }
@@ -4749,6 +4778,33 @@ pub fn synthetic_snapshot(n: usize, now: DateTime<Utc>) -> Snapshot {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn box_score_cache_evicts_oldest_over_cap() {
+        let mk = |ms: i64| CachedBoxScore {
+            bs: crate::types::BoxScore::default(),
+            fetched_at: DateTime::from_timestamp_millis(ms).unwrap(),
+            errored: false,
+        };
+        let mut m: HashMap<String, CachedBoxScore> = HashMap::new();
+        // Fill to cap (3) with increasing fetch times.
+        for ms in 1..=3 {
+            insert_capped(&mut m, format!("k{ms}"), mk(ms), 3);
+        }
+        assert_eq!(m.len(), 3);
+        // A fourth distinct key over cap evicts the oldest (k1, fetched_at = 1).
+        insert_capped(&mut m, "k4".into(), mk(4), 3);
+        assert_eq!(m.len(), 3, "stays at cap");
+        assert!(!m.contains_key("k1"), "oldest evicted");
+        assert!(m.contains_key("k4"), "newest inserted");
+        assert!(
+            m.contains_key("k2") && m.contains_key("k3"),
+            "others retained"
+        );
+        // Re-inserting an existing key at cap updates in place, no eviction.
+        insert_capped(&mut m, "k4".into(), mk(9), 3);
+        assert_eq!(m.len(), 3, "in-place update does not evict");
+    }
 
     #[test]
     fn source_link_espn_sports_build_gamecast_urls() {
