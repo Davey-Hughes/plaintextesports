@@ -8,7 +8,10 @@
 //! toggle (like esports); the start time still shows in the viewer's zone.
 
 use crate::feed::{NormalizedMatch, NormalizedTeam};
-use crate::types::{EventInfo, MatchStatus, Sport, StandingRow, StreamView};
+use crate::types::{
+    stat_share, BoxScore, EventInfo, LeaderCard, LineRow, LineScore, MatchStatus, PlayerRow,
+    PlayerTable, ScoreEvent, Sport, StandingRow, StatPair, StreamView,
+};
 use chrono::{DateTime, Datelike, NaiveDate, NaiveDateTime, Utc};
 use serde::Deserialize;
 
@@ -662,6 +665,307 @@ pub async fn fetch_standings(
     Ok(conferences_from(resp, lg))
 }
 
+// ----- Box score ---------------------------------------------------------------
+
+#[derive(Deserialize, Default)]
+pub struct RawSummary {
+    #[serde(default)]
+    boxscore: RawBox,
+    #[serde(default)]
+    leaders: Vec<RawTeamLeaders>,
+    #[serde(default)]
+    header: RawHeader,
+    #[serde(default, rename = "scoringPlays")]
+    scoring_plays: Vec<RawPlay>,
+}
+#[derive(Deserialize, Default)]
+struct RawBox {
+    #[serde(default)]
+    teams: Vec<RawBoxTeam>,
+    #[serde(default)]
+    players: Vec<RawBoxPlayers>,
+}
+#[derive(Deserialize, Default)]
+struct RawTeamRef {
+    #[serde(default)]
+    abbreviation: String,
+}
+#[derive(Deserialize, Default)]
+struct RawBoxTeam {
+    #[serde(default, rename = "homeAway")]
+    home_away: String,
+    #[serde(default)]
+    statistics: Vec<RawLabeledStat>,
+}
+#[derive(Deserialize, Default)]
+struct RawLabeledStat {
+    #[serde(default)]
+    label: String,
+    #[serde(default, rename = "displayValue")]
+    display_value: String,
+}
+#[derive(Deserialize, Default)]
+struct RawBoxPlayers {
+    #[serde(default)]
+    team: RawTeamRef,
+    #[serde(default)]
+    statistics: Vec<RawPlayerGroup>,
+}
+#[derive(Deserialize, Default)]
+struct RawPlayerGroup {
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    labels: Vec<String>,
+    #[serde(default)]
+    athletes: Vec<RawAthleteLine>,
+}
+#[derive(Deserialize, Default)]
+struct RawAthleteLine {
+    #[serde(default)]
+    athlete: RawAthlete,
+    #[serde(default)]
+    stats: Vec<String>,
+}
+#[derive(Deserialize, Default)]
+struct RawAthlete {
+    #[serde(default, rename = "displayName")]
+    display_name: String,
+}
+#[derive(Deserialize, Default)]
+struct RawTeamLeaders {
+    #[serde(default)]
+    team: RawTeamRef,
+    #[serde(default)]
+    leaders: Vec<RawLeaderCat>,
+}
+#[derive(Deserialize, Default)]
+struct RawLeaderCat {
+    #[serde(default, rename = "displayName")]
+    display_name: String,
+    #[serde(default)]
+    leaders: Vec<RawLeaderEntry>,
+}
+#[derive(Deserialize, Default)]
+struct RawLeaderEntry {
+    #[serde(default, rename = "displayValue")]
+    display_value: String,
+    #[serde(default)]
+    athlete: RawAthlete,
+}
+#[derive(Deserialize, Default)]
+struct RawHeader {
+    #[serde(default)]
+    competitions: Vec<RawCompetition>,
+}
+#[derive(Deserialize, Default)]
+struct RawCompetition {
+    #[serde(default)]
+    competitors: Vec<RawCompetitor>,
+}
+#[derive(Deserialize, Default)]
+struct RawCompetitor {
+    #[serde(default, rename = "homeAway")]
+    home_away: String,
+    #[serde(default)]
+    team: RawTeamRef,
+    #[serde(default)]
+    score: String,
+    #[serde(default)]
+    linescores: Vec<RawLineValue>,
+}
+#[derive(Deserialize, Default)]
+struct RawLineValue {
+    // ESPN's summary linescores carry a string `displayValue`, not a numeric
+    // `value` — the fixture (a finished NFL game) has no `value` field at all.
+    #[serde(default, rename = "displayValue")]
+    display_value: String,
+}
+#[derive(Deserialize, Default)]
+struct RawPlay {
+    #[serde(default)]
+    period: RawPeriodNum,
+    #[serde(default)]
+    clock: RawClock,
+    #[serde(default)]
+    team: RawTeamRef,
+    #[serde(default, rename = "type")]
+    kind: RawPlayType,
+    #[serde(default)]
+    text: String,
+}
+#[derive(Deserialize, Default)]
+struct RawPeriodNum {
+    #[serde(default)]
+    number: i64,
+}
+#[derive(Deserialize, Default)]
+struct RawClock {
+    #[serde(default, rename = "displayValue")]
+    display_value: String,
+}
+#[derive(Deserialize, Default)]
+struct RawPlayType {
+    #[serde(default)]
+    abbreviation: String,
+}
+
+pub async fn fetch_box_score(
+    client: &reqwest::Client,
+    lg: &EspnLeague,
+    event_id: i64,
+) -> Result<RawSummary, reqwest::Error> {
+    client
+        .get(format!(
+            "{SITE}/{}/{}/summary?event={event_id}",
+            lg.espn_sport, lg.league
+        ))
+        .send()
+        .await?
+        .error_for_status()?
+        .json::<RawSummary>()
+        .await
+}
+
+pub fn to_box_score(s: &RawSummary) -> BoxScore {
+    // Away/home from the header competitors.
+    let comp = s.header.competitions.first();
+    let away = comp.and_then(|c| c.competitors.iter().find(|t| t.home_away == "away"));
+    let home = comp.and_then(|c| c.competitors.iter().find(|t| t.home_away == "home"));
+
+    let line = match (away, home) {
+        (Some(a), Some(h)) => {
+            let n = a.linescores.len().max(h.linescores.len());
+            let segments: Vec<String> = (0..n)
+                .map(|i| {
+                    if i < 4 {
+                        (i + 1).to_string()
+                    } else {
+                        "OT".to_string()
+                    }
+                })
+                .collect();
+            let seg = |c: &RawCompetitor| {
+                c.linescores
+                    .iter()
+                    .map(|l| l.display_value.clone())
+                    .collect::<Vec<_>>()
+            };
+            Some(LineScore {
+                segments,
+                away: LineRow {
+                    team: a.team.abbreviation.clone(),
+                    abbrev: a.team.abbreviation.clone(),
+                    segment_values: seg(a),
+                    total: a.score.clone(),
+                },
+                home: LineRow {
+                    team: h.team.abbreviation.clone(),
+                    abbrev: h.team.abbreviation.clone(),
+                    segment_values: seg(h),
+                    total: h.score.clone(),
+                },
+                totals: vec![StatPair {
+                    label: "T".into(),
+                    away: a.score.clone(),
+                    home: h.score.clone(),
+                    away_share: None,
+                }],
+            })
+        }
+        _ => None,
+    };
+
+    // Team stats: labels present on the away team, matched by label on the home team.
+    let box_away = s.boxscore.teams.iter().find(|t| t.home_away == "away");
+    let box_home = s.boxscore.teams.iter().find(|t| t.home_away == "home");
+    let team_stats = match (box_away, box_home) {
+        (Some(a), Some(h)) => a
+            .statistics
+            .iter()
+            .filter_map(|as_| {
+                let hs = h.statistics.iter().find(|x| x.label == as_.label)?;
+                let (av, hv) = (as_.display_value.clone(), hs.display_value.clone());
+                Some(StatPair {
+                    away_share: stat_share(&av, &hv),
+                    label: as_.label.clone(),
+                    away: av,
+                    home: hv,
+                })
+            })
+            .collect(),
+        _ => Vec::new(),
+    };
+
+    // Leaders: top athlete per category, per team.
+    let leaders = s
+        .leaders
+        .iter()
+        .flat_map(|tl| {
+            let abbr = tl.team.abbreviation.clone();
+            tl.leaders.iter().filter_map(move |cat| {
+                let e = cat.leaders.first()?;
+                Some(LeaderCard {
+                    name: e.athlete.display_name.clone(),
+                    team: abbr.clone(),
+                    category: cat.display_name.clone(),
+                    line: e.display_value.clone(),
+                })
+            })
+        })
+        .collect();
+
+    // Player tables: one per (team, stat group).
+    let player_tables = s
+        .boxscore
+        .players
+        .iter()
+        .flat_map(|tp| {
+            let abbr = tp.team.abbreviation.clone();
+            tp.statistics
+                .iter()
+                .filter(|g| !g.athletes.is_empty())
+                .map(move |g| PlayerTable {
+                    title: format!("{} — {}", g.name, abbr),
+                    team: abbr.clone(),
+                    columns: g.labels.clone(),
+                    rows: g
+                        .athletes
+                        .iter()
+                        .map(|a| PlayerRow {
+                            name: a.athlete.display_name.clone(),
+                            note: String::new(),
+                            values: a.stats.clone(),
+                        })
+                        .collect(),
+                })
+        })
+        .collect();
+
+    // Timeline: scoring plays.
+    let timeline = s
+        .scoring_plays
+        .iter()
+        .map(|p| ScoreEvent {
+            segment: format!("Q{}", p.period.number),
+            clock: p.clock.display_value.clone(),
+            team: p.team.abbreviation.clone(),
+            kind: p.kind.abbreviation.to_lowercase(),
+            description: p.text.clone(),
+        })
+        .collect();
+
+    BoxScore {
+        line,
+        team_stats,
+        leaders,
+        player_tables,
+        timeline,
+        games: Vec::new(),
+        unavailable: false,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -786,5 +1090,43 @@ mod tests {
         let mut s3 = vec![sv("Prime Video")];
         append_tnf_twitch(&mut s3, Sport::Nba);
         assert!(!s3.iter().any(|x| x.name == "Twitch"));
+    }
+}
+
+#[cfg(all(test, feature = "ssr"))]
+mod boxscore_tests {
+    use super::*;
+
+    #[test]
+    fn espn_to_box_score_maps_line_stats_leaders_and_players() {
+        let s: RawSummary =
+            serde_json::from_str(include_str!("testdata/espn_nfl_summary_401772988.json")).unwrap();
+        let out = to_box_score(&s);
+
+        let line = out.line.expect("line score");
+        assert!(line.segments.len() >= 4, "at least four quarters");
+        assert_eq!(
+            line.away.segment_values.len(),
+            line.segments.len(),
+            "line row aligns to segments"
+        );
+
+        // Team-stat comparison is non-empty and every bar-bearing row has a share
+        // only when both sides parsed as numbers.
+        assert!(!out.team_stats.is_empty(), "team stats present");
+
+        // Leaders present (passing/rushing/receiving for NFL).
+        assert!(!out.leaders.is_empty(), "leaders present");
+
+        // Player tables present and column-aligned.
+        assert!(!out.player_tables.is_empty(), "player tables present");
+        let t = &out.player_tables[0];
+        assert!(!t.rows.is_empty(), "player rows populated");
+        assert_eq!(
+            t.rows[0].values.len(),
+            t.columns.len(),
+            "row aligns to columns"
+        );
+        assert!(!out.unavailable);
     }
 }

@@ -760,6 +760,30 @@ pub async fn box_score(sport: crate::types::Sport, id: i64) -> crate::types::Box
                 true,
             ),
         },
+        crate::types::Sport::Nfl => {
+            match crate::espn::fetch_box_score(&HTTP, &crate::espn::NFL, id).await {
+                Ok(s) => (crate::espn::to_box_score(&s), false),
+                Err(_) => (
+                    crate::types::BoxScore {
+                        unavailable: true,
+                        ..Default::default()
+                    },
+                    true,
+                ),
+            }
+        }
+        crate::types::Sport::Nba => {
+            match crate::espn::fetch_box_score(&HTTP, &crate::espn::NBA, id).await {
+                Ok(s) => (crate::espn::to_box_score(&s), false),
+                Err(_) => (
+                    crate::types::BoxScore {
+                        unavailable: true,
+                        ..Default::default()
+                    },
+                    true,
+                ),
+            }
+        }
         _ => (crate::types::BoxScore::default(), false),
     };
     BOX_SCORES
