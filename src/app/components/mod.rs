@@ -1,5 +1,6 @@
 //! Reusable UI components shared across pages.
 
+pub(crate) mod boxscore;
 pub(crate) mod calendar;
 pub(crate) mod footer;
 pub(crate) mod header;
@@ -8,6 +9,7 @@ pub(crate) mod standings;
 pub(crate) mod subscribe;
 pub(crate) mod toggles;
 
+pub(crate) use boxscore::*;
 pub(crate) use calendar::*;
 pub(crate) use footer::*;
 pub(crate) use header::*;

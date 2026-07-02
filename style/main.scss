@@ -3015,3 +3015,38 @@ a.bk-team-link {
     display: inline;
   }
 }
+
+.boxscore {
+  .boxscore-body { display: flex; flex-direction: column; gap: 1rem; margin-top: 0.75rem; }
+  .boxscore-subhead { font-size: 0.85rem; text-transform: uppercase; letter-spacing: 0.03em; opacity: 0.7; margin: 0 0 0.35rem; }
+
+  .ls-wrap, .ps-wrap { overflow-x: auto; }
+  table.linescore, table.player-stats { border-collapse: collapse; width: 100%; font-variant-numeric: tabular-nums; }
+  table.linescore th, table.linescore td, table.player-stats th, table.player-stats td {
+    padding: 0.2rem 0.45rem; text-align: right; white-space: nowrap;
+  }
+  table.linescore .ls-team, table.player-stats .ps-name { text-align: left; }
+  table.linescore .ls-total { font-weight: 600; border-left: 1px solid var(--border, #333); }
+  .ps-note { opacity: 0.55; font-weight: 400; margin-left: 0.3rem; font-size: 0.8em; }
+
+  .stat-compare { display: flex; flex-direction: column; gap: 0.35rem; }
+  .cmp-row { display: grid; grid-template-columns: 3rem 1fr 3rem; align-items: center; gap: 0.5rem; font-variant-numeric: tabular-nums; }
+  .cmp-away { text-align: right; }
+  .cmp-home { text-align: left; }
+  .cmp-mid { display: flex; flex-direction: column; gap: 0.2rem; }
+  .cmp-label { text-align: center; font-size: 0.8rem; opacity: 0.75; }
+  .cmp-bars { display: flex; height: 4px; border-radius: 2px; overflow: hidden; background: var(--border, #333); }
+  .cmp-bar-away { background: var(--accent, #4a9); }
+  .cmp-bar-home { background: var(--accent-2, #a54); }
+
+  .leaders { display: flex; flex-wrap: wrap; gap: 0.5rem; }
+  .leader-card { display: flex; flex-direction: column; gap: 0.1rem; padding: 0.4rem 0.6rem; border: 1px solid var(--border, #333); border-radius: 6px; min-width: 8rem; }
+  .leader-cat { font-size: 0.72rem; text-transform: uppercase; opacity: 0.6; }
+  .leader-team { opacity: 0.6; }
+  .leader-line { font-variant-numeric: tabular-nums; }
+
+  .tl-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 0.25rem; }
+  .tl-row { display: grid; grid-template-columns: 4rem 3rem 1fr; gap: 0.5rem; }
+  .tl-when { opacity: 0.6; }
+  .player-tables { display: flex; flex-direction: column; gap: 0.75rem; }
+}
