@@ -1863,6 +1863,16 @@ a {
   margin-top: -0.6rem;
 }
 
+// On the event page the link sits directly under the title, with no meta/venue
+// line to hug — so cancel the pull-up (meant for the match page) that would
+// otherwise drag it up into the heading. The title's own 0.2rem bottom margin
+// leaves the right gap. Higher specificity than `.event-watch` above, so it also
+// covers a watch link that stands alone when there's no event-page link.
+.detail-title + .event-link,
+.event-title-head + .event-link {
+  margin-top: 0;
+}
+
 .detail-meta {
   display: flex;
   align-items: center;
