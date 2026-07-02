@@ -3,18 +3,18 @@
 //! the single place it's drawn — so all sports look identical. The structure and
 //! the values both always render, so column/card sizes are fixed from first paint;
 //! the spoiler values are hidden via CSS `visibility` until scores are revealed, so
-//! revealing never shifts the layout. A per-section "show stats" button reveals
-//! just this box score, independent of the global scores toggle.
+//! revealing never shifts the layout. The "Game stats" title is a toggle button
+//! (same pattern as the standings) that reveals it; the global scores toggle
+//! reveals it too.
 use crate::app::*;
 use crate::types::{BoxScore, LeaderCard, LineRow, LineScore, PlayerTable, ScoreEvent, StatPair};
 
-/// The game-stats section, rendered below the standings. `reveal` is the match's
-/// spoiler state (global scores toggle or this match individually revealed); the
-/// header also carries its own "show stats" reveal (`key`-scoped, persisted) so
-/// the values can be shown without revealing the rest of the match. Renders
-/// nothing when the box score is empty.
+/// The game-stats section, rendered below the standings. The "Game stats" title
+/// toggles a `key`-scoped, persisted section reveal (and the global scores toggle
+/// reveals it too) — exactly like the standings section. Renders nothing when the
+/// box score is empty.
 #[component]
-pub(crate) fn BoxScoreView(box_score: BoxScore, reveal: Memo<bool>, key: String) -> impl IntoView {
+pub(crate) fn BoxScoreView(box_score: BoxScore, key: String) -> impl IntoView {
     // Nothing to show at all → render nothing (the caller also guards, but be safe).
     let empty = box_score.line.is_none()
         && box_score.leaders.is_empty()
@@ -24,10 +24,9 @@ pub(crate) fn BoxScoreView(box_score: BoxScore, reveal: Memo<bool>, key: String)
     if empty {
         return ().into_any();
     }
-    // Per-section reveal, separate from the global scores toggle and the match's
-    // own reveal. `shown` = any of them.
-    let (section_revealed, toggle) = section_reveal(format!("boxscore:{key}"));
-    let shown = move || reveal.get() || section_revealed.get();
+    // Click the "Game stats" title to reveal/hide — same section-reveal machinery
+    // as the standings (also revealed by the global scores toggle).
+    let (revealed, toggle) = section_reveal(format!("boxscore:{key}"));
     let BoxScore {
         line,
         leaders,
@@ -38,27 +37,22 @@ pub(crate) fn BoxScoreView(box_score: BoxScore, reveal: Memo<bool>, key: String)
     } = box_score;
     view! {
         <section class="detail-section boxscore">
-            <div class="boxscore-head">
-                <h2 class="section-title">"Game stats"</h2>
-                // The button hides once the match is already revealed (global scores
-                // on, or this match revealed) — nothing left for it to do.
-                {move || {
-                    (!reveal.get())
-                        .then(move || {
-                            view! {
-                                <button class="toggle detail-scores-toggle" on:click=toggle>
-                                    {move || {
-                                        if section_revealed.get() { "hide stats" } else { "show stats" }
-                                    }}
-                                </button>
-                            }
-                        })
-                }}
+            <div class="section-head">
+                <button
+                    class="section-title section-toggle"
+                    class:on=move || revealed.get()
+                    title=move || if revealed.get() { "Hide the game stats" } else { "Show the game stats" }
+                    aria-expanded=move || if revealed.get() { "true" } else { "false" }
+                    on:click=toggle
+                >
+                    "Game stats"
+                </button>
+                {move || (!revealed.get()).then(|| view! { <span class="section-hint">"hidden"</span> })}
             </div>
             // Structure AND values always render (so widths/heights are fixed); the
             // `.revealed` class flips the values' CSS visibility, so revealing fills
             // them in with zero layout shift.
-            <div class="boxscore-body" class:revealed=shown>
+            <div class="boxscore-body" class:revealed=move || revealed.get()>
                 {line.map(|l| view! { <LineScoreGrid line=l /> })}
                 {(!leaders.is_empty()).then(|| view! { <Leaders leaders=leaders /> })}
                 {(!team_stats.is_empty()).then(|| view! { <StatComparison stats=team_stats /> })}
