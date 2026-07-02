@@ -37,10 +37,7 @@ pub(crate) fn AboutPage() -> impl IntoView {
                 " means you're following it."
             </p>
             <ul>
-                <li>
-                    <span class="kbd">"☆"</span>
-                    " on a match — just that match."
-                </li>
+                <li><span class="kbd">"☆"</span> " on a match — just that match."</li>
                 <li>
                     <span class="kbd">"☆"</span>
                     " by a sport tab or in an event's header — every match in that sport or "

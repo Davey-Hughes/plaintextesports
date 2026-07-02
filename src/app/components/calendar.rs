@@ -217,11 +217,7 @@ pub(crate) fn CalendarPicker() -> impl IntoView {
                         view! {
                             <div class="calendar">
                                 <div class="cal-head">
-                                    <button
-                                        class="cal-nav"
-                                        aria-label="Previous month"
-                                        on:click=prev_month
-                                    >
+                                    <button class="cal-nav" aria-label="Previous month" on:click=prev_month>
                                         "‹"
                                     </button>
                                     <span class="cal-title">
@@ -230,11 +226,7 @@ pub(crate) fn CalendarPicker() -> impl IntoView {
                                             format!("{} {y}", month_name(m))
                                         }}
                                     </span>
-                                    <button
-                                        class="cal-nav"
-                                        aria-label="Next month"
-                                        on:click=next_month
-                                    >
+                                    <button class="cal-nav" aria-label="Next month" on:click=next_month>
                                         "›"
                                     </button>
                                 </div>

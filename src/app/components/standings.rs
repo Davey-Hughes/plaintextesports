@@ -19,31 +19,15 @@ pub(crate) fn F1StandingsView(standings: F1Standings, season: i64, round: i64) -
             .into_iter()
             .map(|r| {
                 let (name, con, cabbr, pts, flag, clogo) = if show {
-                    (
-                        r.name,
-                        r.detail,
-                        r.constructor_abbrev,
-                        r.points,
-                        r.flag,
-                        r.constructor_logo,
-                    )
+                    (r.name, r.detail, r.constructor_abbrev, r.points, r.flag, r.constructor_logo)
                 } else {
-                    (
-                        String::new(),
-                        String::new(),
-                        String::new(),
-                        String::new(),
-                        String::new(),
-                        String::new(),
-                    )
+                    (String::new(), String::new(), String::new(), String::new(), String::new(), String::new())
                 };
                 view! {
                     <li class="f1-standing-row">
                         <span class="f1-pos">{r.pos}</span>
                         <span class="f1-standing-name">{team_logo(&flag, "f1-flag")}{name}</span>
-                        <span class="f1-standing-con">
-                            {clogo_icon(&clogo)}{team_cell(con, cabbr)}
-                        </span>
+                        <span class="f1-standing-con">{clogo_icon(&clogo)}{team_cell(con, cabbr)}</span>
                         <span class="f1-standing-pts">{pts}</span>
                     </li>
                 }
@@ -61,9 +45,7 @@ pub(crate) fn F1StandingsView(standings: F1Standings, season: i64, round: i64) -
                 view! {
                     <li class="f1-standing-row f1-standing-row-con">
                         <span class="f1-pos">{r.pos}</span>
-                        <span class="f1-standing-name">
-                            {clogo_icon(&clogo)}{team_cell(name, cabbr)}
-                        </span>
+                        <span class="f1-standing-name">{clogo_icon(&clogo)}{team_cell(name, cabbr)}</span>
                         <span class="f1-standing-pts">{pts}</span>
                     </li>
                 }
@@ -91,11 +73,7 @@ pub(crate) fn F1StandingsView(standings: F1Standings, season: i64, round: i64) -
             <button class="f1-session-head" on:click=toggle>
                 <span class="f1-session-toggle">
                     {move || {
-                        if revealed.get() {
-                            "hide standings".to_string()
-                        } else {
-                            "show standings".to_string()
-                        }
+                        if revealed.get() { "hide standings".to_string() } else { "show standings".to_string() }
                     }}
                 </span>
             </button>
@@ -143,9 +121,7 @@ pub(crate) fn MotorStandingsView(standings: MotorStandings, league: String) -> i
                                 view! {
                                     <li class="f1-standing-row f1-standing-row-con">
                                         <span class="f1-pos">{r.pos}</span>
-                                        <span class="f1-standing-name">
-                                            {team_logo(&flag, "f1-flag")}{name}
-                                        </span>
+                                        <span class="f1-standing-name">{team_logo(&flag, "f1-flag")}{name}</span>
                                         <span class="f1-standing-pts">{pts}</span>
                                     </li>
                                 }
@@ -175,11 +151,7 @@ pub(crate) fn MotorStandingsView(standings: MotorStandings, league: String) -> i
             <button class="f1-session-head" on:click=toggle>
                 <span class="f1-session-toggle">
                     {move || {
-                        if revealed.get() {
-                            "hide standings".to_string()
-                        } else {
-                            "show standings".to_string()
-                        }
+                        if revealed.get() { "hide standings".to_string() } else { "show standings".to_string() }
                     }}
                 </span>
             </button>
