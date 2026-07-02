@@ -1,3 +1,5 @@
+# syntax=docker/dockerfile:1
+
 # Build stage: Rust nightly + cargo-leptos + dart-sass
 FROM rustlang/rust:nightly-alpine AS builder
 
@@ -12,7 +14,20 @@ RUN curl --proto '=https' --tlsv1.3 -LsSf https://github.com/leptos-rs/cargo-lep
 WORKDIR /work
 COPY . .
 
-RUN cargo leptos build --release -vv
+# Compile with BuildKit cache mounts: the cargo registry, git deps, and the
+# target/ dir persist across image builds, so only changed crates recompile
+# (a plain build re-downloads and re-compiles every dependency every time).
+# Cache mounts are build-time only and are NOT baked into the image layer, so
+# the outputs are copied out to /out in this same step to survive into the image
+# (the runner stage COPYs from /out, not from target/).
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/usr/local/cargo/git \
+    --mount=type=cache,target=/work/target \
+    cargo leptos build --release -vv && \
+    mkdir -p /out && \
+    cp target/release/plaintextesports /out/ && \
+    cp target/release/hash.txt /out/ && \
+    cp -r target/site /out/site
 
 # Runtime stage
 FROM alpine:latest AS runner
@@ -21,11 +36,11 @@ RUN apk add --no-cache ca-certificates
 
 WORKDIR /app
 
-COPY --from=builder /work/target/release/plaintextesports /app/
-COPY --from=builder /work/target/site /app/site
+COPY --from=builder /out/plaintextesports /app/
+COPY --from=builder /out/site /app/site
 # With hash-files enabled, the server reads the content hashes from hash.txt
 # next to the binary (current_exe dir), so it must sit alongside /app/plaintextesports.
-COPY --from=builder /work/target/release/hash.txt /app/
+COPY --from=builder /out/hash.txt /app/
 
 RUN mkdir -p /app/data
 
