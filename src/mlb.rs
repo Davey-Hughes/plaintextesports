@@ -952,12 +952,14 @@ pub async fn fetch_box_score(
         .get(format!("{BASE}/game/{game_pk}/linescore"))
         .send()
         .await?
+        .error_for_status()?
         .json::<RawLinescore>()
         .await?;
     let bs = client
         .get(format!("{BASE}/game/{game_pk}/boxscore"))
         .send()
         .await?
+        .error_for_status()?
         .json::<RawBoxscore>()
         .await?;
     Ok((ls, bs))
@@ -1197,6 +1199,28 @@ mod boxscore_tests {
             .iter()
             .any(|t| t.title.starts_with("Pitching")));
         assert!(!out.unavailable);
+
+        // Verify rows are actually populated — guards against wrong player-key format.
+        let away_bat = &out.player_tables[0]; // batting_table(away) is index 0
+        assert!(
+            !away_bat.rows.is_empty(),
+            "away batting table must have player rows"
+        );
+        assert_eq!(
+            away_bat.rows[0].values.len(),
+            7,
+            "batting row must carry 7 values"
+        );
+        let away_pit = &out.player_tables[1];
+        assert!(
+            !away_pit.rows.is_empty(),
+            "away pitching table must have pitcher rows"
+        );
+        assert_eq!(
+            away_pit.rows[0].values.len(),
+            7,
+            "pitching row must carry 7 values"
+        );
     }
 }
 
