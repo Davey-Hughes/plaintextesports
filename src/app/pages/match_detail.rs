@@ -517,7 +517,6 @@ pub(crate) fn detail_view(d: MatchDetail, results: Resource<MatchResults>) -> im
             // Spoiler-gated; absent for upcoming / non-result sessions.
             {move || {
                 let motor_key = motor_reveal_key.clone();
-                let boxscore_key = muid.clone();
                 view! {
                     // Transition, not Suspense: `results` is keyed on tz/hour24 too,
                     // so a clock/timezone toggle refetches it in place — keep the
@@ -531,7 +530,6 @@ pub(crate) fn detail_view(d: MatchDetail, results: Resource<MatchResults>) -> im
                     }>
                         {move || {
                             let motor_key = motor_key.clone();
-                            let boxscore_key = boxscore_key.clone();
                             results
                                 .get()
                                 .map(move |r| {
@@ -552,10 +550,7 @@ pub(crate) fn detail_view(d: MatchDetail, results: Resource<MatchResults>) -> im
                                     } else {
                                         ().into_any()
                                     };
-                                    let box_view = r.box_score.map(|bs| {
-                                        view! { <BoxScoreView box_score=bs key=boxscore_key.clone() /> }
-                                    });
-                                    view! { {result_view}{box_view} }
+                                    result_view
                                 })
                         }}
                     </Transition>
@@ -595,6 +590,17 @@ pub(crate) fn detail_view(d: MatchDetail, results: Resource<MatchResults>) -> im
                 .then(|| view! { <EventStageCombo event=event swiss_grid=RwSignal::new(true) /> })}
             // MLB has no per-event standings; show the two teams' division tables.
             {(!stages.is_empty()).then(|| view! { <EventStages stages=stages /> })}
+            // Game stats (box score) — shown automatically, below the standings. On
+            // its own resource (like the results above) so a slow MLB API never
+            // blocks the header; a tz/hour24 toggle refetches it in place.
+            <Transition>
+                {move || {
+                    results
+                        .get()
+                        .and_then(|r| r.box_score)
+                        .map(|bs| view! { <BoxScoreView box_score=bs /> })
+                }}
+            </Transition>
         </article>
     }
 }
