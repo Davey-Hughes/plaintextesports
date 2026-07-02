@@ -458,17 +458,13 @@ pub(crate) fn StandingsTable(
                 <button
                     class="section-title section-toggle"
                     class:on=move || revealed.get()
-                    title=move || {
-                        if revealed.get() { "Hide the standings" } else { "Show the standings" }
-                    }
+                    title=move || if revealed.get() { "Hide the standings" } else { "Show the standings" }
                     aria-expanded=move || if revealed.get() { "true" } else { "false" }
                     on:click=toggle
                 >
                     "Standings"
                 </button>
-                {move || {
-                    (!revealed.get()).then(|| view! { <span class="section-hint">"hidden"</span> })
-                }}
+                {move || (!revealed.get()).then(|| view! { <span class="section-hint">"hidden"</span> })}
             </div>
             <table class="standings" class:placeholder=move || !revealed.get()>
                 <thead>
@@ -738,7 +734,9 @@ pub(crate) fn SwissBracket(
             let scores = st >= 2 && known_a && known_b;
             let score_view = move |s: Option<i64>| -> leptos::prelude::AnyView {
                 if scores {
-                    view! { <span class="sw-score">{s.map(|v| v.to_string()).unwrap_or_default()}</span> }
+                    view! {
+                        <span class="sw-score">{s.map(|v| v.to_string()).unwrap_or_default()}</span>
+                    }
                     .into_any()
                 } else if max >= 2 {
                     view! {
@@ -749,9 +747,7 @@ pub(crate) fn SwissBracket(
                     .into_any()
                 } else {
                     view! {
-                        <span class="sw-score sw-unplayed" title="Not played yet">
-                            "-"
-                        </span>
+                        <span class="sw-score sw-unplayed" title="Not played yet">"-"</span>
                     }
                     .into_any()
                 }
@@ -806,22 +802,8 @@ pub(crate) fn SwissBracket(
                 .into_any()
             };
             view! {
-                {row(
-                    known_a,
-                    scores && winner == "a",
-                    scores && winner == "b",
-                    team_a.clone(),
-                    sa,
-                    a_record.clone(),
-                )}
-                {row(
-                    known_b,
-                    scores && winner == "b",
-                    scores && winner == "a",
-                    team_b.clone(),
-                    sb,
-                    b_record.clone(),
-                )}
+                {row(known_a, scores && winner == "a", scores && winner == "b", team_a.clone(), sa, a_record.clone())}
+                {row(known_b, scores && winner == "b", scores && winner == "a", team_b.clone(), sb, b_record.clone())}
             }
             .into_any()
         };
@@ -952,9 +934,7 @@ pub(crate) fn SwissBracket(
                 >
                     "Bracket"
                 </button>
-                {move || {
-                    (!bracket_on()).then(|| view! { <span class="section-hint">"hidden"</span> })
-                }}
+                {move || (!bracket_on()).then(|| view! { <span class="section-hint">"hidden"</span> })}
             </div>
             <div class="swiss-scroll">
                 <div class="swiss" class:sw-tracing=move || hovered.with(|h| !h.is_empty())>
@@ -1223,16 +1203,17 @@ pub(crate) fn Bracket(
                             >
                                 {move || {
                                     let st = stage();
-                                    let known_a = if f0.is_some() {
-                                        fed_shown(f0)
-                                    } else {
-                                        st >= 1
-                                    };
-                                    let known_b = if f1.is_some() {
-                                        fed_shown(f1)
-                                    } else {
-                                        st >= 1
-                                    };
+                                    // A fed slot is known only while its feeder's
+                                    // score is shown (the team comes from that
+                                    // result); a first-round slot is known once the
+                                    // match itself is revealed. So hiding a feeder's
+                                    // score makes the fed team unknown again, and a
+                                    // played match can't show its score until both
+                                    // of its teams are known. This cascades up the
+                                    // bracket: hide a semifinal score and the final's
+                                    // fed side goes blank.
+                                    let known_a = if f0.is_some() { fed_shown(f0) } else { st >= 1 };
+                                    let known_b = if f1.is_some() { fed_shown(f1) } else { st >= 1 };
                                     let scores = st >= 2 && known_a && known_b;
                                     let show_a = is_real(&label_a) && known_a;
                                     let show_b = is_real(&label_b) && known_b;
@@ -1250,27 +1231,18 @@ pub(crate) fn Bracket(
                                     } else {
                                         "bk-row"
                                     };
+                                    // When a score is hidden, show whether there's
+                                    // a result waiting — a played match gets a
+                                    // filled dot you can reveal; one not yet played
+                                    // gets a faint dash (nothing to reveal).
                                     let score_view = move |s: Option<i64>| {
                                         if scores {
-                                            // A fed slot is known only while its feeder's
-                                            // score is shown (the team comes from that
-                                            // result); a first-round slot is known once the
-                                            // match itself is revealed. So hiding a feeder's
-                                            // score makes the fed team unknown again, and a
-                                            // played match can't show its score until both
-                                            // of its teams are known. This cascades up the
-                                            // bracket: hide a semifinal score and the final's
-                                            // fed side goes blank.
-                                            // When a score is hidden, show whether there's
-                                            // a result waiting — a played match gets a
-                                            // filled dot you can reveal; one not yet played
-                                            // gets a faint dash (nothing to reveal).
                                             view! {
                                                 <span class="bk-score">
                                                     {s.map(|v| v.to_string()).unwrap_or_default()}
                                                 </span>
                                             }
-                                                .into_any()
+                                            .into_any()
                                         } else if max >= 2 {
                                             view! {
                                                 <span
@@ -1280,45 +1252,50 @@ pub(crate) fn Bracket(
                                                     "●"
                                                 </span>
                                             }
-                                                .into_any()
+                                            .into_any()
                                         } else {
                                             view! {
-                                                <span class="bk-score bk-unplayed" title="Not played yet">
+                                                <span
+                                                    class="bk-score bk-unplayed"
+                                                    title="Not played yet"
+                                                >
                                                     "-"
                                                 </span>
                                             }
-                                                .into_any()
+                                            .into_any()
                                         }
                                     };
                                     let row_a = if show_a {
                                         view! {
                                             <div class=cls_a>
-                                                {team_cell(label_a.clone())} {score_view(sa)}
+                                                {team_cell(label_a.clone())}
+                                                {score_view(sa)}
                                             </div>
                                         }
-                                            .into_any()
+                                        .into_any()
                                     } else {
                                         view! {
                                             <div class="bk-row bk-hidden">
                                                 <span class="bk-team">"—"</span>
                                             </div>
                                         }
-                                            .into_any()
+                                        .into_any()
                                     };
                                     let row_b = if show_b {
                                         view! {
                                             <div class=cls_b>
-                                                {team_cell(label_b.clone())} {score_view(sb)}
+                                                {team_cell(label_b.clone())}
+                                                {score_view(sb)}
                                             </div>
                                         }
-                                            .into_any()
+                                        .into_any()
                                     } else {
                                         view! {
                                             <div class="bk-row bk-hidden">
                                                 <span class="bk-team">"—"</span>
                                             </div>
                                         }
-                                            .into_any()
+                                        .into_any()
                                     };
                                     view! {
                                         {row_a}
@@ -1416,9 +1393,7 @@ pub(crate) fn Bracket(
                 >
                     "Bracket"
                 </button>
-                {move || {
-                    (!bracket_on()).then(|| view! { <span class="section-hint">"hidden"</span> })
-                }}
+                {move || (!bracket_on()).then(|| view! { <span class="section-hint">"hidden"</span> })}
             </div>
             {body}
         </section>

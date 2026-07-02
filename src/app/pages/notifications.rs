@@ -270,9 +270,7 @@ pub(crate) fn TimerPicker(
                                     on:click=move |_| remove_lead(ms)
                                 >
                                     {fmt_lead(ms)}
-                                    <span class="timer-x" aria-hidden="true">
-                                        "×"
-                                    </span>
+                                    <span class="timer-x" aria-hidden="true">"×"</span>
                                 </button>
                             }
                         })
@@ -312,7 +310,8 @@ pub(crate) fn TimerPicker(
                                             }
                                         })
                                         .collect_view()
-                                }} <span class="timer-custom-label">"or"</span>
+                                }}
+                                <span class="timer-custom-label">"or"</span>
                                 <input
                                     class="timer-num"
                                     type="number"
@@ -698,7 +697,8 @@ pub(crate) fn NotificationsPage() -> impl IntoView {
                         <p class="notif-note">
                             "The global reminder times for every subscription and starred match. "
                             "Any one of them can override these with its own "
-                            <strong>"custom"</strong> " timer."
+                            <strong>"custom"</strong>
+                            " timer."
                         </p>
                         <hr class="notif-divider" />
                         <TimerPicker
@@ -715,7 +715,8 @@ pub(crate) fn NotificationsPage() -> impl IntoView {
                                 let mut keys: Vec<String> = subscribed.get().into_iter().collect();
                                 keys.sort();
                                 keys.into_iter().map(|k| view! { <SubRow key=k /> }).collect_view()
-                            }} // Transition (not Suspense) so re-fetching on a 12h/24h
+                            }}
+                            // Transition (not Suspense) so re-fetching on a 12h/24h
                             // switch keeps the current rows visible instead of
                             // blanking the list (which made the page flash).
                             <Transition>
@@ -775,8 +776,10 @@ pub(crate) fn NotificationsPage() -> impl IntoView {
                         // after a copy doesn't shift the layout.
                         <div class="notif-io-copy-status">{move || copy_hint.get()}</div>
                         <p class="notif-note">
-                            "Or paste a code here, then " <strong>"add"</strong>
-                            " it to your current set or " <strong>"override"</strong>
+                            "Or paste a code here, then "
+                            <strong>"add"</strong>
+                            " it to your current set or "
+                            <strong>"override"</strong>
                             " to replace everything."
                         </p>
                         <input

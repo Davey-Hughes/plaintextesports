@@ -17,40 +17,30 @@ pub(crate) fn SiteFooter() -> impl IntoView {
                             .and_then(Result::ok)
                             .map(|s| {
                                 let mut items: Vec<AnyView> = Vec::new();
+                                // The copyright links out when a URL is configured.
                                 if let Some(c) = s.copyright {
                                     let url = s.copyright_url.filter(|u| !u.trim().is_empty());
-                                    items
-                                        .push(
-                                            match url {
-                                                Some(u) => {
-                                                    // The copyright links out when a URL is configured.
-                                                    view! {
-                                                        <a href=u target="_blank" rel="noreferrer">
-                                                            {c}
-                                                        </a>
-                                                    }
-                                                        .into_any()
-                                                }
-                                                None => view! { <span>{c}</span> }.into_any(),
-                                            },
-                                        );
+                                    items.push(match url {
+                                        Some(u) => {
+                                            view! { <a href=u target="_blank" rel="noreferrer">{c}</a> }
+                                                .into_any()
+                                        }
+                                        None => view! { <span>{c}</span> }.into_any(),
+                                    });
                                 }
                                 for l in s.links {
-                                    items
-                                        .push(
-                                            view! {
-                                                <a href=l.url target="_blank" rel="noreferrer">
-                                                    {l.label}
-                                                </a>
-                                            }
-                                                .into_any(),
-                                        );
+                                    items.push(
+                                        view! {
+                                            <a href=l.url target="_blank" rel="noreferrer">{l.label}</a>
+                                        }
+                                            .into_any(),
+                                    );
                                 }
+                                // `about` always precedes these, so every item gets
+                                // a leading separator.
                                 items
                                     .into_iter()
                                     .map(|it| {
-                                        // `about` always precedes these, so every item gets
-                                        // a leading separator.
                                         view! {
                                             <span class="sep">" · "</span>
                                             {it}

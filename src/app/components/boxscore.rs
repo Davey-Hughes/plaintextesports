@@ -41,17 +41,13 @@ pub(crate) fn BoxScoreView(box_score: BoxScore, key: String) -> impl IntoView {
                 <button
                     class="section-title section-toggle"
                     class:on=move || revealed.get()
-                    title=move || {
-                        if revealed.get() { "Hide the game stats" } else { "Show the game stats" }
-                    }
+                    title=move || if revealed.get() { "Hide the game stats" } else { "Show the game stats" }
                     aria-expanded=move || if revealed.get() { "true" } else { "false" }
                     on:click=toggle
                 >
                     "Game stats"
                 </button>
-                {move || {
-                    (!revealed.get()).then(|| view! { <span class="section-hint">"hidden"</span> })
-                }}
+                {move || (!revealed.get()).then(|| view! { <span class="section-hint">"hidden"</span> })}
             </div>
             // Structure AND values always render (so widths/heights are fixed); the
             // `.revealed` class flips the values' CSS visibility, so revealing fills
@@ -61,8 +57,7 @@ pub(crate) fn BoxScoreView(box_score: BoxScore, key: String) -> impl IntoView {
                 {(!leaders.is_empty()).then(|| view! { <Leaders leaders=leaders /> })}
                 {(!team_stats.is_empty()).then(|| view! { <StatComparison stats=team_stats /> })}
                 {(!timeline.is_empty()).then(|| view! { <ScoringTimeline events=timeline /> })}
-                {(!player_tables.is_empty())
-                    .then(|| view! { <PlayerStatTables tables=player_tables /> })}
+                {(!player_tables.is_empty()).then(|| view! { <PlayerStatTables tables=player_tables /> })}
             </div>
         </section>
     }
@@ -91,23 +86,13 @@ fn LineScoreGrid(line: LineScore) -> impl IntoView {
         let cells = r
             .segment_values
             .into_iter()
-            .map(|v| {
-                view! {
-                    <td>
-                        <span class="bx-spoiler">{v}</span>
-                    </td>
-                }
-            })
+            .map(|v| view! { <td><span class="bx-spoiler">{v}</span></td> })
             .collect_view();
         let tot = totals
             .iter()
             .map(|t| {
                 let v = if home { t.home.clone() } else { t.away.clone() };
-                view! {
-                    <td class="ls-total">
-                        <span class="bx-spoiler">{v}</span>
-                    </td>
-                }
+                view! { <td class="ls-total"><span class="bx-spoiler">{v}</span></td> }
             })
             .collect_view();
         // The team abbreviation isn't a spoiler — always shown.
@@ -129,7 +114,10 @@ fn LineScoreGrid(line: LineScore) -> impl IntoView {
                         {total_head}
                     </tr>
                 </thead>
-                <tbody>{row(away, &totals, false)} {row(home, &totals, true)}</tbody>
+                <tbody>
+                    {row(away, &totals, false)}
+                    {row(home, &totals, true)}
+                </tbody>
             </table>
         </div>
     }
@@ -150,14 +138,8 @@ fn StatComparison(stats: Vec<StatPair>) -> impl IntoView {
                     <span class="cmp-mid">
                         <span class="cmp-label">{s.label}</span>
                         <span class="cmp-bars">
-                            <span
-                                class="cmp-bar cmp-bar-away"
-                                style=format!("width:{away_share}%")
-                            ></span>
-                            <span
-                                class="cmp-bar cmp-bar-home"
-                                style=format!("width:{home_share}%")
-                            ></span>
+                            <span class="cmp-bar cmp-bar-away" style=format!("width:{away_share}%")></span>
+                            <span class="cmp-bar cmp-bar-home" style=format!("width:{home_share}%")></span>
                         </span>
                     </span>
                     <span class="cmp-val cmp-home bx-spoiler">{s.home}</span>
@@ -220,29 +202,24 @@ fn ScoringTimeline(events: Vec<ScoreEvent>) -> impl IntoView {
 
 #[component]
 fn PlayerStatTables(tables: Vec<PlayerTable>) -> impl IntoView {
-    let out =
-        tables
-            .into_iter()
-            .map(|t| {
-                // Column headers + player names/positions reserve the table shape; the
-                // stat values are the spoilers.
-                let head = t
-                    .columns
-                    .iter()
-                    .map(|c| view! { <th>{c.clone()}</th> })
-                    .collect_view();
-                let body = t
+    let out = tables
+        .into_iter()
+        .map(|t| {
+            // Column headers + player names/positions reserve the table shape; the
+            // stat values are the spoilers.
+            let head = t
+                .columns
+                .iter()
+                .map(|c| view! { <th>{c.clone()}</th> })
+                .collect_view();
+            let body = t
                 .rows
                 .into_iter()
                 .map(|r| {
                     let vals = r
                         .values
                         .into_iter()
-                        .map(|v| view! {
-                            <td>
-                                <span class="bx-spoiler">{v}</span>
-                            </td>
-                        })
+                        .map(|v| view! { <td><span class="bx-spoiler">{v}</span></td> })
                         .collect_view();
                     view! {
                         <tr>
@@ -252,23 +229,23 @@ fn PlayerStatTables(tables: Vec<PlayerTable>) -> impl IntoView {
                     }
                 })
                 .collect_view();
-                view! {
-                    <div class="player-table">
-                        <h3 class="boxscore-subhead">{t.title}</h3>
-                        <div class="ps-wrap">
-                            <table class="player-stats">
-                                <thead>
-                                    <tr>
-                                        <th class="ps-name"></th>
-                                        {head}
-                                    </tr>
-                                </thead>
-                                <tbody>{body}</tbody>
-                            </table>
-                        </div>
+            view! {
+                <div class="player-table">
+                    <h3 class="boxscore-subhead">{t.title}</h3>
+                    <div class="ps-wrap">
+                        <table class="player-stats">
+                            <thead>
+                                <tr>
+                                    <th class="ps-name"></th>
+                                    {head}
+                                </tr>
+                            </thead>
+                            <tbody>{body}</tbody>
+                        </table>
                     </div>
-                }
-            })
-            .collect_view();
+                </div>
+            }
+        })
+        .collect_view();
     view! { <div class="player-tables">{out}</div> }
 }
