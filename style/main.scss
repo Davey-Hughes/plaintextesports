@@ -355,9 +355,16 @@ a {
   cursor: pointer;
   opacity: 0.7;
 
-  &:hover {
-    opacity: 1;
-    color: var(--fg);
+  // Only brighten on a real pointer. On touch there's no hover, and a tap leaves
+  // `:hover` stuck on the button until you tap elsewhere — so it looks
+  // perpetually lit/"pressed". Gating it behind `hover: hover` lets a tap fall
+  // straight back to the resting state (the on-state signalling lives in the
+  // schedule freshness itself, not this button, so nothing is lost on touch).
+  @media (hover: hover) {
+    &:hover {
+      opacity: 1;
+      color: var(--fg);
+    }
   }
 
   .refresh-icon {
