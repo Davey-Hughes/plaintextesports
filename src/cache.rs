@@ -272,12 +272,18 @@ pub async fn live_streams_for(sport: Sport, id: i64) -> Vec<StreamView> {
     let yt_enabled =
         config().youtube_api_key.is_some() && (!yt_seed_idents.is_empty() || has_youtube_base);
 
+    // SOOP (Korean streaming) enrichment: opt-in, no key. Runs when there's a SOOP
+    // stream to mark live or a curated SOOP co-streamer to surface.
+    let soop_seeds = costreamer_seeds(&config().soop_costreamers, &league, sport);
+    let has_soop_base = base.iter().any(|s| crate::soop::bid_of(&s.url).is_some());
+    let soop_on = config().soop_enabled && (!soop_seeds.is_empty() || has_soop_base);
+
     // Twitch category discovery runs only for a live esports match with the sport
     // enabled — so an otherwise-inert match still triggers a scan when it's on.
     let discovery_on = matches!(status, MatchStatus::Live)
         && matches!(sport, Sport::Cs2 | Sport::Lol)
         && config().discovery_enabled(sport);
-    if base_logins.is_empty() && tw_seeds.is_empty() && !yt_enabled && !discovery_on {
+    if base_logins.is_empty() && tw_seeds.is_empty() && !yt_enabled && !discovery_on && !soop_on {
         return base;
     }
     {
@@ -298,6 +304,17 @@ pub async fn live_streams_for(sport: Sport, id: i64) -> Vec<StreamView> {
     // YouTube: resolve channels, collapse duplicates, mark live + append seeds.
     if yt_enabled {
         enriched = enrich_youtube_channels(enriched, &yt_seed_idents).await;
+    }
+
+    // SOOP: mark base SOOP streams live + append curated SOOP co-streamers.
+    if soop_on {
+        let mut bids: Vec<String> = enriched
+            .iter()
+            .filter_map(|s| crate::soop::bid_of(&s.url))
+            .collect();
+        bids.extend(soop_seeds.iter().cloned());
+        let soop_live = crate::soop::live_streams(&bids).await;
+        enriched = enrich_soop(enriched, &soop_live, &soop_seeds);
     }
 
     // Twitch category discovery (opt-in): surface unlisted co-streamers for a
@@ -4244,6 +4261,48 @@ fn enrich_streams(
     base
 }
 
+/// Merge SOOP live status into a match's base streams and append live seeded
+/// co-streamers. `live` maps lowercased broadcaster id → info; `seeds` are the
+/// league's curated SOOP ids. Base streams keep their order; appended seeds are
+/// tagged Korean (SOOP is Korea-centric and its station endpoint carries no ISO
+/// language). SOOP seeds aren't game-filtered — like YouTube's, they're trusted
+/// curation (the station endpoint's category is available if that ever changes).
+fn enrich_soop(
+    mut base: Vec<StreamView>,
+    live: &HashMap<String, crate::soop::LiveInfo>,
+    seeds: &[String],
+) -> Vec<StreamView> {
+    let mut present: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for s in &mut base {
+        if let Some(bid) = crate::soop::bid_of(&s.url) {
+            present.insert(bid.clone());
+            if let Some(info) = live.get(&bid) {
+                s.live = true;
+                s.viewers = Some(info.viewers);
+            }
+        }
+    }
+    for seed in seeds {
+        let bid = seed.to_ascii_lowercase();
+        if present.contains(&bid) {
+            continue;
+        }
+        if let Some(info) = live.get(&bid) {
+            present.insert(bid.clone());
+            base.push(StreamView {
+                url: format!("https://www.sooplive.com/{bid}"),
+                language: "ko".to_string(),
+                live: true,
+                viewers: Some(info.viewers),
+                official: false,
+                group: "costream".to_string(),
+                ..Default::default()
+            });
+        }
+    }
+    base
+}
+
 /// Twitch title keywords for a league: its configured aliases (lowercased) plus
 /// the raw league token as a fallback. Empty league / no alias behaves sensibly
 /// (raw token only, or nothing).
@@ -6516,6 +6575,80 @@ mod tests {
         .collect();
         let out = enrich_streams(Vec::new(), &live, &["x".to_string()], "");
         assert!(out.is_empty());
+    }
+
+    #[test]
+    fn enrich_soop_marks_live_and_appends_live_seeds() {
+        let base = vec![
+            StreamView {
+                url: "https://www.sooplive.com/lck".into(),
+                language: "ko".into(),
+                official: true,
+                main: true,
+                curated: true,
+                ..Default::default()
+            },
+            // A non-SOOP stream must be left untouched.
+            StreamView {
+                url: "https://www.twitch.tv/riotgames".into(),
+                official: true,
+                ..Default::default()
+            },
+        ];
+        let live: std::collections::HashMap<String, crate::soop::LiveInfo> = [
+            ("lck".to_string(), crate::soop::LiveInfo { viewers: 5000 }),
+            (
+                "faker".to_string(),
+                crate::soop::LiveInfo { viewers: 12000 },
+            ),
+        ]
+        .into_iter()
+        .collect();
+        // faker is live and appended; offline_bj is not in `live` so it's skipped.
+        let seeds = vec!["faker".to_string(), "offline_bj".to_string()];
+        let out = enrich_soop(base, &live, &seeds);
+
+        // Base SOOP stream marked live with viewers.
+        let lck = out
+            .iter()
+            .find(|s| s.url.ends_with("/lck"))
+            .expect("lck present");
+        assert!(lck.live && lck.viewers == Some(5000));
+        // Non-SOOP stream untouched.
+        let tw = out.iter().find(|s| s.url.contains("twitch")).unwrap();
+        assert!(!tw.live && tw.viewers.is_none());
+        // faker appended as a Korean costream.
+        let faker = out
+            .iter()
+            .find(|s| s.url.ends_with("/faker"))
+            .expect("faker appended");
+        assert!(
+            faker.live
+                && faker.viewers == Some(12000)
+                && faker.group == "costream"
+                && faker.language == "ko"
+                && !faker.official
+        );
+        // Offline seed not appended.
+        assert!(out.iter().all(|s| !s.url.contains("offline_bj")));
+        assert_eq!(out.len(), 3);
+    }
+
+    #[test]
+    fn enrich_soop_skips_seed_already_present_as_base() {
+        let base = vec![StreamView {
+            url: "https://play.sooplive.com/lck".into(),
+            official: true,
+            ..Default::default()
+        }];
+        let live: std::collections::HashMap<String, crate::soop::LiveInfo> =
+            [("lck".to_string(), crate::soop::LiveInfo { viewers: 5000 })]
+                .into_iter()
+                .collect();
+        // "lck" is already the base channel → must not be double-appended.
+        let out = enrich_soop(base, &live, &["lck".to_string()]);
+        assert_eq!(out.iter().filter(|s| s.url.contains("lck")).count(), 1);
+        assert!(out[0].live && out[0].viewers == Some(5000));
     }
 
     #[test]

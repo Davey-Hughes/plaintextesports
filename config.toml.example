@@ -30,6 +30,19 @@ youtube_api_key = ""
 # [youtube_costreamers]
 # lol = ["@caedrel", "https://www.youtube.com/@sneaky"]
 
+# SOOP (formerly AfreecaTV) is Korea's dominant platform, where LCK and Korean
+# pro-player streams live instead of Twitch. Enabling this marks SOOP streams on a
+# match live and shows their viewer counts (and surfaces curated SOOP co-streamers
+# below). It uses SOOP's unofficial station endpoint — no API key, but off by
+# default because it's unofficial. Set true to opt in.
+# soop_enabled = true
+
+# Curated SOOP co-streamers, same game/league keys as [costreamers] (values are
+# SOOP broadcaster ids, e.g. the "<id>" in sooplive.com/<id>). Shown when live;
+# NOT game-filtered, so curate per game. Requires soop_enabled = true.
+# [soop_costreamers]
+# lol = ["lck", "faker"]
+
 # Curated co-streamers (Twitch logins), shown on a match's page when they're live
 # and streaming that match's game. Two kinds of key, merged for each match:
 #   - a game key = the sport slug ("lol" or "cs2") applies to EVERY league of that

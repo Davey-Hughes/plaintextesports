@@ -35,6 +35,11 @@ struct FileConfig {
     /// YouTube Data API v3 key.
     youtube_api_key: Option<String>,
     youtube_costreamers: Option<HashMap<String, Vec<String>>>,
+    /// Enable SOOP (formerly AfreecaTV) live enrichment via its unofficial
+    /// station endpoint (no key). Off by default since the endpoint is unofficial.
+    soop_enabled: Option<bool>,
+    /// Curated SOOP co-streamers per game (sport slug) or league — broadcaster ids.
+    soop_costreamers: Option<HashMap<String, Vec<String>>>,
     /// Twitch category-discovery of unlisted co-streamers.
     twitch_discovery: Option<TwitchDiscoveryFile>,
     /// League name → Twitch title keywords for discovery attribution.
@@ -100,6 +105,7 @@ impl FileConfig {
         put("TWITCH_CLIENT_ID", self.twitch_client_id.clone());
         put("TWITCH_CLIENT_SECRET", self.twitch_client_secret.clone());
         put("YOUTUBE_API_KEY", self.youtube_api_key.clone());
+        put("SOOP_ENABLED", self.soop_enabled.map(|b| b.to_string()));
         put(
             "OCBLACKTOP_LIVE_POLL_SECS",
             self.ocblacktop_live_poll_secs.map(|n| n.to_string()),
@@ -199,6 +205,13 @@ pub struct Config {
     /// Curated YouTube co-streamers per game (sport slug) or league — channel
     /// handles/URLs, surfaced when live (not game-filtered). Empty when unset.
     pub youtube_costreamers: HashMap<String, Vec<String>>,
+    /// Enable SOOP live enrichment (live status + viewer counts on SOOP streams,
+    /// plus curated SOOP co-streamers). Off by default — it uses SOOP's
+    /// unofficial station endpoint, so it's opt-in.
+    pub soop_enabled: bool,
+    /// Curated SOOP co-streamers per game (sport slug) or league — broadcaster
+    /// ids, surfaced when live (not game-filtered). Empty when unset.
+    pub soop_costreamers: HashMap<String, Vec<String>>,
     /// Twitch category-discovery of unlisted co-streamers. Off when
     /// `enabled_sports` is empty.
     pub twitch_discovery: TwitchDiscovery,
@@ -340,6 +353,9 @@ impl Config {
         if let Some(yc) = file.youtube_costreamers {
             cfg.youtube_costreamers = yc;
         }
+        if let Some(sc) = file.soop_costreamers {
+            cfg.soop_costreamers = sc;
+        }
         if let Some(td) = file.twitch_discovery {
             cfg.twitch_discovery = TwitchDiscovery {
                 enabled_sports: td.enabled_sports.unwrap_or_default(),
@@ -460,6 +476,7 @@ impl Config {
         };
         let past_refresh = flag("ENABLE_PAST_REFRESH", true);
         let backfill = flag("ENABLE_BACKFILL", true);
+        let soop_enabled = flag("SOOP_ENABLED", false);
         let rate_limit_floor = secs("RATE_LIMIT_FLOOR", 200, 0);
 
         let db_path = get("DB_PATH").unwrap_or_else(|| "data/cache.db".to_string());
@@ -493,6 +510,8 @@ impl Config {
             costreamers: HashMap::new(),
             youtube_api_key,
             youtube_costreamers: HashMap::new(),
+            soop_enabled,
+            soop_costreamers: HashMap::new(),
             ocblacktop_live_poll,
             ocblacktop_near_poll,
             ocblacktop_idle_poll,
@@ -729,6 +748,33 @@ mod tests {
             &vec!["caedrel".to_string(), "ludwig".to_string()]
         );
         assert_eq!(cs.get("PGL Major").unwrap(), &vec!["gaules".to_string()]);
+    }
+
+    #[test]
+    fn soop_enabled_defaults_off_and_parses() {
+        // Off by default (unofficial endpoint ⇒ opt-in).
+        assert!(!cfg(&[]).soop_enabled);
+        assert!(cfg(&[("SOOP_ENABLED", "true")]).soop_enabled);
+        assert!(!cfg(&[("SOOP_ENABLED", "false")]).soop_enabled);
+    }
+
+    #[test]
+    fn parses_soop_flag_and_costreamers() {
+        let src = r#"
+            soop_enabled = true
+            [soop_costreamers]
+            lol = ["lck", "faker"]
+        "#;
+        let fc: FileConfig = toml::from_str(src).unwrap();
+        assert_eq!(
+            fc.to_map().get("SOOP_ENABLED").map(String::as_str),
+            Some("true")
+        );
+        let cfg = Config::from_file_for_test(fc);
+        assert_eq!(
+            cfg.soop_costreamers.get("lol").unwrap(),
+            &vec!["lck".to_string(), "faker".to_string()]
+        );
     }
 
     #[test]
