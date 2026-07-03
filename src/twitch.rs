@@ -36,6 +36,8 @@ static TOKEN: Lazy<RwLock<Option<AppToken>>> = Lazy::new(|| RwLock::new(None));
 pub struct LiveInfo {
     pub viewers: u64,
     pub game: String,
+    /// ISO-639-1 stream language from Helix (e.g. "en"), empty when absent.
+    pub language: String,
 }
 
 /// The lowercased Twitch channel login from a `twitch.tv/<login>` URL, or `None`
@@ -61,6 +63,8 @@ struct RawLive {
     viewer_count: u64,
     #[serde(default)]
     game_name: String,
+    #[serde(default)]
+    language: String,
 }
 
 /// Parse a Get Streams body into `login → LiveInfo` (lowercased logins). Malformed
@@ -76,6 +80,7 @@ fn parse_streams(json: &str) -> HashMap<String, LiveInfo> {
                 LiveInfo {
                     viewers: r.viewer_count,
                     game: r.game_name,
+                    language: r.language,
                 },
             )
         })
@@ -197,7 +202,7 @@ mod tests {
     #[test]
     fn parse_streams_keeps_live_only() {
         let json = r#"{"data":[
-            {"user_login":"Gaules","viewer_count":375,"game_name":"Back 4 Blood","type":"live"},
+            {"user_login":"Gaules","viewer_count":375,"game_name":"Back 4 Blood","language":"pt","type":"live"},
             {"user_login":"esl_dota2","viewer_count":31,"game_name":"Dota 2","type":"live"}
         ]}"#;
         let m = parse_streams(json);
@@ -206,11 +211,13 @@ mod tests {
             m.get("gaules").unwrap(),
             &LiveInfo {
                 viewers: 375,
-                game: "Back 4 Blood".to_string()
+                game: "Back 4 Blood".to_string(),
+                language: "pt".to_string(), // captured from Helix
             }
         );
         assert_eq!(m.get("esl_dota2").unwrap().viewers, 31);
-        // Empty / malformed → empty map, never panics.
+        assert_eq!(m.get("esl_dota2").unwrap().language, ""); // absent → empty
+                                                              // Empty / malformed → empty map, never panics.
         assert!(parse_streams(r#"{"data":[]}"#).is_empty());
         assert!(parse_streams("not json").is_empty());
     }

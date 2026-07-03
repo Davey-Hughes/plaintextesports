@@ -542,6 +542,65 @@ pub struct StreamView {
     /// Current viewer count when `live`. `None` otherwise.
     #[serde(default)]
     pub viewers: Option<u64>,
+    /// True for a stream from the data source's own broadcast list (PandaScore
+    /// `streams_list`), false for a community co-stream we discovered/seeded. Ranks
+    /// curated broadcasts above discovered co-streams within a language.
+    #[serde(default)]
+    pub curated: bool,
+}
+
+/// Order an esports match's streams for display: official broadcasts lead (the
+/// `main` one first), then co-streams grouped by language — the main broadcast's
+/// language first, remaining languages by their group's top viewer count, unknown
+/// language last — with viewers descending inside each language. Also stamps the
+/// `group` key (`"official"` / `"costream:<lang>"`) the renderer uses to place a
+/// language header before each co-stream group.
+///
+/// A no-op when any row carries a `name`: those are traditional-sports broadcast
+/// rows (MLB/NHL/…), already ordered by market rank by their own producer.
+///
+/// Server-only: the producers (`pandascore`, `cache`) order streams before they
+/// reach the client, so the wasm bundle never needs this.
+#[cfg(feature = "ssr")]
+pub(crate) fn order_streams(streams: &mut Vec<StreamView>) {
+    if streams.iter().any(|s| !s.name.is_empty()) {
+        return;
+    }
+    // The main broadcast's language anchors the ordering — its group leads the
+    // co-streams. Fall back to the first official stream, else "unknown".
+    let main_lang = streams
+        .iter()
+        .find(|s| s.main)
+        .or_else(|| streams.iter().find(|s| s.official))
+        .map(|s| s.language.to_ascii_lowercase())
+        .unwrap_or_default();
+    // Top viewer count per language, to rank the non-main language groups.
+    let mut lang_top: std::collections::HashMap<String, u64> = std::collections::HashMap::new();
+    for s in streams.iter() {
+        let e = lang_top.entry(s.language.to_ascii_lowercase()).or_insert(0);
+        *e = (*e).max(s.viewers.unwrap_or(0));
+    }
+    streams.sort_by_cached_key(|s| {
+        let lang = s.language.to_ascii_lowercase();
+        let is_main_lang = !lang.is_empty() && lang == main_lang;
+        (
+            !s.official,                                           // official broadcasts lead
+            !is_main_lang,                                         // main-broadcast language first
+            lang.is_empty(),                                       // unknown language last
+            std::cmp::Reverse(*lang_top.get(&lang).unwrap_or(&0)), // languages by top viewers
+            lang.clone(),                                          // keep one language contiguous
+            !s.curated, // curated (PandaScore) streams before discovered
+            !s.main,    // main stream first within its group
+            std::cmp::Reverse(s.viewers.unwrap_or(0)), // viewers descending
+        )
+    });
+    for s in streams.iter_mut() {
+        s.group = if s.official {
+            "official".to_string()
+        } else {
+            format!("costream:{}", s.language.to_ascii_lowercase())
+        };
+    }
 }
 
 /// The best external "view this game" link for a match: a precise per-game page
@@ -1338,5 +1397,169 @@ mod tests {
         assert_eq!(stat_share("1,024", "976"), Some(51)); // strips commas
         assert_eq!(stat_share("bad", "5"), None); // non-numeric
         assert_eq!(stat_share("0", "0"), None); // both zero
+    }
+
+    #[cfg(feature = "ssr")]
+    fn sv(
+        url: &str,
+        language: &str,
+        official: bool,
+        main: bool,
+        viewers: Option<u64>,
+    ) -> StreamView {
+        StreamView {
+            url: url.to_string(),
+            language: language.to_string(),
+            official,
+            main,
+            viewers,
+            ..Default::default()
+        }
+    }
+
+    #[cfg(feature = "ssr")]
+    #[test]
+    fn order_streams_official_leads_then_language_groups_by_viewers() {
+        // Discovery order (deliberately scrambled): official main, EN/KO co-streams,
+        // a lower-viewer EN, an unknown-language stream, a second KO.
+        let mut s = vec![
+            sv(
+                "https://twitch.tv/riotgames",
+                "en",
+                true,
+                true,
+                Some(82_400),
+            ),
+            sv(
+                "https://twitch.tv/caedrel",
+                "en",
+                false,
+                false,
+                Some(41_200),
+            ),
+            sv("https://twitch.tv/lck", "ko", false, false, Some(55_000)),
+            sv(
+                "https://youtube.com/lolesports/live",
+                "en",
+                false,
+                false,
+                Some(12_000),
+            ),
+            sv("https://twitch.tv/somecaster", "", false, false, Some(900)),
+            sv("https://twitch.tv/faker", "ko", false, false, Some(5_000)),
+        ];
+        order_streams(&mut s);
+        let order: Vec<&str> = s.iter().map(|x| x.url.as_str()).collect();
+        assert_eq!(
+            order,
+            vec![
+                "https://twitch.tv/riotgames",         // official leads
+                "https://twitch.tv/caedrel",           // main lang (EN) group, viewers desc
+                "https://youtube.com/lolesports/live", // "
+                "https://twitch.tv/lck",               // next lang (KO), by top viewers
+                "https://twitch.tv/faker",             // "
+                "https://twitch.tv/somecaster",        // unknown language last
+            ]
+        );
+    }
+
+    #[cfg(feature = "ssr")]
+    #[test]
+    fn order_streams_ranks_nonmain_languages_by_top_viewers() {
+        // Main broadcast is EN; a Spanish group outdraws a Korean group, so ES leads KO.
+        let mut s = vec![
+            sv("https://twitch.tv/official", "en", true, true, Some(9_000)),
+            sv("https://twitch.tv/ko1", "ko", false, false, Some(3_000)),
+            sv("https://twitch.tv/es1", "es", false, false, Some(6_000)),
+            sv("https://twitch.tv/en1", "en", false, false, Some(1_000)),
+        ];
+        order_streams(&mut s);
+        let order: Vec<&str> = s.iter().map(|x| x.url.as_str()).collect();
+        assert_eq!(
+            order,
+            vec![
+                "https://twitch.tv/official", // official
+                "https://twitch.tv/en1",      // main lang EN first
+                "https://twitch.tv/es1",      // ES (top 6000) before KO (top 3000)
+                "https://twitch.tv/ko1",
+            ]
+        );
+    }
+
+    #[cfg(feature = "ssr")]
+    #[test]
+    fn order_streams_ranks_curated_base_above_discovered_in_language() {
+        // A PandaScore base feed (curated, no viewer count) outranks a
+        // higher-viewer *discovered* co-stream in the same language.
+        let mut curated = sv(
+            "https://youtube.com/lolesports/live",
+            "en",
+            false,
+            false,
+            None,
+        );
+        curated.curated = true;
+        let mut s = vec![
+            sv("https://twitch.tv/official", "en", true, true, Some(9_000)),
+            sv(
+                "https://twitch.tv/discovered",
+                "en",
+                false,
+                false,
+                Some(50_000),
+            ),
+            curated,
+        ];
+        order_streams(&mut s);
+        let order: Vec<&str> = s.iter().map(|x| x.url.as_str()).collect();
+        assert_eq!(
+            order,
+            vec![
+                "https://twitch.tv/official",          // official leads
+                "https://youtube.com/lolesports/live", // curated base before discovered
+                "https://twitch.tv/discovered",        // discovered, despite more viewers
+            ]
+        );
+    }
+
+    #[cfg(feature = "ssr")]
+    #[test]
+    fn order_streams_sets_official_and_language_group_keys() {
+        let mut s = vec![
+            sv("https://twitch.tv/riotgames", "en", true, true, Some(1)),
+            sv("https://twitch.tv/caedrel", "en", false, false, Some(1)),
+            sv("https://twitch.tv/lck", "ko", false, false, Some(1)),
+            sv("https://twitch.tv/mystery", "", false, false, Some(1)),
+        ];
+        order_streams(&mut s);
+        let groups: Vec<&str> = s.iter().map(|x| x.group.as_str()).collect();
+        assert_eq!(
+            groups,
+            vec!["official", "costream:en", "costream:ko", "costream:"]
+        );
+    }
+
+    #[cfg(feature = "ssr")]
+    #[test]
+    fn order_streams_leaves_broadcast_rows_untouched() {
+        // Rows carrying a `name` are MLB/NHL broadcasts: their producer already
+        // ordered them by market rank, so order_streams must not reshuffle them.
+        let mut s = vec![
+            StreamView {
+                name: "ESPN".into(),
+                group: "tv".into(),
+                viewers: Some(1),
+                ..Default::default()
+            },
+            StreamView {
+                name: "MLB.tv".into(),
+                group: "streaming".into(),
+                viewers: Some(999),
+                ..Default::default()
+            },
+        ];
+        let before = s.clone();
+        order_streams(&mut s);
+        assert_eq!(s, before);
     }
 }

@@ -79,6 +79,113 @@ pub fn channel_ident(s: &str) -> Option<String> {
     None
 }
 
+/// A YouTube URL classified for channel resolution: a specific `Video` (resolved
+/// to its channel via `videos.list`), a `Channel` id already in hand, or a
+/// `Handle`/custom name (resolved via `channels.list?forHandle`).
+#[derive(Debug, PartialEq, Eq)]
+enum YtRef {
+    Video(String),
+    Channel(String),
+    Handle(String),
+}
+
+/// Classify a YouTube URL/handle into the form we can resolve to a channel id.
+/// `None` for non-YouTube URLs and reserved paths (`/results`, a bare `/watch`
+/// with no `v=`, …). Pure — the API resolution happens in `channel_id_of_url`.
+fn youtube_ref(url: &str) -> Option<YtRef> {
+    let t = url.trim();
+    if t.is_empty() {
+        return None;
+    }
+    // Bare forms (no scheme): @handle, or a UC… channel id.
+    if let Some(rest) = t.strip_prefix('@') {
+        let h = rest.split(['/', '?', '#']).next().unwrap_or("").trim();
+        return (!h.is_empty()).then(|| YtRef::Handle(format!("@{}", h.to_ascii_lowercase())));
+    }
+    if t.starts_with("UC") && !t.contains('/') && !t.contains(' ') {
+        return Some(YtRef::Channel(t.to_string()));
+    }
+    let low = t.to_ascii_lowercase();
+    if !low.contains("youtube.com") && !low.contains("youtu.be") {
+        return None;
+    }
+    // youtu.be/<id> is always an opaque video id.
+    if let Some(i) = low.find("youtu.be/") {
+        let id = t[i + "youtu.be/".len()..]
+            .split(['/', '?', '#'])
+            .next()
+            .unwrap_or("")
+            .trim();
+        return (!id.is_empty()).then(|| YtRef::Video(id.to_string()));
+    }
+    let after = t
+        .split_once("youtube.com/")
+        .map(|(_, r)| r)
+        .unwrap_or("")
+        .trim_start_matches('/');
+    if after.is_empty() {
+        return None;
+    }
+    let first = after.split('/').next().unwrap_or("");
+    let first_clean = first.split(['?', '#']).next().unwrap_or("");
+    let second = || {
+        after
+            .split('/')
+            .nth(1)
+            .unwrap_or("")
+            .split(['?', '#'])
+            .next()
+            .unwrap_or("")
+            .trim()
+    };
+    match first_clean {
+        // /watch?v=<id> — the id lives in the query string.
+        "watch" => after
+            .split_once('?')
+            .map(|(_, q)| q)
+            .unwrap_or("")
+            .split('&')
+            .find_map(|kv| kv.strip_prefix("v="))
+            .map(|v| v.split(['&', '#']).next().unwrap_or("").trim())
+            .filter(|id| !id.is_empty())
+            .map(|id| YtRef::Video(id.to_string())),
+        // /live/<id> and /embed/<id> carry the video id in the next segment.
+        "live" | "embed" => {
+            let id = second();
+            (!id.is_empty()).then(|| YtRef::Video(id.to_string()))
+        }
+        // /channel/<UC…> — an explicit channel id.
+        "channel" => {
+            let cid = second();
+            cid.starts_with("UC")
+                .then(|| YtRef::Channel(cid.to_string()))
+        }
+        // /c/<name> and /user/<name> put the custom name in the next segment.
+        "c" | "user" => {
+            let name = second();
+            (!name.is_empty()).then(|| YtRef::Handle(format!("@{}", name.to_ascii_lowercase())))
+        }
+        // Reserved non-channel paths.
+        "shorts" | "playlist" | "results" | "feed" => None,
+        // /@handle
+        h if h.starts_with('@') => {
+            let hh = h.trim_start_matches('@');
+            (!hh.is_empty()).then(|| YtRef::Handle(format!("@{}", hh.to_ascii_lowercase())))
+        }
+        // A bare custom name (optionally with a trailing `/live`) — treat it as a
+        // handle; a wrong guess just fails to resolve, so dedup safely no-ops.
+        name => Some(YtRef::Handle(format!("@{}", name.to_ascii_lowercase()))),
+    }
+}
+
+/// True when a YouTube URL points at a channel (an `@handle`, custom name, or
+/// `/channel/UC…`) rather than a specific video (`/watch`, `/live/<id>`,
+/// `youtu.be/<id>`). Used to prefer a stable channel permalink when collapsing
+/// duplicate streams that resolve to the same channel.
+pub fn is_channel_url(url: &str) -> bool {
+    matches!(youtube_ref(url), Some(YtRef::Handle(_) | YtRef::Channel(_)))
+}
+
 /// Try to reserve `n` units of today's budget; false (and reserves nothing) if it
 /// would exceed the ceiling. Resets the counter when the UTC date rolls over.
 fn spend(n: u32) -> bool {
@@ -181,6 +288,54 @@ async fn resolve_channel_id(ident: &str, key: &str) -> Option<String> {
     Some(cid)
 }
 
+/// Resolve a video id to its channel's `UC…` id via `videos.list`, cached forever
+/// (a video never changes channels). `None` on error or spent budget.
+async fn video_channel_id(vid: &str, key: &str) -> Option<String> {
+    let cache_key = format!("vid:{vid}");
+    if let Some(cid) = ID_CACHE
+        .read()
+        .unwrap_or_else(PoisonError::into_inner)
+        .get(&cache_key)
+    {
+        return Some(cid.clone());
+    }
+    if !spend(1) {
+        return None;
+    }
+    let url = format!("{API}/videos?part=snippet&id={vid}&key={key}");
+    let v = get_json(&url).await?;
+    let cid = v
+        .get("items")?
+        .get(0)?
+        .get("snippet")?
+        .get("channelId")?
+        .as_str()?
+        .to_string();
+    ID_CACHE
+        .write()
+        .unwrap_or_else(PoisonError::into_inner)
+        .insert(cache_key, cid.clone());
+    Some(cid)
+}
+
+/// Resolve any YouTube URL/handle to its channel's `UC…` id: a `/watch`, `/live`,
+/// `/embed`, or `youtu.be` video → its channel via `videos.list`; an `@handle` or
+/// custom name → `channels.forHandle`; a `UC…`/`/channel/UC…` passes straight
+/// through (no key needed). `None` for non-YouTube or unresolvable inputs, so a
+/// caller can safely skip dedup rather than break.
+pub async fn channel_id_of_url(url: &str) -> Option<String> {
+    let r = youtube_ref(url)?;
+    if let YtRef::Channel(uc) = &r {
+        return Some(uc.clone());
+    }
+    let key = config().youtube_api_key.clone().filter(|k| !k.is_empty())?;
+    match r {
+        YtRef::Channel(uc) => Some(uc),
+        YtRef::Handle(h) => resolve_channel_id(&h, &key).await,
+        YtRef::Video(vid) => video_channel_id(&vid, &key).await,
+    }
+}
+
 /// Live status for `idents` (offline/unknown absent), keyed by the input ident.
 /// Method B: uploads playlist → recent video ids → batched videos.list. Empty map
 /// when the key is unset, on any error, or once the daily budget is spent.
@@ -274,6 +429,61 @@ pub async fn live_one(ident: &str) -> Option<LiveInfo> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn youtube_ref_classifies_urls_for_channel_resolution() {
+        use YtRef::*;
+        // Per-video forms → a video id (resolved to a channel via videos.list).
+        assert_eq!(
+            youtube_ref("https://www.youtube.com/watch?v=_USAoRuPdl4"),
+            Some(Video("_USAoRuPdl4".into()))
+        );
+        assert_eq!(
+            youtube_ref("https://youtu.be/abc123?t=5"),
+            Some(Video("abc123".into()))
+        );
+        assert_eq!(
+            youtube_ref("https://www.youtube.com/live/xyz789"),
+            Some(Video("xyz789".into()))
+        );
+        assert_eq!(
+            youtube_ref("https://www.youtube.com/embed/vid42?autoplay=1"),
+            Some(Video("vid42".into()))
+        );
+        // Channel-id forms → pass through.
+        assert_eq!(
+            youtube_ref("https://www.youtube.com/channel/UCabc123"),
+            Some(Channel("UCabc123".into()))
+        );
+        assert_eq!(youtube_ref("UCabc123"), Some(Channel("UCabc123".into())));
+        // Handle / custom-name forms → an @handle (resolved via channels.forHandle).
+        assert_eq!(
+            youtube_ref("https://www.youtube.com/@Caedrel"),
+            Some(Handle("@caedrel".into()))
+        );
+        assert_eq!(youtube_ref("@Sneaky"), Some(Handle("@sneaky".into())));
+        // The duplicate case: a bare custom name, with or without a `/live` suffix.
+        assert_eq!(
+            youtube_ref("https://www.youtube.com/lolesports/live"),
+            Some(Handle("@lolesports".into()))
+        );
+        assert_eq!(
+            youtube_ref("https://www.youtube.com/LoLEsports"),
+            Some(Handle("@lolesports".into()))
+        );
+        assert_eq!(
+            youtube_ref("https://www.youtube.com/c/SomeCast"),
+            Some(Handle("@somecast".into()))
+        );
+        // Non-YouTube, reserved paths, and empties → not resolvable.
+        assert_eq!(youtube_ref("https://www.twitch.tv/x"), None);
+        assert_eq!(
+            youtube_ref("https://www.youtube.com/results?search_query=x"),
+            None
+        );
+        assert_eq!(youtube_ref("https://www.youtube.com/watch"), None); // no video id
+        assert_eq!(youtube_ref(""), None);
+    }
 
     #[test]
     fn channel_ident_normalizes() {

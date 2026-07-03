@@ -2310,24 +2310,86 @@ a.sw-link {
   margin: 0.3rem 0;
 }
 
+// Broadcasts (MLB/NHL): a single name | tag | live column.
 .streams {
   list-style: none;
   margin: 0;
   padding: 0;
+  display: grid;
+  grid-template-columns: auto auto max-content;
+  justify-content: start;
+  column-gap: 0.65rem;
+  row-gap: 0.15rem;
+  align-items: baseline;
 }
 
-.stream {
-  display: flex;
+// Esports: one grid holds the official lead (full-width, row 1) and the co-streams,
+// which flow into two columns (desktop) / one (mobile). Keeping them in a single
+// grid lets the official's live line up with the left column, while each column's
+// tracks still size to their own content. `dense` back-fills the right column, so
+// source order stays official → col1 → col2 (also the correct order when it
+// collapses to a single column on mobile).
+.streams-grid {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  grid-auto-flow: row dense;
+  // left column (gutter | name | live) · gap · right column (gutter | name | live).
+  // `justify-content: start` keeps the tracks content-sized (packed left) instead
+  // of stretching the auto gutter tracks across the width.
+  grid-template-columns:
+    auto max-content max-content
+    2.5rem
+    auto max-content max-content;
+  justify-content: start;
+  column-gap: 0.65rem;
+  row-gap: 0.15rem;
   align-items: baseline;
-  gap: 0.5rem;
-  padding: 0.15rem 0;
 
-  // A small gap sets off each new group (official vs co-stream; TV/streaming/radio).
+  > .stream-lead {
+    grid-column: 1 / -1; // spans full width; its cells land in the left tracks
+    margin-bottom: 0.6rem; // gap before the co-streams
+  }
+  > .stream-c1 {
+    grid-column: 1 / 4;
+  }
+  > .stream-c2 {
+    grid-column: 5 / 8;
+  }
+}
+
+@media (max-width: 600px) {
+  .streams-grid {
+    grid-auto-flow: row;
+    grid-template-columns: 2.75rem 1fr 4rem;
+
+    > .stream-lead,
+    > .stream-c1,
+    > .stream-c2 {
+      grid-column: 1 / -1;
+    }
+  }
+}
+
+// Shared row styling (broadcasts and esports).
+.stream {
+  // Span the parent's tracks and adopt them, so every row's columns line up.
+  display: grid;
+  grid-column: 1 / -1;
+  grid-template-columns: subgrid;
+  align-items: baseline;
+
+  // A small gap sets off each new broadcast group (TV / streaming / radio).
   &.stream-group-start {
     margin-top: 0.55rem;
   }
 
-  a {
+  .stream-name {
+    grid-column: 1;
+  }
+
+  a.stream-name {
     color: var(--link);
   }
 
@@ -2341,17 +2403,33 @@ a.sw-link {
     font-weight: 600;
   }
 
+  // Left-gutter language label (esports).
+  .stream-lang {
+    grid-column: 1;
+    color: var(--muted);
+    font-size: 11px;
+    letter-spacing: 0.03em;
+    text-transform: uppercase;
+  }
+
   .stream-tags {
+    grid-column: 2;
     color: var(--muted);
     font-size: 11px;
   }
 
   .stream-live {
+    grid-column: 3;
     color: var(--accent);
     font-size: 11px;
     font-weight: 600;
-    margin-left: 0.4rem;
   }
+}
+
+// Esports rows carry a gutter, so the channel name shifts to the middle track.
+// (After `.stream` so it wins over the broadcast `grid-column: 1`.)
+.streams-grid .stream-name {
+  grid-column: 2;
 }
 
 // The MLB "Series" section: schedule-style rows (reusing `.row`/`.row-body`), so

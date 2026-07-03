@@ -135,17 +135,18 @@ fn streams(raw: &[RawStream]) -> Vec<StreamView> {
                 language: s.language.clone().unwrap_or_default(),
                 official: s.official.unwrap_or(false),
                 main: s.main.unwrap_or(false),
+                // From the data source's own broadcast list — ranks above the
+                // community co-streams we discover at request time.
+                curated: true,
                 ..Default::default()
             })
         })
         .collect();
-    // Main/official first, then the rest, so the primary broadcast leads.
-    out.sort_by_key(|s| (!s.main, !s.official));
-    // Tag each by group so the list separates official broadcasts from
-    // community co-streams (set after the sort, which keeps groups contiguous).
-    for s in &mut out {
-        s.group = if s.official { "official" } else { "costream" }.to_string();
-    }
+    // Order the pre-enrichment view the same way the enriched one will be:
+    // official broadcasts lead, then co-streams grouped by language. Viewer counts
+    // aren't known yet, so within a language the input order stands until the
+    // request-time enrichment re-orders with live counts.
+    crate::types::order_streams(&mut out);
     out
 }
 

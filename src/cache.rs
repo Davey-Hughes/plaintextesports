@@ -228,34 +228,49 @@ struct CachedStreams {
 }
 
 const STREAM_STATUS_TTL_SECS: i64 = 90;
+/// How close in time (± hours) a same-event match must be scheduled to count as
+/// part of a match's "day slate" for widening co-stream discovery keywords.
+const DISCOVERY_SLATE_WINDOW_HOURS: i64 = 12;
 
 /// A match's streams with Twitch live status + seeded co-streamers merged in.
 /// Returns the base streams unchanged when there's nothing to enrich (no Twitch
 /// logins and no seeds) or when Twitch is unconfigured/erroring. The `SNAPSHOT`
 /// read lock is dropped before any network await.
 pub async fn live_streams_for(sport: Sport, id: i64) -> Vec<StreamView> {
-    let (base, league, status) = {
+    let (base, league, series_name, begin_at, status) = {
         let snap = SNAPSHOT.read().unwrap_or_else(PoisonError::into_inner);
         match snap.matches.iter().find(|m| m.id == id && m.sport == sport) {
-            Some(m) => (m.streams.clone(), m.league.clone(), m.status),
+            Some(m) => (
+                m.streams.clone(),
+                m.league.clone(),
+                m.series_name.clone(),
+                m.begin_at,
+                m.status,
+            ),
             None => return Vec::new(),
         }
     };
+    // Demo/fixture mode: serve the mocked (already-ordered) streams as-is, without
+    // touching Twitch/YouTube, so the styling is deterministic.
+    if config().demo {
+        return base;
+    }
     let tw_seeds = costreamer_seeds(&config().costreamers, &league, sport);
     let base_logins: Vec<String> = base.iter().filter_map(|s| login_of(&s.url)).collect();
 
-    // YouTube idents: any youtube base stream + curated youtube co-streamers.
+    // Curated YouTube co-streamer seeds. Base YouTube streams are resolved to
+    // channels inside the enrichment phase, so they need no pre-extracted idents.
     let yt_seed_idents: Vec<String> =
         costreamer_seeds(&config().youtube_costreamers, &league, sport)
             .iter()
             .filter_map(|s| crate::youtube::channel_ident(s))
             .collect();
-    let yt_base_idents: Vec<String> = base
-        .iter()
-        .filter_map(|s| crate::youtube::channel_ident(&s.url))
-        .collect();
-    let yt_enabled = config().youtube_api_key.is_some()
-        && (!yt_seed_idents.is_empty() || !yt_base_idents.is_empty());
+    let has_youtube_base = base.iter().any(|s| {
+        let u = s.url.to_ascii_lowercase();
+        u.contains("youtube.com") || u.contains("youtu.be")
+    });
+    let yt_enabled =
+        config().youtube_api_key.is_some() && (!yt_seed_idents.is_empty() || has_youtube_base);
 
     // Twitch category discovery runs only for a live esports match with the sport
     // enabled — so an otherwise-inert match still triggers a scan when it's on.
@@ -280,12 +295,9 @@ pub async fn live_streams_for(sport: Sport, id: i64) -> Vec<StreamView> {
     let tw_live = crate::twitch::live_streams(&tw_logins).await;
     let mut enriched = enrich_streams(base, &tw_live, &tw_seeds, game_needle(sport));
 
-    // YouTube.
+    // YouTube: resolve channels, collapse duplicates, mark live + append seeds.
     if yt_enabled {
-        let mut idents = yt_base_idents;
-        idents.extend(yt_seed_idents.iter().cloned());
-        let yt_live = crate::youtube::live_status(&idents).await;
-        enriched = enrich_youtube(enriched, &yt_live, &yt_seed_idents);
+        enriched = enrich_youtube_channels(enriched, &yt_seed_idents).await;
     }
 
     // Twitch category discovery (opt-in): surface unlisted co-streamers for a
@@ -296,7 +308,20 @@ pub async fn live_streams_for(sport: Sport, id: i64) -> Vec<StreamView> {
             let scan =
                 crate::twitch_discover::discover(&gid, &cfg.twitch_discovery.languages).await;
             if !scan.is_empty() {
-                let keywords = league_keywords(&league, &cfg.twitch_league_aliases);
+                // Widen keywords to the whole day's event slate: co-streamers often
+                // keep a stale title naming a different (or earlier) matchup.
+                let keywords = {
+                    let snap = SNAPSHOT.read().unwrap_or_else(PoisonError::into_inner);
+                    event_day_keywords(
+                        sport,
+                        &league,
+                        &series_name,
+                        begin_at,
+                        &snap.matches,
+                        &cfg.twitch_league_aliases,
+                        Duration::hours(DISCOVERY_SLATE_WINDOW_HOURS),
+                    )
+                };
                 let present: std::collections::HashSet<String> =
                     enriched.iter().filter_map(|s| login_of(&s.url)).collect();
                 let extra = attribute_costreams(
@@ -341,6 +366,7 @@ pub async fn live_streams_for(sport: Sport, id: i64) -> Vec<StreamView> {
                 if let Some(info) = live.get(&login) {
                     enriched.push(StreamView {
                         url: format!("https://www.twitch.tv/{login}"),
+                        language: info.language.clone(),
                         live: true,
                         viewers: Some(info.viewers),
                         official: false,
@@ -351,6 +377,10 @@ pub async fn live_streams_for(sport: Sport, id: i64) -> Vec<StreamView> {
             }
         }
     }
+
+    // Final display order: official broadcasts lead, then co-streams grouped by
+    // language (main-broadcast language first) with viewers descending.
+    crate::types::order_streams(&mut enriched);
 
     STREAM_STATUS
         .write()
@@ -4200,6 +4230,7 @@ fn enrich_streams(
                     present.insert(login.clone());
                     base.push(StreamView {
                         url: format!("https://www.twitch.tv/{login}"),
+                        language: info.language.clone(),
                         live: true,
                         viewers: Some(info.viewers),
                         official: false,
@@ -4229,6 +4260,44 @@ fn league_keywords(
     let raw = league.trim().to_ascii_lowercase();
     if !raw.is_empty() && !out.iter().any(|k| k == &raw) {
         out.push(raw);
+    }
+    out
+}
+
+/// Discovery keyword set for a live match, widened to its whole day: the league
+/// keywords, plus the team names and acronyms of every same-event match scheduled
+/// within `window` of it. Esports co-streamers frequently keep a stale stream
+/// title, so matching *any* of the day's matchups (not only this one) keeps them
+/// from being filtered out. `matches` is the snapshot's match list.
+fn event_day_keywords(
+    sport: Sport,
+    league: &str,
+    series_name: &str,
+    begin_at: DateTime<Utc>,
+    matches: &[NormalizedMatch],
+    aliases: &std::collections::HashMap<String, Vec<String>>,
+    window: Duration,
+) -> Vec<String> {
+    let mut out = league_keywords(league, aliases);
+    let window_min = window.num_minutes();
+    for m in matches {
+        // Same sport + event (league + edition), within the day window.
+        if m.sport != sport
+            || !m.league.eq_ignore_ascii_case(league)
+            || !m.series_name.eq_ignore_ascii_case(series_name)
+            || (m.begin_at - begin_at).num_minutes().abs() > window_min
+        {
+            continue;
+        }
+        for team in [&m.team_a, &m.team_b] {
+            for tok in [&team.name, &team.abbrev, &team.label] {
+                let tok = tok.trim().to_ascii_lowercase();
+                // Skip empties, single chars, and "TBD" placeholders.
+                if tok.len() >= 2 && tok != "tbd" && !out.contains(&tok) {
+                    out.push(tok);
+                }
+            }
+        }
     }
     out
 }
@@ -4277,6 +4346,7 @@ fn attribute_costreams(
         .take(max)
         .map(|d| StreamView {
             url: format!("https://www.twitch.tv/{}", d.login.to_ascii_lowercase()),
+            language: d.language.clone(),
             live: true,
             viewers: Some(d.viewers),
             official: false,
@@ -4295,32 +4365,75 @@ fn youtube_url_for(ident: &str) -> String {
     }
 }
 
-/// Merge YouTube live status into a match's streams: mark any base YouTube stream
-/// live+viewers, and append each live seed ident (not already present) as a
-/// co-stream. Keyed entirely by channel ident (pure); NOT game-filtered.
-fn enrich_youtube(
-    mut streams: Vec<StreamView>,
-    yt_live: &HashMap<String, crate::youtube::LiveInfo>,
-    seed_idents: &[String],
+/// Collapse base YouTube streams that resolve to the same channel to a single
+/// entry (`channel_of`: stream url → channel id). PandaScore lists the same
+/// broadcast under two URL forms — a channel permalink (`…/live`, `/@handle`) and
+/// a per-video `/watch?v=` link — which are the same live stream. Among duplicates
+/// keep a channel permalink over a per-video URL, and carry a language from any
+/// duplicate that has one. Streams absent from the map (non-YouTube or unresolved)
+/// are kept untouched, and input order is preserved.
+fn dedupe_youtube_streams(
+    streams: Vec<StreamView>,
+    channel_of: &HashMap<String, String>,
 ) -> Vec<StreamView> {
-    let mut present: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut seen: HashMap<String, usize> = HashMap::new();
+    let mut out: Vec<StreamView> = Vec::new();
+    for s in streams {
+        let Some(chan) = channel_of.get(&s.url) else {
+            out.push(s);
+            continue;
+        };
+        if let Some(&i) = seen.get(chan) {
+            if out[i].language.is_empty() && !s.language.is_empty() {
+                out[i].language = s.language.clone();
+            }
+            // Prefer a stable channel permalink over the per-video URL.
+            if crate::youtube::is_channel_url(&s.url)
+                && !crate::youtube::is_channel_url(&out[i].url)
+            {
+                out[i].url = s.url.clone();
+            }
+            out[i].official |= s.official;
+            out[i].main |= s.main;
+            out[i].curated |= s.curated;
+        } else {
+            seen.insert(chan.clone(), out.len());
+            out.push(s);
+        }
+    }
+    out
+}
+
+/// Mark surviving base YouTube streams live (by resolved channel id) and append
+/// each live seed co-streamer whose channel isn't already present. `channel_of`
+/// maps a stream url → channel id; `yt_live` is keyed by channel id; `seeds` are
+/// (channel id, watch url) pairs.
+fn mark_and_append_youtube(
+    mut streams: Vec<StreamView>,
+    channel_of: &HashMap<String, String>,
+    yt_live: &HashMap<String, crate::youtube::LiveInfo>,
+    seeds: &[(String, String)],
+) -> Vec<StreamView> {
+    let mut present: std::collections::HashSet<String> = streams
+        .iter()
+        .filter_map(|s| channel_of.get(&s.url).cloned())
+        .collect();
     for s in &mut streams {
-        if let Some(ident) = crate::youtube::channel_ident(&s.url) {
-            present.insert(ident.clone());
-            if let Some(info) = yt_live.get(&ident) {
+        if let Some(cid) = channel_of.get(&s.url) {
+            if let Some(info) = yt_live.get(cid) {
                 s.live = true;
                 s.viewers = info.viewers;
             }
         }
     }
-    for ident in seed_idents {
-        if present.contains(ident) {
+    for (cid, url) in seeds {
+        if present.contains(cid) {
             continue;
         }
-        if let Some(info) = yt_live.get(ident) {
-            present.insert(ident.clone());
+        if let Some(info) = yt_live.get(cid) {
+            present.insert(cid.clone());
             streams.push(StreamView {
-                url: youtube_url_for(ident),
+                url: url.clone(),
                 live: true,
                 viewers: info.viewers,
                 official: false,
@@ -4332,22 +4445,157 @@ fn enrich_youtube(
     streams
 }
 
+/// YouTube enrichment phase: resolve every stream to its channel id (non-YouTube
+/// urls resolve to `None` with no API call), collapse same-channel duplicates,
+/// then mark the survivors live and append live seed co-streamers.
+async fn enrich_youtube_channels(
+    enriched: Vec<StreamView>,
+    seed_idents: &[String],
+) -> Vec<StreamView> {
+    let mut channel_of: HashMap<String, String> = HashMap::new();
+    for s in &enriched {
+        if channel_of.contains_key(&s.url) {
+            continue;
+        }
+        if let Some(cid) = crate::youtube::channel_id_of_url(&s.url).await {
+            channel_of.insert(s.url.clone(), cid);
+        }
+    }
+    let deduped = dedupe_youtube_streams(enriched, &channel_of);
+    // Resolve curated seeds (@handle/UC) → (channel id, watch url).
+    let mut seeds: Vec<(String, String)> = Vec::new();
+    for ident in seed_idents {
+        if let Some(cid) = crate::youtube::channel_id_of_url(ident).await {
+            seeds.push((cid, youtube_url_for(ident)));
+        }
+    }
+    // Channels to query for live status: surviving base channels + seeds.
+    let mut idents: Vec<String> = channel_of.values().cloned().collect();
+    idents.extend(seeds.iter().map(|(cid, _)| cid.clone()));
+    idents.sort();
+    idents.dedup();
+    if idents.is_empty() {
+        return deduped;
+    }
+    let yt_live = crate::youtube::live_status(&idents).await;
+    mark_and_append_youtube(deduped, &channel_of, &yt_live, &seeds)
+}
+
 /// A handful of demo broadcasts (official + a language variant + a co-streamer).
+/// A rich, deterministic mock of an enriched esports stream list — an official
+/// broadcast plus co-streams across several languages with live viewer counts — so
+/// demo mode exercises the full streams layout (official lead, curated-first,
+/// language grouping, two columns) without hitting Twitch/YouTube. Returned
+/// already ordered, exactly as `live_streams_for` would.
 fn demo_streams() -> Vec<StreamView> {
-    let s = |url: &str, language: &str, official: bool, main: bool| StreamView {
-        url: url.to_string(),
-        language: language.to_string(),
-        official,
-        main,
-        group: if official { "official" } else { "costream" }.to_string(),
-        ..Default::default()
-    };
-    vec![
-        s("https://www.twitch.tv/esl_csgo", "en", true, true),
-        s("https://www.twitch.tv/esl_csgob", "en", true, false),
-        s("https://www.twitch.tv/ru_esl", "ru", true, false),
-        s("https://www.twitch.tv/ohnepixel", "en", false, false),
-    ]
+    let s =
+        |url: &str, lang: &str, official: bool, main: bool, curated: bool, viewers: Option<u64>| {
+            StreamView {
+                url: url.to_string(),
+                language: lang.to_string(),
+                official,
+                main,
+                curated,
+                live: true,
+                viewers,
+                ..Default::default()
+            }
+        };
+    let mut out = vec![
+        // Official broadcast (leads).
+        s(
+            "https://www.twitch.tv/riotgames",
+            "en",
+            true,
+            true,
+            true,
+            Some(82_400),
+        ),
+        // Curated non-official feed (ranks above discovered co-streams; hidden count).
+        s(
+            "https://www.youtube.com/lolesports/live",
+            "en",
+            false,
+            false,
+            true,
+            None,
+        ),
+        // Discovered co-streams across languages.
+        s(
+            "https://www.twitch.tv/caedrel",
+            "en",
+            false,
+            false,
+            false,
+            Some(131_400),
+        ),
+        s(
+            "https://www.twitch.tv/ls",
+            "en",
+            false,
+            false,
+            false,
+            Some(8_300),
+        ),
+        s(
+            "https://www.twitch.tv/lck",
+            "ko",
+            false,
+            false,
+            false,
+            Some(55_000),
+        ),
+        s(
+            "https://www.twitch.tv/faker",
+            "ko",
+            false,
+            false,
+            false,
+            Some(12_000),
+        ),
+        s(
+            "https://www.twitch.tv/ibai",
+            "es",
+            false,
+            false,
+            false,
+            Some(30_500),
+        ),
+        s(
+            "https://www.twitch.tv/otplol_",
+            "fr",
+            false,
+            false,
+            false,
+            Some(18_200),
+        ),
+        s(
+            "https://www.twitch.tv/cblol",
+            "pt",
+            false,
+            false,
+            false,
+            Some(1_100),
+        ),
+        s(
+            "https://www.twitch.tv/entych",
+            "ja",
+            false,
+            false,
+            false,
+            Some(649),
+        ),
+        s(
+            "https://www.twitch.tv/mixwarz",
+            "",
+            false,
+            false,
+            false,
+            Some(400),
+        ),
+    ];
+    crate::types::order_streams(&mut out);
+    out
 }
 
 /// Demo data anchored to `now` so the page is populated without a token.
@@ -6194,6 +6442,7 @@ mod tests {
                 LiveInfo {
                     viewers: 5000,
                     game: "Counter-Strike".into(),
+                    language: "en".into(),
                 },
             ),
             (
@@ -6201,6 +6450,7 @@ mod tests {
                 LiveInfo {
                     viewers: 20000,
                     game: "Counter-Strike 2".into(),
+                    language: "en".into(),
                 },
             ),
             (
@@ -6208,6 +6458,7 @@ mod tests {
                 LiveInfo {
                     viewers: 375,
                     game: "Back 4 Blood".into(),
+                    language: "pt".into(),
                 },
             ),
             (
@@ -6215,6 +6466,7 @@ mod tests {
                 LiveInfo {
                     viewers: 5000,
                     game: "Counter-Strike".into(),
+                    language: "en".into(),
                 },
             ),
         ]
@@ -6242,7 +6494,8 @@ mod tests {
                 && caedrel.group == "costream"
                 && !caedrel.official
         );
-        // gaules live but on the wrong game → NOT appended.
+        assert_eq!(caedrel.language, "en"); // Helix stream language carried onto the co-stream
+                                            // gaules live but on the wrong game → NOT appended.
         assert!(out.iter().all(|s| !s.url.contains("gaules")));
         // esl_csgo is already a base stream → not double-appended as a costream.
         assert_eq!(out.iter().filter(|s| s.url.contains("esl_csgo")).count(), 1);
@@ -6256,6 +6509,7 @@ mod tests {
             LiveInfo {
                 viewers: 1,
                 game: "whatever".into(),
+                language: "en".into(),
             },
         )]
         .into_iter()
@@ -6284,12 +6538,129 @@ mod tests {
     }
 
     #[test]
+    fn event_day_keywords_widens_to_the_same_event_slate() {
+        let base = "2026-07-04T06:00:00Z".parse::<DateTime<Utc>>().unwrap();
+        let team = |label: &str, name: &str, abbrev: &str| NormalizedTeam {
+            label: label.into(),
+            name: name.into(),
+            abbrev: abbrev.into(),
+            score: None,
+        };
+        let mk = |id: i64,
+                  series: &str,
+                  sport: Sport,
+                  hrs: i64,
+                  a: NormalizedTeam,
+                  b: NormalizedTeam| {
+            let mut m = NormalizedMatch::team_sport(
+                id,
+                sport,
+                "Mid-Season Invitational",
+                base + Duration::hours(hrs),
+                MatchStatus::Upcoming,
+                a,
+                b,
+            );
+            m.series_name = series.into();
+            m
+        };
+        let matches = vec![
+            // The match being viewed.
+            mk(
+                1,
+                "2026",
+                Sport::Lol,
+                0,
+                team("BLG", "Bilibili Gaming", "BLG"),
+                team("T1", "T1", "T1"),
+            ),
+            // Same event, +3h → its teams are folded in.
+            mk(
+                2,
+                "2026",
+                Sport::Lol,
+                3,
+                team("G2", "G2 Esports", "G2"),
+                team("TES", "Top Esports", "TES"),
+            ),
+            // Same event but 20h away → out of the day window.
+            mk(
+                3,
+                "2026",
+                Sport::Lol,
+                20,
+                team("HLE", "Hanwha Life", "HLE"),
+                team("GEN", "Gen.G", "GEN"),
+            ),
+            // Different edition (series) → excluded.
+            mk(
+                4,
+                "2025",
+                Sport::Lol,
+                1,
+                team("FNC", "Fnatic", "FNC"),
+                team("MAD", "Mad Lions", "MAD"),
+            ),
+            // Different sport → excluded.
+            mk(
+                5,
+                "2026",
+                Sport::Cs2,
+                1,
+                team("NAVI", "Natus Vincere", "NAVI"),
+                team("FAZE", "FaZe", "FAZE"),
+            ),
+        ];
+        let aliases: std::collections::HashMap<String, Vec<String>> = [(
+            "Mid-Season Invitational".to_string(),
+            vec!["MSI".to_string()],
+        )]
+        .into_iter()
+        .collect();
+        let kw = event_day_keywords(
+            Sport::Lol,
+            "Mid-Season Invitational",
+            "2026",
+            base,
+            &matches,
+            &aliases,
+            Duration::hours(12),
+        );
+        // League keywords, plus the current + within-window teams (names + acronyms).
+        for t in [
+            "msi",
+            "mid-season invitational",
+            "bilibili gaming",
+            "blg",
+            "t1",
+            "g2 esports",
+            "g2",
+            "top esports",
+            "tes",
+        ] {
+            assert!(kw.contains(&t.to_string()), "missing keyword {t}");
+        }
+        // Out-of-window, other edition, and other sport are all excluded.
+        for t in [
+            "hanwha life",
+            "gen.g",
+            "fnatic",
+            "mad lions",
+            "natus vincere",
+            "faze",
+        ] {
+            assert!(!kw.contains(&t.to_string()), "should not include {t}");
+        }
+    }
+
+    #[test]
     fn attribute_costreams_filters_dedups_and_marks_costream() {
         use crate::twitch_discover::DiscoveredStream;
         let ds = |login: &str, v: u64, title: &str, tags: &[&str]| DiscoveredStream {
             login: login.to_string(),
             viewers: v,
             title: title.to_string(),
+            language: "en".to_string(),
             tags: tags.iter().map(|s| s.to_string()).collect(),
         };
         let scan = vec![
@@ -6312,13 +6683,12 @@ mod tests {
         assert!(out
             .iter()
             .all(|s| s.group == "costream" && s.live && !s.official));
-        assert_eq!(
-            out.iter()
-                .find(|s| login_of(&s.url).as_deref() == Some("caedrel"))
-                .unwrap()
-                .viewers,
-            Some(40000)
-        );
+        let caedrel = out
+            .iter()
+            .find(|s| login_of(&s.url).as_deref() == Some("caedrel"))
+            .unwrap();
+        assert_eq!(caedrel.viewers, Some(40000));
+        assert_eq!(caedrel.language, "en"); // discovered stream language carried onto the co-stream
     }
 
     #[test]
@@ -6328,6 +6698,7 @@ mod tests {
             login: login.to_string(),
             viewers: v,
             title: title.to_string(),
+            language: "en".to_string(),
             tags: vec![],
         };
         let scan = vec![
@@ -6349,64 +6720,107 @@ mod tests {
     }
 
     #[test]
-    fn enrich_youtube_marks_and_appends() {
+    fn dedupe_youtube_collapses_same_channel_and_keeps_permalink() {
+        let streams = vec![
+            // Same broadcast, two URL forms (per-video + channel permalink).
+            StreamView {
+                url: "https://www.youtube.com/watch?v=vid1".into(),
+                language: "en".into(),
+                group: "costream".into(),
+                ..Default::default()
+            },
+            StreamView {
+                url: "https://www.youtube.com/lolesports/live".into(),
+                group: "costream".into(),
+                ..Default::default()
+            },
+            // A different channel (Spanish feed) — must survive.
+            StreamView {
+                url: "https://www.youtube.com/@latam/live".into(),
+                language: "es".into(),
+                group: "costream".into(),
+                ..Default::default()
+            },
+            // Non-YouTube — untouched.
+            StreamView {
+                url: "https://www.twitch.tv/riotgames".into(),
+                official: true,
+                group: "official".into(),
+                ..Default::default()
+            },
+        ];
+        let channel_of: HashMap<String, String> = [
+            ("https://www.youtube.com/watch?v=vid1", "UCmain"),
+            ("https://www.youtube.com/lolesports/live", "UCmain"),
+            ("https://www.youtube.com/@latam/live", "UClatam"),
+        ]
+        .into_iter()
+        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .collect();
+        let out = dedupe_youtube_streams(streams, &channel_of);
+        let urls: Vec<&str> = out.iter().map(|s| s.url.as_str()).collect();
+        assert_eq!(
+            urls,
+            vec![
+                "https://www.youtube.com/lolesports/live", // permalink kept over /watch
+                "https://www.youtube.com/@latam/live",     // distinct channel survives
+                "https://www.twitch.tv/riotgames",         // non-youtube untouched
+            ]
+        );
+        assert_eq!(out[0].language, "en"); // carried from the /watch duplicate
+    }
+
+    #[test]
+    fn mark_and_append_youtube_marks_base_and_appends_live_seeds() {
         use crate::youtube::LiveInfo;
-        let base = vec![StreamView {
-            url: "https://www.twitch.tv/riotgames".into(),
-            group: "official".into(),
+        let streams = vec![StreamView {
+            url: "https://www.youtube.com/lolesports/live".into(),
+            group: "costream".into(),
             ..Default::default()
         }];
-        let yt_live: std::collections::HashMap<String, LiveInfo> = [
+        let channel_of: HashMap<String, String> =
+            [("https://www.youtube.com/lolesports/live", "UCmain")]
+                .into_iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect();
+        let yt_live: HashMap<String, LiveInfo> = [
             (
-                "@caedrel".to_string(),
+                "UCmain".to_string(),
+                LiveInfo {
+                    viewers: Some(12000),
+                },
+            ),
+            (
+                "UCcaedrel".to_string(),
                 LiveInfo {
                     viewers: Some(3700),
                 },
             ),
-            ("@sneaky".to_string(), LiveInfo { viewers: None }),
+            // UCoffline absent → its seed isn't appended.
         ]
         .into_iter()
         .collect();
         let seeds = vec![
-            "@caedrel".to_string(),
-            "@sneaky".to_string(),
-            "@offline".to_string(),
+            // Same channel as the base stream → must NOT be double-added.
+            (
+                "UCmain".to_string(),
+                "https://www.youtube.com/@lolesports".to_string(),
+            ),
+            (
+                "UCcaedrel".to_string(),
+                "https://www.youtube.com/@caedrel".to_string(),
+            ),
+            (
+                "UCoffline".to_string(),
+                "https://www.youtube.com/@offline".to_string(),
+            ),
         ];
-        let out = enrich_youtube(base, &yt_live, &seeds);
-        // Two live seeds appended as costreams; offline one not.
-        let caedrel = out
-            .iter()
-            .find(|s| s.url.contains("@caedrel"))
-            .expect("caedrel appended");
-        assert!(caedrel.live && caedrel.viewers == Some(3700) && caedrel.group == "costream");
-        let sneaky = out
-            .iter()
-            .find(|s| s.url.contains("@sneaky"))
-            .expect("sneaky appended");
-        assert!(sneaky.live && sneaky.viewers.is_none()); // live, hidden count
-        assert!(out.iter().all(|s| !s.url.contains("@offline")));
-        assert_eq!(out.len(), 3); // twitch base + 2 live yt
-    }
-
-    #[test]
-    fn enrich_youtube_marks_a_base_youtube_stream() {
-        use crate::youtube::LiveInfo;
-        let base = vec![StreamView {
-            url: "https://www.youtube.com/@FIAWEC/streams".into(),
-            group: "official".into(),
-            ..Default::default()
-        }];
-        let yt_live: std::collections::HashMap<String, LiveInfo> = [(
-            "@fiawec".to_string(),
-            LiveInfo {
-                viewers: Some(12000),
-            },
-        )]
-        .into_iter()
-        .collect();
-        let out = enrich_youtube(base, &yt_live, &[]);
-        assert!(out[0].live && out[0].viewers == Some(12000));
-        assert_eq!(out.len(), 1); // marked in place, not appended
+        let out = mark_and_append_youtube(streams, &channel_of, &yt_live, &seeds);
+        assert!(out[0].live && out[0].viewers == Some(12000)); // base marked live
+        let urls: Vec<&str> = out.iter().map(|s| s.url.as_str()).collect();
+        assert!(urls.contains(&"https://www.youtube.com/@caedrel")); // live seed appended
+        assert!(!urls.iter().any(|u| u.contains("@offline"))); // offline seed skipped
+        assert_eq!(out.len(), 2); // base + caedrel only (lolesports not double-added)
     }
 
     #[test]
