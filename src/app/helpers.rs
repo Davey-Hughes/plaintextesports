@@ -369,24 +369,42 @@ pub(crate) fn initial_tz() -> String {
     String::new()
 }
 
+/// The app-wide clock format when a viewer has no stored preference: 24-hour.
+/// Both the display seed ([`initial_hour24`]) and notification arming
+/// ([`super::storage::effective_hour24`]) fall back to this, so the schedule and
+/// its push notifications never show different clocks for the same viewer — keep
+/// them routed through this one constant so the two defaults can't drift apart.
+pub(crate) const DEFAULT_HOUR24: bool = true;
+
+/// Resolve a stored `"1"`/`"0"` clock string (from the `h24` cookie or the
+/// [`keys::HOUR24`] localStorage key) to a bool, falling back to
+/// [`DEFAULT_HOUR24`] when it was never set. Anything other than `"0"` counts as
+/// 24h, matching how the toggle persists the preference.
+pub(crate) fn resolve_hour24(stored: Option<&str>) -> bool {
+    stored.map_or(DEFAULT_HOUR24, |v| v != "0")
+}
+
 /// The 24-hour-clock preference for this render, read from the `h24` cookie so SSR
-/// and hydrate agree on the first paint. Defaults to true (24h); the localStorage
-/// pref still takes over (and back-fills the cookie) in the post-hydration effect.
+/// and hydrate agree on the first paint. Defaults to 24h ([`DEFAULT_HOUR24`]); the
+/// localStorage pref still takes over (and back-fills the cookie) in the
+/// post-hydration effect.
 #[cfg(feature = "ssr")]
 pub(crate) fn initial_hour24() -> bool {
-    use_context::<http::request::Parts>()
-        .and_then(|parts| ssr_cookie(&parts, HOUR24_COOKIE_KEY))
-        .is_none_or(|v| v != "0")
+    resolve_hour24(
+        use_context::<http::request::Parts>()
+            .and_then(|parts| ssr_cookie(&parts, HOUR24_COOKIE_KEY))
+            .as_deref(),
+    )
 }
 
 #[cfg(feature = "hydrate")]
 pub(crate) fn initial_hour24() -> bool {
-    read_cookie(HOUR24_COOKIE_KEY).is_none_or(|v| v != "0")
+    resolve_hour24(read_cookie(HOUR24_COOKIE_KEY).as_deref())
 }
 
 #[cfg(not(any(feature = "ssr", feature = "hydrate")))]
 pub(crate) fn initial_hour24() -> bool {
-    true
+    resolve_hour24(None)
 }
 
 #[cfg(feature = "hydrate")]

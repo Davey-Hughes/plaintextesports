@@ -506,6 +506,21 @@ mod tests {
     }
 
     #[test]
+    fn hour24_defaults_to_24h_when_unset() {
+        // The app-wide clock default is 24h. A viewer who never toggled the clock
+        // sees 24h everywhere — the schedule *and* push notifications. Regression
+        // for the bug where notification arming defaulted to 12h (via
+        // `unwrap_or(false)`) while the display defaulted to 24h, so a
+        // default-settings viewer got 12h notifications.
+        assert!(DEFAULT_HOUR24);
+        assert!(resolve_hour24(None), "never set ⇒ 24h");
+        assert!(!resolve_hour24(Some("0")), "explicit 12h");
+        assert!(resolve_hour24(Some("1")), "explicit 24h");
+        // The notification fallback and the display fallback must agree when unset.
+        assert_eq!(None::<bool>.unwrap_or(DEFAULT_HOUR24), resolve_hour24(None));
+    }
+
+    #[test]
     fn parse_uid_inverts_match_uid() {
         let uid = crate::types::match_uid(Sport::Lol, 12345);
         assert_eq!(parse_uid(&uid), Some((Sport::Lol, 12345)));

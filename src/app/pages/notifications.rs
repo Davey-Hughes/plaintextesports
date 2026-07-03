@@ -1027,7 +1027,7 @@ pub(crate) fn sync_entries(
     // The viewer's zone + clock format, so the server bakes each body's start
     // time locally in the format the rest of the UI uses.
     let tz = detect_tz().unwrap_or_default();
-    let hour24 = load_hour24_pref().unwrap_or(false);
+    let hour24 = effective_hour24();
     leptos::task::spawn_local(async move {
         // A user action, so it's fine to prompt + create a subscription.
         let sub = match pte_subscribe(&vapid).await {
@@ -1119,7 +1119,7 @@ pub(crate) fn reconcile_notifications(
     // Re-arm with the current zone + clock format, so a since-changed 12h/24h
     // preference re-renders existing reminders' bodies on the next load.
     let tz = detect_tz().unwrap_or_default();
-    let hour24 = load_hour24_pref().unwrap_or(false);
+    let hour24 = effective_hour24();
     // Resolve each entry's effective leads (its override else the global list) —
     // the same shape the import/global-edit paths arm with.
     let subs_re: Vec<(String, String, Vec<i64>)> = subscribed
@@ -1175,7 +1175,7 @@ pub(crate) fn subscribe_scope(
     // The viewer's zone + clock format, stored with the subscription so expansion
     // bakes each match's reminder body in their local time and chosen format.
     let tz = detect_tz().unwrap_or_default();
-    let hour24 = load_hour24_pref().unwrap_or(false);
+    let hour24 = effective_hour24();
     leptos::task::spawn_local(async move {
         let sub = match pte_subscribe(&vapid).await {
             Ok(s) => s,
@@ -1257,7 +1257,7 @@ pub(crate) fn sync_match_reminder(
     // The viewer's zone + clock format, so the server bakes the body's start time
     // locally in the format the rest of the UI uses.
     let tz = detect_tz().unwrap_or_default();
-    let hour24 = load_hour24_pref().unwrap_or(false);
+    let hour24 = effective_hour24();
     leptos::task::spawn_local(async move {
         let sub = match pte_subscribe(&vapid).await {
             Ok(s) => s,

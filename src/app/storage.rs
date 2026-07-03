@@ -21,6 +21,17 @@ pub(crate) fn load_hour24_pref() -> Option<bool> {
     Some(v != "0")
 }
 
+/// The viewer's clock format for notification arming: their saved localStorage
+/// preference, else the app default ([`DEFAULT_HOUR24`], 24h). This must match the
+/// display seed ([`initial_hour24`]) so a push notification renders in the same
+/// clock the schedule shows — a viewer on the untouched default gets 24h in both,
+/// not 12h. (Bare `load_hour24_pref()` returns `None` when unset; don't default it
+/// to 12h.)
+#[cfg(feature = "hydrate")]
+pub(crate) fn effective_hour24() -> bool {
+    load_hour24_pref().unwrap_or(DEFAULT_HOUR24)
+}
+
 #[cfg(feature = "hydrate")]
 pub(crate) fn save_hour24_pref(hour24: bool) {
     let val = if hour24 { "1" } else { "0" };
