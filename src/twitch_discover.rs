@@ -17,6 +17,8 @@ pub struct DiscoveredStream {
     pub login: String,
     pub viewers: u64,
     pub title: String,
+    /// ISO-639-1 stream language from Helix (e.g. "en"), empty when absent.
+    pub language: String,
     pub tags: Vec<String>,
 }
 
@@ -59,6 +61,8 @@ struct RawDiscover {
     #[serde(default)]
     title: String,
     #[serde(default)]
+    language: String,
+    #[serde(default)]
     tags: Vec<String>,
 }
 
@@ -74,6 +78,7 @@ pub fn parse_discover_page(json: &str) -> (Vec<DiscoveredStream>, Option<String>
             login: r.user_login.to_ascii_lowercase(),
             viewers: r.viewer_count,
             title: r.title,
+            language: r.language,
             tags: r.tags,
         })
         .collect();
@@ -161,7 +166,7 @@ mod tests {
     #[test]
     fn parse_discover_page_extracts_streams_and_cursor() {
         let json = r#"{"data":[
-            {"user_login":"Caedrel","viewer_count":40000,"title":"MSI CO-STREAM","tags":["English","Esports"]},
+            {"user_login":"Caedrel","viewer_count":40000,"title":"MSI CO-STREAM","language":"en","tags":["English","Esports"]},
             {"user_login":"","viewer_count":5,"title":"x","tags":[]}
         ],"pagination":{"cursor":"abc"}}"#;
         let (v, cursor) = parse_discover_page(json);
@@ -169,6 +174,7 @@ mod tests {
         assert_eq!(v[0].login, "caedrel"); // lowercased
         assert_eq!(v[0].viewers, 40000);
         assert_eq!(v[0].title, "MSI CO-STREAM");
+        assert_eq!(v[0].language, "en"); // captured from Helix
         assert_eq!(v[0].tags, vec!["English", "Esports"]);
         assert_eq!(cursor.as_deref(), Some("abc"));
         // Malformed / empty → no panic, empty page, no cursor.

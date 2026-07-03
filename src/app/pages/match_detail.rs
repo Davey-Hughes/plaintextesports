@@ -679,28 +679,86 @@ fn fmt_viewers(n: u64) -> String {
     }
 }
 
-#[component]
-pub(crate) fn StreamsList(streams: Vec<StreamView>) -> impl IntoView {
-    if streams.is_empty() {
-        return ().into_any();
+/// The left-gutter language label for an esports stream's group, shown once per
+/// group: `"costream:en"` → `"EN"`, unknown → `"Other"`, and the official block
+/// shows just its language too — being the leading full-width row already sets it
+/// apart, so it needs no "main"/"official" tag.
+fn gutter_label(s: &StreamView) -> String {
+    let lang = s
+        .group
+        .strip_prefix("costream:")
+        .map(str::to_string)
+        .unwrap_or_else(|| s.language.to_ascii_lowercase());
+    if lang.is_empty() {
+        "Other".to_string()
+    } else {
+        lang.to_uppercase()
     }
-    // MLB broadcasts carry a network `name` (and sometimes a watch link); esports
-    // streams carry a clickable `url`. Title the section to match what it lists.
-    let broadcast = streams.iter().any(|s| !s.name.is_empty());
-    let title = if broadcast { "Broadcasts" } else { "Streams" };
-    // A small gap leads each new group (after the first), separating official
-    // streams from co-streams, and TV / streaming / radio for broadcasts.
-    let gaps: Vec<bool> = streams
-        .iter()
-        .enumerate()
-        .map(|(i, s)| i > 0 && streams[i - 1].group != s.group)
-        .collect();
+}
+
+/// Build `<li>` rows for one region of esports streams (the official lead, or a
+/// co-stream column), tagged with `region_class` so the grid can place them. Each
+/// row: a left-gutter language label (shown once per group), channel name, and
+/// live/viewers.
+fn stream_rows(streams: Vec<StreamView>, region_class: &'static str) -> Vec<AnyView> {
+    let mut rows = Vec::new();
+    let mut prev_group: Option<String> = None;
+    for s in streams {
+        let new_group = prev_group.as_deref() != Some(s.group.as_str());
+        prev_group = Some(s.group.clone());
+        let gutter = if new_group {
+            gutter_label(&s)
+        } else {
+            String::new()
+        };
+        let (site, channel) = stream_parts(&s.url);
+        let name_inner = view! {
+            <span class="stream-site">{site}</span>
+            {(!channel.is_empty())
+                .then(|| view! { <span class="stream-chan">{format!("/{channel}")}</span> })}
+        };
+        let name = if s.url.is_empty() {
+            view! { <span class="stream-name">{name_inner}</span> }.into_any()
+        } else {
+            view! {
+                <a class="stream-name" href=s.url target="_blank" rel="noreferrer">
+                    {name_inner}
+                </a>
+            }
+            .into_any()
+        };
+        let mut cls = String::from("stream ");
+        cls.push_str(region_class);
+        if s.official {
+            cls.push_str(" official");
+        }
+        let (live, viewers) = (s.live, s.viewers);
+        rows.push(
+            view! {
+                <li class=cls>
+                    <span class="stream-lang">{gutter}</span>
+                    {name}
+                    {live.then(|| {
+                        let v = viewers.map(|n| format!(" {}", fmt_viewers(n))).unwrap_or_default();
+                        view! { <span class="stream-live">"●"{v}</span> }
+                    })}
+                </li>
+            }
+            .into_any(),
+        );
+    }
+    rows
+}
+
+/// Traditional-sports broadcasts: a single column of `name · tag · live` rows, a
+/// small gap between the TV / streaming / radio groups.
+fn broadcast_list(title: &'static str, streams: Vec<StreamView>) -> AnyView {
+    let mut prev_group: Option<String> = None;
     let items = streams
         .into_iter()
-        .zip(gaps)
-        .map(|(s, gap)| {
-            // A broadcast's label is its network name; an esports stream's is
-            // derived from its url (site + channel).
+        .map(|s| {
+            let gap = prev_group.as_deref().is_some_and(|g| g != s.group);
+            prev_group = Some(s.group.clone());
             let (label, channel) = if s.name.is_empty() {
                 stream_parts(&s.url)
             } else {
@@ -712,30 +770,32 @@ pub(crate) fn StreamsList(streams: Vec<StreamView>) -> impl IntoView {
                 s.tag.clone()
             };
             let mut cls = String::from("stream");
-            // Highlight an esports official broadcast (not the per-sport MLB flag).
-            if s.official && s.name.is_empty() {
-                cls.push_str(" official");
-            }
             if gap {
                 cls.push_str(" stream-group-start");
             }
-            let label_view = view! {
+            let name_inner = view! {
                 <span class="stream-site">{label}</span>
                 {(!channel.is_empty())
                     .then(|| view! { <span class="stream-chan">{format!("/{channel}")}</span> })}
             };
-            let body = if s.url.is_empty() {
-                label_view.into_any()
+            let name = if s.url.is_empty() {
+                view! { <span class="stream-name">{name_inner}</span> }.into_any()
             } else {
-                view! { <a href=s.url target="_blank" rel="noreferrer">{label_view}</a> }.into_any()
+                view! {
+                    <a class="stream-name" href=s.url target="_blank" rel="noreferrer">
+                        {name_inner}
+                    </a>
+                }
+                .into_any()
             };
+            let (live, viewers) = (s.live, s.viewers);
             view! {
                 <li class=cls>
-                    {body}
+                    {name}
                     {(!tags.is_empty()).then(|| view! { <span class="stream-tags">{tags}</span> })}
-                    {s.live.then(|| {
-                        let v = s.viewers.map(|n| format!(" · {}", fmt_viewers(n))).unwrap_or_default();
-                        view! { <span class="stream-live">"● live"{v}</span> }
+                    {live.then(|| {
+                        let v = viewers.map(|n| format!(" {}", fmt_viewers(n))).unwrap_or_default();
+                        view! { <span class="stream-live">"●"{v}</span> }
                     })}
                 </li>
             }
@@ -745,6 +805,38 @@ pub(crate) fn StreamsList(streams: Vec<StreamView>) -> impl IntoView {
         <section class="detail-section">
             <h2 class="section-title">{title}</h2>
             <ul class="streams">{items}</ul>
+        </section>
+    }
+    .into_any()
+}
+
+#[component]
+pub(crate) fn StreamsList(streams: Vec<StreamView>) -> impl IntoView {
+    if streams.is_empty() {
+        return ().into_any();
+    }
+    // MLB broadcasts carry a network `name` (and sometimes a watch link); esports
+    // streams carry a clickable `url`. Title the section to match what it lists.
+    let broadcast = streams.iter().any(|s| !s.name.is_empty());
+    let title = if broadcast { "Broadcasts" } else { "Streams" };
+    if broadcast {
+        return broadcast_list(title, streams);
+    }
+    // Esports: one grid holds the official lead (full-width, row 1) and the
+    // co-streams, which flow into two columns on desktop / one on mobile. Keeping
+    // them in a single grid lets the official's live line up with the left column,
+    // while each column's tracks still size to their own content.
+    let (official, mut rest): (Vec<StreamView>, Vec<StreamView>) =
+        streams.into_iter().partition(|s| s.official);
+    let mid = rest.len().div_ceil(2);
+    let second = rest.split_off(mid);
+    let mut items = stream_rows(official, "stream-lead");
+    items.extend(stream_rows(rest, "stream-c1"));
+    items.extend(stream_rows(second, "stream-c2"));
+    view! {
+        <section class="detail-section">
+            <h2 class="section-title">{title}</h2>
+            <ul class="streams-grid">{items}</ul>
         </section>
     }
     .into_any()
