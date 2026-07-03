@@ -1211,6 +1211,35 @@ a {
   margin: 1.5rem 0;
 }
 
+// Hold the async "loading…" fallback hidden for a short grace period. A
+// client-side navigation to an event/match page resolves its data in well under
+// a second, so the fallback would otherwise flash for just a few frames before
+// the real content pops in — a flicker that reads as "flashing" on mobile, where
+// the swap is more visible. (The `<Routes transition>` View Transition crossfade
+// only masks the swap INTO this loading state, not the swap back out of it, which
+// takes longer than the 0.1s crossfade — so it can't hide this on its own.)
+// Quick loads finish before the reveal and never show it; genuinely slow loads
+// still surface it as a real loading indicator. The `.page` min-height keeps the
+// footer pinned throughout (see above), so nothing else shifts meanwhile.
+.loading {
+  opacity: 0;
+  animation: loading-reveal 0.15s ease 0.25s forwards;
+}
+
+@keyframes loading-reveal {
+  to {
+    opacity: 1;
+  }
+}
+
+// Reduced-motion users get the indicator immediately — no delayed reveal.
+@media (prefers-reduced-motion: reduce) {
+  .loading {
+    opacity: 1;
+    animation: none;
+  }
+}
+
 .error {
   color: #d36a6a;
 }
