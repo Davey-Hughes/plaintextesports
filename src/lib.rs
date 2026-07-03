@@ -37,6 +37,8 @@ pub mod pandascore;
 #[cfg(feature = "ssr")]
 pub mod push;
 #[cfg(feature = "ssr")]
+pub mod soop;
+#[cfg(feature = "ssr")]
 pub mod store;
 #[cfg(feature = "ssr")]
 pub mod tiering;
