@@ -172,6 +172,29 @@ pub fn shell(options: LeptosOptions) -> impl IntoView {
 #[derive(Clone, Copy)]
 struct ShowScores(RwSignal<bool>);
 
+/// A bumped-each-time nonce that pulses the "scores" toggle. Fired when a per-item
+/// hide can't take effect because the global reveal is on, to point the user at the
+/// button they need to turn off.
+#[derive(Clone, Copy)]
+pub(crate) struct FlashScores(pub(crate) RwSignal<u32>);
+
+/// When the global reveal is on an individual hide can't take effect, so pulse the
+/// "scores" toggle instead and report `true` (the caller skips its own toggle).
+/// Both signals are captured at component setup so this is safe to call from an
+/// event handler.
+pub(crate) fn hide_deflected_to_global(
+    global: Option<RwSignal<bool>>,
+    flash: Option<RwSignal<u32>>,
+) -> bool {
+    let on = global.is_some_and(|g| g.get_untracked());
+    if on {
+        if let Some(f) = flash {
+            f.update(|n| *n = n.wrapping_add(1));
+        }
+    }
+    on
+}
+
 /// Whether to show the venue-local time on every sport's row at once — clicking
 /// any one time toggles it for all of them.
 #[derive(Clone, Copy)]
@@ -290,6 +313,8 @@ pub fn App() -> impl IntoView {
     let vapid = RwSignal::new(initial_vapid());
     // Spoiler control: a global reveal + a per-match reveal set.
     let show_scores = RwSignal::new(false);
+    // Pulses the "scores" toggle when an individual hide is blocked by it being on.
+    let flash_scores = RwSignal::new(0u32);
     // Shared so clicking any one game's time reveals every venue time at once.
     let show_venue = RwSignal::new(false);
     let revealed = RwSignal::new(HashSet::<String>::new());
@@ -322,6 +347,7 @@ pub fn App() -> impl IntoView {
     provide_context(Excluded(excluded));
     provide_context(vapid);
     provide_context(ShowScores(show_scores));
+    provide_context(FlashScores(flash_scores));
     provide_context(ShowVenue(show_venue));
     provide_context(RevealedMatches(revealed));
     provide_context(RevealedSections(sections));

@@ -140,6 +140,29 @@ pub(crate) fn HourToggle() -> impl IntoView {
 #[component]
 pub(crate) fn ScoresToggle() -> impl IntoView {
     let show = use_context::<ShowScores>().expect("show_scores context").0;
+    let flash = use_context::<FlashScores>().map(|f| f.0);
+    // Pulses when a per-item hide is blocked by this toggle being on, to draw the
+    // eye here (the button they need to turn off).
+    let flashing = RwSignal::new(false);
+    #[cfg(feature = "hydrate")]
+    if let Some(flash) = flash {
+        Effect::new(move |prev: Option<u32>| {
+            let n = flash.get();
+            if prev.is_some_and(|p| p != n) {
+                // Restart the CSS pulse each time: drop the class, re-add next
+                // frame, then clear it once the animation has played.
+                flashing.set(false);
+                request_animation_frame(move || flashing.set(true));
+                set_timeout(
+                    move || flashing.set(false),
+                    std::time::Duration::from_millis(750),
+                );
+            }
+            n
+        });
+    }
+    #[cfg(not(feature = "hydrate"))]
+    let _ = flash;
     let toggle = move |_| {
         let next = !show.get_untracked();
         show.set(next);
@@ -152,6 +175,7 @@ pub(crate) fn ScoresToggle() -> impl IntoView {
         // so it doesn't flash on load. The action is spelled out in the tooltip.
         <button
             class="toggle state-toggle scores-toggle"
+            class:flash=move || flashing.get()
             title=move || if show.get() { "Hide scores" } else { "Show scores" }
             aria-pressed=move || if show.get() { "true" } else { "false" }
             on:click=toggle
