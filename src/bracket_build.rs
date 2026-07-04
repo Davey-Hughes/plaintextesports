@@ -253,6 +253,12 @@ pub fn build(series: Vec<RawSeries>) -> Vec<BracketRound> {
                     break;
                 }
                 for (pos, &j) in idxs.iter().enumerate() {
+                    // A non-final match's feeder is within its own section; only the
+                    // final crosses sections (its finalists come from different
+                    // conferences), so don't match a same-named team elsewhere.
+                    if s.section != "final" && series[j].section != s.section {
+                        continue;
+                    }
                     if series[j].winner_team() == team {
                         best = Some((col, pos)); // later earlier col wins (closest)
                     }
