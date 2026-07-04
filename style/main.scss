@@ -2930,8 +2930,13 @@ a.sw-link {
 .bracket {
   position: relative;
   font-size: 12px;
-  --bk-box-w: 7.6em;
-  --bk-box-h: 3.8em;
+  // Wide enough that a single-word club name ("Hurricanes") fits on one line.
+  // Must match `BOX_W_EM` in `src/bracket.rs`.
+  --bk-box-w: 9em;
+  // Two rows tall enough for a team name to wrap to two lines (long club names
+  // like "Golden Knights") rather than truncate. Must match `BOX_H_EM` in
+  // `src/bracket.rs`.
+  --bk-box-h: 4.8em;
 }
 
 // The connector overlay sits behind the boxes and never intercepts clicks; the
@@ -2967,6 +2972,9 @@ a.sw-link {
 }
 
 // Round heading, absolutely placed above and centred over its column of boxes.
+// A background matching the page keeps the connector lines (which pass behind the
+// centred final's heading in a two-conference bracket) from showing through the
+// text.
 .bk-round-title {
   position: absolute;
   width: var(--bk-box-w);
@@ -2974,6 +2982,7 @@ a.sw-link {
   flex-direction: column;
   align-items: center;
   gap: 0.1rem;
+  background: var(--bg);
 }
 
 // The round's date span, beside the round title — muted and small so it reads
@@ -3050,12 +3059,18 @@ a.bk-team-link {
 
 // The box is a fixed width, so a long team name truncates with an ellipsis on a
 // single line rather than overflowing the box or wrapping past its fixed height.
+// A team name wraps to a second line rather than truncating — a two-word club
+// name ("Golden Knights") breaks at the space, and the box is wide enough that a
+// single-word name ("Hurricanes") still fits on one line. `overflow-wrap` is the
+// fallback for a single word longer than the box; `max-height` clips to two lines.
 .bk-team {
   flex: 1 1 auto;
   min-width: 0;
   overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  white-space: normal;
+  overflow-wrap: break-word;
+  line-height: 1.15;
+  max-height: 2.3em;
 }
 
 .bk-row {
