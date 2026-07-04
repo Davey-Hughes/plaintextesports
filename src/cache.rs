@@ -114,6 +114,120 @@ fn soccer_tables(league: &str) -> Vec<EventInfo> {
         .unwrap_or_default()
 }
 
+/// Traditional-sport postseason brackets (soccer World Cup, NFL/NBA/NHL/MLB
+/// playoffs), each a bracket-only [`EventInfo`] stage keyed by event/league name.
+/// Built from each sport's source in the background loop and appended to the event
+/// page after any group/division tables. Empty until first built.
+static PLAYOFF_BRACKETS: Lazy<RwLock<HashMap<String, EventInfo>>> =
+    Lazy::new(|| RwLock::new(HashMap::new()));
+
+// Synthetic tournament-id bases for the playoff brackets — reveal state keys off
+// `tournament_id`, so it must be stable across page loads and disjoint from the
+// ESPN standings ids (400–700) and PandaScore's real ids. One base per sport
+// (1M apart); the season year (added in) keeps editions distinct.
+const BRACKET_ID_SOCCER: i64 = 92_000_000;
+const BRACKET_ID_NFL: i64 = 93_000_000;
+const BRACKET_ID_NBA: i64 = 94_000_000;
+const BRACKET_ID_NHL: i64 = 95_000_000;
+const BRACKET_ID_MLB: i64 = 96_000_000;
+
+/// The cached bracket stage for an event name, if one has been built.
+fn playoff_bracket_stage(event: &str) -> Option<EventInfo> {
+    PLAYOFF_BRACKETS
+        .read()
+        .unwrap_or_else(PoisonError::into_inner)
+        .get(event)
+        .cloned()
+}
+
+/// Wrap freshly-built rounds into a bracket-only stage and replace the cache entry
+/// — keeping the previous bracket on a fetch error or an empty (off-season / not
+/// yet started) result, so the page never blanks a bracket that was showing.
+fn update_bracket<E: std::fmt::Display>(
+    event: &str,
+    tid: i64,
+    stage: &str,
+    sport: Sport,
+    raw: Result<Vec<crate::types::BracketRound>, E>,
+) {
+    match raw {
+        Ok(rounds) if !rounds.is_empty() => {
+            let ev = EventInfo {
+                event: event.to_string(),
+                tournament_id: tid,
+                stage: stage.to_string(),
+                sport,
+                standings: Vec::new(),
+                rounds,
+                swiss: Vec::new(),
+            };
+            db_cache_put("playoff_bracket", event, &ev, Utc::now());
+            PLAYOFF_BRACKETS
+                .write()
+                .unwrap_or_else(PoisonError::into_inner)
+                .insert(event.to_string(), ev);
+        }
+        Ok(_) => {}
+        Err(e) => leptos::logging::log!("{event} bracket fetch failed: {e}"),
+    }
+}
+
+/// Fetch every available traditional-sport playoff bracket and refresh the cache.
+/// Each builder returns an empty bracket off-season, which `update_bracket` keeps
+/// out of the cache. Run on the same cadence as standings (a bracket only changes
+/// when a game/series finishes).
+#[allow(clippy::let_underscore_future)]
+async fn refresh_brackets(client: &reqwest::Client, now: DateTime<Utc>) {
+    use crate::espn::{season_year, NBA, NFL, WORLD_CUP};
+    let wc_year = now.year();
+    // NFL labels its season by the start year but plays the postseason the next
+    // January/February; NBA/NHL/MLB postseasons fall in their end year.
+    let nfl_year = season_year(Sport::Nfl, now);
+    let hoops_year = season_year(Sport::Nba, now);
+    let (soccer, nfl, nba, nhl, mlb) = tokio::join!(
+        crate::espn::fetch_soccer_bracket(client, &WORLD_CUP, wc_year),
+        crate::espn::fetch_nfl_bracket(client, &NFL, nfl_year),
+        crate::espn::fetch_nba_bracket(client, &NBA, hoops_year),
+        crate::nhl::fetch_bracket(client, hoops_year),
+        crate::mlb::fetch_bracket(client, hoops_year),
+    );
+    update_bracket(
+        "World Cup",
+        BRACKET_ID_SOCCER + wc_year as i64,
+        "Knockout Stage",
+        Sport::Soccer,
+        soccer,
+    );
+    update_bracket(
+        "NFL",
+        BRACKET_ID_NFL + nfl_year as i64,
+        "Playoffs",
+        Sport::Nfl,
+        nfl,
+    );
+    update_bracket(
+        "NBA",
+        BRACKET_ID_NBA + hoops_year as i64,
+        "Playoffs",
+        Sport::Nba,
+        nba,
+    );
+    update_bracket(
+        "NHL",
+        BRACKET_ID_NHL + hoops_year as i64,
+        "Stanley Cup Playoffs",
+        Sport::Nhl,
+        nhl,
+    );
+    update_bracket(
+        "MLB",
+        BRACKET_ID_MLB + hoops_year as i64,
+        "Postseason",
+        Sport::Mlb,
+        mlb,
+    );
+}
+
 /// The subset of `tables` that contain either team — the one or two
 /// divisions/conferences/groups the two sides of a match belong to. Order
 /// follows the league-wide ordering.
@@ -133,17 +247,26 @@ fn tables_with_team(tables: &[EventInfo], team_a: &str, team_b: &str) -> Vec<Eve
 /// six MLB divisions for `/event/MLB`). `None` for an esports event, whose
 /// standings come from its tournament instead.
 pub fn standings_for_event_name(name: &str) -> Option<Vec<EventInfo>> {
-    Some(match name {
-        "MLB" => read_tables(&MLB_STANDINGS),
-        "NHL" => read_tables(&NHL_STANDINGS),
-        "NBA" => read_tables(&NBA_STANDINGS),
-        "NFL" => read_tables(&NFL_STANDINGS),
-        "Premier League" => soccer_tables("Premier League"),
+    // The league/group tables, then (in postseason) a bracket-only stage appended
+    // after them. `bracket_key` is the event name the bracket is cached under.
+    let (mut tables, bracket_key) = match name {
+        "MLB" => (read_tables(&MLB_STANDINGS), "MLB"),
+        "NHL" => (read_tables(&NHL_STANDINGS), "NHL"),
+        "NBA" => (read_tables(&NBA_STANDINGS), "NBA"),
+        "NFL" => (read_tables(&NFL_STANDINGS), "NFL"),
+        "Premier League" => (soccer_tables("Premier League"), ""),
         // The World Cup event name carries its year ("World Cup 2026"); its
-        // standings are keyed on the bare league name.
-        n if n.starts_with("World Cup") => soccer_tables("World Cup"),
+        // standings and bracket are keyed on the bare league name.
+        n if n.starts_with("World Cup") => (soccer_tables("World Cup"), "World Cup"),
         _ => return None,
-    })
+    };
+    if let Some(bracket) = (!bracket_key.is_empty())
+        .then(|| playoff_bracket_stage(bracket_key))
+        .flatten()
+    {
+        tables.push(bracket);
+    }
+    Some(tables)
 }
 
 /// The standings table(s) the two sides of a traditional match belong to (their
@@ -1142,6 +1265,16 @@ fn load_persisted_standings() {
     fill_motor("wrc_standings", &WRC_STANDINGS);
     fill_motor("wec_standings", &WEC_STANDINGS);
     fill_motor("motogp_standings", &MOTOGP_STANDINGS);
+    {
+        let mut brackets = PLAYOFF_BRACKETS
+            .write()
+            .unwrap_or_else(PoisonError::into_inner);
+        for (event, stage, _) in db_cache_get_ns::<EventInfo>("playoff_bracket") {
+            if !stage.rounds.is_empty() {
+                brackets.insert(event, stage);
+            }
+        }
+    }
 }
 
 /// Start the background poller. Loads any persisted matches first (so a restart
@@ -1518,6 +1651,10 @@ pub fn spawn_poller() {
             // Cup's group tables.
             update_soccer_standings("Premier League", epl_standings_raw);
             update_soccer_standings("World Cup", wc_standings_raw);
+
+            // Postseason brackets (soccer World Cup + NFL/NBA/NHL/MLB playoffs) —
+            // same cadence as standings; each builder is a no-op off-season.
+            refresh_brackets(&client, now).await;
 
             // Resolve exact Liquipedia links for any new events. The async
             // lookups hold no DB connection; persistence happens synchronously

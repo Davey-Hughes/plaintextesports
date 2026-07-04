@@ -7,13 +7,15 @@
 //! ESPN doesn't expose a venue IANA timezone, so these games carry no venue-time
 //! toggle (like esports); the start time still shows in the viewer's zone.
 
+use crate::bracket_build::{self, RawSeries};
 use crate::feed::{NormalizedMatch, NormalizedTeam};
 use crate::types::{
-    stat_share, BoxScore, EventInfo, LeaderCard, LineRow, LineScore, MatchStatus, PlayerRow,
-    PlayerTable, ScoreEvent, Sport, StandingRow, StatPair, StreamView,
+    stat_share, BoxScore, BracketRound, EventInfo, LeaderCard, LineRow, LineScore, MatchStatus,
+    PlayerRow, PlayerTable, ScoreEvent, Sport, StandingRow, StatPair, StreamView,
 };
 use chrono::{DateTime, Datelike, NaiveDate, NaiveDateTime, Utc};
 use serde::Deserialize;
+use std::time::Duration;
 
 const SITE: &str = "https://site.api.espn.com/apis/site/v2/sports";
 const CORE: &str = "https://site.api.espn.com/apis/v2/sports";
@@ -135,6 +137,26 @@ struct Event {
     status: Status,
     #[serde(default)]
     competitions: Vec<Competition>,
+    /// The season block: `type` distinguishes the round (a numeric stage id for
+    /// soccer/NFL/NBA postseasons). Only used by the bracket builders. (The
+    /// per-side feeder placeholders live on each competitor's `displayName`.)
+    #[serde(default)]
+    season: SeasonRef,
+    /// The postseason week (NFL: 1 Wild Card … 5 Super Bowl). Bracket builders only.
+    #[serde(default)]
+    week: WeekRef,
+}
+
+#[derive(Deserialize, Default)]
+struct SeasonRef {
+    #[serde(rename = "type", default)]
+    kind: i64,
+}
+
+#[derive(Deserialize, Default)]
+struct WeekRef {
+    #[serde(default)]
+    number: i64,
 }
 
 #[derive(Deserialize, Default)]
@@ -159,6 +181,36 @@ struct Competition {
     venue: Venue,
     #[serde(rename = "geoBroadcasts", default)]
     geo_broadcasts: Vec<GeoBroadcast>,
+    /// Round headlines, e.g. "AFC Wild Card Playoffs", "East 1st Round - Game 6",
+    /// "NBA Finals". Bracket builders only.
+    #[serde(default)]
+    notes: Vec<Note>,
+    /// The embedded playoff-series summary (NBA: games-won per team, best-of
+    /// length, completion). Absent outside a series. Bracket builders only.
+    #[serde(default)]
+    series: Option<SeriesRef>,
+}
+
+#[derive(Deserialize, Default)]
+struct Note {
+    #[serde(default)]
+    headline: String,
+}
+
+#[derive(Deserialize, Default)]
+struct SeriesRef {
+    #[serde(default)]
+    completed: bool,
+    #[serde(default)]
+    competitors: Vec<SeriesCompetitor>,
+}
+
+#[derive(Deserialize, Default)]
+struct SeriesCompetitor {
+    #[serde(default)]
+    id: String,
+    #[serde(default)]
+    wins: i64,
 }
 
 #[derive(Deserialize, Default)]
@@ -232,10 +284,16 @@ struct Competitor {
     score: String,
     #[serde(default)]
     team: TeamRef,
+    /// Whether this side won (set on a finished game/series). Bracket builders only.
+    #[serde(default)]
+    winner: bool,
 }
 
 #[derive(Deserialize, Default)]
 struct TeamRef {
+    /// ESPN team id (matches `series.competitors[].id`). Bracket builders only.
+    #[serde(default)]
+    id: String,
     #[serde(rename = "shortDisplayName", default)]
     short_display_name: String,
     #[serde(rename = "displayName", default)]
@@ -974,9 +1032,738 @@ pub fn to_box_score(s: &RawSummary) -> BoxScore {
     }
 }
 
+// ---- Playoff brackets -------------------------------------------------------
+//
+// ESPN's scoreboard already carries everything a knockout bracket needs: each
+// event's `season.type` (the round), the matchup `name` (which, before a match is
+// seeded, is a "Quarterfinal 1 Winner at …" feeder placeholder), per-competitor
+// `winner`, and — for the series sports — an embedded `series` games-won summary.
+// These builders turn that into the shared `Vec<BracketRound>` the renderer draws.
+
+/// Fetch a league's scoreboard over the inclusive UTC-day range as raw events
+/// (parsed but not normalized) — the input to the bracket builders.
+async fn fetch_scoreboard_events(
+    client: &reqwest::Client,
+    espn_sport: &str,
+    league: &str,
+    start: NaiveDate,
+    end: NaiveDate,
+) -> Result<Vec<Event>, reqwest::Error> {
+    let url = format!(
+        "{SITE}/{espn_sport}/{league}/scoreboard?dates={}-{}&limit=500",
+        start.format("%Y%m%d"),
+        end.format("%Y%m%d"),
+    );
+    let resp: Scoreboard = client
+        .get(&url)
+        .timeout(Duration::from_secs(15))
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    Ok(resp.events)
+}
+
+/// A "… N Winner"/"… N Loser" feeder placeholder → `(feeder index 1-based, is the
+/// loser slot)`. `None` for a real, seeded team name.
+fn parse_placeholder(name: &str) -> Option<(u32, bool)> {
+    let (rest, is_loser) = name
+        .strip_suffix(" Winner")
+        .map(|r| (r, false))
+        .or_else(|| name.strip_suffix(" Loser").map(|r| (r, true)))?;
+    let n: u32 = rest.rsplit(' ').next()?.parse().ok()?;
+    Some((n, is_loser))
+}
+
+/// One parsed knockout match. Side 0 is the away team, side 1 the home team
+/// (matching the "away at home" name and the schedule's team-a/team-b order).
+#[derive(Clone)]
+struct KnMatch {
+    id: i64,
+    /// ESPN `season.type` — a per-round stage id used only to bucket matches.
+    kind: i64,
+    /// ISO date string, for ordering the two one-match rounds (3rd place < final).
+    date: String,
+    /// Seeded team name per side, empty while still a placeholder.
+    name: [String; 2],
+    score: [Option<i64>; 2],
+    won: [bool; 2],
+    /// Feeder placeholder per side (`(index, is_loser)`), when not yet seeded.
+    ph: [Option<(u32, bool)>; 2],
+}
+
+impl KnMatch {
+    fn winner_team(&self) -> &str {
+        if self.won[0] {
+            &self.name[0]
+        } else if self.won[1] {
+            &self.name[1]
+        } else {
+            ""
+        }
+    }
+    fn winner_code(&self) -> String {
+        if self.won[0] {
+            "a".into()
+        } else if self.won[1] {
+            "b".into()
+        } else {
+            String::new()
+        }
+    }
+}
+
+/// The World Cup (or any single-elimination soccer knockout) bracket: fetch the
+/// whole year's scoreboard (one call captures every knockout round wherever the
+/// tournament falls; the group stage is dropped by round size) and assemble it.
+pub async fn fetch_soccer_bracket(
+    client: &reqwest::Client,
+    lg: &EspnLeague,
+    year: i32,
+) -> Result<Vec<BracketRound>, reqwest::Error> {
+    let start = NaiveDate::from_ymd_opt(year, 1, 1).unwrap_or_default();
+    let end = NaiveDate::from_ymd_opt(year, 12, 31).unwrap_or_default();
+    let events = fetch_scoreboard_events(client, lg.espn_sport, lg.league, start, end).await?;
+    Ok(soccer_bracket(parse_knockout(events)))
+}
+
+/// Parse scoreboard events into knockout matches (dropping anything unparseable).
+fn parse_knockout(events: Vec<Event>) -> Vec<KnMatch> {
+    let mut out = Vec::new();
+    for e in events {
+        let Ok(id) = e.id.parse::<i64>() else {
+            continue;
+        };
+        let Some(comp) = e.competitions.into_iter().next() else {
+            continue;
+        };
+        let finished = e.status.r#type.state == "post";
+        let side = |ha: &str| -> Option<(String, Option<i64>, bool, Option<(u32, bool)>)> {
+            let c = comp.competitors.iter().find(|c| c.home_away == ha)?;
+            let ph = parse_placeholder(&c.team.display_name);
+            let name = if ph.is_some() {
+                String::new()
+            } else {
+                c.team.label()
+            };
+            let score = finished.then(|| c.score.parse::<i64>().ok()).flatten();
+            Some((name, score, c.winner, ph))
+        };
+        let (Some(a), Some(b)) = (side("away"), side("home")) else {
+            continue;
+        };
+        out.push(KnMatch {
+            id,
+            kind: e.season.kind,
+            date: e.date,
+            name: [a.0, b.0],
+            score: [a.1, b.1],
+            won: [a.2, b.2],
+            ph: [a.3, b.3],
+        });
+    }
+    out
+}
+
+/// The round title for a knockout column of `size` matches (16 → Round of 32, …).
+fn soccer_round_title(size: usize) -> String {
+    match size {
+        16 => "Round of 32",
+        8 => "Round of 16",
+        4 => "Quarterfinals",
+        2 => "Semifinals",
+        1 => "Final",
+        _ => "",
+    }
+    .to_string()
+}
+
+/// Assemble parsed knockout matches into bracket rounds. Rounds are the
+/// power-of-two-≤16 `season.type` buckets (the group stage, being larger, drops
+/// out); within a round, matches sort by id — which is ESPN's FIFA match order,
+/// the same 1-based index the feeder placeholders reference. Feeders come from a
+/// side's placeholder index when unseeded, or from which prior match its team won
+/// when seeded — so the real bracket crossovers (QF1 ← R16 #1 & #2, QF2 ← #5 & #6)
+/// are honored rather than assumed. The two one-match buckets split into the final
+/// and, one day earlier, the third-place match (its own labeled column).
+fn soccer_bracket(matches: Vec<KnMatch>) -> Vec<BracketRound> {
+    use std::collections::HashMap;
+    // Bucket by round stage id, keep only knockout-sized buckets.
+    let mut buckets: HashMap<i64, Vec<KnMatch>> = HashMap::new();
+    for m in matches {
+        buckets.entry(m.kind).or_default().push(m);
+    }
+    let mut buckets: Vec<Vec<KnMatch>> = buckets
+        .into_values()
+        .filter(|v| matches!(v.len(), 1 | 2 | 4 | 8 | 16))
+        .collect();
+    for b in &mut buckets {
+        b.sort_by(|x, y| x.id.cmp(&y.id));
+    }
+    if buckets.is_empty() {
+        return Vec::new();
+    }
+
+    // Multi-match rounds (R32 → SF), largest first; the one-match buckets are the
+    // final and the third-place match.
+    let mut main: Vec<Vec<KnMatch>> = buckets.iter().filter(|b| b.len() > 1).cloned().collect();
+    main.sort_by(|a, b| b.len().cmp(&a.len()));
+    let mut ones: Vec<Vec<KnMatch>> = buckets.into_iter().filter(|b| b.len() == 1).collect();
+    // Third place is the earlier of the two one-match games (or the one whose
+    // placeholder marks it a "Loser" bracket); the later/other is the final.
+    ones.sort_by(|a, b| a[0].date.cmp(&b[0].date));
+    let third = if ones.len() >= 2 {
+        let is_loser = |m: &KnMatch| m.ph.iter().flatten().any(|(_, l)| *l);
+        // Prefer an explicit "… Loser" placeholder; else the earlier date.
+        let idx = ones.iter().position(|b| is_loser(&b[0])).unwrap_or(0);
+        Some(ones.remove(idx))
+    } else {
+        None
+    };
+    if let Some(f) = ones.into_iter().next() {
+        main.push(f); // the final is the last main-tree round
+    }
+
+    // Feeder slot (into the prior round) for every match/side. Resolved so the real
+    // bracket crossovers survive: a seeded side is matched to the prior match its
+    // team won; an unseeded side uses its "… N Winner" placeholder index, but only
+    // when that index points at a still-undecided prior match (a placeholder never
+    // feeds from a decided one). Anything left over — a placeholder whose index
+    // collided with an already-seeded match — is matched by elimination against the
+    // remaining undecided prior matches, in id order.
+    let feed_slots: Vec<Vec<[Option<u32>; 2]>> = {
+        let mut all = Vec::with_capacity(main.len());
+        for r in 0..main.len() {
+            let mut fr = vec![[None, None]; main[r].len()];
+            if r > 0 {
+                let prev = &main[r - 1];
+                let prev_won: Vec<&str> = prev.iter().map(KnMatch::winner_team).collect();
+                let mut claimed = vec![false; prev.len()];
+                let mut pending: Vec<(usize, usize)> = Vec::new();
+                for (i, m) in main[r].iter().enumerate() {
+                    for side in 0..2 {
+                        if !m.name[side].is_empty() {
+                            // Seeded: the prior slot whose winner is this team.
+                            if let Some(s) = prev_won.iter().position(|w| *w == m.name[side]) {
+                                fr[i][side] = Some(s as u32);
+                                claimed[s] = true;
+                            }
+                        } else if let Some((n, _)) = m.ph[side] {
+                            let s = n.saturating_sub(1) as usize;
+                            if s < prev.len() && prev_won[s].is_empty() && !claimed[s] {
+                                fr[i][side] = Some(s as u32);
+                                claimed[s] = true;
+                            } else {
+                                pending.push((i, side));
+                            }
+                        } else {
+                            pending.push((i, side));
+                        }
+                    }
+                }
+                let mut pool = (0..prev.len()).filter(|&s| !claimed[s]);
+                for (i, side) in pending {
+                    if let Some(s) = pool.next() {
+                        fr[i][side] = Some(s as u32);
+                    }
+                }
+            }
+            all.push(fr);
+        }
+        all
+    };
+
+    let mut series: Vec<RawSeries> = Vec::new();
+    for (r, round) in main.iter().enumerate() {
+        let title = soccer_round_title(round.len());
+        for (slot, m) in round.iter().enumerate() {
+            let feed = |side: usize| -> Option<bracket_build::FeederRef> {
+                feed_slots[r][slot][side].map(|s| (String::new(), (r - 1) as u32, s))
+            };
+            series.push(RawSeries {
+                section: String::new(),
+                round: r as u32,
+                slot: slot as u32,
+                round_title: title.clone(),
+                team_a: m.name[0].clone(),
+                team_b: m.name[1].clone(),
+                score_a: m.score[0],
+                score_b: m.score[1],
+                winner: m.winner_code(),
+                match_id: m.id,
+                feed: [feed(0), feed(1)],
+            });
+        }
+    }
+    if let Some(t) = third {
+        let m = &t[0];
+        // A lone labeled column, no drawn feeders (both semifinal losers would
+        // otherwise cross the final's connectors).
+        series.push(RawSeries {
+            section: "third".into(),
+            round: 0,
+            slot: 0,
+            round_title: "Third Place".into(),
+            team_a: m.name[0].clone(),
+            team_b: m.name[1].clone(),
+            score_a: m.score[0],
+            score_b: m.score[1],
+            winner: m.winner_code(),
+            match_id: m.id,
+            feed: [None, None],
+        });
+    }
+    bracket_build::build(series)
+}
+
+// ----- NFL playoff bracket ---------------------------------------------------
+
+/// The NFL playoff bracket for a season (empty outside the postseason). The
+/// postseason plays in January/February of the year after the season's start
+/// year, so the window spans the season boundary.
+pub async fn fetch_nfl_bracket(
+    client: &reqwest::Client,
+    lg: &EspnLeague,
+    season_start_year: i32,
+) -> Result<Vec<BracketRound>, reqwest::Error> {
+    let start = NaiveDate::from_ymd_opt(season_start_year, 12, 1).unwrap_or_default();
+    let end = NaiveDate::from_ymd_opt(season_start_year + 1, 3, 1).unwrap_or_default();
+    let events = fetch_scoreboard_events(client, lg.espn_sport, lg.league, start, end).await?;
+    Ok(nfl_bracket(events))
+}
+
+/// `(round-in-conference, column title)` for an NFL postseason week; `None` skips
+/// non-bracket weeks (week 4 is the Pro Bowl).
+fn nfl_week_round(week: i64) -> Option<(u32, &'static str)> {
+    match week {
+        1 => Some((0, "Wild Card")),
+        2 => Some((1, "Divisional")),
+        3 => Some((2, "Conf. Championship")),
+        5 => Some((0, "Super Bowl")), // the final's own section, one column
+        _ => None,
+    }
+}
+
+fn nfl_bracket(events: Vec<Event>) -> Vec<BracketRound> {
+    use std::collections::HashMap;
+    let mut raws: Vec<RawSeries> = Vec::new();
+    let mut slot_counter: HashMap<(String, u32), u32> = HashMap::new();
+    // Sort by (week, id) so slots within a round are stable and the final is last.
+    let mut evs: Vec<Event> = events.into_iter().filter(|e| e.season.kind == 3).collect();
+    evs.sort_by(|a, b| a.week.number.cmp(&b.week.number).then(a.id.cmp(&b.id)));
+    for e in evs {
+        let Some((round, title)) = nfl_week_round(e.week.number) else {
+            continue;
+        };
+        let Ok(id) = e.id.parse::<i64>() else {
+            continue;
+        };
+        let headline = e
+            .competitions
+            .first()
+            .and_then(|c| c.notes.first())
+            .map(|n| n.headline.as_str())
+            .unwrap_or("");
+        let section = if headline.contains("Super Bowl") || e.week.number == 5 {
+            "final"
+        } else if headline.starts_with("AFC") {
+            "afc"
+        } else if headline.starts_with("NFC") {
+            "nfc"
+        } else {
+            continue;
+        };
+        let Some(comp) = e.competitions.into_iter().next() else {
+            continue;
+        };
+        let (Some(away), Some(home)) = (
+            comp.competitors.iter().find(|c| c.home_away == "away"),
+            comp.competitors.iter().find(|c| c.home_away == "home"),
+        ) else {
+            continue;
+        };
+        let finished = e.status.r#type.state == "post";
+        let winner = if !finished {
+            ""
+        } else if away.winner {
+            "a"
+        } else if home.winner {
+            "b"
+        } else {
+            ""
+        };
+        let slot = slot_counter
+            .entry((section.to_string(), round))
+            .or_insert(0);
+        let this_slot = *slot;
+        *slot += 1;
+        raws.push(RawSeries {
+            section: section.to_string(),
+            round,
+            slot: this_slot,
+            round_title: title.to_string(),
+            team_a: away.team.label(),
+            team_b: home.team.label(),
+            score_a: finished.then(|| away.score.parse::<i64>().ok()).flatten(),
+            score_b: finished.then(|| home.score.parse::<i64>().ok()).flatten(),
+            winner: winner.to_string(),
+            match_id: id,
+            feed: [None, None],
+        });
+    }
+    bracket_build::build(raws)
+}
+
+// ----- NBA playoff bracket ---------------------------------------------------
+
+/// The NBA playoff bracket for a season (empty outside the playoffs). The playoffs
+/// run mid-April to mid-June of the season's end year.
+pub async fn fetch_nba_bracket(
+    client: &reqwest::Client,
+    lg: &EspnLeague,
+    end_year: i32,
+) -> Result<Vec<BracketRound>, reqwest::Error> {
+    let start = NaiveDate::from_ymd_opt(end_year, 4, 1).unwrap_or_default();
+    let end = NaiveDate::from_ymd_opt(end_year, 7, 15).unwrap_or_default();
+    let events = fetch_scoreboard_events(client, lg.espn_sport, lg.league, start, end).await?;
+    Ok(nba_bracket(events))
+}
+
+/// `(section, round-in-section, title)` for an NBA series from a game's round
+/// headline ("East 1st Round", "West Conference Finals", "NBA Finals"); `None`
+/// skips the play-in and anything unrecognized.
+fn nba_round(headline: &str) -> Option<(&'static str, u32, &'static str)> {
+    if headline.contains("Play-In") || headline.contains("Play In") {
+        return None;
+    }
+    if headline.contains("NBA Finals") {
+        return Some(("final", 0, "NBA Finals"));
+    }
+    let section = if headline.starts_with("East") {
+        "east"
+    } else if headline.starts_with("West") {
+        "west"
+    } else {
+        return None;
+    };
+    // ESPN labels the conference finals "East Finals"/"West Finals" (the NBA
+    // Finals is already handled above), the second round "… Semifinals".
+    let (round, title) = if headline.contains("1st Round") {
+        (0, "First Round")
+    } else if headline.contains("2nd Round") || headline.contains("Semifinal") {
+        (1, "Conf. Semifinals")
+    } else if headline.contains("Finals") {
+        (2, "Conference Finals")
+    } else {
+        return None;
+    };
+    Some((section, round, title))
+}
+
+fn nba_bracket(events: Vec<Event>) -> Vec<BracketRound> {
+    use std::collections::HashMap;
+    // Aggregate games into series by (section, round, matchup); each game carries
+    // the running series score, so keep the latest game's snapshot per matchup.
+    struct Acc {
+        section: &'static str,
+        round: u32,
+        title: &'static str,
+        best_id: i64,
+        first_id: i64,
+        team_a: String,
+        team_b: String,
+        id_a: String,
+        id_b: String,
+        wins_a: i64,
+        wins_b: i64,
+        completed: bool,
+    }
+    let mut map: HashMap<(String, u32, String), Acc> = HashMap::new();
+    for e in events {
+        if e.season.kind != 3 {
+            continue;
+        }
+        let Ok(id) = e.id.parse::<i64>() else {
+            continue;
+        };
+        let Some(comp) = e.competitions.into_iter().next() else {
+            continue;
+        };
+        let headline = comp
+            .notes
+            .first()
+            .map(|n| n.headline.as_str())
+            .unwrap_or("");
+        let Some((section, round, title)) = nba_round(headline) else {
+            continue;
+        };
+        let (Some(away), Some(home)) = (
+            comp.competitors.iter().find(|c| c.home_away == "away"),
+            comp.competitors.iter().find(|c| c.home_away == "home"),
+        ) else {
+            continue;
+        };
+        let (ida, idb) = (away.team.id.clone(), home.team.id.clone());
+        if ida.is_empty() || idb.is_empty() {
+            continue;
+        }
+        let pair = {
+            let (lo, hi) = if ida <= idb {
+                (&ida, &idb)
+            } else {
+                (&idb, &ida)
+            };
+            format!("{lo}-{hi}")
+        };
+        // Series score for this game, matched by team id.
+        let series = comp.series.as_ref();
+        let wins_of = |tid: &str| -> i64 {
+            series
+                .and_then(|s| s.competitors.iter().find(|c| c.id == tid))
+                .map(|c| c.wins)
+                .unwrap_or(0)
+        };
+        let entry = map
+            .entry((section.to_string(), round, pair))
+            .or_insert(Acc {
+                section,
+                round,
+                title,
+                best_id: 0,
+                first_id: i64::MAX,
+                team_a: String::new(),
+                team_b: String::new(),
+                id_a: String::new(),
+                id_b: String::new(),
+                wins_a: 0,
+                wins_b: 0,
+                completed: false,
+            });
+        entry.first_id = entry.first_id.min(id);
+        // Keep the most recent game's snapshot (latest series score / teams).
+        if id >= entry.best_id {
+            entry.best_id = id;
+            entry.team_a = away.team.label();
+            entry.team_b = home.team.label();
+            entry.id_a = ida.clone();
+            entry.id_b = idb.clone();
+            entry.wins_a = wins_of(&ida);
+            entry.wins_b = wins_of(&idb);
+            entry.completed = series.map(|s| s.completed).unwrap_or(false);
+        }
+    }
+    let mut accs: Vec<Acc> = map.into_values().collect();
+    accs.sort_by(|x, y| {
+        nba_section_rank(x.section)
+            .cmp(&nba_section_rank(y.section))
+            .then(x.round.cmp(&y.round))
+            .then(x.first_id.cmp(&y.first_id))
+    });
+    let mut slot_counter: HashMap<(&str, u32), u32> = HashMap::new();
+    let mut raws: Vec<RawSeries> = Vec::new();
+    for a in accs {
+        let slot = slot_counter.entry((a.section, a.round)).or_insert(0);
+        let this_slot = *slot;
+        *slot += 1;
+        let winner = if !a.completed {
+            ""
+        } else if a.wins_a > a.wins_b {
+            "a"
+        } else {
+            "b"
+        };
+        let _ = (&a.id_a, &a.id_b);
+        raws.push(RawSeries {
+            section: a.section.to_string(),
+            round: a.round,
+            slot: this_slot,
+            round_title: a.title.to_string(),
+            team_a: a.team_a,
+            team_b: a.team_b,
+            score_a: Some(a.wins_a),
+            score_b: Some(a.wins_b),
+            winner: winner.to_string(),
+            match_id: a.best_id,
+            feed: [None, None],
+        });
+    }
+    bracket_build::build(raws)
+}
+
+fn nba_section_rank(section: &str) -> u8 {
+    match section {
+        "east" => 0,
+        "west" => 1,
+        _ => 2,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A finished knockout match with real teams (side `w` won).
+    fn kn(kind: i64, id: i64, a: &str, b: &str, w: usize) -> KnMatch {
+        KnMatch {
+            id,
+            kind,
+            date: format!("2026-07-{id:02}"),
+            name: [a.into(), b.into()],
+            score: [Some(1), Some(0)],
+            won: [w == 0, w == 1],
+            ph: [None, None],
+        }
+    }
+
+    /// An unseeded knockout match, both sides "<prev> N Winner" placeholders.
+    fn kn_ph(kind: i64, id: i64, date: &str, a: (u32, bool), b: (u32, bool)) -> KnMatch {
+        KnMatch {
+            id,
+            kind,
+            date: date.into(),
+            name: [String::new(), String::new()],
+            score: [None, None],
+            won: [false, false],
+            ph: [Some(a), Some(b)],
+        }
+    }
+
+    #[test]
+    fn soccer_bracket_honors_placeholder_crossovers_and_third_place() {
+        // A tiny 8-team knockout: QF (4) → SF (2) → Final (1), + a 3rd-place game.
+        // QF ids 1..4 are the seeded, played round. SF/Final/3rd are placeholders,
+        // whose indices encode the real crossover (SF1 ← QF1&QF2, SF2 ← QF3&QF4).
+        let matches = vec![
+            kn(4, 1, "A", "B", 0),                             // QF1 → A
+            kn(4, 2, "C", "D", 1),                             // QF2 → D
+            kn(4, 3, "E", "F", 0),                             // QF3 → E
+            kn(4, 4, "G", "H", 1),                             // QF4 → H
+            kn_ph(2, 5, "2026-07-10", (2, false), (1, false)), // SF1 ← QF2, QF1
+            kn_ph(2, 6, "2026-07-11", (4, false), (3, false)), // SF2 ← QF4, QF3
+            kn_ph(3, 7, "2026-07-18", (1, true), (2, true)),   // 3rd ← SF losers
+            kn_ph(1, 8, "2026-07-19", (2, false), (1, false)), // Final ← SF winners
+        ];
+        let rounds = soccer_bracket(matches);
+        // Columns: QF, SF, Final (main tree) then Third.
+        assert_eq!(rounds.len(), 4);
+        assert_eq!(rounds[0].title, "Quarterfinals");
+        assert_eq!(rounds[0].matches.len(), 4);
+        assert_eq!(rounds[3].section, "third");
+        assert_eq!(rounds[3].title, "Third Place");
+        assert!(
+            rounds[3].matches[0].feeders.is_empty(),
+            "3rd place is feeder-less"
+        );
+        // SF column is index 1. SF1 (slot0) feeds from QF slots 1 and 0 (placeholder
+        // indices 2 and 1) — a real crossover, not a 2k/2k+1 assumption.
+        let sf1 = &rounds[1].matches[0];
+        assert_eq!(sf1.feeders.len(), 2);
+        assert!(sf1.feeders.contains(&(0, 1)) && sf1.feeders.contains(&(0, 0)));
+        // Final (column 2) feeds from the two SFs (column 1).
+        assert_eq!(rounds[2].title, "Final");
+        let fin = &rounds[2].matches[0];
+        assert!(fin.feeders.contains(&(1, 0)) && fin.feeders.contains(&(1, 1)));
+    }
+
+    #[test]
+    fn soccer_bracket_resolves_placeholder_index_collision() {
+        // Mirrors the real World-Cup case: a next-round match names one seeded side
+        // and one "… N Winner" placeholder whose index lands on the *seeded* side's
+        // own prior match. Elimination must send it to the remaining undecided one.
+        let mixed = |id: i64, real: &str, ph: u32| KnMatch {
+            id,
+            kind: 8,
+            date: format!("2026-07-{id:02}"),
+            name: [real.into(), String::new()],
+            score: [None, None],
+            won: [false, false],
+            ph: [None, Some((ph, false))],
+        };
+        let matches = vec![
+            kn(16, 1, "P", "x", 0),                    // R32 s0 → P (decided)
+            kn(16, 2, "Q", "y", 0),                    // R32 s1 → Q (decided)
+            kn_ph(16, 3, "d", (1, false), (2, false)), // R32 s2 undecided
+            kn_ph(16, 4, "d", (3, false), (4, false)), // R32 s3 undecided
+            mixed(5, "P", 3), // R16 s0: P + "R32 #3 Winner" (→ undecided s2)
+            mixed(6, "Q", 2), // R16 s1: Q + "R32 #2 Winner" (→ decided s1: collision)
+        ];
+        let rounds = soccer_bracket(matches);
+        // Two columns (the 4-match round then the 2-match round); the next round is
+        // col 1, fed from col 0.
+        let r16 = &rounds[1];
+        // s0: P (won prior s0) + placeholder #3 → undecided prior s2.
+        assert_eq!(sorted(&r16.matches[0].feeders), vec![(0, 0), (0, 2)]);
+        // s1: Q (won R32 s1) + placeholder #2 collided with decided s1 → elimination
+        // gives the only remaining undecided match, s3.
+        assert_eq!(sorted(&r16.matches[1].feeders), vec![(0, 1), (0, 3)]);
+    }
+
+    fn sorted(v: &[(usize, usize)]) -> Vec<(usize, usize)> {
+        let mut v = v.to_vec();
+        v.sort();
+        v
+    }
+
+    /// Live smoke test against ESPN — run with `cargo test --features ssr -- --ignored
+    /// espn_live_soccer_bracket --nocapture` while a World Cup is on. Prints the
+    /// assembled bracket for eyeballing; asserts it isn't empty and converges.
+    #[tokio::test]
+    #[ignore = "hits the live ESPN API"]
+    async fn espn_live_soccer_bracket() {
+        let client = reqwest::Client::new();
+        let rounds = fetch_soccer_bracket(&client, &WORLD_CUP, 2026)
+            .await
+            .unwrap();
+        for r in &rounds {
+            println!("[{}] {} ({} matches)", r.section, r.title, r.matches.len());
+            for (i, m) in r.matches.iter().enumerate() {
+                println!(
+                    "   {i}: {} {:?} vs {} {:?}  win={}  feeders={:?}",
+                    m.team_a, m.score_a, m.team_b, m.score_b, m.winner, m.feeders
+                );
+            }
+        }
+        assert!(!rounds.is_empty(), "a World Cup knockout bracket was built");
+        assert!(
+            rounds.iter().any(|r| r.title == "Final"),
+            "the bracket reaches a Final"
+        );
+    }
+
+    fn print_bracket(label: &str, rounds: &[BracketRound]) {
+        println!("== {label} ==");
+        for r in rounds {
+            println!("[{}] {} ({} series)", r.section, r.title, r.matches.len());
+            for (i, m) in r.matches.iter().enumerate() {
+                println!(
+                    "   {i}: {} {:?} vs {} {:?} win={} feeders={:?}",
+                    m.team_a, m.score_a, m.team_b, m.score_b, m.winner, m.feeders
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    #[ignore = "hits the live ESPN API"]
+    async fn espn_live_nba_bracket() {
+        let client = reqwest::Client::new();
+        let rounds = fetch_nba_bracket(&client, &NBA, 2026).await.unwrap();
+        print_bracket("NBA 2026", &rounds);
+        assert!(!rounds.is_empty());
+        assert!(rounds.iter().any(|r| r.section == "final"));
+    }
+
+    #[tokio::test]
+    #[ignore = "hits the live ESPN API"]
+    async fn espn_live_nfl_bracket() {
+        let client = reqwest::Client::new();
+        // The 2025 NFL season's playoffs play in Jan/Feb 2026.
+        let rounds = fetch_nfl_bracket(&client, &NFL, 2025).await.unwrap();
+        print_bracket("NFL 2025", &rounds);
+        assert!(!rounds.is_empty());
+        assert!(rounds.iter().any(|r| r.section == "final"));
+    }
 
     #[test]
     fn parses_a_scheduled_and_a_final_game() {

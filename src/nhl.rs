@@ -4,10 +4,11 @@
 //! toggle. The schedule endpoint returns a week at a time, so a date-range fetch
 //! walks it a week at a time and de-dupes.
 
+use crate::bracket_build::{self, RawSeries};
 use crate::feed::{NormalizedMatch, NormalizedTeam};
 use crate::types::{
-    stat_share, BoxScore, EventInfo, LeaderCard, LineRow, LineScore, MatchStatus, PlayerRow,
-    PlayerTable, ScoreEvent, Sport, StandingRow, StatPair, StreamView,
+    stat_share, BoxScore, BracketRound, EventInfo, LeaderCard, LineRow, LineScore, MatchStatus,
+    PlayerRow, PlayerTable, ScoreEvent, Sport, StandingRow, StatPair, StreamView,
 };
 use chrono::{DateTime, Duration, NaiveDate, Utc};
 use serde::Deserialize;
@@ -434,6 +435,147 @@ struct PeriodDescriptor {
     number: i64,
     #[serde(default, rename = "periodType")]
     period_type: String,
+}
+
+// ----- Playoff bracket -------------------------------------------------------
+//
+// The NHL Web API exposes a ready-made bracket: one object per series with its
+// round (`playoffRound`), a stable `seriesLetter` (A–H first round, I–L second,
+// M/N conference finals, O the Cup final), each seed's team and games won, and the
+// winner id. Letters A–D / I–J / M are one conference, E–H / K–L / N the other;
+// which is East vs West comes from the conference-final titles. Feeders fall out
+// of the standard lettered tree (A&B → I, …) so the shared builder derives them.
+
+#[derive(Deserialize, Default)]
+struct BracketResp {
+    #[serde(default)]
+    series: Vec<BracketSeries>,
+}
+
+#[derive(Deserialize, Default)]
+struct BracketSeries {
+    #[serde(rename = "seriesLetter", default)]
+    letter: String,
+    #[serde(rename = "seriesTitle", default)]
+    title: String,
+    #[serde(rename = "playoffRound", default)]
+    round: i64,
+    #[serde(rename = "topSeedWins", default)]
+    top_wins: i64,
+    #[serde(rename = "bottomSeedWins", default)]
+    bottom_wins: i64,
+    #[serde(rename = "winningTeamId", default)]
+    winner_id: i64,
+    #[serde(rename = "topSeedTeam", default)]
+    top: BracketTeam,
+    #[serde(rename = "bottomSeedTeam", default)]
+    bottom: BracketTeam,
+}
+
+#[derive(Deserialize, Default)]
+struct BracketTeam {
+    #[serde(default)]
+    id: i64,
+    #[serde(default)]
+    abbrev: String,
+    #[serde(rename = "commonName", default)]
+    common_name: NameDefault,
+}
+
+impl BracketTeam {
+    /// Short bracket label ("Maple Leafs"), falling back to the abbreviation.
+    fn label(&self) -> String {
+        if self.common_name.default.is_empty() {
+            self.abbrev.clone()
+        } else {
+            self.common_name.default.clone()
+        }
+    }
+}
+
+/// The NHL playoff bracket for a season (empty off-season / before the playoffs).
+pub async fn fetch_bracket(
+    client: &reqwest::Client,
+    year: i32,
+) -> Result<Vec<BracketRound>, reqwest::Error> {
+    let url = format!("{BASE}/playoff-bracket/{year}");
+    let resp: BracketResp = client
+        .get(&url)
+        .timeout(std::time::Duration::from_secs(15))
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    Ok(nhl_bracket(resp.series))
+}
+
+fn nhl_round_title(round: i64) -> String {
+    match round {
+        1 => "First Round",
+        2 => "Second Round",
+        3 => "Conference Finals",
+        _ => "Stanley Cup Final",
+    }
+    .to_string()
+}
+
+/// Assemble NHL bracket series into rounds. Only series that have begun (both
+/// seeds set) contribute; the letter order within each round places matches so the
+/// standard tree connects them.
+fn nhl_bracket(series: Vec<BracketSeries>) -> Vec<BracketRound> {
+    if series.is_empty() {
+        return Vec::new();
+    }
+    // Is the alphabetically-first conference-final half the Eastern one? (Letters
+    // M/N are the two conference finals; M is the first half.)
+    let first_half_is_east = {
+        let mut finals: Vec<&BracketSeries> = series.iter().filter(|s| s.round == 3).collect();
+        finals.sort_by(|a, b| a.letter.cmp(&b.letter));
+        match finals.first() {
+            Some(f) if f.title.to_lowercase().contains("west") => false,
+            _ => true,
+        }
+    };
+
+    let mut raws: Vec<RawSeries> = Vec::new();
+    for round in 1..=4 {
+        let mut in_round: Vec<&BracketSeries> =
+            series.iter().filter(|s| s.round == round).collect();
+        in_round.sort_by(|a, b| a.letter.cmp(&b.letter));
+        let half_size = in_round.len().div_ceil(2).max(1);
+        for (i, s) in in_round.iter().enumerate() {
+            let (section, slot) = if round == 4 {
+                ("final".to_string(), 0)
+            } else {
+                let first_half = i < half_size;
+                let east = first_half == first_half_is_east;
+                let sec = if east { "east" } else { "west" };
+                (sec.to_string(), (i % half_size) as u32)
+            };
+            let winner = if s.winner_id != 0 && s.winner_id == s.top.id {
+                "a"
+            } else if s.winner_id != 0 && s.winner_id == s.bottom.id {
+                "b"
+            } else {
+                ""
+            };
+            raws.push(RawSeries {
+                section,
+                round: (round - 1) as u32,
+                slot,
+                round_title: nhl_round_title(round),
+                team_a: s.top.label(),
+                team_b: s.bottom.label(),
+                score_a: Some(s.top_wins),
+                score_b: Some(s.bottom_wins),
+                winner: winner.to_string(),
+                match_id: 0, // the bracket endpoint carries no per-game id to link
+                feed: [None, None],
+            });
+        }
+    }
+    bracket_build::build(raws)
 }
 
 // ---- landing ----
@@ -963,6 +1105,29 @@ mod boxscore_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Live smoke test — `cargo test --features ssr -- --ignored nhl_live_bracket
+    /// --nocapture`. Prints the assembled bracket; asserts the two conferences feed
+    /// the Cup final.
+    #[tokio::test]
+    #[ignore = "hits the live NHL API"]
+    async fn nhl_live_bracket() {
+        let client = reqwest::Client::new();
+        let rounds = fetch_bracket(&client, 2025).await.unwrap();
+        for r in &rounds {
+            println!("[{}] {} ({} series)", r.section, r.title, r.matches.len());
+            for (i, m) in r.matches.iter().enumerate() {
+                println!(
+                    "   {i}: {} {:?} vs {} {:?} win={} feeders={:?}",
+                    m.team_a, m.score_a, m.team_b, m.score_b, m.winner, m.feeders
+                );
+            }
+        }
+        assert!(!rounds.is_empty());
+        let sections: Vec<&str> = rounds.iter().map(|r| r.section.as_str()).collect();
+        assert!(sections.contains(&"east") && sections.contains(&"west"));
+        assert!(rounds.iter().any(|r| r.section == "final"));
+    }
 
     fn b(network: &str, market: &str, country: &str, seq: i64) -> RawBroadcast {
         RawBroadcast {

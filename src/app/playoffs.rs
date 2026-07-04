@@ -1339,19 +1339,27 @@ pub(crate) fn Bracket(
         })
         .collect_view();
 
-    // Section banners for double-elim (Winner's / Loser's Bracket); stop each at
-    // the winner's/loser's-bracket edge so its underline never reaches the
-    // grand-final rail to its right.
+    // Section banners: double-elim's Winner's/Loser's brackets, or a traditional
+    // playoff's conference/league halves and third-place match. Each stops at the
+    // bracket edge so its underline never reaches the final rail to its right.
     let banner_w = bracket::banner_width_em(layout.bracket_cols);
     let labels = multi.then(|| {
         group_rows
             .iter()
             .filter_map(|(sec, lo, _)| {
-                // The grand final's own round title labels it; a banner over it
-                // would cut across the brackets it sits between.
+                // The grand final / championship labels itself via its round title;
+                // a banner over it would cut across the brackets it sits between.
                 let label = match sec.as_str() {
                     "upper" => "Winner's Bracket",
                     "lower" => "Loser's Bracket",
+                    "afc" => "AFC",
+                    "nfc" => "NFC",
+                    "east" => "Eastern Conference",
+                    "west" => "Western Conference",
+                    "al" => "American League",
+                    "nl" => "National League",
+                    // "third" (soccer's third-place match) is a lone column — it
+                    // labels itself via its round title, no spanning banner.
                     _ => return None,
                 };
                 let top = center_em(*lo) - half_h - TITLE_GAP - TITLE_EM - LABEL_GAP - LABEL_EM;
