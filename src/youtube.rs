@@ -33,9 +33,15 @@ static BUDGET: Lazy<RwLock<(NaiveDate, u32)>> =
     Lazy::new(|| RwLock::new((Utc::now().date_naive(), 0)));
 /// `@handle` → `UC…` channel id, cached forever (a channel id is permanent).
 static ID_CACHE: Lazy<RwLock<HashMap<String, String>>> = Lazy::new(|| RwLock::new(HashMap::new()));
+/// Video id → `UC…` channel id. Bounded, since video ids are ephemeral (one per
+/// live broadcast) and would otherwise accumulate forever.
+static VIDEO_CACHE: Lazy<RwLock<HashMap<String, String>>> =
+    Lazy::new(|| RwLock::new(HashMap::new()));
+const VIDEO_CACHE_CAP: usize = 512;
 /// Single-channel live-status cache (~90s TTL) for the WEC watch-line badge, so
 /// repeated views during a session don't re-hit the API.
-static LIVE_CACHE: Lazy<RwLock<HashMap<String, (DateTime<Utc>, Option<LiveInfo>)>>> =
+type LiveEntry = (DateTime<Utc>, Option<LiveInfo>);
+static LIVE_CACHE: Lazy<RwLock<HashMap<String, LiveEntry>>> =
     Lazy::new(|| RwLock::new(HashMap::new()));
 const LIVE_CACHE_TTL_SECS: i64 = 90;
 
@@ -288,14 +294,26 @@ async fn resolve_channel_id(ident: &str, key: &str) -> Option<String> {
     Some(cid)
 }
 
-/// Resolve a video id to its channel's `UC…` id via `videos.list`, cached forever
-/// (a video never changes channels). `None` on error or spent budget.
+/// Insert into a bounded cache, evicting one existing entry when at capacity, so
+/// ephemeral keys (like video ids) can't grow it without limit. Not strict LRU —
+/// an evicted entry simply re-resolves.
+fn insert_bounded(map: &mut HashMap<String, String>, cap: usize, key: String, val: String) {
+    if map.len() >= cap && !map.contains_key(&key) {
+        if let Some(evict) = map.keys().next().cloned() {
+            map.remove(&evict);
+        }
+    }
+    map.insert(key, val);
+}
+
+/// Resolve a video id to its channel's `UC…` id via `videos.list`. Cached in a
+/// bounded map: video ids are ephemeral (one per live broadcast), unlike the
+/// permanent `@handle` ids in `ID_CACHE`. `None` on error or spent budget.
 async fn video_channel_id(vid: &str, key: &str) -> Option<String> {
-    let cache_key = format!("vid:{vid}");
-    if let Some(cid) = ID_CACHE
+    if let Some(cid) = VIDEO_CACHE
         .read()
         .unwrap_or_else(PoisonError::into_inner)
-        .get(&cache_key)
+        .get(vid)
     {
         return Some(cid.clone());
     }
@@ -311,10 +329,12 @@ async fn video_channel_id(vid: &str, key: &str) -> Option<String> {
         .get("channelId")?
         .as_str()?
         .to_string();
-    ID_CACHE
-        .write()
-        .unwrap_or_else(PoisonError::into_inner)
-        .insert(cache_key, cid.clone());
+    insert_bounded(
+        &mut VIDEO_CACHE.write().unwrap_or_else(PoisonError::into_inner),
+        VIDEO_CACHE_CAP,
+        vid.to_string(),
+        cid.clone(),
+    );
     Some(cid)
 }
 
@@ -429,6 +449,24 @@ pub async fn live_one(ident: &str) -> Option<LiveInfo> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn insert_bounded_caps_the_map_and_keeps_the_newest() {
+        let mut m = HashMap::new();
+        for i in 0..10 {
+            insert_bounded(&mut m, 4, format!("k{i}"), format!("v{i}"));
+        }
+        assert!(
+            m.len() <= 4,
+            "bounded cache must not exceed its cap (got {})",
+            m.len()
+        );
+        assert_eq!(
+            m.get("k9").map(String::as_str),
+            Some("v9"),
+            "the most recent insert must survive"
+        );
+    }
 
     #[test]
     fn youtube_ref_classifies_urls_for_channel_resolution() {
