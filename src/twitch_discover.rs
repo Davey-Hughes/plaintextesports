@@ -87,7 +87,9 @@ pub fn parse_discover_page(json: &str) -> (Vec<DiscoveredStream>, Option<String>
 
 /// Per-game cache of the last category scan, keyed by game_id. One scan per game
 /// per TTL serves every live match of that game.
-static DISCOVER_CACHE: Lazy<RwLock<HashMap<String, (DateTime<Utc>, Vec<DiscoveredStream>)>>> =
+/// A cached scan: when it was taken, and the streams it found.
+type DiscoverEntry = (DateTime<Utc>, Vec<DiscoveredStream>);
+static DISCOVER_CACHE: Lazy<RwLock<HashMap<String, DiscoverEntry>>> =
     Lazy::new(|| RwLock::new(HashMap::new()));
 const DISCOVER_TTL_SECS: i64 = 120;
 /// Pages of 100 to pull (top streams are viewer-sorted, so 1–2 pages suffice).

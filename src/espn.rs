@@ -1142,7 +1142,9 @@ fn parse_knockout(events: Vec<Event>) -> Vec<KnMatch> {
             continue;
         };
         let finished = e.status.r#type.state == "post";
-        let side = |ha: &str| -> Option<(String, Option<i64>, bool, Option<(u32, bool)>)> {
+        // (label, score, finished-winner?, placeholder (seed, is-home))
+        type SideParse = (String, Option<i64>, bool, Option<(u32, bool)>);
+        let side = |ha: &str| -> Option<SideParse> {
             let c = comp.competitors.iter().find(|c| c.home_away == ha)?;
             let ph = parse_placeholder(&c.team.display_name);
             let name = if ph.is_some() {
@@ -1202,7 +1204,7 @@ fn soccer_bracket(matches: Vec<KnMatch>) -> Vec<BracketRound> {
         .filter(|v| matches!(v.len(), 1 | 2 | 4 | 8 | 16))
         .collect();
     for b in &mut buckets {
-        b.sort_by(|x, y| x.id.cmp(&y.id));
+        b.sort_by_key(|x| x.id);
     }
     if buckets.is_empty() {
         return Vec::new();
@@ -1211,7 +1213,7 @@ fn soccer_bracket(matches: Vec<KnMatch>) -> Vec<BracketRound> {
     // Multi-match rounds (R32 → SF), largest first; the one-match buckets are the
     // final and the third-place match.
     let mut main: Vec<Vec<KnMatch>> = buckets.iter().filter(|b| b.len() > 1).cloned().collect();
-    main.sort_by(|a, b| b.len().cmp(&a.len()));
+    main.sort_by_key(|a| std::cmp::Reverse(a.len()));
     let mut ones: Vec<Vec<KnMatch>> = buckets.into_iter().filter(|b| b.len() == 1).collect();
     // Third place is the earlier of the two one-match games (or the one whose
     // placeholder marks it a "Loser" bracket); the later/other is the final.
@@ -1245,7 +1247,7 @@ fn soccer_bracket(matches: Vec<KnMatch>) -> Vec<BracketRound> {
                 let mut claimed = vec![false; prev.len()];
                 let mut pending: Vec<(usize, usize)> = Vec::new();
                 for (i, m) in main[r].iter().enumerate() {
-                    for side in 0..2 {
+                    for side in [0usize, 1] {
                         if !m.name[side].is_empty() {
                             // Seeded: the prior slot whose winner is this team.
                             if let Some(s) = prev_won.iter().position(|w| *w == m.name[side]) {

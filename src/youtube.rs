@@ -1,5 +1,5 @@
 //! YouTube Data API v3 client (server-only): channel-handle resolution (cached)
-//! + live-stream lookup via the cheap uploads→videos.list path ("Method B"),
+//! and live-stream lookup via the cheap uploads→videos.list path ("Method B"),
 //! under an in-memory daily-unit budget. Key absent ⇒ every call is a no-op that
 //! returns an empty map, so the page never depends on it.
 

@@ -196,8 +196,8 @@ pub fn layout(rounds: &[BracketRound]) -> BracketLayout {
             let base = if anchor.is_finite() { anchor } else { cursor };
             let mut k = 1.0;
             for &r in idxs {
-                for i in 0..rounds[r].matches.len() {
-                    positions[r][i].y = base + THIRD_GAP * k;
+                for p in positions[r].iter_mut().take(rounds[r].matches.len()) {
+                    p.y = base + THIRD_GAP * k;
                     k += 1.0;
                 }
             }
