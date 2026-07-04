@@ -174,7 +174,7 @@ fn StandingsBlock(groups: Vec<EventInfo>) -> impl IntoView {
                 ..
             } = e;
             view! {
-                <div class="event-extra spy" id=format!("stage-{tournament_id}")>
+                <div class="event-extra spy standings-cell" id=format!("stage-{tournament_id}")>
                     <h2 class="stage-head">{stage}</h2>
                     <StandingsTable rows=standings sport shared=revealed />
                 </div>
@@ -453,9 +453,6 @@ pub(crate) fn EventPage() -> impl IntoView {
                                 </nav>
                             }
                         });
-                        // A dotted rule between the schedule and the brackets below.
-                        let sep = (!stage_list.is_empty())
-                            .then(|| view! { <hr class="section-sep" /> });
                         // Traditional sports (MLB) cap their forward horizon like
                         // the homepage: window the days to [today - earlier,
                         // today + later-extended] and show the earlier/later
@@ -470,6 +467,12 @@ pub(crate) fn EventPage() -> impl IntoView {
                                     && d.day_key.as_str() <= hi.as_str()
                             });
                         }
+                        // A dotted rule between the schedule and the brackets below —
+                        // only when both are present. An empty schedule ("No matches
+                        // in this window.") would otherwise leave a stray line above
+                        // the standings. Computed after windowing, which can empty it.
+                        let sep = (!stage_list.is_empty() && !s.days.is_empty())
+                            .then(|| view! { <hr class="section-sep" /> });
                         // Read push here (not at the top) so the ★s appear once the
                         // VAPID key resolves after hydration — this closure re-runs.
                         let push = use_context::<RwSignal<Option<String>>>()
