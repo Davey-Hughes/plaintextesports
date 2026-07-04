@@ -2049,6 +2049,19 @@ a {
   margin-top: 0.5rem;
 }
 
+// In a grouped standings cell the group name's rule sits directly above the
+// table's header row, so drop the gap between them — otherwise "TEAM  W-L  PTS"
+// hugs its own bottom border instead of sitting centred between the two rules.
+.standings-cell {
+  .stage-head {
+    margin-bottom: 0;
+  }
+
+  .detail-section {
+    margin-top: 0;
+  }
+}
+
 // A stage heading on a multi-stage event page (e.g. "Stage 1", "Playoffs").
 .stage-head {
   font-size: 14px;
