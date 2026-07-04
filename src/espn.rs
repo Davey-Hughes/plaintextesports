@@ -1655,11 +1655,28 @@ mod tests {
             rounds[3].matches[0].feeders.is_empty(),
             "3rd place is feeder-less"
         );
-        // SF column is index 1. SF1 (slot0) feeds from QF slots 1 and 0 (placeholder
-        // indices 2 and 1) — a real crossover, not a 2k/2k+1 assumption.
-        let sf1 = &rounds[1].matches[0];
-        assert_eq!(sf1.feeders.len(), 2);
-        assert!(sf1.feeders.contains(&(0, 1)) && sf1.feeders.contains(&(0, 0)));
+        // SF column is index 1. Each SF is fed by its two QFs (the real crossover,
+        // SF1 ← QF1&QF2), which the planar reorder lays out as an adjacent pair; the
+        // two SFs draw from disjoint pairs covering all four QFs.
+        let sf1: Vec<usize> = rounds[1].matches[0]
+            .feeders
+            .iter()
+            .map(|&(_, p)| p)
+            .collect();
+        let sf2: Vec<usize> = rounds[1].matches[1]
+            .feeders
+            .iter()
+            .map(|&(_, p)| p)
+            .collect();
+        assert_eq!(sf1.len(), 2);
+        assert_eq!(
+            (sf1[0] as i32 - sf1[1] as i32).abs(),
+            1,
+            "SF1 feeders adjacent"
+        );
+        let mut all: Vec<usize> = sf1.into_iter().chain(sf2).collect();
+        all.sort_unstable();
+        assert_eq!(all, vec![0, 1, 2, 3], "the two SFs cover all four QFs");
         // Final (column 2) feeds from the two SFs (column 1).
         assert_eq!(rounds[2].title, "Final");
         let fin = &rounds[2].matches[0];
@@ -1692,11 +1709,18 @@ mod tests {
         // Two columns (the 4-match round then the 2-match round); the next round is
         // col 1, fed from col 0.
         let r16 = &rounds[1];
-        // s0: P (won prior s0) + placeholder #3 → undecided prior s2.
-        assert_eq!(sorted(&r16.matches[0].feeders), vec![(0, 0), (0, 2)]);
-        // s1: Q (won R32 s1) + placeholder #2 collided with decided s1 → elimination
-        // gives the only remaining undecided match, s3.
-        assert_eq!(sorted(&r16.matches[1].feeders), vec![(0, 1), (0, 3)]);
+        // The planar reorder makes each R16 match's two feeders an adjacent pair,
+        // and the two matches cover all four first-round slots exactly once — so the
+        // collision was resolved to a distinct feeder (not a duplicate), and the
+        // connectors don't cross.
+        let m0 = sorted(&r16.matches[0].feeders);
+        let m1 = sorted(&r16.matches[1].feeders);
+        assert_eq!(m0.len(), 2);
+        assert_eq!(m0[1].1 - m0[0].1, 1, "R16 s0 feeders adjacent");
+        assert_eq!(m1[1].1 - m1[0].1, 1, "R16 s1 feeders adjacent");
+        let mut all: Vec<usize> = m0.iter().chain(&m1).map(|&(_, p)| p).collect();
+        all.sort_unstable();
+        assert_eq!(all, vec![0, 1, 2, 3]);
     }
 
     fn sorted(v: &[(usize, usize)]) -> Vec<(usize, usize)> {
