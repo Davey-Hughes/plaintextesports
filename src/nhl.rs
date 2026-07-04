@@ -520,9 +520,9 @@ fn nhl_round_title(round: i64) -> String {
     .to_string()
 }
 
-/// Assemble NHL bracket series into rounds. Only series that have begun (both
-/// seeds set) contribute; the letter order within each round places matches so the
-/// standard tree connects them.
+/// Assemble NHL bracket series into rounds. Every series in each round contributes
+/// — including ones not yet seeded, which render as empty/TBD boxes — and the letter
+/// order within each round places matches so the standard tree connects them.
 fn nhl_bracket(series: Vec<BracketSeries>) -> Vec<BracketRound> {
     if series.is_empty() {
         return Vec::new();
