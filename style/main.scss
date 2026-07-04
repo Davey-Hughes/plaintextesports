@@ -2930,13 +2930,11 @@ a.sw-link {
 .bracket {
   position: relative;
   font-size: 12px;
-  // Wide enough that a single-word club name ("Hurricanes") fits on one line.
-  // Must match `BOX_W_EM` in `src/bracket.rs`.
-  --bk-box-w: 9em;
-  // Two rows tall enough for a team name to wrap to two lines (long club names
-  // like "Golden Knights") rather than truncate. Must match `BOX_H_EM` in
-  // `src/bracket.rs`.
-  --bk-box-h: 4.8em;
+  // Box width is set per-bracket inline (`--bk-box-w`), sized to that bracket's
+  // longest team name so it stays uniform across the bracket without being fixed
+  // site-wide; this is just a fallback. Height matches `BOX_H_EM` in `bracket.rs`.
+  --bk-box-w: 7.6em;
+  --bk-box-h: 3.8em;
 }
 
 // The connector overlay sits behind the boxes and never intercepts clicks; the
@@ -3059,18 +3057,14 @@ a.bk-team-link {
 
 // The box is a fixed width, so a long team name truncates with an ellipsis on a
 // single line rather than overflowing the box or wrapping past its fixed height.
-// A team name wraps to a second line rather than truncating — a two-word club
-// name ("Golden Knights") breaks at the space, and the box is wide enough that a
-// single-word name ("Hurricanes") still fits on one line. `overflow-wrap` is the
-// fallback for a single word longer than the box; `max-height` clips to two lines.
+// The box is sized (per bracket) to fit the longest name on one line; a name past
+// the width ceiling truncates with an ellipsis.
 .bk-team {
   flex: 1 1 auto;
   min-width: 0;
   overflow: hidden;
-  white-space: normal;
-  overflow-wrap: break-word;
-  line-height: 1.15;
-  max-height: 2.3em;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .bk-row {

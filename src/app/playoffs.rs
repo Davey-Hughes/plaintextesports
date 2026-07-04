@@ -973,6 +973,11 @@ pub(crate) fn Bracket(
     // with a section banner above that for double-elim. `head_em` is the box
     // centre offset that reserves room for all of it above slot 0.
     let layout = bracket::layout(&rounds);
+    // Size the boxes (and so the column pitch) to this bracket's longest team name,
+    // uniform across the bracket. `box_w_em` also feeds the `--bk-box-w` custom
+    // property so the CSS box matches the geometry the connectors are drawn to.
+    let box_w_em = bracket::box_width_em(&rounds);
+    let col_em = bracket::col_em(box_w_em);
     const TITLE_EM: f64 = 2.8; // round name + date (two lines)
     const TITLE_GAP: f64 = 0.5; // below the date, above the box
     const LABEL_EM: f64 = 1.5; // section banner
@@ -1066,7 +1071,7 @@ pub(crate) fn Bracket(
         .into_iter()
         .enumerate()
         .map(|(r, (section, title, sres))| {
-            let x_em = positions[r].first().map_or(0, |p| p.col) as f64 * bracket::COL_EM;
+            let x_em = positions[r].first().map_or(0, |p| p.col) as f64 * col_em;
             let sec_ymin = group_rows
                 .iter()
                 .find(|(s, _, _)| s == &section)
@@ -1317,7 +1322,7 @@ pub(crate) fn Bracket(
 
     // Connector overlay: one elbow path per feeder edge, drawn behind the boxes in
     // the same em coordinate space, so it stays attached at any shape or zoom.
-    let w_em = layout.cols as f64 * bracket::COL_EM;
+    let w_em = layout.cols as f64 * col_em;
     let h_em = positions
         .iter()
         .flatten()
@@ -1330,9 +1335,9 @@ pub(crate) fn Bracket(
         .map(|e| {
             let (fr, fi) = e.from;
             let (tr, ti) = e.to;
-            let x1 = positions[fr][fi].col as f64 * bracket::COL_EM + bracket::BOX_W_EM;
+            let x1 = positions[fr][fi].col as f64 * col_em + box_w_em;
             let y1 = center_em(positions[fr][fi].y);
-            let x2 = positions[tr][ti].col as f64 * bracket::COL_EM;
+            let x2 = positions[tr][ti].col as f64 * col_em;
             let y2 = center_em(positions[tr][ti].y);
             let xm = (x1 + x2) / 2.0;
             view! { <path d=format!("M {x1:.2} {y1:.2} H {xm:.2} V {y2:.2} H {x2:.2}") /> }
@@ -1342,7 +1347,7 @@ pub(crate) fn Bracket(
     // Section banners: double-elim's Winner's/Loser's brackets, or a traditional
     // playoff's conference/league halves and third-place match. Each stops at the
     // bracket edge so its underline never reaches the final rail to its right.
-    let banner_w = bracket::banner_width_em(layout.bracket_cols);
+    let banner_w = bracket::banner_width_em(layout.bracket_cols, col_em, box_w_em);
     let labels = multi.then(|| {
         group_rows
             .iter()
@@ -1374,7 +1379,10 @@ pub(crate) fn Bracket(
 
     let body = view! {
         <div class="bracket-scroll">
-            <div class="bracket" style=format!("width:{w_em:.2}em;height:{h_em:.2}em")>
+            <div
+                class="bracket"
+                style=format!("--bk-box-w:{box_w_em:.2}em;width:{w_em:.2}em;height:{h_em:.2}em")
+            >
                 <svg class="bk-connectors" viewBox=format!("0 0 {w_em:.2} {h_em:.2}")>
                     {paths}
                 </svg>
