@@ -108,6 +108,9 @@ pub fn season_year(sport: Sport, now: DateTime<Utc>) -> i32 {
                 y - 1
             }
         }
+        // MLB names a season by its calendar year and plays the postseason
+        // (Oct–early Nov) within it — October must not roll forward.
+        Sport::Mlb => y,
         // NBA (and anything else ESPN-backed): end-year convention.
         _ => {
             if m >= 10 {
@@ -1848,6 +1851,19 @@ mod tests {
         let nov_2026 = "2026-11-15T00:00:00Z".parse::<DateTime<Utc>>().unwrap();
         assert_eq!(season_year(Sport::Nfl, nov_2026), 2026);
         assert_eq!(season_year(Sport::Nba, nov_2026), 2027);
+    }
+
+    #[test]
+    fn mlb_labels_its_season_by_the_calendar_year() {
+        // MLB plays its postseason (Oct–early Nov) in the same calendar year that
+        // names the season, so — unlike the NBA end-year convention — October must
+        // NOT roll forward, or the World Series bracket fetches an empty next season.
+        let oct_2025 = "2025-10-25T00:00:00Z".parse::<DateTime<Utc>>().unwrap();
+        assert_eq!(season_year(Sport::Mlb, oct_2025), 2025);
+        let apr_2026 = "2026-04-01T00:00:00Z".parse::<DateTime<Utc>>().unwrap();
+        assert_eq!(season_year(Sport::Mlb, apr_2026), 2026);
+        // Contrast: the NBA convention rolls October forward (the old bug source).
+        assert_eq!(season_year(Sport::Nba, oct_2025), 2026);
     }
 
     #[test]

@@ -181,15 +181,17 @@ async fn refresh_brackets(client: &reqwest::Client, now: DateTime<Utc>) {
     use crate::espn::{season_year, NBA, NFL, WORLD_CUP};
     let wc_year = now.year();
     // NFL labels its season by the start year but plays the postseason the next
-    // January/February; NBA/NHL/MLB postseasons fall in their end year.
+    // January/February; NBA/NHL postseasons (Apr–June) fall in their end year;
+    // MLB names its season by the calendar year its Oct–Nov postseason plays in.
     let nfl_year = season_year(Sport::Nfl, now);
     let hoops_year = season_year(Sport::Nba, now);
+    let mlb_year = season_year(Sport::Mlb, now);
     let (soccer, nfl, nba, nhl, mlb) = tokio::join!(
         crate::espn::fetch_soccer_bracket(client, &WORLD_CUP, wc_year),
         crate::espn::fetch_nfl_bracket(client, &NFL, nfl_year),
         crate::espn::fetch_nba_bracket(client, &NBA, hoops_year),
         crate::nhl::fetch_bracket(client, hoops_year),
-        crate::mlb::fetch_bracket(client, hoops_year),
+        crate::mlb::fetch_bracket(client, mlb_year),
     );
     update_bracket(
         "World Cup",
