@@ -1979,6 +1979,30 @@ a {
   scroll-margin-top: 4.5rem;
 }
 
+// The stages laid out two-across: a plain standings table is far narrower than
+// the page, so pairing tables up (e.g. the World Cup's twelve groups, MLB's
+// divisions) halves the vertical run and uses the empty space beside each table.
+// `auto-fit` + a min track means it collapses to one column on a narrow viewport
+// (or for a single table) and — capped by the 760px page — never exceeds two.
+.event-stages {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(19rem, 1fr));
+  gap: 1.5rem 1rem;
+  align-items: start;
+
+  // The grid's row gap already separates stages; drop each item's own top margin
+  // (the grid itself carries the separation from the schedule above).
+  .event-extra {
+    margin-top: 0;
+  }
+  margin-top: 2rem;
+
+  // A bracket or Swiss stage is wide — it spans both columns.
+  .event-extra-wide {
+    grid-column: 1 / -1;
+  }
+}
+
 #sched {
   scroll-margin-top: 4.5rem;
 }
