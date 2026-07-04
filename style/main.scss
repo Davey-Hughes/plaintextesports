@@ -2981,7 +2981,11 @@ a.sw-link {
   position: absolute;
   left: 0;
   color: var(--muted);
-  font-size: 11px;
+  // Must match the bracket's base font size: the `top:…em` position is computed
+  // in the bracket's 12px em unit, and `em` here resolves against this element's
+  // own font size — a smaller one drifts the banner up, worse the deeper the
+  // section (e.g. the lower conference in a two-conference playoff).
+  font-size: 12px;
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.03em;
