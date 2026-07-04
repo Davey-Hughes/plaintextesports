@@ -274,17 +274,17 @@ fn reschedule_writes(
     conn: &rusqlite::Connection,
     now: i64,
 ) -> (Vec<crate::cache::CollapseAlert>, Vec<store::Reminder>) {
-    let unsent = match store::unsent_reminders(conn) {
+    let reminders = match store::all_reminders(conn) {
         Ok(u) => u,
         Err(e) => {
-            leptos::logging::log!("reschedule: unsent_reminders failed: {e}");
+            leptos::logging::log!("reschedule: all_reminders failed: {e}");
             return (Vec::new(), Vec::new());
         }
     };
-    if unsent.is_empty() {
+    if reminders.is_empty() {
         return (Vec::new(), Vec::new());
     }
-    let plan = crate::cache::current_reschedule_plan(&unsent, now);
+    let plan = crate::cache::current_reschedule_plan(&reminders, now);
 
     // Rewrite shifted timers to the new start (notify time + body).
     for u in &plan.updates {
@@ -357,6 +357,7 @@ fn expand_subscriptions(conn: &rusqlite::Connection) {
                     event: seed.event,
                     tz: seed.tz,
                     hour24: seed.hour24,
+                    sent: false,
                 };
                 if let Err(e) = store::add_reminder_if_absent(conn, &r) {
                     leptos::logging::log!(
@@ -416,6 +417,7 @@ mod tests {
             event: "LCK Spring".into(),
             tz: String::new(),
             hour24: false,
+            sent: false,
         };
 
         let req = build_push_request(&key, "mailto:dev@example.com", &r).expect("build");
