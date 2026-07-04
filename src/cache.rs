@@ -3566,6 +3566,9 @@ pub struct ReschedulePlan {
     pub alerts: Vec<CollapseAlert>,
     /// Reminders whose match is now canceled — drop them.
     pub cancels: Vec<crate::store::Reminder>,
+    /// One "canceled" notification per canceled match the subscriber still had a
+    /// pending reminder for (a plain send — the rows themselves are in `cancels`).
+    pub cancel_alerts: Vec<crate::store::Reminder>,
 }
 
 /// Rewrite `r`'s schedule fields from a freshly-derived seed (same match, same
@@ -3622,6 +3625,18 @@ pub fn reschedule_plan(
             continue;
         };
         if m.status == MatchStatus::Canceled {
+            // One "canceled" notice for the whole match — the subscriber had a
+            // pending reminder for it (only unsent rows reach here), so they were
+            // going to be told it was starting; tell them it isn't. Then drop every
+            // row for the match.
+            let rep = rows[0];
+            let tz = resolve_tz(&rep.tz, cfg.tz);
+            let seed = reminder_seed(m, rep.lead_ms, &tz, rep.hour24);
+            let mut notice = rep.clone();
+            notice.title = seed.title;
+            notice.body = format!("{} · canceled", m.league);
+            notice.url = seed.url;
+            plan.cancel_alerts.push(notice);
             plan.cancels.extend(rows.iter().map(|r| (*r).clone()));
             continue;
         }
@@ -6681,12 +6696,43 @@ mod tests {
     }
 
     #[test]
-    fn reschedule_canceled_match_is_dropped() {
+    fn reschedule_cancellation_notifies_and_clears_rows_via_store() {
+        // End-to-end at the store seam: arm two timers, cancel the match, apply the
+        // plan as the sender does — one notice out, every row gone.
+        let conn = crate::store::open(":memory:").unwrap();
+        let m = match_at(NOW_MS + 30 * MIN_MS, MatchStatus::Canceled);
+        crate::store::add_reminder(&conn, &rem(HOUR_MS, NOW_MS + HOUR_MS)).unwrap();
+        crate::store::add_reminder(&conn, &rem(15 * MIN_MS, NOW_MS + HOUR_MS)).unwrap();
+
+        let unsent = crate::store::unsent_reminders(&conn).unwrap();
+        let plan = reschedule_plan(&unsent, &[m], NOW_MS);
+        assert_eq!(plan.cancel_alerts.len(), 1, "one cancellation notice");
+        for c in &plan.cancels {
+            crate::store::remove_reminder(&conn, &c.endpoint, c.match_id, &c.sport).unwrap();
+        }
+        assert!(
+            crate::store::unsent_reminders(&conn).unwrap().is_empty(),
+            "no reminders remain for the canceled match"
+        );
+    }
+
+    #[test]
+    fn reschedule_canceled_match_notifies_once_and_drops_its_rows() {
         let begin = NOW_MS + 30 * MIN_MS;
         let m = match_at(begin, MatchStatus::Canceled);
-        let r = rem(15 * MIN_MS, NOW_MS);
-        let plan = reschedule_plan(&[r], &[m], NOW_MS);
-        assert_eq!(plan.cancels.len(), 1);
+        // Two pending timers for the one match.
+        let r1h = rem(HOUR_MS, NOW_MS + HOUR_MS);
+        let r15 = rem(15 * MIN_MS, NOW_MS + HOUR_MS);
+        let plan = reschedule_plan(&[r1h, r15], &[m], NOW_MS);
+        // Every row is dropped...
+        assert_eq!(plan.cancels.len(), 2);
+        // ...and exactly one cancellation notice is produced (collapsed per match).
+        assert_eq!(plan.cancel_alerts.len(), 1);
+        assert!(
+            plan.cancel_alerts[0].body.contains("canceled"),
+            "body: {}",
+            plan.cancel_alerts[0].body
+        );
         assert!(plan.updates.is_empty());
         assert!(plan.alerts.is_empty());
     }
