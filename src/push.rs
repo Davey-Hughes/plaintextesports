@@ -149,10 +149,11 @@ pub fn spawn_sender() {
             // Bring armed reminders back in line with the latest start times:
             // rewrite shifted notify times/bodies and drop canceled matches (sync),
             // returning one "earlier than scheduled" alert per match that jumped
-            // earlier past a lead window. Runs before the due scan so it sees the
-            // corrected times; subsumed timers are marked sent below, so the due
-            // scan never double-delivers them.
-            let alerts = reschedule_writes(&conn, now);
+            // earlier past a lead window, plus one "canceled" notice per canceled
+            // match. Runs before the due scan so it sees the corrected times;
+            // subsumed timers are marked sent below, so the due scan never
+            // double-delivers them.
+            let (alerts, cancel_notices) = reschedule_writes(&conn, now);
             let mut early_sent = 0usize;
             for alert in &alerts {
                 match send_one(&client, &key, &cfg.vapid_subject, &alert.reminder).await {
@@ -186,6 +187,24 @@ pub fn spawn_sender() {
                 leptos::logging::log!(
                     "reschedule: sent {early_sent} 'earlier than scheduled' alert(s)"
                 );
+            }
+
+            // Cancellation notices — best-effort (the rows are already dropped, so
+            // a failed send only misses telling them; nothing stale can fire).
+            let mut cancel_sent = 0usize;
+            for notice in &cancel_notices {
+                match send_one(&client, &key, &cfg.vapid_subject, notice).await {
+                    Outcome::Sent => cancel_sent += 1,
+                    Outcome::Gone => {
+                        if let Err(e) = store::delete_endpoint(&conn, &notice.endpoint) {
+                            leptos::logging::log!("reschedule: delete_endpoint failed: {e}");
+                        }
+                    }
+                    Outcome::Failed => {}
+                }
+            }
+            if cancel_sent > 0 {
+                leptos::logging::log!("reschedule: sent {cancel_sent} 'canceled' notice(s)");
             }
 
             let due = match store::due_reminders(&conn, now) {
@@ -245,19 +264,25 @@ pub fn spawn_sender() {
 /// Reconcile armed reminders against the latest match start times (the sync,
 /// DB-only half of the reschedule step). Rewrites the notify time + start-time
 /// body of any timer whose match was rescheduled and drops reminders for canceled
-/// matches, then returns the collapsed "earlier than scheduled" alerts — one per
-/// match that jumped earlier past a lead window — for the caller to deliver
-/// (kept out of here so no `&Connection` is held across a push send's await).
-fn reschedule_writes(conn: &rusqlite::Connection, now: i64) -> Vec<crate::cache::CollapseAlert> {
+/// matches, then returns the notifications the caller must deliver: the collapsed
+/// "earlier than scheduled" alerts (one per match that jumped earlier past a lead
+/// window) and the "canceled" notices (one per canceled match the subscriber still
+/// had a pending reminder for). Sends are kept out of here so no `&Connection` is
+/// held across a push send's await; the canceled rows are already deleted, so a
+/// failed cancel send can't leave a stale reminder to fire.
+fn reschedule_writes(
+    conn: &rusqlite::Connection,
+    now: i64,
+) -> (Vec<crate::cache::CollapseAlert>, Vec<store::Reminder>) {
     let unsent = match store::unsent_reminders(conn) {
         Ok(u) => u,
         Err(e) => {
             leptos::logging::log!("reschedule: unsent_reminders failed: {e}");
-            return Vec::new();
+            return (Vec::new(), Vec::new());
         }
     };
     if unsent.is_empty() {
-        return Vec::new();
+        return (Vec::new(), Vec::new());
     }
     let plan = crate::cache::current_reschedule_plan(&unsent, now);
 
@@ -274,7 +299,7 @@ fn reschedule_writes(conn: &rusqlite::Connection, now: i64) -> Vec<crate::cache:
             leptos::logging::log!("reschedule: cancel drop failed (match {}): {e}", c.match_id);
         }
     }
-    plan.alerts
+    (plan.alerts, plan.cancel_alerts)
 }
 
 /// Turn each sport/event subscription into per-match reminders — one row per
