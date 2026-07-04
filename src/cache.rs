@@ -2679,11 +2679,7 @@ pub(crate) fn match_source_link(
     })
 }
 
-/// Consecutive matches closer together than this stay in one day group (so a
-/// late-night broadcast that spills across midnight in the viewer's zone reads as
-/// one night); a gap of at least this — a real break to the next session — starts
-/// a new group, even within the same calendar date.
-const CHAIN_GAP_MS: i64 = 8 * 60 * 60 * 1000;
+use crate::types::CHAIN_GAP_MS;
 
 /// A day group's label, spanning its first→last local date. A single calendar day
 /// collapses to the plain label ("Friday, July 3"); a group that crosses midnight
