@@ -25,8 +25,10 @@ const WEEK_MS: i64 = 7 * 24 * 60 * 60 * 1000;
 /// is skipped instead of fired hours late. Wide enough to ride out a normal
 /// restart/deploy, short enough that a real outage suppresses a now-pointless
 /// "starts soon" ping. A far-out timer (e.g. a 1-week lead) stays deliverable
-/// almost until the match begins, so a brief delay never drops it.
-const DELIVER_GRACE_MS: i64 = 5 * 60 * 1000;
+/// almost until the match begins, so a brief delay never drops it. Also bounds
+/// the "still worth a heads-up" window for a rescheduled-earlier match (see
+/// [`crate::cache::reschedule_plan`]).
+pub(crate) const DELIVER_GRACE_MS: i64 = 5 * 60 * 1000;
 
 /// The most a reminder may lag its scheduled notify time and still be delivered.
 /// Bounds the previous rule for *long* leads: a 1-day/1-week timer's
@@ -139,6 +141,10 @@ pub fn open(path: &str) -> rusqlite::Result<Connection> {
             -- Full event name (league + edition, e.g. F1 Austrian Grand Prix), so
             -- an event subscription's reminders can be cleaned up on unsub.
             event        TEXT    NOT NULL DEFAULT '',
+            -- Subscriber's zone + clock format, so the sender can re-render this
+            -- reminder's start-time body when the match is rescheduled.
+            tz           TEXT    NOT NULL DEFAULT '',
+            hour24       INTEGER NOT NULL DEFAULT 0,
             sent         INTEGER NOT NULL DEFAULT 0,
             -- Keyed by (match_id, sport, lead_ms): an id isn't unique across games,
             -- and a match holds one row per lead time.
@@ -281,6 +287,20 @@ pub fn open(path: &str) -> rusqlite::Result<Connection> {
         }
         set_meta(&conn, "reminders_pk_v3", "1")?;
     }
+
+    // The per-reminder zone + clock format, so the sender can re-render a
+    // rescheduled match's start-time body. Added *after* the v3 rebuild above,
+    // which recreates `reminders` from a fixed column list and would otherwise
+    // drop columns added by an earlier ALTER; here they land on the final shape
+    // (older rows fall back to the server tz / 12-hour). Idempotent.
+    let _ = conn.execute(
+        "ALTER TABLE reminders ADD COLUMN tz TEXT NOT NULL DEFAULT ''",
+        [],
+    );
+    let _ = conn.execute(
+        "ALTER TABLE reminders ADD COLUMN hour24 INTEGER NOT NULL DEFAULT 0",
+        [],
+    );
 
     purge_unknown_sports(&conn)?;
     Ok(conn)
@@ -612,12 +632,17 @@ pub struct Reminder {
     pub team_b: String,
     /// Full event name (e.g. F1 Austrian Grand Prix), for event-scope cleanup.
     pub event: String,
+    /// Subscriber's IANA zone + 12h/24h pref, stored so the sender can re-render
+    /// this reminder's start-time body when the match is rescheduled (see
+    /// [`crate::cache::reschedule_plan`]). Empty tz ⇒ the server default.
+    pub tz: String,
+    pub hour24: bool,
 }
 
 const REMINDER_COLS: &str = "endpoint, p256dh, auth, match_id, lead_ms, notify_at_ms, title, \
-     body, url, sport, league, team_a, team_b, event";
+     body, url, sport, league, team_a, team_b, event, tz, hour24";
 
-fn reminder_params(r: &Reminder) -> [&dyn rusqlite::ToSql; 14] {
+fn reminder_params(r: &Reminder) -> [&dyn rusqlite::ToSql; 16] {
     [
         &r.endpoint,
         &r.p256dh,
@@ -633,6 +658,8 @@ fn reminder_params(r: &Reminder) -> [&dyn rusqlite::ToSql; 14] {
         &r.team_a,
         &r.team_b,
         &r.event,
+        &r.tz,
+        &r.hour24,
     ]
 }
 
@@ -641,13 +668,14 @@ fn reminder_params(r: &Reminder) -> [&dyn rusqlite::ToSql; 14] {
 fn reminder_upsert_sql() -> String {
     format!(
         "INSERT INTO reminders ({REMINDER_COLS}, sent)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, 0)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, 0)
          ON CONFLICT(endpoint, match_id, sport, lead_ms) DO UPDATE SET
             p256dh=excluded.p256dh, auth=excluded.auth,
             notify_at_ms=excluded.notify_at_ms, title=excluded.title,
             body=excluded.body, url=excluded.url,
             league=excluded.league, team_a=excluded.team_a,
-            team_b=excluded.team_b, event=excluded.event, sent=0"
+            team_b=excluded.team_b, event=excluded.event,
+            tz=excluded.tz, hour24=excluded.hour24, sent=0"
     )
 }
 
@@ -655,7 +683,7 @@ fn reminder_upsert_sql() -> String {
 fn reminder_insert_if_absent_sql() -> String {
     format!(
         "INSERT INTO reminders ({REMINDER_COLS}, sent)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, 0)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, 0)
          ON CONFLICT(endpoint, match_id, sport, lead_ms) DO NOTHING"
     )
 }
@@ -799,6 +827,8 @@ pub fn due_reminders(conn: &Connection, now_ms: i64) -> rusqlite::Result<Vec<Rem
             team_a: String::new(),
             team_b: String::new(),
             event: String::new(),
+            tz: String::new(),
+            hour24: false,
         })
     })?;
     rows.collect()
@@ -818,6 +848,57 @@ pub fn mark_reminder_sent(
         "UPDATE reminders SET sent = 1
          WHERE endpoint = ?1 AND match_id = ?2 AND sport = ?3 AND lead_ms = ?4",
         params![endpoint, match_id, sport, lead_ms],
+    )?;
+    Ok(())
+}
+
+/// Every unsent reminder in full — the sender loads these each tick to reconcile
+/// each timer's notify time (and start-time body) against the match's latest
+/// `begin_at` (see [`crate::cache::reschedule_plan`]).
+pub fn unsent_reminders(conn: &Connection) -> rusqlite::Result<Vec<Reminder>> {
+    let mut stmt = conn.prepare(&format!(
+        "SELECT {REMINDER_COLS} FROM reminders WHERE sent = 0"
+    ))?;
+    let rows = stmt.query_map([], |r| {
+        Ok(Reminder {
+            endpoint: r.get(0)?,
+            p256dh: r.get(1)?,
+            auth: r.get(2)?,
+            match_id: r.get(3)?,
+            lead_ms: r.get(4)?,
+            notify_at_ms: r.get(5)?,
+            title: r.get(6)?,
+            body: r.get(7)?,
+            url: r.get(8)?,
+            sport: r.get(9)?,
+            league: r.get(10)?,
+            team_a: r.get(11)?,
+            team_b: r.get(12)?,
+            event: r.get(13)?,
+            tz: r.get(14)?,
+            hour24: r.get(15)?,
+        })
+    })?;
+    rows.collect()
+}
+
+/// Re-point an unsent timer row at a rescheduled start: update its notify time
+/// and the derived title/body/url, keyed by the full PK. Touches only unsent rows
+/// — a delivered reminder is never rewritten, and its `sent` latch is preserved.
+pub fn update_reminder_schedule(conn: &Connection, r: &Reminder) -> rusqlite::Result<()> {
+    conn.execute(
+        "UPDATE reminders SET notify_at_ms=?1, title=?2, body=?3, url=?4
+         WHERE endpoint=?5 AND match_id=?6 AND sport=?7 AND lead_ms=?8 AND sent=0",
+        params![
+            r.notify_at_ms,
+            r.title,
+            r.body,
+            r.url,
+            r.endpoint,
+            r.match_id,
+            r.sport,
+            r.lead_ms
+        ],
     )?;
     Ok(())
 }
@@ -1338,7 +1419,122 @@ mod tests {
             team_a: "T1".into(),
             team_b: "Gen.G".into(),
             event: "LCK Spring".into(),
+            tz: String::new(),
+            hour24: false,
         }
+    }
+
+    #[test]
+    fn v2_to_v3_migration_keeps_the_tz_and_hour24_columns() {
+        // The tz/hour24 columns are added by an ALTER placed *after* the v3 table
+        // rebuild — which recreates `reminders` from a fixed column list. This
+        // guards that ordering: a pre-v3 DB (has the old `game` + `excluded`
+        // columns, no reminders_pk_v3 meta) must still end up with the columns.
+        let path = std::env::temp_dir().join("pte_v3_tz_migration_test.sqlite");
+        let _ = std::fs::remove_file(&path);
+        {
+            let conn = Connection::open(&path).unwrap();
+            // A post-v2, pre-v3 DB: the `reminders_pk_v2` flag is already set (so
+            // open() doesn't drop the table), the table carries the pre-v3
+            // `excluded` column, and there's no `reminders_pk_v3` flag yet — so the
+            // v3 rebuild runs and must preserve the row.
+            conn.execute_batch(
+                "CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+                 INSERT INTO meta (key, value) VALUES ('reminders_pk_v2', '1');
+                 CREATE TABLE reminders (
+                    endpoint TEXT NOT NULL, p256dh TEXT NOT NULL, auth TEXT NOT NULL,
+                    match_id INTEGER NOT NULL, sport TEXT NOT NULL DEFAULT '',
+                    notify_at_ms INTEGER NOT NULL, title TEXT NOT NULL, body TEXT NOT NULL,
+                    url TEXT NOT NULL, excluded INTEGER NOT NULL DEFAULT 0,
+                    sent INTEGER NOT NULL DEFAULT 0,
+                    PRIMARY KEY (endpoint, match_id, sport)
+                 );
+                 INSERT INTO reminders
+                    (endpoint, p256dh, auth, match_id, sport, notify_at_ms, title, body, url, excluded, sent)
+                 VALUES ('https://push/x', 'p', 'a', 7, 'lol', 123, 'T', 'B', 'u', 0, 0);",
+            )
+            .unwrap();
+        }
+        let conn = open(path.to_str().unwrap()).unwrap();
+        let has_col = |name: &str| -> bool {
+            conn.query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('reminders') WHERE name = ?1",
+                [name],
+                |r| r.get::<_, i64>(0),
+            )
+            .unwrap()
+                > 0
+        };
+        assert!(has_col("tz"), "tz column present after the v2→v3 upgrade");
+        assert!(
+            has_col("hour24"),
+            "hour24 column present after the v2→v3 upgrade"
+        );
+        // The pre-v3 row survived the rebuild, defaulting to the empty (server) tz.
+        let (mid, tz): (i64, String) = conn
+            .query_row(
+                "SELECT match_id, tz FROM reminders WHERE match_id = 7",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(mid, 7);
+        assert_eq!(tz, "");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn unsent_reminders_round_trips_the_subscriber_zone_and_clock() {
+        let conn = open(":memory:").unwrap();
+        let mut r = reminder(5);
+        r.tz = "America/New_York".into();
+        r.hour24 = true;
+        add_reminder(&conn, &r).unwrap();
+
+        let unsent = unsent_reminders(&conn).unwrap();
+        assert_eq!(unsent.len(), 1);
+        assert_eq!(unsent[0].tz, "America/New_York");
+        assert!(unsent[0].hour24);
+
+        // A delivered reminder is not "unsent" and drops out of the set.
+        mark_reminder_sent(&conn, &r.endpoint, r.match_id, &r.sport, r.lead_ms).unwrap();
+        assert!(unsent_reminders(&conn).unwrap().is_empty());
+    }
+
+    #[test]
+    fn update_reminder_schedule_moves_notify_and_body_but_only_when_unsent() {
+        let conn = open(":memory:").unwrap();
+        let r = reminder(6);
+        add_reminder(&conn, &r).unwrap();
+
+        // Reschedule earlier: notify + body move.
+        let mut moved = r.clone();
+        moved.notify_at_ms = r.notify_at_ms - 1_800_000;
+        moved.body = "LCK · 7:40 PM PDT".into();
+        update_reminder_schedule(&conn, &moved).unwrap();
+        let after = unsent_reminders(&conn).unwrap();
+        assert_eq!(after[0].notify_at_ms, r.notify_at_ms - 1_800_000);
+        assert_eq!(after[0].body, "LCK · 7:40 PM PDT");
+
+        // Once sent, a further reschedule must not rewrite the row.
+        mark_reminder_sent(&conn, &r.endpoint, r.match_id, &r.sport, r.lead_ms).unwrap();
+        let mut again = moved.clone();
+        again.notify_at_ms = 42;
+        again.body = "should not apply".into();
+        update_reminder_schedule(&conn, &again).unwrap();
+        let stored: (i64, String) = conn
+            .query_row(
+                "SELECT notify_at_ms, body FROM reminders WHERE match_id = 6",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(
+            stored.0,
+            r.notify_at_ms - 1_800_000,
+            "notify unchanged once sent"
+        );
+        assert_eq!(stored.1, "LCK · 7:40 PM PDT", "body unchanged once sent");
     }
 
     #[test]

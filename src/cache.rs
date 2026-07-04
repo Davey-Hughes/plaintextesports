@@ -3390,6 +3390,10 @@ pub struct ReminderSeed {
     pub title: String,
     pub body: String,
     pub url: String,
+    /// Subscriber's IANA zone + clock format, carried onto the reminder row so the
+    /// sender can re-render the body if the match is rescheduled.
+    pub tz: String,
+    pub hour24: bool,
 }
 
 impl ReminderSeed {
@@ -3425,6 +3429,8 @@ impl ReminderSeed {
             team_a: self.team_a,
             team_b: self.team_b,
             event: self.event,
+            tz: self.tz,
+            hour24: self.hour24,
         }
     }
 }
@@ -3443,6 +3449,8 @@ fn reminder_seed(m: &NormalizedMatch, lead_ms: i64, tz: &Tz, hour24: bool) -> Re
         event: full_event_name(&m.league, &m.series_name),
         lead_ms,
         notify_at_ms: m.begin_at.timestamp_millis() - lead_ms,
+        tz: tz.name().to_string(),
+        hour24,
         // The American team sports read "away at home"; soccer (neutral-venue
         // World Cup games) and esports read "vs".
         title: format!(
@@ -3529,6 +3537,146 @@ pub fn reminder_seeds_for_match(
         .iter()
         .map(|&lead| reminder_seed(m, lead, &tz, hour24))
         .collect()
+}
+
+// ----- Reschedule reconciliation --------------------------------------------
+
+/// Ignore a notify-time shift smaller than this (a minute) — start times can
+/// jitter by seconds between polls, and rewriting a row for that is pointless
+/// churn.
+const RESCHEDULE_EPSILON_MS: i64 = 60_000;
+
+/// The single "starting sooner than scheduled" push to send now for a match that
+/// jumped earlier past one or more unfired lead windows, plus the now-passed
+/// timers it stands in for (marked sent on a successful send).
+#[derive(Debug, Clone)]
+pub struct CollapseAlert {
+    pub reminder: crate::store::Reminder,
+    pub subsumed: Vec<crate::store::Reminder>,
+}
+
+/// What the sender should do this tick to bring armed reminders back in line with
+/// the latest match start times.
+#[derive(Debug, Default)]
+pub struct ReschedulePlan {
+    /// Unsent timers whose notify time / body must be rewritten to the new start
+    /// (via [`crate::store::update_reminder_schedule`]).
+    pub updates: Vec<crate::store::Reminder>,
+    /// One collapsed alert per match that jumped earlier past a lead window.
+    pub alerts: Vec<CollapseAlert>,
+    /// Reminders whose match is now canceled — drop them.
+    pub cancels: Vec<crate::store::Reminder>,
+}
+
+/// Rewrite `r`'s schedule fields from a freshly-derived seed (same match, same
+/// lead, current start), leaving its delivery identity untouched.
+fn reschedule_to(r: &crate::store::Reminder, seed: &ReminderSeed) -> crate::store::Reminder {
+    let mut u = r.clone();
+    u.notify_at_ms = seed.notify_at_ms;
+    u.title = seed.title.clone();
+    u.body = seed.body.clone();
+    u.url = seed.url.clone();
+    u
+}
+
+/// Reconcile a set of unsent reminders against the current match start times,
+/// deciding — per match — what to rewrite, what single "earlier than scheduled"
+/// alert to fire, and what to drop as canceled. Pure over its inputs (no
+/// `SNAPSHOT`/clock reads) so the decision logic is directly testable;
+/// [`current_reschedule_plan`] supplies the live snapshot.
+///
+/// For each `(endpoint, match id, sport)` group:
+/// - match gone from the window → left as-is;
+/// - match canceled → its reminders are dropped;
+/// - a timer whose notify instant the reschedule pulled from the future into the
+///   past (`old > now && new <= now`) is a *crossed-earlier* trigger. If the match
+///   is still ahead of its start grace, the group collapses to a single alert and
+///   every now-passed timer is subsumed; timers still in the future are rewritten
+///   to fire on their corrected schedule;
+/// - otherwise each timer whose notify time moved by at least
+///   [`RESCHEDULE_EPSILON_MS`] is rewritten in place.
+#[must_use]
+pub fn reschedule_plan(
+    reminders: &[crate::store::Reminder],
+    matches: &[NormalizedMatch],
+    now_ms: i64,
+) -> ReschedulePlan {
+    let cfg = config();
+    let mut plan = ReschedulePlan::default();
+
+    let mut groups: HashMap<(String, i64, String), Vec<&crate::store::Reminder>> = HashMap::new();
+    for r in reminders {
+        groups
+            .entry((r.endpoint.clone(), r.match_id, r.sport.clone()))
+            .or_default()
+            .push(r);
+    }
+
+    for ((_endpoint, match_id, sport), rows) in &groups {
+        let Some(m) = matches
+            .iter()
+            .find(|m| m.id == *match_id && m.sport.slug() == sport)
+        else {
+            // Dropped from the window — we can't reconcile it; leave the stored
+            // time and let the delivery window / prune handle it.
+            continue;
+        };
+        if m.status == MatchStatus::Canceled {
+            plan.cancels.extend(rows.iter().map(|r| (*r).clone()));
+            continue;
+        }
+
+        let begin = m.begin_at.timestamp_millis();
+        let tz = resolve_tz(&rows[0].tz, cfg.tz);
+        // The heads-up is only worth firing while the match hasn't started beyond
+        // the delivery grace.
+        let grace_open = begin + crate::store::DELIVER_GRACE_MS > now_ms;
+        // The reschedule pulled at least one timer's notify instant from the
+        // future into the past.
+        let crossed_earlier = rows
+            .iter()
+            .any(|r| r.notify_at_ms > now_ms && begin - r.lead_ms <= now_ms);
+
+        if crossed_earlier && grace_open {
+            let mut subsumed = Vec::new();
+            for r in rows {
+                let seed = reminder_seed(m, r.lead_ms, &tz, r.hour24);
+                if seed.notify_at_ms <= now_ms {
+                    subsumed.push((*r).clone());
+                } else {
+                    plan.updates.push(reschedule_to(r, &seed));
+                }
+            }
+            // One alert for the whole group — the body carries the new start with
+            // an "earlier than scheduled" tag; lead/notify are irrelevant to a send.
+            let rep = rows[0];
+            let seed = reminder_seed(m, rep.lead_ms, &tz, rep.hour24);
+            let mut reminder = rep.clone();
+            reminder.title = seed.title.clone();
+            reminder.body = format!("{} — earlier than scheduled", seed.body);
+            reminder.url = seed.url.clone();
+            plan.alerts.push(CollapseAlert { reminder, subsumed });
+        } else {
+            for r in rows {
+                let seed = reminder_seed(m, r.lead_ms, &tz, r.hour24);
+                if (r.notify_at_ms - seed.notify_at_ms).abs() >= RESCHEDULE_EPSILON_MS {
+                    plan.updates.push(reschedule_to(r, &seed));
+                }
+            }
+        }
+    }
+    plan
+}
+
+/// [`reschedule_plan`] against the live snapshot — the per-tick entry point for
+/// the push sender.
+#[must_use]
+pub fn current_reschedule_plan(
+    reminders: &[crate::store::Reminder],
+    now_ms: i64,
+) -> ReschedulePlan {
+    let snap = SNAPSHOT.read().unwrap_or_else(PoisonError::into_inner);
+    reschedule_plan(reminders, &snap.matches, now_ms)
 }
 
 // ----- Match detail + event standings/bracket ------------------------------
@@ -6330,6 +6478,8 @@ mod tests {
             title: "Bruins at Canadiens".into(),
             body: "NHL · 7:00 PM".into(),
             url: "https://x".into(),
+            tz: "America/New_York".into(),
+            hour24: false,
         };
         let sub = crate::types::PushSub {
             endpoint: "https://push/1".into(),
@@ -6347,6 +6497,8 @@ mod tests {
         assert_eq!(r.sport, "nhl");
         assert_eq!(r.team_a, "Boston Bruins");
         assert_eq!(r.event, "NHL");
+        assert_eq!(r.tz, "America/New_York");
+        assert!(!r.hour24);
     }
 
     #[test]
@@ -6405,6 +6557,187 @@ mod tests {
             !far.is_armable(now),
             "the 1-day timer's window already opened"
         );
+    }
+
+    // ----- reschedule_plan ----------------------------------------------------
+
+    const MIN_MS: i64 = 60_000;
+    const HOUR_MS: i64 = 60 * MIN_MS;
+    const DAY_MS: i64 = 24 * HOUR_MS;
+    const NOW_MS: i64 = 1_700_000_000_000;
+
+    /// An unsent 15-min-style reminder for match 1 / cs2 (matches [`at`]'s default
+    /// id + sport), with the given lead and stale stored notify time.
+    fn rem(lead_ms: i64, notify_at_ms: i64) -> crate::store::Reminder {
+        crate::store::Reminder {
+            endpoint: "https://push/e".into(),
+            p256dh: "p".into(),
+            auth: "a".into(),
+            match_id: 1,
+            lead_ms,
+            notify_at_ms,
+            title: "A vs B".into(),
+            body: "X · old-time".into(),
+            url: "u".into(),
+            sport: "cs2".into(),
+            league: "X".into(),
+            team_a: "A".into(),
+            team_b: "B".into(),
+            event: "X".into(),
+            tz: String::new(),
+            hour24: false,
+        }
+    }
+
+    fn match_at(begin_ms: i64, status: MatchStatus) -> NormalizedMatch {
+        at(DateTime::from_timestamp_millis(begin_ms).unwrap(), status)
+    }
+
+    #[test]
+    fn reschedule_later_shift_moves_notify_forward_no_alert() {
+        let begin = NOW_MS + 30 * MIN_MS; // slipped later
+        let m = match_at(begin, MatchStatus::Upcoming);
+        let r = rem(15 * MIN_MS, NOW_MS); // stale notify from the old start
+        let plan = reschedule_plan(&[r], &[m], NOW_MS);
+        assert!(plan.alerts.is_empty());
+        assert!(plan.cancels.is_empty());
+        assert_eq!(plan.updates.len(), 1);
+        assert_eq!(plan.updates[0].notify_at_ms, begin - 15 * MIN_MS);
+    }
+
+    #[test]
+    fn reschedule_small_earlier_shift_within_lead_updates_no_alert() {
+        let begin = NOW_MS + 30 * MIN_MS;
+        let m = match_at(begin, MatchStatus::Upcoming);
+        // Stale notify as if the start had been 5 min later; still ahead of now.
+        let r = rem(15 * MIN_MS, NOW_MS + 20 * MIN_MS);
+        let plan = reschedule_plan(&[r], &[m], NOW_MS);
+        assert!(plan.alerts.is_empty());
+        assert_eq!(plan.updates.len(), 1);
+        assert_eq!(plan.updates[0].notify_at_ms, begin - 15 * MIN_MS);
+    }
+
+    #[test]
+    fn reschedule_earlier_jump_past_one_lead_fires_one_alert() {
+        let begin = NOW_MS + 45 * MIN_MS; // now only 45 min out
+        let m = match_at(begin, MatchStatus::Upcoming);
+        // A 1-hour-lead timer: its notify instant is now in the past.
+        let r = rem(HOUR_MS, NOW_MS + HOUR_MS);
+        let plan = reschedule_plan(&[r], &[m], NOW_MS);
+        assert_eq!(plan.alerts.len(), 1);
+        assert_eq!(plan.alerts[0].subsumed.len(), 1);
+        assert_eq!(plan.alerts[0].subsumed[0].lead_ms, HOUR_MS);
+        assert!(plan.updates.is_empty());
+        assert!(
+            plan.alerts[0]
+                .reminder
+                .body
+                .contains("earlier than scheduled"),
+            "body: {}",
+            plan.alerts[0].reminder.body
+        );
+    }
+
+    #[test]
+    fn reschedule_earlier_jump_past_many_leads_collapses_to_one_alert() {
+        let begin = NOW_MS + 45 * MIN_MS;
+        let m = match_at(begin, MatchStatus::Upcoming);
+        // 24h / 1h / 15m timers, all armed for the future.
+        let r24 = rem(DAY_MS, NOW_MS + HOUR_MS);
+        let r1h = rem(HOUR_MS, NOW_MS + HOUR_MS);
+        let r15 = rem(15 * MIN_MS, NOW_MS + HOUR_MS);
+        let plan = reschedule_plan(&[r24, r1h, r15], &[m], NOW_MS);
+        // Exactly one alert; the two now-passed timers subsumed.
+        assert_eq!(plan.alerts.len(), 1);
+        let mut subsumed_leads: Vec<i64> =
+            plan.alerts[0].subsumed.iter().map(|r| r.lead_ms).collect();
+        subsumed_leads.sort_unstable();
+        assert_eq!(subsumed_leads, vec![HOUR_MS, DAY_MS]);
+        // The 15-min timer is still in the future → rewritten, not subsumed.
+        assert_eq!(plan.updates.len(), 1);
+        assert_eq!(plan.updates[0].lead_ms, 15 * MIN_MS);
+        assert_eq!(plan.updates[0].notify_at_ms, begin - 15 * MIN_MS);
+    }
+
+    #[test]
+    fn reschedule_earlier_jump_after_start_fires_no_alert() {
+        let begin = NOW_MS - 10 * MIN_MS; // already started, past the grace
+        let m = match_at(begin, MatchStatus::Upcoming);
+        let r = rem(15 * MIN_MS, NOW_MS + HOUR_MS);
+        let plan = reschedule_plan(&[r], &[m], NOW_MS);
+        assert!(plan.alerts.is_empty(), "no pointless late heads-up");
+        assert!(plan.cancels.is_empty());
+    }
+
+    #[test]
+    fn reschedule_sub_epsilon_jitter_produces_no_update() {
+        let begin = NOW_MS + 30 * MIN_MS;
+        let m = match_at(begin, MatchStatus::Upcoming);
+        // Stored notify is 30s off the recomputed one — below the 1-min epsilon.
+        let r = rem(15 * MIN_MS, begin - 15 * MIN_MS + 30_000);
+        let plan = reschedule_plan(&[r], &[m], NOW_MS);
+        assert!(plan.updates.is_empty(), "sub-minute jitter is ignored");
+        assert!(plan.alerts.is_empty());
+    }
+
+    #[test]
+    fn reschedule_canceled_match_is_dropped() {
+        let begin = NOW_MS + 30 * MIN_MS;
+        let m = match_at(begin, MatchStatus::Canceled);
+        let r = rem(15 * MIN_MS, NOW_MS);
+        let plan = reschedule_plan(&[r], &[m], NOW_MS);
+        assert_eq!(plan.cancels.len(), 1);
+        assert!(plan.updates.is_empty());
+        assert!(plan.alerts.is_empty());
+    }
+
+    #[test]
+    fn reschedule_earlier_jump_rewrites_db_and_subsumes_via_store() {
+        // End-to-end at the store seam the push sender uses: arm two future timers,
+        // reschedule the match earlier past the 1h window, then apply the plan
+        // exactly as `reschedule_writes` + the sender loop do.
+        let conn = crate::store::open(":memory:").unwrap();
+        let begin = NOW_MS + 45 * MIN_MS;
+        let m = match_at(begin, MatchStatus::Upcoming);
+        crate::store::add_reminder(&conn, &rem(HOUR_MS, NOW_MS + HOUR_MS)).unwrap();
+        crate::store::add_reminder(&conn, &rem(15 * MIN_MS, NOW_MS + HOUR_MS)).unwrap();
+
+        let unsent = crate::store::unsent_reminders(&conn).unwrap();
+        let plan = reschedule_plan(&unsent, &[m], NOW_MS);
+        for u in &plan.updates {
+            crate::store::update_reminder_schedule(&conn, u).unwrap();
+        }
+        assert_eq!(plan.alerts.len(), 1, "one collapsed alert");
+        for alert in &plan.alerts {
+            for s in &alert.subsumed {
+                crate::store::mark_reminder_sent(
+                    &conn,
+                    &s.endpoint,
+                    s.match_id,
+                    &s.sport,
+                    s.lead_ms,
+                )
+                .unwrap();
+            }
+        }
+
+        // The 1h timer was subsumed (marked sent); the 15m timer was rewritten to
+        // the new start and is still pending.
+        let after = crate::store::unsent_reminders(&conn).unwrap();
+        assert_eq!(after.len(), 1);
+        assert_eq!(after[0].lead_ms, 15 * MIN_MS);
+        assert_eq!(after[0].notify_at_ms, begin - 15 * MIN_MS);
+    }
+
+    #[test]
+    fn reschedule_match_gone_from_window_is_left_alone() {
+        let m = match_at(NOW_MS + 30 * MIN_MS, MatchStatus::Upcoming); // id 1
+        let mut r = rem(15 * MIN_MS, NOW_MS);
+        r.match_id = 99; // no such match in the window
+        let plan = reschedule_plan(&[r], &[m], NOW_MS);
+        assert!(plan.updates.is_empty());
+        assert!(plan.alerts.is_empty());
+        assert!(plan.cancels.is_empty());
     }
 
     #[test]
