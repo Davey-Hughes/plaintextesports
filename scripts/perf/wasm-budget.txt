@@ -1,1 +1,6 @@
-gzip_kb=888
+# Hydration WASM bundle ceiling (gzip KiB), enforced by wasm_size.sh.
+# Raised 888 -> 910 on 2026-07-04: the traditional-sports bracket render,
+# two-across standings, reorganized stream rows, and box-score tables are all
+# genuine new client UI (verified: no server logic leaking into the bundle),
+# which pushed the bundle to ~900 KiB. Bumped deliberately with headroom.
+gzip_kb=910
