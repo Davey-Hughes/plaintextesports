@@ -3634,8 +3634,10 @@ pub fn reschedule_plan(
         if m.status == MatchStatus::Canceled {
             // One "canceled" notice for the whole match. Every row is considered
             // (sent and unsent), so this fires whether the subscriber had a pending
-            // reminder or had already been told it was starting — then drop every
-            // row for the match (deletion is the latch against re-notifying).
+            // reminder or had already been told it was starting. The sender latches
+            // every row for the match (marks it sent, keeps it) and deletes only
+            // once the notice is delivered — so this re-derives and retries each
+            // tick until then, without a stale reminder firing in the meantime.
             let rep = rows[0];
             let tz = resolve_tz(&rep.tz, cfg.tz);
             let seed = reminder_seed(m, rep.lead_ms, &tz, rep.hour24);

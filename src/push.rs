@@ -147,11 +147,11 @@ pub fn spawn_sender() {
             let now = Utc::now().timestamp_millis();
 
             // Bring armed reminders back in line with the latest start times:
-            // rewrite shifted notify times/bodies and drop canceled matches (sync),
+            // rewrite shifted notify times/bodies and latch canceled matches (sync),
             // returning one "earlier than scheduled" alert per match that jumped
             // earlier past a lead window, plus one "canceled" notice per canceled
             // match. Runs before the due scan so it sees the corrected times;
-            // subsumed timers are marked sent below, so the due scan never
+            // subsumed and canceled timers are marked sent, so the due scan never
             // double-delivers them.
             let (alerts, cancel_notices) = reschedule_writes(&conn, now);
             let mut early_sent = 0usize;
@@ -189,17 +189,34 @@ pub fn spawn_sender() {
                 );
             }
 
-            // Cancellation notices — best-effort (the rows are already dropped, so
-            // a failed send only misses telling them; nothing stale can fire).
+            // Cancellation notices. The rows are latched (marked sent) but kept, so
+            // a delivered notice must now drop every lead row for the match; a
+            // transient failure leaves them for the plan to re-derive and retry next
+            // tick — nothing stale can fire, since the latch holds them out of the
+            // due scan in the meantime.
             let mut cancel_sent = 0usize;
             for notice in &cancel_notices {
                 match send_one(&client, &key, &cfg.vapid_subject, notice).await {
-                    Outcome::Sent => cancel_sent += 1,
+                    Outcome::Sent => {
+                        cancel_sent += 1;
+                        if let Err(e) = store::remove_reminder(
+                            &conn,
+                            &notice.endpoint,
+                            notice.match_id,
+                            &notice.sport,
+                        ) {
+                            leptos::logging::log!(
+                                "reschedule: cancel drop failed (match {}): {e}",
+                                notice.match_id
+                            );
+                        }
+                    }
                     Outcome::Gone => {
                         if let Err(e) = store::delete_endpoint(&conn, &notice.endpoint) {
                             leptos::logging::log!("reschedule: delete_endpoint failed: {e}");
                         }
                     }
+                    // Latched rows stay; retried next tick.
                     Outcome::Failed => {}
                 }
             }
@@ -263,13 +280,14 @@ pub fn spawn_sender() {
 
 /// Reconcile armed reminders against the latest match start times (the sync,
 /// DB-only half of the reschedule step). Rewrites the notify time + start-time
-/// body of any timer whose match was rescheduled and drops reminders for canceled
-/// matches, then returns the notifications the caller must deliver: the collapsed
-/// "earlier than scheduled" alerts (one per match that jumped earlier past a lead
-/// window) and the "canceled" notices (one per canceled match the subscriber still
-/// had a pending reminder for). Sends are kept out of here so no `&Connection` is
-/// held across a push send's await; the canceled rows are already deleted, so a
-/// failed cancel send can't leave a stale reminder to fire.
+/// body of any timer whose match was rescheduled and latches reminders for
+/// canceled matches (see [`apply_reschedule`]), then returns the notifications the
+/// caller must deliver: the collapsed "earlier than scheduled" alerts (one per
+/// match that jumped earlier past a lead window) and the "canceled" notices (one
+/// per canceled match the subscriber still had a pending reminder for). Sends are
+/// kept out of here so no `&Connection` is held across a push send's await; the
+/// canceled rows are latched (marked sent, kept) rather than deleted, so a failed
+/// cancel send can neither lose the notice nor leave a stale reminder to fire.
 fn reschedule_writes(
     conn: &rusqlite::Connection,
     now: i64,
@@ -285,21 +303,32 @@ fn reschedule_writes(
         return (Vec::new(), Vec::new());
     }
     let plan = crate::cache::current_reschedule_plan(&reminders, now);
+    apply_reschedule(conn, &plan);
+    (plan.alerts, plan.cancel_alerts)
+}
 
-    // Rewrite shifted timers to the new start (notify time + body).
+/// Apply the sync, DB-only half of a reschedule plan: rewrite shifted timers, and
+/// latch canceled reminders — mark them sent so the due scan can't fire a normal
+/// "starts soon" reminder, while keeping the rows until the cancellation notice is
+/// actually delivered (deleted on a successful send, back in the sender loop). A
+/// transient push failure therefore can't silently lose the notice; the plan
+/// re-derives the cancel from `MatchStatus::Canceled` next tick and retries.
+fn apply_reschedule(conn: &rusqlite::Connection, plan: &crate::cache::ReschedulePlan) {
     for u in &plan.updates {
         if let Err(e) = store::update_reminder_schedule(conn, u) {
             leptos::logging::log!("reschedule: update failed (match {}): {e}", u.match_id);
         }
     }
-    // Drop reminders whose match is now canceled (remove_reminder clears every
-    // lead row for the match, so repeats within a group are harmless no-ops).
     for c in &plan.cancels {
-        if let Err(e) = store::remove_reminder(conn, &c.endpoint, c.match_id, &c.sport) {
-            leptos::logging::log!("reschedule: cancel drop failed (match {}): {e}", c.match_id);
+        if let Err(e) =
+            store::mark_reminder_sent(conn, &c.endpoint, c.match_id, &c.sport, c.lead_ms)
+        {
+            leptos::logging::log!(
+                "reschedule: cancel latch failed (match {}): {e}",
+                c.match_id
+            );
         }
     }
-    (plan.alerts, plan.cancel_alerts)
 }
 
 /// Turn each sport/event subscription into per-match reminders — one row per
@@ -428,5 +457,72 @@ mod tests {
             Some(b"aes128gcm".as_ref())
         );
         assert!(!req.body().is_empty());
+    }
+
+    fn pending_reminder(match_id: i64, lead_ms: i64) -> Reminder {
+        Reminder {
+            endpoint: "https://push.example/x".into(),
+            p256dh: "p".into(),
+            auth: "a".into(),
+            match_id,
+            lead_ms,
+            notify_at_ms: 100,
+            title: "T".into(),
+            body: "B".into(),
+            url: "u".into(),
+            sport: "lol".into(),
+            league: "LCK".into(),
+            team_a: "T1".into(),
+            team_b: "GEN".into(),
+            event: "LCK".into(),
+            tz: String::new(),
+            hour24: false,
+            sent: false,
+        }
+    }
+
+    #[test]
+    fn canceled_reminders_are_latched_not_deleted_until_the_notice_is_delivered() {
+        // A cancellation notice is a plain push send that can transiently fail.
+        // If the rows were deleted before the send, a failed send would lose the
+        // notice forever. So `apply_reschedule` must KEEP the canceled rows (for a
+        // retry) while marking them sent so the normal due scan can't fire them.
+        let path = std::env::temp_dir().join("pte_cancel_latch_test.sqlite");
+        let _ = std::fs::remove_file(&path);
+        let conn = store::open(path.to_str().unwrap()).unwrap();
+
+        // Two lead timers for one match, both pending, notify instant in the past.
+        let t1 = pending_reminder(42, 900_000);
+        let t2 = pending_reminder(42, 300_000);
+        store::add_reminder(&conn, &t1).unwrap();
+        store::add_reminder(&conn, &t2).unwrap();
+
+        // Sanity: while unsent, both are due (they WOULD fire a normal reminder).
+        assert_eq!(
+            store::due_reminders(&conn, 200).unwrap().len(),
+            2,
+            "unsent timers should be due before cancellation"
+        );
+
+        // The plan cancels the match (every lead row) and carries the notice.
+        let plan = crate::cache::ReschedulePlan {
+            cancels: vec![t1.clone(), t2.clone()],
+            ..Default::default()
+        };
+        apply_reschedule(&conn, &plan);
+
+        // Rows survive, so the cancellation notice can still be retried…
+        assert_eq!(
+            store::all_reminders(&conn).unwrap().len(),
+            2,
+            "canceled rows must be kept until the notice is delivered"
+        );
+        // …but are latched out of the normal due scan (no stale 'starts soon').
+        assert!(
+            store::due_reminders(&conn, 200).unwrap().is_empty(),
+            "latched (sent) rows must not be returned as due"
+        );
+
+        let _ = std::fs::remove_file(&path);
     }
 }
