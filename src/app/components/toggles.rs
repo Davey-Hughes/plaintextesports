@@ -169,6 +169,13 @@ pub(crate) fn SportToggle() -> impl IntoView {
     let later = use_context::<LaterDays>().expect("later context").0;
     let games = use_context::<Games>().expect("games context").0;
     let leagues = use_context::<Leagues>().expect("leagues context").0;
+    // Resolve the router hooks during render (they read context); the click handler
+    // uses them to send the viewer back to the home schedule. Client-only — the
+    // toggle never fires on the server.
+    #[cfg(feature = "hydrate")]
+    let navigate = leptos_router::hooks::use_navigate();
+    #[cfg(feature = "hydrate")]
+    let location = leptos_router::hooks::use_location();
     let toggle = move |_| {
         let next = !traditional.get_untracked();
         traditional.set(next);
@@ -185,6 +192,22 @@ pub(crate) fn SportToggle() -> impl IntoView {
             save_sport_pref(next);
             save_str_set(keys::GAMES, &games.get_untracked());
             save_str_set(keys::LEAGUES, &leagues.get_untracked());
+            // The toggle is a jump back to the main schedule in the chosen mode, not
+            // just an in-place flip. Only the schedule pages mirror the mode into
+            // their URL (via `FilterUrlSync`); on a match/event/team page nothing
+            // does, so flipping the signal alone would strand the viewer on a
+            // now-irrelevant page. Send them home in the picked mode from there. On
+            // the schedule pages `FilterUrlSync` already keeps the URL in sync in
+            // place, so skip the redundant navigation (preserves scroll, no extra
+            // history entry) and let the in-place behaviour stand.
+            let path = location.pathname.get_untracked();
+            let on_schedule = path == "/" || path.is_empty() || path.starts_with("/day");
+            if !on_schedule {
+                navigate(
+                    if next { "/?mode=sports" } else { "/" },
+                    leptos_router::NavigateOptions::default(),
+                );
+            }
         }
     };
     view! {
