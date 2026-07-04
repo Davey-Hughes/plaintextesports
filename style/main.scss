@@ -2853,6 +2853,13 @@ a.sw-link {
     width: 1.5em;
   }
 
+  // Left-align the "W-L" header with the records below it: the record is the
+  // widest cell in the column, so it already sits at the column's left edge; the
+  // (shorter) header would otherwise right-align away from it.
+  th.st-wl {
+    text-align: left;
+  }
+
   .st-team {
     text-align: left;
     width: 100%;
