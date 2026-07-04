@@ -7,9 +7,12 @@ pub(crate) fn AboutPage() -> impl IntoView {
         <article class="about">
             <h1>"about"</h1>
             <p>
-                "A fast schedule for "
-                <strong>"tier-1 Counter-Strike 2 and League of Legends"</strong>
-                " — just the top events. Times are in your timezone; your theme and "
+                "A fast, no-frills schedule for "
+                <strong>"tier-1 esports and the major traditional sports"</strong>
+                " — Counter-Strike 2 and League of Legends, plus the NFL, NBA, NHL, MLB, "
+                "soccer, and motorsport. Switch between them with the "
+                <span class="kbd">"esports / sports"</span>
+                " toggle by the calendar. Times are in your timezone; your theme and "
                 "12h/24h choices are remembered."
             </p>
 
@@ -48,18 +51,20 @@ pub(crate) fn AboutPage() -> impl IntoView {
 
             <h2>"Finding matches"</h2>
             <p>
-                "You start with every tier-1 match. Click sport tabs ("
-                <span class="kbd">"CS2"</span> " / " <span class="kbd">"LoL"</span>
-                ") and event chips to narrow it — the address bar updates so a filtered view "
-                "is shareable. Use " <span class="kbd">"‹ show earlier days"</span>
+                "You start with every match in the current mode. Click the sport tabs and "
+                "event chips to narrow it — the address bar updates so a filtered view is "
+                "shareable. Use " <span class="kbd">"‹ show earlier days"</span>
                 " or the calendar to look back, and click an event's name for its full "
-                "schedule, standings, and bracket."
+                "schedule, standings, and bracket. A match's own page adds where to watch — "
+                "official streams, co-streams, and TV — plus the box score once a game is "
+                "final, where available."
             </p>
 
             <p class="about-note">
-                "Data is from PandaScore and refreshes in the background; a "
+                "Esports data is from PandaScore; the traditional sports come from each "
+                "league's own public feed. Everything refreshes in the background; a "
                 <span class="kbd">"LIVE"</span>
-                " badge is inferred, and scores fill in shortly after a match ends."
+                " badge is inferred, and scores and standings fill in shortly after play ends."
             </p>
 
             <p class="about-back">
