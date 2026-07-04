@@ -166,7 +166,8 @@ a {
   // No top padding: the sticky toggle bar sits flush at the top from the start, so
   // there's no empty strip to scroll through before it pins — it's already there.
   // The brand overlay and the bar's own padding keep the content off the very edge.
-  padding: 0 1rem 3rem;
+  // The bottom value is the gap under the footer (its last child) — kept modest.
+  padding: 0 1rem 1rem;
   // Sticky-footer layout: the page fills the viewport and the main grows to
   // take up the slack, so the footer stays pinned to the bottom. Without this,
   // a route that loads asynchronously (event/match pages) briefly has a short
@@ -534,8 +535,9 @@ a {
   .sub-star {
     padding: 0.1rem 0.45rem 0.1rem 0.1rem;
     font-size: 12px;
-    // Optically centre the star with the label text (see .tab-with-star above).
-    transform: translateY(-0.1em);
+    // The ★/☆ ink sits low in its line-box, so flex-centring reads a touch low;
+    // nudge it up to optically centre the star with the label text.
+    transform: translateY(-0.15em);
   }
 
   // Keep the ★ legible against the inverted fill when the chip is active.
@@ -1337,6 +1339,11 @@ a {
     padding: 0 0.3rem;
     color: var(--fg);
     white-space: nowrap;
+  }
+
+  // The filled ★ carries the gold "following" colour, matching the live star.
+  .kbd.star-on {
+    color: var(--c2);
   }
 
   // Secondary aside (data source, caveats) — quieter than the main copy.
