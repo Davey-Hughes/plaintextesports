@@ -258,12 +258,13 @@ fn PlayerStatTables(tables: Vec<PlayerTable>) -> impl IntoView {
             view! {
                 {sep}
                 <div class="player-table">
-                    <h3 class="boxscore-subhead">{t.title}</h3>
                     <div class="ps-wrap">
                         <table class="player-stats">
                             <thead>
                                 <tr>
-                                    <th class="ps-name"></th>
+                                    // The "Batting/Pitching — Team" title heads the
+                                    // name column, in line with the stat headers.
+                                    <th class="ps-name boxscore-subhead">{t.title}</th>
                                     {head}
                                 </tr>
                             </thead>
