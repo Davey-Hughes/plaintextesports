@@ -67,6 +67,9 @@ pub(crate) fn EventStageCombo(
     } = event;
     let bracket_only = standings.is_empty();
     let has_swiss = !swiss.is_empty();
+    // A stage carrying a bracket or Swiss grid is wide (it spans both columns of
+    // the stages grid); a plain standings table is narrow and pairs up two-across.
+    let wide = !rounds.is_empty() || has_swiss;
     let label = (!stage.is_empty()).then(|| view! { <h2 class="stage-head">{stage}</h2> });
     // A Swiss stage gets a grid/list toggle; otherwise just the standings
     // (+ any playoff bracket).
@@ -106,7 +109,7 @@ pub(crate) fn EventStageCombo(
         </div>
     };
     view! {
-        <div class="event-extra spy" id=format!("stage-{tournament_id}")>
+        <div class="event-extra spy" class:event-extra-wide=wide id=format!("stage-{tournament_id}")>
             <div class="stage-bar">{label}</div>
             // The grid/list toggle sits at the top-right of the views, on the
             // "Bracket"/"Standings" title row (just above its underline).
@@ -131,10 +134,14 @@ pub(crate) fn EventStages(
     let times = StoredValue::new(times);
     // One toggle drives every stage.
     let swiss_grid = RwSignal::new(true);
-    stages
+    // Lay the stages out in a grid so plain standings tables pair up two-across on
+    // desktop (they're far narrower than the page); bracket/Swiss stages span the
+    // full width. Collapses to a single column on narrow viewports.
+    let combos = stages
         .into_iter()
         .map(move |e| view! { <EventStageCombo event=e swiss_grid times=times.get_value() /> })
-        .collect_view()
+        .collect_view();
+    view! { <div class="event-stages">{combos}</div> }
 }
 
 /// Internal event page: the event's standings/bracket, its full schedule, and a
