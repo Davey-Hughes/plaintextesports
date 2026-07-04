@@ -9,6 +9,8 @@ pub mod server;
 pub mod types;
 
 #[cfg(feature = "ssr")]
+pub mod bracket_build;
+#[cfg(feature = "ssr")]
 pub mod cache;
 #[cfg(feature = "ssr")]
 pub mod config;

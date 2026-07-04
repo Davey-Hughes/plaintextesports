@@ -2,10 +2,11 @@
 //! required), normalized into the same [`NormalizedMatch`] model as the esports
 //! feeds so it flows through the existing schedule UI unchanged.
 
+use crate::bracket_build::{self, RawSeries as BracketSeries};
 use crate::feed::{NormalizedMatch, NormalizedTeam};
 use crate::types::{
-    stat_share, BoxScore, EventInfo, LeaderCard, LineRow, LineScore, MatchStatus, PlayerRow,
-    PlayerTable, Sport, StandingRow, StatPair, StreamView,
+    stat_share, BoxScore, BracketRound, EventInfo, LeaderCard, LineRow, LineScore, MatchStatus,
+    PlayerRow, PlayerTable, Sport, StandingRow, StatPair, StreamView,
 };
 use chrono::{DateTime, NaiveDate, Utc};
 use serde::Deserialize;
@@ -127,6 +128,9 @@ struct RawSide {
     score: Option<i64>,
     #[serde(default)]
     team: RawTeamRef,
+    /// Whether this side won the game (set on a final). Bracket builder only.
+    #[serde(rename = "isWinner", default)]
+    is_winner: bool,
 }
 
 #[derive(Deserialize, Default)]
@@ -625,6 +629,165 @@ pub async fn fetch_series(
         team_a_label,
         team_b_label,
     ))
+}
+
+// ----- Playoff bracket -------------------------------------------------------
+//
+// The postseason schedule is a flat list of games, each tagged with its series
+// ("AL Division Series", "World Series", …). Games are aggregated into series by
+// (round, matchup); the series score is each team's game wins, and the winner is
+// set once a team reaches the clinch number. Two league sub-brackets (AL/NL) feed
+// the World Series; the shared builder derives feeders from who beat whom (the
+// division/championship rounds each have a bye seed, so participant-matching — not
+// a fixed template — is what gets the connectors right).
+
+/// The AL/NL playoff bracket for a season (empty before the postseason begins).
+pub async fn fetch_bracket(
+    client: &reqwest::Client,
+    year: i32,
+) -> Result<Vec<BracketRound>, reqwest::Error> {
+    let url = format!("{BASE}/schedule/postseason?season={year}&hydrate=team");
+    let resp: ScheduleResp = client
+        .get(&url)
+        .timeout(std::time::Duration::from_secs(15))
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    let games: Vec<RawGame> = resp.dates.into_iter().flat_map(|d| d.games).collect();
+    Ok(mlb_bracket(games))
+}
+
+/// `(section, round-in-section, column title)` for a `seriesDescription`, or
+/// `None` for a non-bracket series (e.g. a tiebreaker) we skip.
+fn mlb_series_round(desc: &str) -> Option<(&'static str, u32, &'static str)> {
+    if desc == "World Series" {
+        return Some(("final", 0, "World Series"));
+    }
+    let (league, rest) = desc.split_once(' ')?;
+    let section = match league {
+        "AL" => "al",
+        "NL" => "nl",
+        _ => return None,
+    };
+    let (round, title) = if rest.starts_with("Wild Card") {
+        (0, "Wild Card")
+    } else if rest.starts_with("Division") {
+        (1, "Division Series")
+    } else if rest.starts_with("Championship") {
+        (2, "Championship Series")
+    } else {
+        return None;
+    };
+    Some((section, round, title))
+}
+
+/// Aggregate postseason games into bracket rounds.
+fn mlb_bracket(games: Vec<RawGame>) -> Vec<BracketRound> {
+    use std::collections::HashMap;
+    // Accumulate per series, keyed by (description, unordered team-id pair).
+    struct Acc {
+        section: &'static str,
+        round: u32,
+        title: &'static str,
+        // team id → (label, wins)
+        teams: Vec<(i64, String, i64)>,
+        games_in_series: i32,
+        last_pk: i64,
+        first_pk: i64,
+    }
+    let mut map: HashMap<(String, i64, i64), Acc> = HashMap::new();
+    for g in games {
+        let Some((section, round, title)) = mlb_series_round(&g.series) else {
+            continue;
+        };
+        let (a, h) = (&g.teams.away, &g.teams.home);
+        if a.team.id == 0 || h.team.id == 0 {
+            continue;
+        }
+        let key = (
+            g.series.clone(),
+            a.team.id.min(h.team.id),
+            a.team.id.max(h.team.id),
+        );
+        let acc = map.entry(key).or_insert_with(|| Acc {
+            section,
+            round,
+            title,
+            teams: Vec::new(),
+            games_in_series: g.games_in_series,
+            last_pk: 0,
+            first_pk: i64::MAX,
+        });
+        acc.last_pk = acc.last_pk.max(g.game_pk);
+        acc.first_pk = acc.first_pk.min(g.game_pk);
+        for side in [a, h] {
+            let entry = acc.teams.iter_mut().find(|(id, _, _)| *id == side.team.id);
+            let won = i64::from(side.is_winner);
+            match entry {
+                Some((_, _, w)) => *w += won,
+                None => acc.teams.push((side.team.id, side.team.label(), won)),
+            }
+        }
+    }
+
+    // Order series within each (section, round) by their first game, for stable
+    // slots, then assemble.
+    let mut accs: Vec<Acc> = map.into_values().collect();
+    accs.sort_by(|x, y| {
+        section_rank(x.section)
+            .cmp(&section_rank(y.section))
+            .then(x.round.cmp(&y.round))
+            .then(x.first_pk.cmp(&y.first_pk))
+    });
+    let mut slot_counter: HashMap<(&str, u32), u32> = HashMap::new();
+    let mut raws: Vec<BracketSeries> = Vec::new();
+    for acc in accs {
+        if acc.teams.len() < 2 {
+            continue;
+        }
+        let slot = slot_counter.entry((acc.section, acc.round)).or_insert(0);
+        let this_slot = *slot;
+        *slot += 1;
+        let (ida, la, wa) = acc.teams[0].clone();
+        let (_idb, lb, wb) = acc.teams[1].clone();
+        let _ = ida;
+        // A series is decided once a team reaches the clinch number.
+        let clinch = (acc.games_in_series / 2 + 1) as i64;
+        let over = wa >= clinch || wb >= clinch;
+        let winner = if !over {
+            ""
+        } else if wa > wb {
+            "a"
+        } else {
+            "b"
+        };
+        raws.push(BracketSeries {
+            section: acc.section.to_string(),
+            round: acc.round,
+            slot: this_slot,
+            round_title: acc.title.to_string(),
+            team_a: la,
+            team_b: lb,
+            score_a: Some(wa),
+            score_b: Some(wb),
+            winner: winner.to_string(),
+            match_id: acc.last_pk,
+            feed: [None, None],
+        });
+    }
+    bracket_build::build(raws)
+}
+
+/// Top-to-bottom order for the league sub-brackets (AL on top, NL below, World
+/// Series to the right).
+fn section_rank(section: &str) -> u8 {
+    match section {
+        "al" => 0,
+        "nl" => 1,
+        _ => 2,
+    }
 }
 
 // ----- Standings -----------------------------------------------------------
@@ -1238,6 +1401,26 @@ mod boxscore_tests {
 mod tests {
     use super::*;
 
+    /// Live smoke test — `cargo test --features ssr -- --ignored mlb_live_bracket
+    /// --nocapture`. Prints the assembled postseason bracket.
+    #[tokio::test]
+    #[ignore = "hits the live MLB API"]
+    async fn mlb_live_bracket() {
+        let client = reqwest::Client::new();
+        let rounds = fetch_bracket(&client, 2025).await.unwrap();
+        for r in &rounds {
+            println!("[{}] {} ({} series)", r.section, r.title, r.matches.len());
+            for (i, m) in r.matches.iter().enumerate() {
+                println!(
+                    "   {i}: {} {:?} vs {} {:?} win={} feeders={:?}",
+                    m.team_a, m.score_a, m.team_b, m.score_b, m.winner, m.feeders
+                );
+            }
+        }
+        assert!(!rounds.is_empty());
+        assert!(rounds.iter().any(|r| r.section == "final"));
+    }
+
     #[test]
     fn parses_a_scheduled_and_a_final_game() {
         let json = r#"{"dates":[{"games":[
@@ -1484,6 +1667,7 @@ mod tests {
                         team_name: "Astros".into(),
                         ..Default::default()
                     },
+                    ..Default::default()
                 },
                 home: RawSide {
                     score: Some(0),
@@ -1492,6 +1676,7 @@ mod tests {
                         team_name: "Blue Jays".into(),
                         ..Default::default()
                     },
+                    ..Default::default()
                 },
             },
             series: "Regular Season".into(),
