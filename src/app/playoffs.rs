@@ -1030,7 +1030,7 @@ pub(crate) fn Bracket(
     const TITLE_EM: f64 = 2.8; // round name + date (two lines)
     const TITLE_GAP: f64 = 0.5; // below the date, above the box
     const LABEL_EM: f64 = 1.5; // section banner
-    const LABEL_GAP: f64 = 0.5; // below the banner, above the title
+    const LABEL_GAP: f64 = 1.2; // below the banner, above the title
     const TOP_PAD: f64 = 0.3; // above the topmost banner/title
     let half_h = bracket::BOX_H_EM / 2.0;
     let multi = layout.group_rows.len() > 1
