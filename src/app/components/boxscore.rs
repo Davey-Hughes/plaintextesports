@@ -35,6 +35,12 @@ pub(crate) fn BoxScoreView(box_score: BoxScore, key: String) -> impl IntoView {
         timeline,
         ..
     } = box_score;
+    // The away/home abbreviations label the comparison's two columns (which team is
+    // which side); taken from the line score's rows.
+    let (away_abbr, home_abbr) = line
+        .as_ref()
+        .map(|l| (l.away.abbrev.clone(), l.home.abbrev.clone()))
+        .unwrap_or_default();
     view! {
         <section class="detail-section boxscore">
             <div class="section-head">
@@ -55,7 +61,8 @@ pub(crate) fn BoxScoreView(box_score: BoxScore, key: String) -> impl IntoView {
             <div class="boxscore-body" class:revealed=move || revealed.get()>
                 {line.map(|l| view! { <LineScoreGrid line=l /> })}
                 {(!leaders.is_empty()).then(|| view! { <Leaders leaders=leaders /> })}
-                {(!team_stats.is_empty()).then(|| view! { <StatComparison stats=team_stats /> })}
+                {(!team_stats.is_empty())
+                    .then(|| view! { <StatComparison stats=team_stats away=away_abbr home=home_abbr /> })}
                 {(!timeline.is_empty()).then(|| view! { <ScoringTimeline events=timeline /> })}
                 {(!player_tables.is_empty()).then(|| view! { <PlayerStatTables tables=player_tables /> })}
             </div>
@@ -124,7 +131,18 @@ fn LineScoreGrid(line: LineScore) -> impl IntoView {
 }
 
 #[component]
-fn StatComparison(stats: Vec<StatPair>) -> impl IntoView {
+fn StatComparison(stats: Vec<StatPair>, away: String, home: String) -> impl IntoView {
+    // Team abbreviations head the two value columns so it's clear which side is
+    // which. Team names aren't spoilers, so they show even while hidden.
+    let header = (!away.is_empty() || !home.is_empty()).then(|| {
+        view! {
+            <div class="cmp-row cmp-head">
+                <span class="cmp-away">{away}</span>
+                <span class="cmp-mid"></span>
+                <span class="cmp-home">{home}</span>
+            </div>
+        }
+    });
     let rows = stats
         .into_iter()
         .map(|s| {
@@ -147,7 +165,7 @@ fn StatComparison(stats: Vec<StatPair>) -> impl IntoView {
             }
         })
         .collect_view();
-    view! { <div class="stat-compare">{rows}</div> }
+    view! { <div class="stat-compare">{header}{rows}</div> }
 }
 
 #[component]
@@ -202,9 +220,17 @@ fn ScoringTimeline(events: Vec<ScoreEvent>) -> impl IntoView {
 
 #[component]
 fn PlayerStatTables(tables: Vec<PlayerTable>) -> impl IntoView {
+    let mut prev_team: Option<String> = None;
     let out = tables
         .into_iter()
         .map(|t| {
+            // A rule separates one team's tables (its batting + pitching) from the
+            // next team's, so the two sides read as distinct blocks.
+            let sep = prev_team
+                .as_ref()
+                .is_some_and(|p| p != &t.team)
+                .then(|| view! { <hr class="boxscore-team-sep" /> });
+            prev_team = Some(t.team.clone());
             // Column headers + player names/positions reserve the table shape; the
             // stat values are the spoilers.
             let head = t
@@ -230,6 +256,7 @@ fn PlayerStatTables(tables: Vec<PlayerTable>) -> impl IntoView {
                 })
                 .collect_view();
             view! {
+                {sep}
                 <div class="player-table">
                     <h3 class="boxscore-subhead">{t.title}</h3>
                     <div class="ps-wrap">

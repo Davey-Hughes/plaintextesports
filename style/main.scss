@@ -3248,7 +3248,7 @@ a.bk-team-link {
 }
 
 .boxscore {
-  .boxscore-body { display: flex; flex-direction: column; gap: 1rem; margin-top: 0.75rem; }
+  .boxscore-body { display: flex; flex-direction: column; gap: 1.5rem; margin-top: 0.75rem; }
   .boxscore-subhead { font-size: 0.85rem; text-transform: uppercase; letter-spacing: 0.03em; opacity: 0.7; margin: 0 0 0.35rem; }
   // Spoiler values (and the comparison bars, which reveal who leads) render in the
   // DOM always so column/card sizes are fixed; `.revealed` flips their visibility,
@@ -3272,6 +3272,8 @@ a.bk-team-link {
   .cmp-row { display: grid; grid-template-columns: 3rem 1fr 3rem; align-items: center; gap: 0.5rem; font-variant-numeric: tabular-nums; }
   .cmp-away { text-align: right; }
   .cmp-home { text-align: left; }
+  // Team abbreviations heading the two value columns (which side is which).
+  .cmp-head { font-weight: 600; opacity: 0.85; padding-bottom: 0.25rem; border-bottom: 1px solid var(--border, #333); }
   .cmp-mid { display: flex; flex-direction: column; gap: 0.2rem; }
   .cmp-label { text-align: center; font-size: 0.8rem; opacity: 0.75; }
   .cmp-bars { display: flex; height: 4px; border-radius: 2px; overflow: hidden; background: var(--border, #333); }
@@ -3291,4 +3293,6 @@ a.bk-team-link {
   .tl-row { display: grid; grid-template-columns: 4rem 3rem 1fr; gap: 0.5rem; }
   .tl-when { opacity: 0.6; }
   .player-tables { display: flex; flex-direction: column; gap: 0.75rem; }
+  // A rule between one team's tables (batting + pitching) and the next team's.
+  .boxscore-team-sep { border: none; border-top: 1px solid var(--border, #333); margin: 0.15rem 0; width: 100%; }
 }
