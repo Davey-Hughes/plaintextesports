@@ -471,8 +471,10 @@ a {
 
   .sub-star {
     padding: 0.2rem 0.5rem 0.2rem 0.15rem;
-    // The ★/☆ glyph's ink sits low in its line-box, so flex-centring still reads
-    // a touch low; nudge it up to optically centre the star with the label text.
+    // The ★/☆ glyph's vertical position in its line-box is font-dependent: it
+    // sits low on the desktop monospace stack but high on iOS's SF, so no fixed
+    // nudge centres it everywhere. Keep this modest: a larger up-nudge fixes the
+    // desktop case but pushes the star noticeably above the label on iOS.
     transform: translateY(-0.1em);
   }
 
@@ -535,9 +537,11 @@ a {
   .sub-star {
     padding: 0.1rem 0.45rem 0.1rem 0.1rem;
     font-size: 12px;
-    // The ★/☆ ink sits low in its line-box, so flex-centring reads a touch low;
-    // nudge it up to optically centre the star with the label text.
-    transform: translateY(-0.15em);
+    // The ★/☆ glyph's vertical position in its line-box is font-dependent: it
+    // sits low on the desktop monospace stack but high on iOS's SF, so no fixed
+    // nudge centres it everywhere. Keep this modest: a larger up-nudge fixes the
+    // desktop case but pushes the star noticeably above the label on iOS.
+    transform: translateY(-0.1em);
   }
 
   // Keep the ★ legible against the inverted fill when the chip is active.
