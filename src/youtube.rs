@@ -26,7 +26,9 @@ static CLIENT: Lazy<reqwest::Client> = Lazy::new(|| {
         .connect_timeout(std::time::Duration::from_secs(4))
         .timeout(std::time::Duration::from_secs(8))
         .build()
-        .unwrap_or_default()
+        // A build failure would otherwise fall back to a UA-/timeout-less default
+        // (itself a panic in reqwest); fail loudly and specifically instead.
+        .expect("failed to build the YouTube HTTP client")
 });
 /// (utc_date, units_used_today) — resets on date change.
 static BUDGET: Lazy<RwLock<(NaiveDate, u32)>> =
@@ -124,9 +126,13 @@ fn youtube_ref(url: &str) -> Option<YtRef> {
             .trim();
         return (!id.is_empty()).then(|| YtRef::Video(id.to_string()));
     }
-    let after = t
-        .split_once("youtube.com/")
-        .map(|(_, r)| r)
+    // Slice the original-case `t` at the index found in `low`, so a mixed-case
+    // host (e.g. `YouTube.com`) classifies like its lowercase form rather than
+    // failing the split and being dropped. (`to_ascii_lowercase` preserves byte
+    // offsets, so the index is valid in `t`.)
+    let after = low
+        .find("youtube.com/")
+        .map(|i| &t[i + "youtube.com/".len()..])
         .unwrap_or("")
         .trim_start_matches('/');
     if after.is_empty() {
@@ -171,8 +177,11 @@ fn youtube_ref(url: &str) -> Option<YtRef> {
             let name = second();
             (!name.is_empty()).then(|| YtRef::Handle(format!("@{}", name.to_ascii_lowercase())))
         }
-        // Reserved non-channel paths.
-        "shorts" | "playlist" | "results" | "feed" => None,
+        // Reserved non-channel paths (YouTube's own top-level routes, not vanity
+        // channel names) — resolving these would burn a quota unit on a doomed
+        // `forHandle` lookup.
+        "shorts" | "playlist" | "results" | "feed" | "about" | "gaming" | "premium" | "account"
+        | "hashtag" => None,
         // /@handle
         h if h.starts_with('@') => {
             let hh = h.trim_start_matches('@');
@@ -513,12 +522,21 @@ mod tests {
             youtube_ref("https://www.youtube.com/c/SomeCast"),
             Some(Handle("@somecast".into()))
         );
+        // A mixed-case host must classify like its lowercase form (the guard is
+        // case-insensitive, so the split must be too).
+        assert_eq!(
+            youtube_ref("https://www.YouTube.com/@Caedrel"),
+            Some(Handle("@caedrel".into()))
+        );
         // Non-YouTube, reserved paths, and empties → not resolvable.
         assert_eq!(youtube_ref("https://www.twitch.tv/x"), None);
         assert_eq!(
             youtube_ref("https://www.youtube.com/results?search_query=x"),
             None
         );
+        // Reserved top-level paths are not vanity channel names.
+        assert_eq!(youtube_ref("https://www.youtube.com/about"), None);
+        assert_eq!(youtube_ref("https://www.youtube.com/gaming"), None);
         assert_eq!(youtube_ref("https://www.youtube.com/watch"), None); // no video id
         assert_eq!(youtube_ref(""), None);
     }

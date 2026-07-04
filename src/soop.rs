@@ -24,7 +24,10 @@ static CLIENT: Lazy<reqwest::Client> = Lazy::new(|| {
         .connect_timeout(std::time::Duration::from_secs(4))
         .timeout(std::time::Duration::from_secs(8))
         .build()
-        .unwrap_or_default()
+        // The browser UA is required (a default client gets a 404 HTML page), and
+        // a build failure would otherwise fall back to a UA-less default (itself a
+        // panic in reqwest); fail loudly and specifically instead.
+        .expect("failed to build the SOOP HTTP client")
 });
 
 /// Live viewer count for a SOOP channel that's broadcasting now.
