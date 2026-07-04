@@ -2009,7 +2009,9 @@ a {
 // (or for a single table) and — capped by the 760px page — never exceeds two.
 .event-stages {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(19rem, 1fr));
+  // `min(19rem, 100%)` keeps the two-across track floor from forcing a fixed
+  // 19rem column wider than a narrow viewport (which overflowed at 320px).
+  grid-template-columns: repeat(auto-fit, minmax(min(19rem, 100%), 1fr));
   gap: 1.5rem 1.5rem;
   align-items: start;
 
