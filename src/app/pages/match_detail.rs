@@ -475,7 +475,7 @@ pub(crate) fn detail_view(d: MatchDetail, results: Resource<MatchResults>) -> im
                 let wec_badge = wec_live.map(|res| view! {
                     <Transition fallback=|| ().into_any()>
                         {move || res.get().flatten().map(|v| {
-                            let n = (v > 0).then(|| format!(" · {}", fmt_viewers(v))).unwrap_or_default();
+                            let n = if v > 0 { format!(" · {}", fmt_viewers(v)) } else { String::new() };
                             view! { <span class="stream-live">"● live"{n}</span> }
                         })}
                     </Transition>

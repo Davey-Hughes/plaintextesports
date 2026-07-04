@@ -4804,7 +4804,7 @@ fn attribute_costreams(
             })
         })
         .collect();
-    hits.sort_by(|a, b| b.viewers.cmp(&a.viewers));
+    hits.sort_by_key(|a| std::cmp::Reverse(a.viewers));
     hits.into_iter()
         .take(max)
         .map(|d| StreamView {

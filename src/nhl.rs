@@ -532,10 +532,7 @@ fn nhl_bracket(series: Vec<BracketSeries>) -> Vec<BracketRound> {
     let first_half_is_east = {
         let mut finals: Vec<&BracketSeries> = series.iter().filter(|s| s.round == 3).collect();
         finals.sort_by(|a, b| a.letter.cmp(&b.letter));
-        match finals.first() {
-            Some(f) if f.title.to_lowercase().contains("west") => false,
-            _ => true,
-        }
+        !matches!(finals.first(), Some(f) if f.title.to_lowercase().contains("west"))
     };
 
     let mut raws: Vec<RawSeries> = Vec::new();

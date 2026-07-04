@@ -568,7 +568,7 @@ pub struct StreamView {
 /// Server-only: the producers (`pandascore`, `cache`) order streams before they
 /// reach the client, so the wasm bundle never needs this.
 #[cfg(feature = "ssr")]
-pub(crate) fn order_streams(streams: &mut Vec<StreamView>) {
+pub(crate) fn order_streams(streams: &mut [StreamView]) {
     if streams.iter().any(|s| !s.name.is_empty()) {
         return;
     }
