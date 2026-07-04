@@ -1358,8 +1358,12 @@ pub fn spawn_poller() {
     };
 
     tokio::spawn(async move {
+        // A request timeout caps a hung upstream: the poll loop `.await`s these
+        // fetches, so without it a single stalled endpoint (schedules, standings,
+        // brackets) freezes the whole in-memory snapshot refresh. Matches HTTP.
         let client = match reqwest::Client::builder()
             .user_agent(crate::http::USER_AGENT)
+            .timeout(std::time::Duration::from_secs(15))
             .build()
         {
             Ok(c) => c,
