@@ -134,14 +134,70 @@ pub(crate) fn EventStages(
     let times = StoredValue::new(times);
     // One toggle drives every stage.
     let swiss_grid = RwSignal::new(true);
+    // Pure standings stages (a group/division table — no bracket or Swiss grid)
+    // group under one shared "Standings" heading, each labelled by its group or
+    // division name only, rather than repeating "Standings" for every one. Richer
+    // stages (brackets, Swiss) keep their own heading and reveal.
+    let (groups, others): (Vec<EventInfo>, Vec<EventInfo>) = stages
+        .into_iter()
+        .partition(|e| !e.standings.is_empty() && e.rounds.is_empty() && e.swiss.is_empty());
+    let standings = (!groups.is_empty()).then(|| view! { <StandingsBlock groups /> });
     // Lay the stages out in a grid so plain standings tables pair up two-across on
     // desktop (they're far narrower than the page); bracket/Swiss stages span the
     // full width. Collapses to a single column on narrow viewports.
-    let combos = stages
+    let combos = others
         .into_iter()
         .map(move |e| view! { <EventStageCombo event=e swiss_grid times=times.get_value() /> })
         .collect_view();
-    view! { <div class="event-stages">{combos}</div> }
+    view! { <div class="event-stages">{standings}{combos}</div> }
+}
+
+/// The event's group/division standings under one shared "Standings" heading, each
+/// table labelled by its group/division name only. The single toggle reveals or
+/// hides them all together.
+#[component]
+fn StandingsBlock(groups: Vec<EventInfo>) -> impl IntoView {
+    // One reveal for the whole block, keyed off the first group's id (stable).
+    let key = format!(
+        "st:{}",
+        groups.first().map(|e| e.tournament_id).unwrap_or(0)
+    );
+    let (revealed, toggle) = section_reveal(key);
+    let cells = groups
+        .into_iter()
+        .map(move |e| {
+            let EventInfo {
+                tournament_id,
+                stage,
+                sport,
+                standings,
+                ..
+            } = e;
+            view! {
+                <div class="event-extra spy" id=format!("stage-{tournament_id}")>
+                    <h2 class="stage-head">{stage}</h2>
+                    <StandingsTable rows=standings sport shared=revealed />
+                </div>
+            }
+        })
+        .collect_view();
+    view! {
+        <div class="event-extra event-extra-wide standings-lead">
+            <div class="section-head">
+                <button
+                    class="section-title section-toggle"
+                    class:on=move || revealed.get()
+                    title=move || if revealed.get() { "Hide the standings" } else { "Show the standings" }
+                    aria-expanded=move || if revealed.get() { "true" } else { "false" }
+                    on:click=toggle
+                >
+                    "Standings"
+                </button>
+                {move || (!revealed.get()).then(|| view! { <span class="section-hint">"hidden"</span> })}
+            </div>
+        </div>
+        {cells}
+    }
 }
 
 /// Internal event page: the event's standings/bracket, its full schedule, and a
