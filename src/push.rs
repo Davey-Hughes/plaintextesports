@@ -145,6 +145,49 @@ pub fn spawn_sender() {
             expand_subscriptions(&conn);
 
             let now = Utc::now().timestamp_millis();
+
+            // Bring armed reminders back in line with the latest start times:
+            // rewrite shifted notify times/bodies and drop canceled matches (sync),
+            // returning one "earlier than scheduled" alert per match that jumped
+            // earlier past a lead window. Runs before the due scan so it sees the
+            // corrected times; subsumed timers are marked sent below, so the due
+            // scan never double-delivers them.
+            let alerts = reschedule_writes(&conn, now);
+            let mut early_sent = 0usize;
+            for alert in &alerts {
+                match send_one(&client, &key, &cfg.vapid_subject, &alert.reminder).await {
+                    Outcome::Sent => {
+                        early_sent += 1;
+                        for s in &alert.subsumed {
+                            if let Err(e) = store::mark_reminder_sent(
+                                &conn,
+                                &s.endpoint,
+                                s.match_id,
+                                &s.sport,
+                                s.lead_ms,
+                            ) {
+                                leptos::logging::log!(
+                                    "reschedule: mark subsumed sent failed (match {}): {e}",
+                                    s.match_id
+                                );
+                            }
+                        }
+                    }
+                    Outcome::Gone => {
+                        if let Err(e) = store::delete_endpoint(&conn, &alert.reminder.endpoint) {
+                            leptos::logging::log!("reschedule: delete_endpoint failed: {e}");
+                        }
+                    }
+                    // Leave the subsumed timers unsent — retry next tick.
+                    Outcome::Failed => {}
+                }
+            }
+            if early_sent > 0 {
+                leptos::logging::log!(
+                    "reschedule: sent {early_sent} 'earlier than scheduled' alert(s)"
+                );
+            }
+
             let due = match store::due_reminders(&conn, now) {
                 Ok(d) => d,
                 Err(e) => {
@@ -197,6 +240,41 @@ pub fn spawn_sender() {
             tokio::time::sleep(TICK).await;
         }
     });
+}
+
+/// Reconcile armed reminders against the latest match start times (the sync,
+/// DB-only half of the reschedule step). Rewrites the notify time + start-time
+/// body of any timer whose match was rescheduled and drops reminders for canceled
+/// matches, then returns the collapsed "earlier than scheduled" alerts — one per
+/// match that jumped earlier past a lead window — for the caller to deliver
+/// (kept out of here so no `&Connection` is held across a push send's await).
+fn reschedule_writes(conn: &rusqlite::Connection, now: i64) -> Vec<crate::cache::CollapseAlert> {
+    let unsent = match store::unsent_reminders(conn) {
+        Ok(u) => u,
+        Err(e) => {
+            leptos::logging::log!("reschedule: unsent_reminders failed: {e}");
+            return Vec::new();
+        }
+    };
+    if unsent.is_empty() {
+        return Vec::new();
+    }
+    let plan = crate::cache::current_reschedule_plan(&unsent, now);
+
+    // Rewrite shifted timers to the new start (notify time + body).
+    for u in &plan.updates {
+        if let Err(e) = store::update_reminder_schedule(conn, u) {
+            leptos::logging::log!("reschedule: update failed (match {}): {e}", u.match_id);
+        }
+    }
+    // Drop reminders whose match is now canceled (remove_reminder clears every
+    // lead row for the match, so repeats within a group are harmless no-ops).
+    for c in &plan.cancels {
+        if let Err(e) = store::remove_reminder(conn, &c.endpoint, c.match_id, &c.sport) {
+            leptos::logging::log!("reschedule: cancel drop failed (match {}): {e}", c.match_id);
+        }
+    }
+    plan.alerts
 }
 
 /// Turn each sport/event subscription into per-match reminders — one row per
@@ -252,6 +330,8 @@ fn expand_subscriptions(conn: &rusqlite::Connection) {
                     team_a: seed.team_a,
                     team_b: seed.team_b,
                     event: seed.event,
+                    tz: seed.tz,
+                    hour24: seed.hour24,
                 };
                 if let Err(e) = store::add_reminder_if_absent(conn, &r) {
                     leptos::logging::log!(
@@ -309,6 +389,8 @@ mod tests {
             team_a: "T1".into(),
             team_b: "Gen.G".into(),
             event: "LCK Spring".into(),
+            tz: String::new(),
+            hour24: false,
         };
 
         let req = build_push_request(&key, "mailto:dev@example.com", &r).expect("build");
