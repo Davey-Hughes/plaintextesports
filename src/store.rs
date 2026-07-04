@@ -144,7 +144,8 @@ pub fn open(path: &str) -> rusqlite::Result<Connection> {
             -- Subscriber's zone + clock format, so the sender can re-render this
             -- reminder's start-time body when the match is rescheduled.
             tz           TEXT    NOT NULL DEFAULT '',
-            hour24       INTEGER NOT NULL DEFAULT 0,
+            -- Clock format for the body; the site default is 24-hour (1), 0 ⇒ 12h.
+            hour24       INTEGER NOT NULL DEFAULT 1,
             sent         INTEGER NOT NULL DEFAULT 0,
             -- Keyed by (match_id, sport, lead_ms): an id isn't unique across games,
             -- and a match holds one row per lead time.
@@ -171,8 +172,9 @@ pub fn open(path: &str) -> rusqlite::Result<Connection> {
             lead_list   TEXT    NOT NULL DEFAULT '',
             -- Subscriber's IANA tz, for formatting reminder bodies; '' ⇒ server tz.
             tz          TEXT    NOT NULL DEFAULT '',
-            -- Subscriber's 12h/24h pref, for formatting reminder bodies; 0 ⇒ 12h.
-            hour24      INTEGER NOT NULL DEFAULT 0,
+            -- Subscriber's 12h/24h pref, for formatting reminder bodies; the site
+            -- default is 24-hour (1), 0 ⇒ 12h.
+            hour24      INTEGER NOT NULL DEFAULT 1,
             PRIMARY KEY (endpoint, scope_kind, scope_value)
         );
         CREATE TABLE IF NOT EXISTS result_cache (
@@ -240,7 +242,7 @@ pub fn open(path: &str) -> rusqlite::Result<Connection> {
     );
     // …and the per-subscriber 12h/24h pref (older rows fall back to 12-hour).
     let _ = conn.execute(
-        "ALTER TABLE subscriptions ADD COLUMN hour24 INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE subscriptions ADD COLUMN hour24 INTEGER NOT NULL DEFAULT 1",
         [],
     );
 
@@ -292,15 +294,25 @@ pub fn open(path: &str) -> rusqlite::Result<Connection> {
     // rescheduled match's start-time body. Added *after* the v3 rebuild above,
     // which recreates `reminders` from a fixed column list and would otherwise
     // drop columns added by an earlier ALTER; here they land on the final shape
-    // (older rows fall back to the server tz / 12-hour). Idempotent.
+    // (older rows fall back to the server tz and the site's 24-hour default).
+    // Idempotent.
     let _ = conn.execute(
         "ALTER TABLE reminders ADD COLUMN tz TEXT NOT NULL DEFAULT ''",
         [],
     );
     let _ = conn.execute(
-        "ALTER TABLE reminders ADD COLUMN hour24 INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE reminders ADD COLUMN hour24 INTEGER NOT NULL DEFAULT 1",
         [],
     );
+    // A DB that added `hour24` under the earlier 0 (12-hour) default has rows stuck
+    // on 12-hour; the site default is 24-hour and new reminders/subscriptions always
+    // carry an explicit choice, so normalize those old rows once. This ships with
+    // the clock feature, so it runs before any real 12-hour choice could persist.
+    if get_meta(&conn, "hour24_default_24h").is_none() {
+        let _ = conn.execute("UPDATE reminders SET hour24 = 1 WHERE hour24 = 0", []);
+        let _ = conn.execute("UPDATE subscriptions SET hour24 = 1 WHERE hour24 = 0", []);
+        set_meta(&conn, "hour24_default_24h", "1")?;
+    }
 
     purge_unknown_sports(&conn)?;
     Ok(conn)
@@ -1489,16 +1501,58 @@ mod tests {
             has_col("hour24"),
             "hour24 column present after the v2→v3 upgrade"
         );
-        // The pre-v3 row survived the rebuild, defaulting to the empty (server) tz.
-        let (mid, tz): (i64, String) = conn
+        // The pre-v3 row survived the rebuild, defaulting to the empty (server) tz
+        // and the site's 24-hour clock (not the old 12-hour column default).
+        let (mid, tz, hour24): (i64, String, i64) = conn
             .query_row(
-                "SELECT match_id, tz FROM reminders WHERE match_id = 7",
+                "SELECT match_id, tz, hour24 FROM reminders WHERE match_id = 7",
                 [],
-                |r| Ok((r.get(0)?, r.get(1)?)),
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
             )
             .unwrap();
         assert_eq!(mid, 7);
         assert_eq!(tz, "");
+        assert_eq!(hour24, 1, "a pre-migration reminder defaults to 24-hour");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn a_reminder_left_on_the_12h_default_is_normalized_to_24h() {
+        // A DB that already carries the hour24 column at the old 0 (12h) default,
+        // with a row stuck there (armed before the column, or under the old
+        // default). Opening it must normalize that row to the site's 24h default.
+        let path = std::env::temp_dir().join("pte_hour24_normalize_test.sqlite");
+        let _ = std::fs::remove_file(&path);
+        {
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+                 INSERT INTO meta (key, value) VALUES
+                    ('reminders_pk_v2', '1'), ('reminders_pk_v3', '1');
+                 CREATE TABLE reminders (
+                    endpoint TEXT NOT NULL, p256dh TEXT NOT NULL, auth TEXT NOT NULL,
+                    match_id INTEGER NOT NULL, lead_ms INTEGER NOT NULL DEFAULT 900000,
+                    notify_at_ms INTEGER NOT NULL, title TEXT NOT NULL, body TEXT NOT NULL,
+                    url TEXT NOT NULL, sport TEXT NOT NULL DEFAULT '',
+                    league TEXT NOT NULL DEFAULT '', team_a TEXT NOT NULL DEFAULT '',
+                    team_b TEXT NOT NULL DEFAULT '', event TEXT NOT NULL DEFAULT '',
+                    tz TEXT NOT NULL DEFAULT '', hour24 INTEGER NOT NULL DEFAULT 0,
+                    sent INTEGER NOT NULL DEFAULT 0,
+                    PRIMARY KEY (endpoint, match_id, sport, lead_ms)
+                 );
+                 INSERT INTO reminders
+                    (endpoint, p256dh, auth, match_id, notify_at_ms, title, body, url, sport)
+                 VALUES ('e', 'p', 'a', 7, 100, 't', 'b', 'u', 'lol');",
+            )
+            .unwrap();
+        }
+        let conn = open(path.to_str().unwrap()).unwrap();
+        let hour24: i64 = conn
+            .query_row("SELECT hour24 FROM reminders WHERE match_id = 7", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(hour24, 1, "an old 12-hour row is normalized to 24-hour");
         let _ = std::fs::remove_file(&path);
     }
 
