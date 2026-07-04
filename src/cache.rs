@@ -2679,44 +2679,117 @@ pub(crate) fn match_source_link(
     })
 }
 
-/// Group already-time-sorted views into per-day buckets, and within each day
-/// into per-league groups (leagues ordered by their earliest match). A league
-/// group's `bo` is set only when every match in it shares the same best-of.
-#[doc(hidden)]
-pub fn group_days(views: Vec<MatchView>, tz: &Tz) -> Vec<DayGroup> {
+/// Consecutive matches closer together than this stay in one day group (so a
+/// late-night broadcast that spills across midnight in the viewer's zone reads as
+/// one night); a gap of at least this — a real break to the next session — starts
+/// a new group, even within the same calendar date.
+const CHAIN_GAP_MS: i64 = 8 * 60 * 60 * 1000;
+
+/// A day group's label, spanning its first→last local date. A single calendar day
+/// collapses to the plain label ("Friday, July 3"); a group that crosses midnight
+/// reads as a span ("Friday–Saturday, July 3–4", or across a month change
+/// "Friday, June 30 – Saturday, July 1").
+fn day_span_label(first: DateTime<Tz>, last: DateTime<Tz>) -> String {
+    if first.date_naive() == last.date_naive() {
+        return day_label(first);
+    }
+    let wd = |d: &DateTime<Tz>| WEEKDAYS_FULL[d.weekday().num_days_from_monday() as usize];
+    let mo = |d: &DateTime<Tz>| MONTHS_FULL[d.month0() as usize];
+    if first.month() == last.month() {
+        format!(
+            "{}–{}, {} {}–{}",
+            wd(&first),
+            wd(&last),
+            mo(&first),
+            first.day(),
+            last.day()
+        )
+    } else {
+        format!(
+            "{}, {} {} – {}, {} {}",
+            wd(&first),
+            mo(&first),
+            first.day(),
+            wd(&last),
+            mo(&last),
+            last.day()
+        )
+    }
+}
+
+/// Group already-time-sorted views into per-day buckets, and within each day into
+/// per-league groups (leagues ordered by their earliest match). A league group's
+/// `bo` is set only when every match in it shares the same best-of. When `chain`
+/// is set, a run of matches that crosses local midnight without a [`CHAIN_GAP_MS`]
+/// break stays in one group (a late-night slate reads as one night); otherwise a
+/// new group starts on every calendar-date change.
+fn group_by(views: Vec<MatchView>, tz: &Tz, chain: bool) -> Vec<DayGroup> {
     let mut days: Vec<DayGroup> = Vec::new();
+    let mut prev: Option<(i64, String)> = None; // (begin_at_ms, day_key) of the last view
     for v in views {
         let local = DateTime::from_timestamp_millis(v.begin_at_ms)
             .unwrap_or_else(Utc::now)
             .with_timezone(tz);
         let key = local.format("%Y-%m-%d").to_string();
-        if days.last().map(|d| &d.day_key) != Some(&key) {
+        // Calendar-day grouping breaks on every date change; chain grouping breaks
+        // only on a real gap between consecutive matches (so a run that crosses
+        // midnight stays together, and a genuine >=8h break within a day — like the
+        // next evening's slate — starts a new group even on the same calendar date).
+        let start_new = match &prev {
+            Some((pms, pkey)) => {
+                if chain {
+                    v.begin_at_ms - pms >= CHAIN_GAP_MS
+                } else {
+                    *pkey != key
+                }
+            }
+            None => true,
+        };
+        let vms = v.begin_at_ms;
+        if start_new {
             days.push(DayGroup {
-                day_key: key,
-                day_label: day_label(local),
+                day_key: key.clone(),
+                day_label: String::new(),
                 leagues: Vec::new(),
             });
         }
         let day = days.last_mut().unwrap();
         // Group by edition (league + series), so two editions of the same circuit
         // form distinct groups with their own header and event link.
-        if let Some(lg) = day
+        match day
             .leagues
             .iter_mut()
             .find(|l| l.league == v.league && l.series_name == v.series_name)
         {
-            lg.matches.push(v);
-        } else {
-            day.leagues.push(LeagueGroup {
+            Some(lg) => lg.matches.push(v),
+            None => day.leagues.push(LeagueGroup {
                 league: v.league.clone(),
                 series_name: v.series_name.clone(),
                 event_url: String::new(),
                 bo: None,
                 matches: vec![v],
-            });
+            }),
         }
+        prev = Some((vms, key));
     }
     for day in &mut days {
+        // Label spans the group's first→last match; a single calendar day collapses
+        // to the plain label, so the non-chained grouping is byte-for-byte unchanged.
+        let (mut lo, mut hi) = (i64::MAX, i64::MIN);
+        for lg in &day.leagues {
+            for m in &lg.matches {
+                lo = lo.min(m.begin_at_ms);
+                hi = hi.max(m.begin_at_ms);
+            }
+        }
+        if lo <= hi {
+            let to_local = |ms: i64| {
+                DateTime::from_timestamp_millis(ms)
+                    .unwrap_or_else(Utc::now)
+                    .with_timezone(tz)
+            };
+            day.day_label = day_span_label(to_local(lo), to_local(hi));
+        }
         for lg in &mut day.leagues {
             let first = lg
                 .matches
@@ -2755,6 +2828,20 @@ pub fn group_days(views: Vec<MatchView>, tz: &Tz) -> Vec<DayGroup> {
             });
     }
     days
+}
+
+/// Group time-sorted views into per-day buckets (one calendar day each). See
+/// [`group_by`].
+#[doc(hidden)]
+pub fn group_days(views: Vec<MatchView>, tz: &Tz) -> Vec<DayGroup> {
+    group_by(views, tz, false)
+}
+
+/// Like [`group_days`], but a late run of matches that crosses local midnight
+/// without a [`CHAIN_GAP_MS`] break stays in one group — used on the event page so
+/// a broadcast that spills past midnight in the viewer's zone reads as one night.
+pub(crate) fn group_chains(views: Vec<MatchView>, tz: &Tz) -> Vec<DayGroup> {
+    group_by(views, tz, true)
 }
 
 /// Fold a rally's per-stage rows into one landmark row per local day for the
@@ -3198,7 +3285,10 @@ pub fn event_view(event: &str, tz_name: &str, hour24: bool) -> ScheduleView {
         .collect();
 
     ScheduleView {
-        days: group_days(all, &tz),
+        // The event page chains a late slate that crosses local midnight into one
+        // day group (a broadcast running past 12 in the viewer's zone reads as one
+        // night) — unlike the home/day/team views, which keep calendar days.
+        days: group_chains(all, &tz),
         today_key: now
             .with_timezone(&tz)
             .date_naive()
@@ -5746,6 +5836,104 @@ mod tests {
         assert_eq!(days[0].leagues[1].league, "LEC");
         assert_eq!(days[0].leagues[1].bo, Some("Bo3".to_string()));
         assert_eq!(days[1].leagues[0].bo, Some("Bo3".to_string()));
+    }
+
+    /// A minimal LoL view at `at_ms` for the day-grouping tests.
+    fn chain_view(at_ms: i64, league: &str) -> MatchView {
+        MatchView {
+            id: at_ms,
+            sport: Sport::Lol,
+            league: league.into(),
+            series_name: String::new(),
+            status: MatchStatus::Upcoming,
+            clock_label: String::new(),
+            date_label: String::new(),
+            venue_label: String::new(),
+            venue_name: String::new(),
+            venue_location: String::new(),
+            best_of: "Bo3".into(),
+            team_a: TeamView {
+                label: "A".into(),
+                name: "A".into(),
+                score: None,
+                winner: false,
+                logo: String::new(),
+                abbrev: String::new(),
+            },
+            team_b: TeamView {
+                label: "B".into(),
+                name: "B".into(),
+                score: None,
+                winner: false,
+                logo: String::new(),
+                abbrev: String::new(),
+            },
+            league_url: String::new(),
+            begin_at_ms: at_ms,
+            row_href: None,
+        }
+    }
+
+    #[test]
+    fn group_chains_merges_a_slate_across_midnight() {
+        // MSI-style: an evening match then one ~5h later past midnight (the same
+        // broadcast block) chain into one group; the next evening, a real overnight
+        // gap away, is a fresh group.
+        let at = |d, h| {
+            Tz::UTC
+                .with_ymd_and_hms(2026, 7, d, h, 0, 0)
+                .unwrap()
+                .timestamp_millis()
+        };
+        let views = vec![
+            chain_view(at(3, 20), "MSI"), // Fri 8pm
+            chain_view(at(4, 1), "MSI"),  // Sat 1am (5h later, crosses midnight)
+            chain_view(at(4, 20), "MSI"), // Sat 8pm (19h later)
+        ];
+        let days = group_chains(views, &Tz::UTC);
+        assert_eq!(
+            days.len(),
+            2,
+            "the 8pm+1am slate is one group; next evening another"
+        );
+        assert_eq!(days[0].leagues[0].matches.len(), 2);
+        assert_eq!(
+            days[0].day_key, "2026-07-03",
+            "keyed on the chain's start date"
+        );
+        assert_eq!(days[0].day_label, "Friday–Saturday, July 3–4");
+        assert_eq!(days[1].leagues[0].matches.len(), 1);
+        assert_eq!(days[1].day_label, "Saturday, July 4");
+    }
+
+    #[test]
+    fn group_chains_splits_a_real_overnight_break_and_leaves_group_days_alone() {
+        let at = |d, h| {
+            Tz::UTC
+                .with_ymd_and_hms(2026, 7, d, h, 0, 0)
+                .unwrap()
+                .timestamp_millis()
+        };
+        // Two evenings ~24h apart stay separate even when chaining.
+        let evenings = vec![chain_view(at(3, 20), "X"), chain_view(at(4, 20), "X")];
+        assert_eq!(
+            group_chains(evenings, &Tz::UTC).len(),
+            2,
+            "24h apart => separate days"
+        );
+        // A 3h cross-midnight pair: group_days splits at midnight (unchanged), while
+        // group_chains keeps it as one night.
+        let across = vec![chain_view(at(3, 22), "X"), chain_view(at(4, 1), "X")];
+        assert_eq!(
+            group_days(across.clone(), &Tz::UTC).len(),
+            2,
+            "calendar-day grouping still splits at midnight"
+        );
+        assert_eq!(
+            group_chains(across, &Tz::UTC).len(),
+            1,
+            "chaining keeps them together"
+        );
     }
 
     #[test]
