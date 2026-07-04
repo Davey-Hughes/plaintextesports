@@ -521,7 +521,7 @@ pub(crate) fn StandingsTable(
                         <th></th>
                         <th class="st-team">"Team"</th>
                         <th class="st-wl">"W-L"</th>
-                        <th>{record_label}</th>
+                        <th class="st-diff">{record_label}</th>
                     </tr>
                 </thead>
                 <tbody>{body}</tbody>
