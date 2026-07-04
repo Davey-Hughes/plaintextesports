@@ -124,6 +124,12 @@ reminder_lead_minutes = 15
 # calendar.
 archive_months = 1
 
+# Days to keep a persisted match box score after it was last fetched/viewed
+# before pruning it from the on-disk cache (0-3650; 0 disables pruning). Box
+# scores are cached per game, so this bounds slow disk growth; an evicted one is
+# simply re-fetched on the next view. Viewing a game refreshes its timer.
+box_score_retention_days = 360
+
 # Periodically re-fetch recent past days for late score corrections (sparse:
 # ~6h for yesterday, slowing to never past a week). Disable to save quota.
 # PandaScore (CS2/LoL) only — the traditional sports come from separate keyless

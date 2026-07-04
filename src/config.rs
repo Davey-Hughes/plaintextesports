@@ -64,6 +64,9 @@ struct FileConfig {
     active_poll_secs: Option<u64>,
     reminder_lead_minutes: Option<i64>,
     archive_months: Option<i64>,
+    /// Days to keep a persisted box score after its last fetch before pruning it
+    /// from result_cache (default 360; 0 disables pruning).
+    box_score_retention_days: Option<i64>,
     past_refresh: Option<bool>,
     backfill: Option<bool>,
     rate_limit_floor: Option<u64>,
@@ -142,6 +145,10 @@ impl FileConfig {
             self.reminder_lead_minutes.map(|n| n.to_string()),
         );
         put("ARCHIVE_MONTHS", self.archive_months.map(|n| n.to_string()));
+        put(
+            "BOX_SCORE_RETENTION_DAYS",
+            self.box_score_retention_days.map(|n| n.to_string()),
+        );
         put(
             "ENABLE_PAST_REFRESH",
             self.past_refresh.map(|b| b.to_string()),
@@ -247,6 +254,9 @@ pub struct Config {
     /// How many months of past matches to keep + backfill (1-3; free-tier
     /// history is shallow, so this is capped low).
     pub archive_months: i64,
+    /// Days to keep a persisted box score after its last fetch before it's pruned
+    /// from result_cache (0 disables pruning).
+    pub box_score_retention_days: i64,
     /// Periodically re-fetch recent past days to catch late score corrections.
     pub past_refresh: bool,
     /// Slowly backfill older past matches up to `archive_months` on a fresh DB.
@@ -468,6 +478,14 @@ impl Config {
             .filter(|&n| (1..=3).contains(&n))
             .unwrap_or(1);
 
+        // Days to keep a persisted box score after its last fetch/view before
+        // pruning it (default 360; 0 disables). result_cache's box_score namespace
+        // is id-keyed, so without this it grows one row per game ever viewed.
+        let box_score_retention_days = get("BOX_SCORE_RETENTION_DAYS")
+            .and_then(|s| s.parse().ok())
+            .filter(|&n| (0..=3650).contains(&n))
+            .unwrap_or(360);
+
         // Both default on; disabled with the usual falsey values.
         let flag = |key: &str, default: bool| -> bool {
             get(key)
@@ -523,6 +541,7 @@ impl Config {
             upcoming_days,
             reminder_lead_ms,
             archive_months,
+            box_score_retention_days,
             past_refresh,
             backfill,
             rate_limit_floor,
@@ -571,6 +590,7 @@ mod tests {
         assert_eq!(c.upcoming_days, 30);
         assert_eq!(c.reminder_lead_ms, 15 * 60_000);
         assert_eq!(c.archive_months, 1);
+        assert_eq!(c.box_score_retention_days, 360);
         assert!(c.past_refresh);
         assert!(c.backfill);
         assert_eq!(c.rate_limit_floor, 200);
@@ -585,6 +605,19 @@ mod tests {
         // Out of range (free-tier wall) → default 1.
         assert_eq!(cfg(&[("ARCHIVE_MONTHS", "12")]).archive_months, 1);
         assert_eq!(cfg(&[("ARCHIVE_MONTHS", "0")]).archive_months, 1);
+        // Box-score retention: a valid value passes; 0 disables; out of range → 360.
+        assert_eq!(
+            cfg(&[("BOX_SCORE_RETENTION_DAYS", "90")]).box_score_retention_days,
+            90
+        );
+        assert_eq!(
+            cfg(&[("BOX_SCORE_RETENTION_DAYS", "0")]).box_score_retention_days,
+            0
+        );
+        assert_eq!(
+            cfg(&[("BOX_SCORE_RETENTION_DAYS", "99999")]).box_score_retention_days,
+            360
+        );
         assert!(!cfg(&[("ENABLE_PAST_REFRESH", "false")]).past_refresh);
         assert!(!cfg(&[("ENABLE_BACKFILL", "0")]).backfill);
         assert_eq!(cfg(&[("RATE_LIMIT_FLOOR", "500")]).rate_limit_floor, 500);

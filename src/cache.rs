@@ -1216,6 +1216,23 @@ fn db_cache_put<T: serde::Serialize>(ns: &str, key: &str, value: &T, fetched_at:
     }
 }
 
+/// Prune `result_cache` rows in `ns` last fetched more than `retain_days` ago
+/// (best-effort; logs). No-op when there's no DB or `retain_days <= 0`. Bounds
+/// id-keyed namespaces (box scores) that would otherwise grow without limit.
+fn db_cache_prune(ns: &str, retain_days: i64, now: DateTime<Utc>) {
+    if retain_days <= 0 {
+        return;
+    }
+    let Some(db) = CACHE_DB.as_ref() else { return };
+    let cutoff = (now - Duration::days(retain_days)).timestamp_millis();
+    let conn = db.lock().unwrap_or_else(PoisonError::into_inner);
+    match crate::store::prune_result_cache(&conn, ns, cutoff) {
+        Ok(n) if n > 0 => leptos::logging::log!("result_cache: pruned {n} stale {ns} row(s)"),
+        Ok(_) => {}
+        Err(e) => leptos::logging::log!("result_cache: prune failed ({ns}): {e}"),
+    }
+}
+
 /// Every row of a namespace, decoded (for Pattern B startup load).
 fn db_cache_get_ns<T: serde::de::DeserializeOwned>(ns: &str) -> Vec<(String, T, DateTime<Utc>)> {
     let Some(db) = CACHE_DB.as_ref() else {
@@ -1374,6 +1391,9 @@ pub fn spawn_poller() {
         };
 
         let mut last_deep: Option<DateTime<Utc>> = None;
+        // Last UTC day the id-keyed result_cache namespaces were pruned (box scores
+        // grow one row per finished game ever viewed; prune once a day).
+        let mut last_prune_day: Option<NaiveDate> = None;
         // Last-seen API budget, used to throttle low-priority past work.
         let mut rate_remaining: Option<u64> = None;
         // Orange Cat Blacktop (WRC/WEC/MotoGP): the last fetched calendars, merged
@@ -1419,6 +1439,12 @@ pub fn spawn_poller() {
             let deep = !active || last_deep.is_none_or(|t| now - t >= deep_interval);
             if deep {
                 last_deep = Some(now);
+            }
+            // Once a day, prune box scores not viewed within the retention window.
+            let today = now.date_naive();
+            if last_prune_day != Some(today) {
+                last_prune_day = Some(today);
+                db_cache_prune("box_score", cfg.box_score_retention_days, now);
             }
             let window_end = now + Duration::days(cfg.upcoming_days);
 
