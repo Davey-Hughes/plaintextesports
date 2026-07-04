@@ -2049,6 +2049,13 @@ a {
   margin-top: 0.5rem;
 }
 
+// The "Standings" heading spans its own grid row; the full row gap below it
+// leaves too much air above the first group/division. Pull the groups up a little
+// (the grid row gap otherwise separating stages is more than this pairing needs).
+.standings-lead {
+  margin-bottom: -0.8rem;
+}
+
 // In a grouped standings cell the group name's rule sits directly above the
 // table's header row, so drop the gap between them — otherwise "TEAM  W-L  PTS"
 // hugs its own bottom border instead of sitting centred between the two rules.
