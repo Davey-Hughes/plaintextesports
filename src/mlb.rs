@@ -996,6 +996,17 @@ struct RawBsTeamName {
     abbrev: String,
 }
 
+impl RawBsTeamName {
+    /// Full team name ("Chicago White Sox"), falling back to the abbreviation.
+    fn label(&self) -> &str {
+        if self.name.is_empty() {
+            &self.abbrev
+        } else {
+            &self.name
+        }
+    }
+}
+
 #[derive(Deserialize, Default)]
 struct RawTeamStats {
     #[serde(default)]
@@ -1154,7 +1165,7 @@ fn batting_table(t: &RawBsTeam) -> PlayerTable {
         })
         .collect();
     PlayerTable {
-        title: format!("Batting \u{2014} {}", t.team.abbrev),
+        title: format!("Batting \u{2014} {}", t.team.label()),
         team: t.team.abbrev.clone(),
         columns: ["AB", "R", "H", "RBI", "BB", "K", "AVG"]
             .map(String::from)
@@ -1183,7 +1194,7 @@ fn pitching_table(t: &RawBsTeam) -> PlayerTable {
         })
         .collect();
     PlayerTable {
-        title: format!("Pitching \u{2014} {}", t.team.abbrev),
+        title: format!("Pitching \u{2014} {}", t.team.label()),
         team: t.team.abbrev.clone(),
         columns: ["IP", "H", "R", "ER", "BB", "K", "ERA"]
             .map(String::from)
