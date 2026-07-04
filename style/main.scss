@@ -3272,8 +3272,10 @@ a.bk-team-link {
   .cmp-row { display: grid; grid-template-columns: 3rem 1fr 3rem; align-items: center; gap: 0.5rem; font-variant-numeric: tabular-nums; }
   .cmp-away { text-align: right; }
   .cmp-home { text-align: left; }
-  // Team abbreviations heading the two value columns (which side is which).
-  .cmp-head { font-weight: 600; opacity: 0.85; padding-bottom: 0.25rem; border-bottom: 1px solid var(--border, #333); }
+  // Team names heading the two sides (which side is which) — one at each end,
+  // over its value column.
+  .cmp-head { display: flex; justify-content: space-between; gap: 0.5rem; font-weight: 600; opacity: 0.85; padding-bottom: 0.25rem; border-bottom: 1px solid var(--border, #333); }
+  .cmp-head-team { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .cmp-mid { display: flex; flex-direction: column; gap: 0.2rem; }
   .cmp-label { text-align: center; font-size: 0.8rem; opacity: 0.75; }
   .cmp-bars { display: flex; height: 4px; border-radius: 2px; overflow: hidden; background: var(--border, #333); }

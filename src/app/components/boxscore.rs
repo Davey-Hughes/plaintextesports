@@ -35,11 +35,22 @@ pub(crate) fn BoxScoreView(box_score: BoxScore, key: String) -> impl IntoView {
         timeline,
         ..
     } = box_score;
-    // The away/home abbreviations label the comparison's two columns (which team is
+    // The away/home team names label the comparison's two columns (which team is
     // which side); taken from the line score's rows.
-    let (away_abbr, home_abbr) = line
+    let (away_name, home_name) = line
         .as_ref()
-        .map(|l| (l.away.abbrev.clone(), l.home.abbrev.clone()))
+        .map(|l| (l.away.team.clone(), l.home.team.clone()))
+        .unwrap_or_default();
+    // Abbreviation -> full name, so the player-table titles can show the full team
+    // name even for games cached (long) with the abbreviated title.
+    let team_names: Vec<(String, String)> = line
+        .as_ref()
+        .map(|l| {
+            vec![
+                (l.away.abbrev.clone(), l.away.team.clone()),
+                (l.home.abbrev.clone(), l.home.team.clone()),
+            ]
+        })
         .unwrap_or_default();
     view! {
         <section class="detail-section boxscore">
@@ -62,9 +73,10 @@ pub(crate) fn BoxScoreView(box_score: BoxScore, key: String) -> impl IntoView {
                 {line.map(|l| view! { <LineScoreGrid line=l /> })}
                 {(!leaders.is_empty()).then(|| view! { <Leaders leaders=leaders /> })}
                 {(!team_stats.is_empty())
-                    .then(|| view! { <StatComparison stats=team_stats away=away_abbr home=home_abbr /> })}
+                    .then(|| view! { <StatComparison stats=team_stats away=away_name home=home_name /> })}
                 {(!timeline.is_empty()).then(|| view! { <ScoringTimeline events=timeline /> })}
-                {(!player_tables.is_empty()).then(|| view! { <PlayerStatTables tables=player_tables /> })}
+                {(!player_tables.is_empty())
+                    .then(|| view! { <PlayerStatTables tables=player_tables team_names=team_names /> })}
             </div>
         </section>
     }
@@ -132,14 +144,14 @@ fn LineScoreGrid(line: LineScore) -> impl IntoView {
 
 #[component]
 fn StatComparison(stats: Vec<StatPair>, away: String, home: String) -> impl IntoView {
-    // Team abbreviations head the two value columns so it's clear which side is
-    // which. Team names aren't spoilers, so they show even while hidden.
+    // Team names head the two sides so it's clear which is which. Team names aren't
+    // spoilers, so they show even while hidden. The away name sits over its (left)
+    // value column, the home name over its (right) one.
     let header = (!away.is_empty() || !home.is_empty()).then(|| {
         view! {
-            <div class="cmp-row cmp-head">
-                <span class="cmp-away">{away}</span>
-                <span class="cmp-mid"></span>
-                <span class="cmp-home">{home}</span>
+            <div class="cmp-head">
+                <span class="cmp-head-team">{away}</span>
+                <span class="cmp-head-team">{home}</span>
             </div>
         }
     });
@@ -219,7 +231,7 @@ fn ScoringTimeline(events: Vec<ScoreEvent>) -> impl IntoView {
 }
 
 #[component]
-fn PlayerStatTables(tables: Vec<PlayerTable>) -> impl IntoView {
+fn PlayerStatTables(tables: Vec<PlayerTable>, team_names: Vec<(String, String)>) -> impl IntoView {
     let mut prev_team: Option<String> = None;
     let out = tables
         .into_iter()
@@ -231,6 +243,13 @@ fn PlayerStatTables(tables: Vec<PlayerTable>) -> impl IntoView {
                 .is_some_and(|p| p != &t.team)
                 .then(|| view! { <hr class="boxscore-team-sep" /> });
             prev_team = Some(t.team.clone());
+            // Show the full team name in the title: swap the trailing abbreviation
+            // for the mapped full name (no-op when the title is already full).
+            let title = team_names
+                .iter()
+                .find(|(abbr, _)| abbr == &t.team)
+                .and_then(|(_, full)| t.title.strip_suffix(&t.team).map(|p| format!("{p}{full}")))
+                .unwrap_or_else(|| t.title.clone());
             // Column headers + player names/positions reserve the table shape; the
             // stat values are the spoilers.
             let head = t
@@ -264,7 +283,7 @@ fn PlayerStatTables(tables: Vec<PlayerTable>) -> impl IntoView {
                                 <tr>
                                     // The "Batting/Pitching — Team" title heads the
                                     // name column, in line with the stat headers.
-                                    <th class="ps-name boxscore-subhead">{t.title}</th>
+                                    <th class="ps-name boxscore-subhead">{title}</th>
                                     {head}
                                 </tr>
                             </thead>
