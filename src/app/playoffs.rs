@@ -12,6 +12,7 @@ use std::collections::HashSet;
 /// where the toggle is shared across every page showing this same section.
 pub(crate) fn section_reveal(key: String) -> (Memo<bool>, impl Fn(leptos::ev::MouseEvent) + Copy) {
     let global = use_context::<ShowScores>().map(|s| s.0);
+    let flash = use_context::<FlashScores>().map(|f| f.0);
     let sections = use_context::<RevealedSections>().map(|s| s.0);
     let key = StoredValue::new(key);
     let revealed = Memo::new(move |_| {
@@ -33,6 +34,11 @@ pub(crate) fn section_reveal(key: String) -> (Memo<bool>, impl Fn(leptos::ev::Mo
         }
     });
     let toggle = move |_: leptos::ev::MouseEvent| {
+        // While the global reveal is on, a hide can't take effect — flash the
+        // "scores" button to point there instead of silently doing nothing.
+        if hide_deflected_to_global(global, flash) {
+            return;
+        }
         if let Some(s) = sections {
             let k = key.get_value();
             let was = s.with_untracked(|set| set.contains(&k));
@@ -631,6 +637,7 @@ pub(crate) fn SwissBracket(
         return ().into_any();
     }
     let global = use_context::<ShowScores>().map(|s| s.0);
+    let flash = use_context::<FlashScores>().map(|f| f.0);
     let sections = use_context::<RevealedSections>().map(|s| s.0);
     let tid = tournament_id;
     // The team whose path is being traced (hovered), keyed by name.
@@ -716,6 +723,11 @@ pub(crate) fn SwissBracket(
     #[cfg(feature = "hydrate")]
     touch_bracket_on_view(sections, format!("swn:{tid}:"), format!("sws:{tid}:"), end);
     let do_op = move |op: BkOp| {
+        // A hide can't take effect while the global reveal is on — flash the
+        // "scores" button instead of silently doing nothing.
+        if hide_deflected_to_global(global, flash) {
+            return;
+        }
         if let Some(sec) = sections {
             #[cfg(feature = "hydrate")]
             let before = sec.get_untracked();
@@ -1013,6 +1025,7 @@ pub(crate) fn Bracket(
     }
     let times = StoredValue::new(times);
     let global = use_context::<ShowScores>().map(|s| s.0);
+    let flash = use_context::<FlashScores>().map(|f| f.0);
     let sections = use_context::<RevealedSections>().map(|s| s.0);
     let tid = tournament_id;
 
@@ -1103,6 +1116,11 @@ pub(crate) fn Bracket(
     touch_bracket_on_view(sections, format!("bn:{tid}:"), format!("bs:{tid}:"), end);
     // A single Copy handle for every reveal click (series / round / cascade).
     let do_op = move |op: BkOp| {
+        // A hide can't take effect while the global reveal is on — flash the
+        // "scores" button instead of silently doing nothing.
+        if hide_deflected_to_global(global, flash) {
+            return;
+        }
         if let Some(sec) = sections {
             #[cfg(feature = "hydrate")]
             let before = sec.get_untracked();

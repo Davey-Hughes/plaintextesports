@@ -285,6 +285,29 @@ a {
   }
 }
 
+// Pulse the "scores" toggle to draw the eye when a per-item hide is blocked by it
+// being on (so the user turns it off here first). Two quick accent-green glows.
+.toggle.scores-toggle.flash {
+  animation: scores-flash 0.7s ease;
+}
+
+@keyframes scores-flash {
+  0%,
+  50%,
+  100% {
+    box-shadow: none;
+    border-color: var(--border);
+    color: var(--fg);
+  }
+
+  25%,
+  75% {
+    box-shadow: 0 0 7px 1px var(--accent);
+    border-color: var(--accent);
+    color: var(--accent);
+  }
+}
+
 // The notifications link in the prefs group. It keeps the base `.toggle` box
 // (same padding/border/font as the text toggles) and renders the clock inline, so
 // its line box — and thus its height — matches the neighbouring toggles exactly.

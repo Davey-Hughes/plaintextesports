@@ -1471,9 +1471,16 @@ pub(crate) fn reveal_toggler(
     // Only consumed by the hydrate-only record write below.
     #[cfg(not(feature = "hydrate"))]
     let _ = end_ms;
+    let global = use_context::<ShowScores>().map(|s| s.0);
+    let flash = use_context::<FlashScores>().map(|f| f.0);
     move |ev: leptos::ev::MouseEvent| {
         ev.prevent_default();
         ev.stop_propagation();
+        // A hide can't take effect while the global reveal is on — flash the
+        // "scores" button instead.
+        if hide_deflected_to_global(global, flash) {
+            return;
+        }
         if let Some(r) = revealed {
             let was = r.with_untracked(|s| s.contains(&uid));
             r.update(|s| {
