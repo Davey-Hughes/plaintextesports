@@ -753,9 +753,11 @@ fn mlb_bracket(games: Vec<RawGame>) -> Vec<BracketRound> {
         let (ida, la, wa) = acc.teams[0].clone();
         let (_idb, lb, wb) = acc.teams[1].clone();
         let _ = ida;
-        // A series is decided once a team reaches the clinch number.
+        // A series is decided once a team reaches the clinch number. Guard on a
+        // known series length: `gamesInSeries` defaults to 0 when the feed omits
+        // it, which would otherwise clinch (0/2 + 1 = 1) after a single win.
         let clinch = (acc.games_in_series / 2 + 1) as i64;
-        let over = wa >= clinch || wb >= clinch;
+        let over = acc.games_in_series > 0 && (wa >= clinch || wb >= clinch);
         let winner = if !over {
             ""
         } else if wa > wb {
@@ -1430,6 +1432,30 @@ mod tests {
         }
         assert!(!rounds.is_empty());
         assert!(rounds.iter().any(|r| r.section == "final"));
+    }
+
+    #[test]
+    fn a_series_is_not_clinched_when_the_length_is_missing() {
+        // One AL Division Series game — Astros beat Blue Jays — but the feed omits
+        // gamesInSeries (defaults to 0). A best-of-N series must never be declared
+        // over after a single win just because its length was unknown.
+        let json = r#"{"dates":[{"games":[
+          {"gamePk":10,"seriesDescription":"AL Division Series",
+           "teams":{"away":{"isWinner":true,"team":{"id":117,"teamName":"Astros"}},
+                    "home":{"isWinner":false,"team":{"id":141,"teamName":"Blue Jays"}}}}
+        ]}]}"#;
+        let resp: ScheduleResp = serde_json::from_str(json).unwrap();
+        let games: Vec<RawGame> = resp.dates.into_iter().flat_map(|d| d.games).collect();
+        let rounds = mlb_bracket(games);
+        let m = rounds
+            .iter()
+            .flat_map(|r| &r.matches)
+            .find(|m| m.team_a == "Astros" || m.team_b == "Astros")
+            .expect("the division-series match");
+        assert_eq!(
+            m.winner, "",
+            "one win must not clinch a series of unknown length"
+        );
     }
 
     #[test]
