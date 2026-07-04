@@ -414,6 +414,18 @@ pub(crate) fn StandingsTable(
     let show_last = sport.standings_single_value();
     // Click the "Standings" title to reveal/hide the table.
     let (revealed, toggle) = section_reveal(format!("st:{tournament_id}"));
+    // Record alignment: if any team has ties/OT losses, every row shows the third
+    // field (blank where a team has none) so the W, L and T columns line up; each
+    // number is padded to the table's widest so double digits align too. Rendered
+    // in the monospace body font with `white-space: pre`, so the padding holds.
+    let show_ties = rows.iter().any(|r| r.ties > 0);
+    let num_w = rows
+        .iter()
+        .flat_map(|r| [r.wins, r.losses, r.ties])
+        .map(|n| n.to_string().len())
+        .max()
+        .unwrap_or(1)
+        .max(1);
     // Always render every row so the table reserves its height — when hidden, the
     // team/record cells show blank placeholders so revealing doesn't shift the page.
     let body = move || {
@@ -427,11 +439,27 @@ pub(crate) fn StandingsTable(
                     } else {
                         format!("{}-{}", r.game_wins, r.game_losses)
                     };
-                    // NHL carries OT losses as the third record number (W-L-OTL).
-                    let wl = if r.ties > 0 {
-                        format!("{}-{}-{}", r.wins, r.losses, r.ties)
+                    // Left-pad each number to the table's widest, and blank the
+                    // tie field where a team has none, so W/L/T line up. Pad with
+                    // non-breaking spaces: a plain space would be collapsed/trimmed
+                    // in the DOM, desyncing hydration when the record reveals.
+                    let pad = |v: String| {
+                        let gap = num_w.saturating_sub(v.chars().count());
+                        format!("{}{v}", "\u{00A0}".repeat(gap))
+                    };
+                    let w = pad(r.wins.to_string());
+                    let l = pad(r.losses.to_string());
+                    // NHL carries OT losses as the third record number (W-L-OTL);
+                    // soccer, draws.
+                    let wl = if show_ties {
+                        let t = if r.ties > 0 {
+                            format!("-{}", pad(r.ties.to_string()))
+                        } else {
+                            "\u{00A0}".repeat(num_w + 1)
+                        };
+                        format!("{w}-{l}{t}")
                     } else {
-                        format!("{}-{}", r.wins, r.losses)
+                        format!("{w}-{l}")
                     };
                     (r.team, wl, last)
                 } else {

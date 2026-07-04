@@ -2341,6 +2341,13 @@ a.sw-link {
   border-bottom: 1px solid var(--border);
 }
 
+// In a standings section the title's rule sits directly above the table's header
+// row, so drop the gap under it — otherwise "TEAM  W-L  PTS" hugs its own bottom
+// border instead of sitting centred between the two rules.
+.detail-section:has(> .standings) .section-head {
+  margin-bottom: 0;
+}
+
 // A faded "hidden" note beside a section title while its contents are concealed.
 .section-hint {
   color: var(--muted);
