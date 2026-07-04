@@ -483,7 +483,12 @@ pub async fn add_reminder(req: ReminderReq) -> Result<(), ServerFnError> {
             req.hour24,
         );
         if seeds.is_empty() {
-            return Err(ServerFnError::new("match not found or already started"));
+            // Nothing to arm — the match isn't in the snapshot or has already
+            // started. The client re-arms every starred match on load and ignores
+            // the result, so this is a benign no-op, not a failure. Returning Err
+            // here surfaced a spurious 500 in the browser console for any starred
+            // match that had since begun.
+            return Ok(());
         }
         // Only arm timers whose lead window is still ahead — a timer added after
         // its notify time passed (e.g. a 1-hour timer on a match starting in 20
