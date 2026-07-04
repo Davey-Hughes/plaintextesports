@@ -25,7 +25,7 @@
 //! The module is pure (no I/O) and unit-tested with synthetic series.
 
 use crate::types::{BracketMatch, BracketRound};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 /// A feeder reference by `(section, round, slot)` — the coordinates a fetcher
 /// uses to point at another series before global positions are assigned.
@@ -127,6 +127,90 @@ pub fn build(series: Vec<RawSeries>) -> Vec<BracketRound> {
                 .collect();
             idxs.sort_by_key(|&i| series[i].slot);
             columns.push((sec.clone(), r, idxs));
+        }
+    }
+
+    // Reorder each section's first-round matches into the bracket's planar order,
+    // so two feeders always converge cleanly into one and the connectors don't
+    // cross. The layout positions a match at the mean of its feeders and hands out
+    // first-round slots in input order, so only the leaves' order matters. We
+    // resolve feeders to series references (independent of the positions we're
+    // about to assign) and walk the tree in order from each section's root; the
+    // coordinate map below then remaps every feeder to the new positions for free.
+    {
+        let by_srs: HashMap<(String, u32, u32), usize> = series
+            .iter()
+            .enumerate()
+            .map(|(i, s)| ((s.section.clone(), s.round, s.slot), i))
+            .collect();
+        // The in-section feeder series for one side, if any: an explicit ref, else
+        // the earlier same-section match this side's team won, else the halving-tree
+        // slot. A cross-section feeder (a championship's conference finals) is a
+        // section boundary — not followed — so each section orders its own leaves.
+        let feeder = |si: usize, side: usize| -> Option<usize> {
+            let s = &series[si];
+            let cand = if let Some((fsec, fr, fslot)) = &s.feed[side] {
+                by_srs.get(&(fsec.clone(), *fr, *fslot)).copied()
+            } else {
+                let team = if side == 0 { &s.team_a } else { &s.team_b };
+                if is_real_team(team) {
+                    (0..series.len())
+                        .filter(|&j| {
+                            series[j].section == s.section
+                                && series[j].round < s.round
+                                && series[j].winner_team() == team
+                        })
+                        .max_by_key(|&j| series[j].round)
+                } else if s.round > 0 {
+                    by_srs
+                        .get(&(s.section.clone(), s.round - 1, s.slot * 2 + side as u32))
+                        .copied()
+                } else {
+                    None
+                }
+            };
+            cand.filter(|&j| series[j].section == s.section)
+        };
+        for (sec, r, idxs) in columns.iter_mut() {
+            if *r != 0 {
+                continue; // only the leaves (first round) drive the ordering
+            }
+            let max_round = series
+                .iter()
+                .filter(|s| &s.section == sec)
+                .map(|s| s.round)
+                .max()
+                .unwrap_or(0);
+            let mut roots: Vec<usize> = (0..series.len())
+                .filter(|&i| series[i].section == *sec && series[i].round == max_round)
+                .collect();
+            roots.sort_by_key(|&i| series[i].slot);
+            // In-order DFS from the root(s), collecting childless (leaf) series
+            // left-to-right — the planar leaf order.
+            let mut order: Vec<usize> = Vec::new();
+            let mut seen: HashSet<usize> = HashSet::new();
+            let mut stack: Vec<usize> = roots.into_iter().rev().collect();
+            while let Some(si) = stack.pop() {
+                if !seen.insert(si) {
+                    continue;
+                }
+                match (feeder(si, 0), feeder(si, 1)) {
+                    (None, None) => order.push(si),
+                    (f0, f1) => {
+                        if let Some(c) = f1 {
+                            stack.push(c);
+                        }
+                        if let Some(c) = f0 {
+                            stack.push(c);
+                        }
+                    }
+                }
+            }
+            // Apply only if it's a clean permutation of this column (safety net).
+            let planar: Vec<usize> = order.iter().copied().filter(|i| idxs.contains(i)).collect();
+            if planar.len() == idxs.len() {
+                *idxs = planar;
+            }
         }
     }
 
@@ -328,18 +412,61 @@ mod tests {
             },
         ];
         let rounds = build(series);
-        // Divisional s0 (A vs F): A won afc r0 s0, F won afc r0 s2 → feeders {s0, s2}.
-        let f0 = feeders_of(&rounds, "afc", 1, 0);
         let r0 = global_col(&rounds, "afc", 0);
-        let poss: Vec<(usize, usize)> = f0.iter().copied().collect();
-        assert!(poss.contains(&(r0, 0)), "A came from r0 slot0");
-        assert!(
-            poss.contains(&(r0, 2)),
-            "F came from r0 slot2 (reseed, not 2k+1)"
-        );
+        // Divisional s0 is A vs F — participant-matched to the first-round games A
+        // and F won (NOT a structural 2k/2k+1 pairing). The planar reorder then
+        // makes those two leaves adjacent so the connectors don't cross.
+        let mut f0 = feeders_of(&rounds, "afc", 1, 0);
+        f0.sort();
+        assert_eq!(f0, vec![(r0, 0), (r0, 1)], "A and F, made adjacent");
         // "G" never appears as a winner, so divisional s1 only matches C.
         let f1 = feeders_of(&rounds, "afc", 1, 1);
-        assert!(f1.contains(&(r0, 1)), "C came from r0 slot1");
+        assert_eq!(f1, vec![(r0, 2)], "C only (G never won)");
+    }
+
+    #[test]
+    fn first_round_reorders_to_a_planar_tree() {
+        // A 4-leaf single-elim tree whose middle round crosses over: r1 slot0 is fed
+        // by r0 slots 0 & 2 (not 0 & 1). Given the leaves in slot order, build() must
+        // reorder them so each middle match's two feeders end up adjacent (2i/2i+1)
+        // — i.e. no crossing connectors.
+        let leaf = |slot: u32| RawSeries {
+            round: 0,
+            slot,
+            ..Default::default()
+        };
+        let mid = |slot: u32, f0: u32, f1: u32| RawSeries {
+            round: 1,
+            slot,
+            feed: [Some((String::new(), 0, f0)), Some((String::new(), 0, f1))],
+            ..Default::default()
+        };
+        let series = vec![
+            leaf(0),
+            leaf(1),
+            leaf(2),
+            leaf(3),
+            mid(0, 0, 2), // crossover: fed by r0 slots 0 & 2
+            mid(1, 1, 3),
+            RawSeries {
+                round: 2,
+                slot: 0,
+                feed: [Some((String::new(), 1, 0)), Some((String::new(), 1, 1))],
+                ..Default::default()
+            },
+        ];
+        let rounds = build(series);
+        // rounds[0] = leaves (col 0), rounds[1] = middle (col 1).
+        let mut m0 = rounds[1].matches[0].feeders.clone();
+        m0.sort();
+        let mut m1 = rounds[1].matches[1].feeders.clone();
+        m1.sort();
+        assert_eq!(
+            m0,
+            vec![(0, 0), (0, 1)],
+            "mid 0 fed by an adjacent leaf pair"
+        );
+        assert_eq!(m1, vec![(0, 2), (0, 3)], "mid 1 fed by the next pair");
     }
 
     #[test]
