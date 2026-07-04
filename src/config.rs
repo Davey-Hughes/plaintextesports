@@ -479,12 +479,13 @@ impl Config {
             .unwrap_or(1);
 
         // Days to keep a persisted box score after its last fetch/view before
-        // pruning it (default 360; 0 disables). result_cache's box_score namespace
-        // is id-keyed, so without this it grows one row per game ever viewed.
+        // pruning it (default 540 — comfortably over a year, to clear any single-
+        // season edge cases; 0 disables). result_cache's box_score namespace is
+        // id-keyed, so without this it grows one row per game ever viewed.
         let box_score_retention_days = get("BOX_SCORE_RETENTION_DAYS")
             .and_then(|s| s.parse().ok())
             .filter(|&n| (0..=3650).contains(&n))
-            .unwrap_or(360);
+            .unwrap_or(540);
 
         // Both default on; disabled with the usual falsey values.
         let flag = |key: &str, default: bool| -> bool {
@@ -590,7 +591,7 @@ mod tests {
         assert_eq!(c.upcoming_days, 30);
         assert_eq!(c.reminder_lead_ms, 15 * 60_000);
         assert_eq!(c.archive_months, 1);
-        assert_eq!(c.box_score_retention_days, 360);
+        assert_eq!(c.box_score_retention_days, 540);
         assert!(c.past_refresh);
         assert!(c.backfill);
         assert_eq!(c.rate_limit_floor, 200);
@@ -616,7 +617,7 @@ mod tests {
         );
         assert_eq!(
             cfg(&[("BOX_SCORE_RETENTION_DAYS", "99999")]).box_score_retention_days,
-            360
+            540
         );
         assert!(!cfg(&[("ENABLE_PAST_REFRESH", "false")]).past_refresh);
         assert!(!cfg(&[("ENABLE_BACKFILL", "0")]).backfill);

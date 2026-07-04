@@ -128,7 +128,7 @@ archive_months = 1
 # before pruning it from the on-disk cache (0-3650; 0 disables pruning). Box
 # scores are cached per game, so this bounds slow disk growth; an evicted one is
 # simply re-fetched on the next view. Viewing a game refreshes its timer.
-box_score_retention_days = 360
+box_score_retention_days = 540
 
 # Periodically re-fetch recent past days for late score corrections (sparse:
 # ~6h for yesterday, slowing to never past a week). Disable to save quota.
