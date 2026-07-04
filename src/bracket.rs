@@ -11,8 +11,9 @@
 //! (hydrate) from the same serialized data, so the rendered geometry byte-matches.
 //!
 //! Units are "slots": one slot is one box pitch. The renderer multiplies a slot
-//! `y` by [`ROW_EM`] and a column by [`COL_EM`]; these em values MUST match the
-//! `--bk-*` custom properties in `style/main.scss` (cross-referenced there).
+//! `y` by [`ROW_EM`] and a column by [`col_em`] (sized per-bracket to its names);
+//! `ROW_EM`/`BOX_H_EM` MUST match the `--bk-*` custom properties in
+//! `style/main.scss` (cross-referenced there).
 
 use crate::types::BracketRound;
 use std::collections::HashSet;
@@ -33,20 +34,28 @@ const NAME_PAD_EM: f64 = 3.2;
 /// long name ellipsises rather than widening the whole bracket.
 const MIN_BOX_W_EM: f64 = 6.0;
 const MAX_BOX_W_EM: f64 = 13.0;
+/// Horizontal budget (em, at the bracket's 12px font) the whole bracket must fit
+/// in so it never scrolls — the page's content width (~760px − padding). The box
+/// width is capped so `cols` columns fit this; longer names then ellipsise.
+const FIT_BUDGET_EM: f64 = 59.0;
 
-/// The box width (em) that fits this bracket's longest team name, clamped to
-/// `[MIN_BOX_W_EM, MAX_BOX_W_EM]`. Every box uses it, so the bracket stays aligned
-/// — sized to the names of *this* bracket, not fixed site-wide; a name past the
-/// ceiling is ellipsised by the CSS.
+/// The box width (em) that fits this bracket's longest team name — clamped to a
+/// floor, a ceiling, and (so the bracket never scrolls) whatever lets all `cols`
+/// columns fit [`FIT_BUDGET_EM`]. Every box uses it, so the bracket stays aligned;
+/// a name too long for the resulting width is ellipsised by the CSS.
 #[must_use]
-pub fn box_width_em(rounds: &[BracketRound]) -> f64 {
+pub fn box_width_em(rounds: &[BracketRound], cols: usize) -> f64 {
     let longest = rounds
         .iter()
         .flat_map(|r| &r.matches)
         .flat_map(|m| [m.team_a.chars().count(), m.team_b.chars().count()])
         .max()
         .unwrap_or(0);
-    (longest as f64 * NAME_CHAR_EM + NAME_PAD_EM).clamp(MIN_BOX_W_EM, MAX_BOX_W_EM)
+    // The widest box that still lets every column fit the budget (floored so a very
+    // wide bracket keeps legible boxes and scrolls instead of vanishing).
+    let fit_cap = (FIT_BUDGET_EM / cols.max(1) as f64 - COL_GAP_EM).max(MIN_BOX_W_EM);
+    let ceiling = MAX_BOX_W_EM.min(fit_cap);
+    (longest as f64 * NAME_CHAR_EM + NAME_PAD_EM).clamp(MIN_BOX_W_EM, ceiling)
 }
 
 /// Column-to-column distance (em) for a bracket whose boxes are `box_w` wide.
@@ -435,6 +444,34 @@ mod tests {
         assert_eq!(
             l.positions[2][0].col, l.positions[1][0].col,
             "third shares the final's column"
+        );
+    }
+
+    #[test]
+    fn box_width_fits_the_budget_and_sizes_to_names() {
+        let one = |name: &str| BracketRound {
+            title: String::new(),
+            section: String::new(),
+            matches: vec![BracketMatch {
+                team_a: name.into(),
+                team_b: "x".into(),
+                ..Default::default()
+            }],
+        };
+        // A short-name bracket floors at the minimum width.
+        assert_eq!(box_width_em(&[one("T1")], 3), MIN_BOX_W_EM);
+        // A five-column knockout is capped so the whole bracket fits the budget.
+        let w5 = box_width_em(&[one("South Africa")], 5);
+        assert!(
+            5.0 * (w5 + COL_GAP_EM) <= FIT_BUDGET_EM + 0.01,
+            "5 columns fit"
+        );
+        // Four columns leave room for a long club name — and are wider than five.
+        let w4 = box_width_em(&[one("Golden Knights")], 4);
+        assert!(w4 > w5, "fewer columns → wider boxes");
+        assert!(
+            4.0 * (w4 + COL_GAP_EM) <= FIT_BUDGET_EM + 0.01,
+            "4 columns fit"
         );
     }
 }

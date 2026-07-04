@@ -976,7 +976,7 @@ pub(crate) fn Bracket(
     // Size the boxes (and so the column pitch) to this bracket's longest team name,
     // uniform across the bracket. `box_w_em` also feeds the `--bk-box-w` custom
     // property so the CSS box matches the geometry the connectors are drawn to.
-    let box_w_em = bracket::box_width_em(&rounds);
+    let box_w_em = bracket::box_width_em(&rounds, layout.cols);
     let col_em = bracket::col_em(box_w_em);
     const TITLE_EM: f64 = 2.8; // round name + date (two lines)
     const TITLE_GAP: f64 = 0.5; // below the date, above the box
