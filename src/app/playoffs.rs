@@ -439,21 +439,24 @@ pub(crate) fn StandingsTable(
                     } else {
                         format!("{}-{}", r.game_wins, r.game_losses)
                     };
-                    // Left-pad each number to the table's widest, and blank the
-                    // tie field where a team has none, so W/L/T line up. Pad with
-                    // non-breaking spaces: a plain space would be collapsed/trimmed
-                    // in the DOM, desyncing hydration when the record reveals.
-                    let pad = |v: String| {
+                    // Zero-pad each present number to the table's widest so the W/L
+                    // (and OTL/tie) columns line up even with double digits — a
+                    // leading zero, never a space, so there's no gap after a dash
+                    // ("43-33-06", not "43-33- 6").
+                    let zpad = |v: String| {
                         let gap = num_w.saturating_sub(v.chars().count());
-                        format!("{}{v}", "\u{00A0}".repeat(gap))
+                        format!("{}{v}", "0".repeat(gap))
                     };
-                    let w = pad(r.wins.to_string());
-                    let l = pad(r.losses.to_string());
+                    let w = zpad(r.wins.to_string());
+                    let l = zpad(r.losses.to_string());
                     // NHL carries OT losses as the third record number (W-L-OTL);
-                    // soccer, draws.
+                    // soccer, draws. A team with none gets the third field blanked
+                    // (no dash, no digits) to keep the columns aligned — with
+                    // non-breaking spaces, since a plain space would be
+                    // collapsed/trimmed in the DOM and desync hydration on reveal.
                     let wl = if show_ties {
                         let t = if r.ties > 0 {
-                            format!("-{}", pad(r.ties.to_string()))
+                            format!("-{}", zpad(r.ties.to_string()))
                         } else {
                             "\u{00A0}".repeat(num_w + 1)
                         };
