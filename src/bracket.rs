@@ -31,6 +31,11 @@ pub const BOX_H_EM: f64 = 3.8;
 /// room for the lower bracket's banner + the grand final, which sits in the gap.
 const SECTION_GAP: f64 = 2.5;
 
+/// Slots the third-place match sits below the lowest box of the final + semifinal
+/// columns — clear of (not row-aligned with) the semifinals, with room for its own
+/// title and a little breathing space.
+const THIRD_GAP: f64 = 1.8;
+
 /// A match's grid column and vertical centre (in slot units).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Pos {
@@ -130,6 +135,38 @@ pub fn layout(rounds: &[BracketRound]) -> BracketLayout {
     let mut cursor = 0.0_f64;
     for (s, idxs) in &groups {
         let is_final = s == "final";
+        // A third-place match sits in the lower-right, beneath the final/semifinal
+        // area, rather than stacked at the very bottom of the whole tree. It shares
+        // the final's (rightmost) column via the column pass above, so only its row
+        // needs placing: anchor it below the lowest box of the final and semifinal
+        // columns so it clears the semifinals instead of lining up with one.
+        if s == "third" {
+            let placed = || {
+                positions
+                    .iter()
+                    .enumerate()
+                    .filter(|(rr, _)| section[*rr] != "third")
+                    .flat_map(|(_, row)| row.iter())
+            };
+            let final_col = placed().map(|p| p.col).max().unwrap_or(0);
+            // The lowest box in the final column and the one to its left (the
+            // semifinals) — everything further left is a taller earlier round we
+            // don't want to drop below.
+            let anchor = placed()
+                .filter(|p| p.col + 1 >= final_col)
+                .map(|p| p.y)
+                .fold(f64::NEG_INFINITY, f64::max);
+            let base = if anchor.is_finite() { anchor } else { cursor };
+            let mut k = 1.0;
+            for &r in idxs {
+                for i in 0..rounds[r].matches.len() {
+                    positions[r][i].y = base + THIRD_GAP * k;
+                    k += 1.0;
+                }
+            }
+            group_rows.push((s.clone(), base + THIRD_GAP, base + THIRD_GAP * (k - 1.0)));
+            continue;
+        }
         for &r in idxs {
             let mlen = rounds[r].matches.len();
             for i in 0..mlen {
@@ -342,6 +379,33 @@ mod tests {
         assert!(
             (a - b).abs() >= 1.0,
             "centres must be >= 1 slot apart, got {a} and {b}"
+        );
+    }
+
+    #[test]
+    fn third_place_sits_below_the_final_clear_of_the_semis() {
+        // A single-elim tree (2 semifinals → final) plus a feeder-less third-place
+        // match in its own "third" section. The third box shares the final's column
+        // and sits below the lower semifinal — clear of the semifinal row, not
+        // stacked far beneath the whole tree.
+        let rounds = vec![
+            round("", vec![m(&[]), m(&[])]),
+            round("", vec![m(&[(0, 0), (0, 1)])]),
+            round("third", vec![m(&[])]),
+        ];
+        let l = layout(&rounds);
+        let final_y = y(&l, 1, 0);
+        let lower_sf = y(&l, 0, 0).max(y(&l, 0, 1));
+        let third_y = y(&l, 2, 0);
+        assert!(third_y > final_y, "third is below the final");
+        assert!(third_y > lower_sf, "third clears the lower semifinal");
+        assert!(
+            (third_y - lower_sf - THIRD_GAP).abs() < 0.01,
+            "third sits one THIRD_GAP below the lower semifinal"
+        );
+        assert_eq!(
+            l.positions[2][0].col, l.positions[1][0].col,
+            "third shares the final's column"
         );
     }
 }
