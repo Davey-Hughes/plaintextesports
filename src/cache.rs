@@ -3431,6 +3431,7 @@ impl ReminderSeed {
             event: self.event,
             tz: self.tz,
             hour24: self.hour24,
+            sent: false,
         }
     }
 }
@@ -3625,10 +3626,10 @@ pub fn reschedule_plan(
             continue;
         };
         if m.status == MatchStatus::Canceled {
-            // One "canceled" notice for the whole match — the subscriber had a
-            // pending reminder for it (only unsent rows reach here), so they were
-            // going to be told it was starting; tell them it isn't. Then drop every
-            // row for the match.
+            // One "canceled" notice for the whole match. Every row is considered
+            // (sent and unsent), so this fires whether the subscriber had a pending
+            // reminder or had already been told it was starting — then drop every
+            // row for the match (deletion is the latch against re-notifying).
             let rep = rows[0];
             let tz = resolve_tz(&rep.tz, cfg.tz);
             let seed = reminder_seed(m, rep.lead_ms, &tz, rep.hour24);
@@ -3641,20 +3642,29 @@ pub fn reschedule_plan(
             continue;
         }
 
+        // Only pending (unsent) timers can be rescheduled or collapsed — a
+        // delivered one already fired and must never be re-armed. (Sent rows are
+        // still counted above, for cancellation.)
+        let unsent: Vec<&crate::store::Reminder> =
+            rows.iter().copied().filter(|r| !r.sent).collect();
+        if unsent.is_empty() {
+            continue;
+        }
+
         let begin = m.begin_at.timestamp_millis();
-        let tz = resolve_tz(&rows[0].tz, cfg.tz);
+        let tz = resolve_tz(&unsent[0].tz, cfg.tz);
         // The heads-up is only worth firing while the match hasn't started beyond
         // the delivery grace.
         let grace_open = begin + crate::store::DELIVER_GRACE_MS > now_ms;
         // The reschedule pulled at least one timer's notify instant from the
         // future into the past.
-        let crossed_earlier = rows
+        let crossed_earlier = unsent
             .iter()
             .any(|r| r.notify_at_ms > now_ms && begin - r.lead_ms <= now_ms);
 
         if crossed_earlier && grace_open {
             let mut subsumed = Vec::new();
-            for r in rows {
+            for r in &unsent {
                 let seed = reminder_seed(m, r.lead_ms, &tz, r.hour24);
                 if seed.notify_at_ms <= now_ms {
                     subsumed.push((*r).clone());
@@ -3664,7 +3674,7 @@ pub fn reschedule_plan(
             }
             // One alert for the whole group — the body carries the new start with
             // an "earlier than scheduled" tag; lead/notify are irrelevant to a send.
-            let rep = rows[0];
+            let rep = unsent[0];
             let seed = reminder_seed(m, rep.lead_ms, &tz, rep.hour24);
             let mut reminder = rep.clone();
             reminder.title = seed.title.clone();
@@ -3672,7 +3682,7 @@ pub fn reschedule_plan(
             reminder.url = seed.url.clone();
             plan.alerts.push(CollapseAlert { reminder, subsumed });
         } else {
-            for r in rows {
+            for r in &unsent {
                 let seed = reminder_seed(m, r.lead_ms, &tz, r.hour24);
                 if (r.notify_at_ms - seed.notify_at_ms).abs() >= RESCHEDULE_EPSILON_MS {
                     plan.updates.push(reschedule_to(r, &seed));
@@ -6601,6 +6611,7 @@ mod tests {
             event: "X".into(),
             tz: String::new(),
             hour24: false,
+            sent: false,
         }
     }
 
@@ -6696,6 +6707,23 @@ mod tests {
     }
 
     #[test]
+    fn reschedule_ignores_already_sent_timers() {
+        // A delivered timer must never be rescheduled or collapsed, even if its
+        // match moved earlier past its window — it already fired.
+        let begin = NOW_MS + 45 * MIN_MS;
+        let m = match_at(begin, MatchStatus::Upcoming);
+        let mut r = rem(HOUR_MS, NOW_MS + HOUR_MS); // would "cross earlier" if pending
+        r.sent = true;
+        let plan = reschedule_plan(&[r], &[m], NOW_MS);
+        assert!(plan.alerts.is_empty(), "no collapse for a delivered timer");
+        assert!(
+            plan.updates.is_empty(),
+            "no reschedule for a delivered timer"
+        );
+        assert!(plan.cancel_alerts.is_empty());
+    }
+
+    #[test]
     fn reschedule_cancellation_notifies_and_clears_rows_via_store() {
         // End-to-end at the store seam: arm two timers, cancel the match, apply the
         // plan as the sender does — one notice out, every row gone.
@@ -6704,16 +6732,34 @@ mod tests {
         crate::store::add_reminder(&conn, &rem(HOUR_MS, NOW_MS + HOUR_MS)).unwrap();
         crate::store::add_reminder(&conn, &rem(15 * MIN_MS, NOW_MS + HOUR_MS)).unwrap();
 
-        let unsent = crate::store::unsent_reminders(&conn).unwrap();
-        let plan = reschedule_plan(&unsent, &[m], NOW_MS);
+        let all = crate::store::all_reminders(&conn).unwrap();
+        let plan = reschedule_plan(&all, &[m], NOW_MS);
         assert_eq!(plan.cancel_alerts.len(), 1, "one cancellation notice");
         for c in &plan.cancels {
             crate::store::remove_reminder(&conn, &c.endpoint, c.match_id, &c.sport).unwrap();
         }
         assert!(
-            crate::store::unsent_reminders(&conn).unwrap().is_empty(),
+            crate::store::all_reminders(&conn).unwrap().is_empty(),
             "no reminders remain for the canceled match"
         );
+    }
+
+    #[test]
+    fn reschedule_notifies_cancellation_even_after_every_timer_fired() {
+        // The edge the sent-reminder latch covers: a match whose reminders were all
+        // already delivered, then canceled. Loading *all* rows (not just unsent)
+        // still surfaces it for one cancellation notice.
+        let conn = crate::store::open(":memory:").unwrap();
+        let m = match_at(NOW_MS + 30 * MIN_MS, MatchStatus::Canceled);
+        crate::store::add_reminder(&conn, &rem(15 * MIN_MS, NOW_MS + HOUR_MS)).unwrap();
+        // Deliver it — now the match has only a sent row.
+        crate::store::mark_reminder_sent(&conn, "https://push/e", 1, "cs2", 15 * MIN_MS).unwrap();
+
+        let all = crate::store::all_reminders(&conn).unwrap();
+        assert!(all.iter().all(|r| r.sent), "the only row is delivered");
+        let plan = reschedule_plan(&all, &[m], NOW_MS);
+        assert_eq!(plan.cancel_alerts.len(), 1, "still notified after firing");
+        assert_eq!(plan.cancels.len(), 1);
     }
 
     #[test]
@@ -6748,8 +6794,8 @@ mod tests {
         crate::store::add_reminder(&conn, &rem(HOUR_MS, NOW_MS + HOUR_MS)).unwrap();
         crate::store::add_reminder(&conn, &rem(15 * MIN_MS, NOW_MS + HOUR_MS)).unwrap();
 
-        let unsent = crate::store::unsent_reminders(&conn).unwrap();
-        let plan = reschedule_plan(&unsent, &[m], NOW_MS);
+        let all = crate::store::all_reminders(&conn).unwrap();
+        let plan = reschedule_plan(&all, &[m], NOW_MS);
         for u in &plan.updates {
             crate::store::update_reminder_schedule(&conn, u).unwrap();
         }
@@ -6769,10 +6815,15 @@ mod tests {
 
         // The 1h timer was subsumed (marked sent); the 15m timer was rewritten to
         // the new start and is still pending.
-        let after = crate::store::unsent_reminders(&conn).unwrap();
-        assert_eq!(after.len(), 1);
-        assert_eq!(after[0].lead_ms, 15 * MIN_MS);
-        assert_eq!(after[0].notify_at_ms, begin - 15 * MIN_MS);
+        let after = crate::store::all_reminders(&conn).unwrap();
+        let pending: Vec<_> = after.iter().filter(|r| !r.sent).collect();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].lead_ms, 15 * MIN_MS);
+        assert_eq!(pending[0].notify_at_ms, begin - 15 * MIN_MS);
+        assert!(
+            after.iter().any(|r| r.lead_ms == HOUR_MS && r.sent),
+            "the 1h timer is the subsumed, now-sent one"
+        );
     }
 
     #[test]

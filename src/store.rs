@@ -637,6 +637,11 @@ pub struct Reminder {
     /// [`crate::cache::reschedule_plan`]). Empty tz ⇒ the server default.
     pub tz: String,
     pub hour24: bool,
+    /// Whether this timer was already delivered. Not part of the write path (the
+    /// insert defaults it to 0 and [`mark_reminder_sent`] flips it); it's read back
+    /// by [`all_reminders`] so the reconcile can notify on a cancellation even
+    /// after every timer for the match has fired.
+    pub sent: bool,
 }
 
 const REMINDER_COLS: &str = "endpoint, p256dh, auth, match_id, lead_ms, notify_at_ms, title, \
@@ -829,6 +834,7 @@ pub fn due_reminders(conn: &Connection, now_ms: i64) -> rusqlite::Result<Vec<Rem
             event: String::new(),
             tz: String::new(),
             hour24: false,
+            sent: false,
         })
     })?;
     rows.collect()
@@ -852,13 +858,13 @@ pub fn mark_reminder_sent(
     Ok(())
 }
 
-/// Every unsent reminder in full — the sender loads these each tick to reconcile
-/// each timer's notify time (and start-time body) against the match's latest
-/// `begin_at` (see [`crate::cache::reschedule_plan`]).
-pub fn unsent_reminders(conn: &Connection) -> rusqlite::Result<Vec<Reminder>> {
-    let mut stmt = conn.prepare(&format!(
-        "SELECT {REMINDER_COLS} FROM reminders WHERE sent = 0"
-    ))?;
+/// Every reminder in full, sent and unsent — the sender loads these each tick to
+/// reconcile against the latest match start times (see
+/// [`crate::cache::reschedule_plan`]). Sent rows are included so a cancellation is
+/// still announced after every timer for the match has already fired; the plan
+/// only *reschedules* the unsent ones.
+pub fn all_reminders(conn: &Connection) -> rusqlite::Result<Vec<Reminder>> {
+    let mut stmt = conn.prepare(&format!("SELECT {REMINDER_COLS}, sent FROM reminders"))?;
     let rows = stmt.query_map([], |r| {
         Ok(Reminder {
             endpoint: r.get(0)?,
@@ -877,6 +883,7 @@ pub fn unsent_reminders(conn: &Connection) -> rusqlite::Result<Vec<Reminder>> {
             event: r.get(13)?,
             tz: r.get(14)?,
             hour24: r.get(15)?,
+            sent: r.get::<_, i64>(16)? != 0,
         })
     })?;
     rows.collect()
@@ -1421,6 +1428,7 @@ mod tests {
             event: "LCK Spring".into(),
             tz: String::new(),
             hour24: false,
+            sent: false,
         }
     }
 
@@ -1484,21 +1492,25 @@ mod tests {
     }
 
     #[test]
-    fn unsent_reminders_round_trips_the_subscriber_zone_and_clock() {
+    fn all_reminders_round_trips_zone_clock_and_sent_flag() {
         let conn = open(":memory:").unwrap();
         let mut r = reminder(5);
         r.tz = "America/New_York".into();
         r.hour24 = true;
         add_reminder(&conn, &r).unwrap();
 
-        let unsent = unsent_reminders(&conn).unwrap();
-        assert_eq!(unsent.len(), 1);
-        assert_eq!(unsent[0].tz, "America/New_York");
-        assert!(unsent[0].hour24);
+        let all = all_reminders(&conn).unwrap();
+        assert_eq!(all.len(), 1);
+        assert_eq!(all[0].tz, "America/New_York");
+        assert!(all[0].hour24);
+        assert!(!all[0].sent, "freshly armed → unsent");
 
-        // A delivered reminder is not "unsent" and drops out of the set.
+        // A delivered reminder stays in the set, now flagged sent — so the reconcile
+        // can still announce a cancellation after every timer has fired.
         mark_reminder_sent(&conn, &r.endpoint, r.match_id, &r.sport, r.lead_ms).unwrap();
-        assert!(unsent_reminders(&conn).unwrap().is_empty());
+        let all = all_reminders(&conn).unwrap();
+        assert_eq!(all.len(), 1);
+        assert!(all[0].sent, "delivered → sent");
     }
 
     #[test]
@@ -1512,7 +1524,7 @@ mod tests {
         moved.notify_at_ms = r.notify_at_ms - 1_800_000;
         moved.body = "LCK · 7:40 PM PDT".into();
         update_reminder_schedule(&conn, &moved).unwrap();
-        let after = unsent_reminders(&conn).unwrap();
+        let after = all_reminders(&conn).unwrap();
         assert_eq!(after[0].notify_at_ms, r.notify_at_ms - 1_800_000);
         assert_eq!(after[0].body, "LCK · 7:40 PM PDT");
 
