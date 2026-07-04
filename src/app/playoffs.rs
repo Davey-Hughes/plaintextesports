@@ -402,8 +402,16 @@ pub(crate) fn apply_bracket_op(set: &mut HashSet<String>, grid: &[Vec<BkCell>], 
 #[component]
 pub(crate) fn StandingsTable(
     rows: Vec<StandingRow>,
-    tournament_id: i64,
     sport: Sport,
+    /// Reveal key for a self-managed table (the Swiss "list" view). Unused when
+    /// `shared` is set.
+    #[prop(optional)]
+    tournament_id: i64,
+    /// When set, follow this shared reveal — the grouped-standings block owns the
+    /// one "Standings" toggle and supplies each table's group/division heading, so
+    /// the table renders headerless.
+    #[prop(optional)]
+    shared: Option<Memo<bool>>,
 ) -> impl IntoView {
     if rows.is_empty() {
         return ().into_any();
@@ -412,8 +420,29 @@ pub(crate) fn StandingsTable(
     // ranking value (games-back / points / win%).
     let record_label = sport.standings_last_label();
     let show_last = sport.standings_single_value();
-    // Click the "Standings" title to reveal/hide the table.
-    let (revealed, toggle) = section_reveal(format!("st:{tournament_id}"));
+    // Follow the block's shared reveal when grouped; else self-manage an own
+    // "Standings" toggle (click the title to reveal/hide the table).
+    let (revealed, header) = match shared {
+        Some(m) => (m, None),
+        None => {
+            let (r, toggle) = section_reveal(format!("st:{tournament_id}"));
+            let head = view! {
+                <div class="section-head">
+                    <button
+                        class="section-title section-toggle"
+                        class:on=move || r.get()
+                        title=move || if r.get() { "Hide the standings" } else { "Show the standings" }
+                        aria-expanded=move || if r.get() { "true" } else { "false" }
+                        on:click=toggle
+                    >
+                        "Standings"
+                    </button>
+                    {move || (!r.get()).then(|| view! { <span class="section-hint">"hidden"</span> })}
+                </div>
+            };
+            (r, Some(head))
+        }
+    };
     // Record alignment: if any team has ties/OT losses, every row shows the third
     // field (blank where a team has none) so the W, L and T columns line up; each
     // number is padded to the table's widest so double digits align too. Rendered
@@ -485,18 +514,7 @@ pub(crate) fn StandingsTable(
     };
     view! {
         <section class="detail-section">
-            <div class="section-head">
-                <button
-                    class="section-title section-toggle"
-                    class:on=move || revealed.get()
-                    title=move || if revealed.get() { "Hide the standings" } else { "Show the standings" }
-                    aria-expanded=move || if revealed.get() { "true" } else { "false" }
-                    on:click=toggle
-                >
-                    "Standings"
-                </button>
-                {move || (!revealed.get()).then(|| view! { <span class="section-hint">"hidden"</span> })}
-            </div>
+            {header}
             <table class="standings" class:placeholder=move || !revealed.get()>
                 <thead>
                     <tr>
