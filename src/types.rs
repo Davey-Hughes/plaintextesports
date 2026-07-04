@@ -14,6 +14,12 @@ pub const TRAD_FORWARD_DAYS: i64 = 2;
 /// Never show traditional-sports games more than this many days ahead.
 pub const TRAD_FORWARD_MAX: i64 = 7;
 
+/// Consecutive matches closer than this stay in one day group under "chain"
+/// grouping — a late broadcast that spills across midnight in the viewer's zone
+/// reads as one night; a bigger gap starts a new group. Used server-side by the
+/// event page and client-side when the home schedule is narrowed to one event.
+pub const CHAIN_GAP_MS: i64 = 8 * 60 * 60 * 1000;
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Sport {
     #[default]

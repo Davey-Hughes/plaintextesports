@@ -467,6 +467,97 @@ fn day_content_hash(d: &DayGroup) -> u64 {
 /// applied, so switching to a single-competition tab can't silently empty the view
 /// (a stale selection from another sport is ignored) while a lone chip still
 /// narrows.
+/// Split a viewer-tz date label "Weekday, Month D" into (weekday, month, day).
+fn parse_date_label(s: &str) -> Option<(&str, &str, &str)> {
+    let (wd, md) = s.split_once(", ")?;
+    let (mo, d) = md.rsplit_once(' ')?;
+    Some((wd, mo, d))
+}
+
+/// The span label for a chained day group, from its first and last match's
+/// viewer-tz date labels ("Friday, July 3"). One date → the plain label; across
+/// days → a span ("Friday–Saturday, July 3–4", or across a month change
+/// "Friday, June 30 – Saturday, July 1"). Mirrors the server-side day label.
+fn span_from_date_labels(first: &str, last: &str) -> String {
+    if last.is_empty() || first == last {
+        return first.to_string();
+    }
+    if first.is_empty() {
+        return last.to_string();
+    }
+    match (parse_date_label(first), parse_date_label(last)) {
+        (Some((wd1, mo1, d1)), Some((wd2, mo2, d2))) if mo1 == mo2 => {
+            format!("{wd1}–{wd2}, {mo1} {d1}–{d2}")
+        }
+        (Some((wd1, mo1, d1)), Some((wd2, mo2, d2))) => {
+            format!("{wd1}, {mo1} {d1} – {wd2}, {mo2} {d2}")
+        }
+        _ => format!("{first} – {last}"),
+    }
+}
+
+/// Merge a single event's day groups into broadcast "nights": consecutive matches
+/// closer than [`crate::types::CHAIN_GAP_MS`] share a group even across midnight,
+/// so a late slate that spills past 12 in the viewer's zone reads as one night —
+/// the same chaining the event page does server-side. Only called when the
+/// schedule is narrowed to one event, so every match is the same edition and each
+/// output group is a single `LeagueGroup`.
+fn chain_single_event_days(days: Vec<DayGroup>) -> Vec<DayGroup> {
+    let Some(template) = days.iter().flat_map(|d| &d.leagues).next().cloned() else {
+        return days;
+    };
+    // Flatten to (source day_key, source date label, match) in time order.
+    let mut all: Vec<(String, String, MatchView)> = Vec::new();
+    for d in days {
+        for lg in d.leagues {
+            for m in lg.matches {
+                all.push((d.day_key.clone(), d.day_label.clone(), m));
+            }
+        }
+    }
+    all.sort_by_key(|(_, _, m)| m.begin_at_ms);
+
+    let mk_day = |run: Vec<(String, String, MatchView)>| -> DayGroup {
+        let day_key = run.first().map(|(k, _, _)| k.clone()).unwrap_or_default();
+        let first_label = run.first().map(|(_, l, _)| l.clone()).unwrap_or_default();
+        let last_label = run.last().map(|(_, l, _)| l.clone()).unwrap_or_default();
+        let matches: Vec<MatchView> = run.into_iter().map(|(_, _, m)| m).collect();
+        let bo = {
+            let first = matches
+                .first()
+                .map(|m| m.best_of.clone())
+                .unwrap_or_default();
+            (!first.is_empty() && matches.iter().all(|m| m.best_of == first)).then_some(first)
+        };
+        DayGroup {
+            day_key,
+            day_label: span_from_date_labels(&first_label, &last_label),
+            leagues: vec![crate::types::LeagueGroup {
+                league: template.league.clone(),
+                series_name: template.series_name.clone(),
+                event_url: template.event_url.clone(),
+                bo,
+                matches,
+            }],
+        }
+    };
+
+    let mut out: Vec<DayGroup> = Vec::new();
+    let mut run: Vec<(String, String, MatchView)> = Vec::new();
+    let mut prev_ms: Option<i64> = None;
+    for item in all {
+        if prev_ms.is_some_and(|p| item.2.begin_at_ms - p >= crate::types::CHAIN_GAP_MS) {
+            out.push(mk_day(std::mem::take(&mut run)));
+        }
+        prev_ms = Some(item.2.begin_at_ms);
+        run.push(item);
+    }
+    if !run.is_empty() {
+        out.push(mk_day(run));
+    }
+    out
+}
+
 fn prepare_days(
     s: ScheduleView,
     games_set: &HashSet<String>,
@@ -482,7 +573,23 @@ fn prepare_days(
         .filter(|l| available.contains(*l))
         .cloned()
         .collect();
-    let filtered = filter_schedule(s, games_set, &leagues_filter);
+    let mut filtered = filter_schedule(s, games_set, &leagues_filter);
+    // Narrowed to a single event? Chain its calendar days into broadcast nights
+    // (a late slate that crosses midnight reads as one), like the event page. Only
+    // for a single edition, so the gap rule is unambiguous.
+    let single_event = {
+        let mut eds = filtered
+            .days
+            .iter()
+            .flat_map(|d| &d.leagues)
+            .map(|lg| (lg.league.as_str(), lg.series_name.as_str()));
+        eds.next()
+            .map(|first| eds.all(|e| e == first))
+            .unwrap_or(false)
+    };
+    if single_event {
+        filtered.days = chain_single_event_days(std::mem::take(&mut filtered.days));
+    }
     let today_key = filtered.today_key.clone();
     // Editions with an upcoming session anywhere in the (filtered) window — drives
     // the head ★, which can sit on a finished day of a still-live edition.
@@ -1695,6 +1802,96 @@ mod tests {
     use super::*;
     use crate::types::{LeagueGroup, TeamView};
     use std::collections::{HashMap, HashSet};
+
+    fn dv(ms: i64, date_label: &str) -> MatchView {
+        MatchView {
+            id: ms,
+            sport: Sport::Lol,
+            league: "MSI".into(),
+            series_name: "2026".into(),
+            status: MatchStatus::Upcoming,
+            clock_label: String::new(),
+            date_label: date_label.into(),
+            venue_label: String::new(),
+            venue_name: String::new(),
+            venue_location: String::new(),
+            best_of: "Bo3".into(),
+            team_a: TeamView {
+                label: "A".into(),
+                name: "A".into(),
+                score: None,
+                winner: false,
+                logo: String::new(),
+                abbrev: String::new(),
+            },
+            team_b: TeamView {
+                label: "B".into(),
+                name: "B".into(),
+                score: None,
+                winner: false,
+                logo: String::new(),
+                abbrev: String::new(),
+            },
+            league_url: String::new(),
+            begin_at_ms: ms,
+            row_href: None,
+        }
+    }
+
+    fn day(key: &str, label: &str, ms: &[(i64, &str)]) -> DayGroup {
+        DayGroup {
+            day_key: key.into(),
+            day_label: label.into(),
+            leagues: vec![LeagueGroup {
+                league: "MSI".into(),
+                series_name: "2026".into(),
+                event_url: String::new(),
+                bo: Some("Bo3".into()),
+                matches: ms.iter().map(|(m, l)| dv(*m, l)).collect(),
+            }],
+        }
+    }
+
+    #[test]
+    fn span_label_collapses_and_spans() {
+        assert_eq!(
+            span_from_date_labels("Friday, July 3", "Friday, July 3"),
+            "Friday, July 3"
+        );
+        assert_eq!(
+            span_from_date_labels("Friday, July 3", "Saturday, July 4"),
+            "Friday–Saturday, July 3–4"
+        );
+        assert_eq!(
+            span_from_date_labels("Friday, June 30", "Saturday, July 1"),
+            "Friday, June 30 – Saturday, July 1"
+        );
+    }
+
+    #[test]
+    fn chain_single_event_merges_a_night_across_midnight() {
+        let h = 3_600_000i64;
+        let fri8 = 1_000_000_000_000i64;
+        // Calendar-grouped input: Fri {8pm}, Sat {1am, 8pm}.
+        let days = vec![
+            day("2026-07-03", "Friday, July 3", &[(fri8, "Friday, July 3")]),
+            day(
+                "2026-07-04",
+                "Saturday, July 4",
+                &[
+                    (fri8 + 5 * h, "Saturday, July 4"),  // Sat 1am (5h after Fri 8pm)
+                    (fri8 + 24 * h, "Saturday, July 4"), // Sat 8pm (19h after Sat 1am)
+                ],
+            ),
+        ];
+        let out = chain_single_event_days(days);
+        assert_eq!(out.len(), 2, "Fri8pm+Sat1am chain; Sat8pm is a new night");
+        assert_eq!(out[0].leagues[0].matches.len(), 2);
+        assert_eq!(out[0].day_key, "2026-07-03");
+        assert_eq!(out[0].day_label, "Friday–Saturday, July 3–4");
+        assert_eq!(out[1].leagues[0].matches.len(), 1);
+        assert_eq!(out[1].day_label, "Saturday, July 4");
+    }
 
     #[test]
     fn chips_with_selected_orders_by_sport_then_name_and_keeps_selected() {
