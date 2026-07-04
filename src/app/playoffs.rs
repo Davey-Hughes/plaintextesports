@@ -1202,8 +1202,13 @@ pub(crate) fn Bracket(
                         if mid > 0 {
                             let muid = muid.clone();
                             view! {
+                                // The link fills its whole row (see `.bk-team-link`
+                                // in the styles) so the two names meet in the middle
+                                // with no dead gap — clicking anywhere on a team,
+                                // not just its text, opens the match. The name rides
+                                // in an inner `.bk-team` span that keeps the ellipsis.
                                 <a
-                                    class="bk-team bk-team-link"
+                                    class="bk-team-link"
                                     href=crate::types::match_path(sport, mid)
                                     title=link_title.clone()
                                     on:click=move |e: leptos::ev::MouseEvent| {
@@ -1216,7 +1221,7 @@ pub(crate) fn Bracket(
                                         let _ = &muid;
                                     }
                                 >
-                                    {name}
+                                    <span class="bk-team">{name}</span>
                                 </a>
                             }
                             .into_any()

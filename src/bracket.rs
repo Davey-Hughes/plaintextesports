@@ -38,8 +38,21 @@ const MAX_BOX_W_EM: f64 = 13.0;
 /// in so it never scrolls — the page's content width (~760px − padding). The box
 /// width is capped so `cols` columns fit this; longer names then ellipsise.
 const FIT_BUDGET_EM: f64 = 59.0;
+/// Short-name brackets (e.g. esports) would otherwise sit at [`MIN_BOX_W_EM`] and
+/// look marooned in whitespace beside a wide one (a full soccer knockout fills the
+/// budget). So widen their boxes to spend more of the budget — up to this fraction
+/// of it — but never past [`FILL_MAX_BOX_W`], so a two/three-column bracket doesn't
+/// get cartoonishly empty boxes. Filling only ever grows boxes toward the same
+/// no-overflow ceiling, so the bracket still never scrolls.
+const FILL_FRACTION: f64 = 0.85;
+/// The widest a box is grown purely to fill space (roughly the width a full soccer
+/// knockout lands at, so every sport's boxes feel about the same size). A longer
+/// name can still push a box past this, up to [`MAX_BOX_W_EM`].
+const FILL_MAX_BOX_W: f64 = 10.0;
 
-/// The box width (em) that fits this bracket's longest team name — clamped to a
+/// The box width (em) for a bracket: wide enough for its longest team name, but
+/// also widened to spend more of the horizontal budget when the names are short
+/// (so a small esports bracket doesn't sit tiny beside the page). Clamped to a
 /// floor, a ceiling, and (so the bracket never scrolls) whatever lets all `cols`
 /// columns fit [`FIT_BUDGET_EM`]. Every box uses it, so the bracket stays aligned;
 /// a name too long for the resulting width is ellipsised by the CSS.
@@ -51,11 +64,16 @@ pub fn box_width_em(rounds: &[BracketRound], cols: usize) -> f64 {
         .flat_map(|m| [m.team_a.chars().count(), m.team_b.chars().count()])
         .max()
         .unwrap_or(0);
+    let cols = cols.max(1) as f64;
     // The widest box that still lets every column fit the budget (floored so a very
     // wide bracket keeps legible boxes and scrolls instead of vanishing).
-    let fit_cap = (FIT_BUDGET_EM / cols.max(1) as f64 - COL_GAP_EM).max(MIN_BOX_W_EM);
+    let fit_cap = (FIT_BUDGET_EM / cols - COL_GAP_EM).max(MIN_BOX_W_EM);
     let ceiling = MAX_BOX_W_EM.min(fit_cap);
-    (longest as f64 * NAME_CHAR_EM + NAME_PAD_EM).clamp(MIN_BOX_W_EM, ceiling)
+    // Grow short-name brackets toward the budget so they don't look narrow, but not
+    // past FILL_MAX (an over-empty box) nor the no-overflow ceiling.
+    let fill = (FIT_BUDGET_EM * FILL_FRACTION / cols - COL_GAP_EM).min(FILL_MAX_BOX_W);
+    let name_w = longest as f64 * NAME_CHAR_EM + NAME_PAD_EM;
+    name_w.max(fill).clamp(MIN_BOX_W_EM, ceiling)
 }
 
 /// Column-to-column distance (em) for a bracket whose boxes are `box_w` wide.
@@ -458,8 +476,14 @@ mod tests {
                 ..Default::default()
             }],
         };
-        // A short-name bracket floors at the minimum width.
-        assert_eq!(box_width_em(&[one("T1")], 3), MIN_BOX_W_EM);
+        // A short-name bracket no longer sits at the floor: it widens to spend more
+        // of the budget so it doesn't look marooned in whitespace — but still fits.
+        let w3 = box_width_em(&[one("T1")], 3);
+        assert!(w3 > MIN_BOX_W_EM, "short names widen to fill, not floor");
+        assert!(
+            3.0 * (w3 + COL_GAP_EM) <= FIT_BUDGET_EM + 0.01,
+            "a widened short-name bracket still fits the budget"
+        );
         // A five-column knockout is capped so the whole bracket fits the budget.
         let w5 = box_width_em(&[one("South Africa")], 5);
         assert!(

@@ -3123,10 +3123,27 @@ a.sw-link {
 
 // A revealed team name links to its match page. It inherits the row's colour
 // (so winner/loser emphasis still reads) and is unobtrusive until hovered.
-// Clicking elsewhere in the box still toggles the reveal.
+// The link fills its whole row — full width up to the score and the full row
+// height (`align-self: stretch`) — so both team links meet at the divider with
+// no dead gap between the names: clicking anywhere on a team opens its match.
+// The score column and the box's thin edges still toggle the reveal.
 a.bk-team-link {
   color: inherit;
   text-decoration: none;
+  flex: 1 1 auto;
+  min-width: 0;
+  align-self: stretch;
+  display: flex;
+  align-items: center;
+}
+
+// The lower row carries the 1px divider border, which would otherwise sit in the
+// gap between the two links — a hairline dead strip that drops the shared hover
+// and flashes the underline as the cursor crosses it. Pull the lower link up over
+// that border so the two links are pixel-contiguous: the divider still shows
+// (the link is transparent) but hovering it counts as hovering the link.
+.bk-row + .bk-row a.bk-team-link {
+  margin-top: -1px;
 }
 
 // Both team names link to the same match, so hovering either one underlines
@@ -3154,13 +3171,17 @@ a.bk-team-link {
   align-items: center;
   justify-content: space-between;
   gap: 0.6rem;
-  padding: 0.12rem 0.4rem;
+  // No vertical padding: the team link stretches to the row's full height so the
+  // two links meet at the divider with no dead gap between the names (the row
+  // still centres its content, so the text position is unchanged).
+  padding: 0 0.4rem;
 
   & + & {
     border-top: 1px solid var(--border);
   }
 
-  &.win .bk-team {
+  &.win .bk-team,
+  &.win .bk-score {
     color: var(--win);
     font-weight: 700;
   }
