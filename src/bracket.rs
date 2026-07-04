@@ -17,17 +17,43 @@
 use crate::types::BracketRound;
 use std::collections::HashSet;
 
-/// Column-to-column distance, in `em` of the bracket's font.
-pub const COL_EM: f64 = 11.0;
 /// Slot-to-slot (box pitch) distance, in `em` (box height + a connector gutter).
-pub const ROW_EM: f64 = 6.0;
-/// Box width, in `em` (leaves a gutter to the next column for the connector).
-/// Must match `--bk-box-w` in `style/main.scss`.
-pub const BOX_W_EM: f64 = 9.0;
-/// Box height, in `em` (two rows, each tall enough for a two-line team name;
-/// fixed so a slot maps to a known centre). Must match `--bk-box-h` in
-/// `style/main.scss`.
-pub const BOX_H_EM: f64 = 4.8;
+pub const ROW_EM: f64 = 5.0;
+/// Box height, in `em` (two rows, one per team; fixed so a slot maps to a known
+/// centre). Must match `--bk-box-h` in `style/main.scss`.
+pub const BOX_H_EM: f64 = 3.8;
+
+/// Gap (em) between a box's right edge and the next column, for the connector.
+const COL_GAP_EM: f64 = 1.9;
+/// Per-character width estimate (em) used to size a bracket's boxes to its names.
+const NAME_CHAR_EM: f64 = 0.62;
+/// Room in a box beside the name: its padding, the gap, and the score column.
+const NAME_PAD_EM: f64 = 3.2;
+/// Box-width bounds: a floor for short (esports) names, and a ceiling past which a
+/// long name ellipsises rather than widening the whole bracket.
+const MIN_BOX_W_EM: f64 = 6.0;
+const MAX_BOX_W_EM: f64 = 13.0;
+
+/// The box width (em) that fits this bracket's longest team name, clamped to
+/// `[MIN_BOX_W_EM, MAX_BOX_W_EM]`. Every box uses it, so the bracket stays aligned
+/// — sized to the names of *this* bracket, not fixed site-wide; a name past the
+/// ceiling is ellipsised by the CSS.
+#[must_use]
+pub fn box_width_em(rounds: &[BracketRound]) -> f64 {
+    let longest = rounds
+        .iter()
+        .flat_map(|r| &r.matches)
+        .flat_map(|m| [m.team_a.chars().count(), m.team_b.chars().count()])
+        .max()
+        .unwrap_or(0);
+    (longest as f64 * NAME_CHAR_EM + NAME_PAD_EM).clamp(MIN_BOX_W_EM, MAX_BOX_W_EM)
+}
+
+/// Column-to-column distance (em) for a bracket whose boxes are `box_w` wide.
+#[must_use]
+pub fn col_em(box_w: f64) -> f64 {
+    box_w + COL_GAP_EM
+}
 
 /// Blank slots inserted between the stacked sections of a double-elim bracket —
 /// room for the lower bracket's banner + the grand final, which sits in the gap.
@@ -243,10 +269,11 @@ pub fn layout(rounds: &[BracketRound]) -> BracketLayout {
 }
 
 /// Right edge (in em) of the last winner's/loser's-bracket column — where a
-/// section banner should end so it never reaches the grand-final rail.
+/// section banner should end so it never reaches the grand-final rail. Takes this
+/// bracket's `col_em`/`box_w` (its boxes are sized to its names).
 #[must_use]
-pub fn banner_width_em(bracket_cols: usize) -> f64 {
-    (bracket_cols.max(1) - 1) as f64 * COL_EM + BOX_W_EM
+pub fn banner_width_em(bracket_cols: usize, col: f64, box_w: f64) -> f64 {
+    (bracket_cols.max(1) - 1) as f64 * col + box_w
 }
 
 /// The match's lineage — itself, all its ancestors (feeders, transitively) and
