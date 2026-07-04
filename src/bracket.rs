@@ -18,14 +18,16 @@ use crate::types::BracketRound;
 use std::collections::HashSet;
 
 /// Column-to-column distance, in `em` of the bracket's font.
-pub const COL_EM: f64 = 9.5;
+pub const COL_EM: f64 = 11.0;
 /// Slot-to-slot (box pitch) distance, in `em` (box height + a connector gutter).
-pub const ROW_EM: f64 = 5.0;
+pub const ROW_EM: f64 = 6.0;
 /// Box width, in `em` (leaves a gutter to the next column for the connector).
-pub const BOX_W_EM: f64 = 7.6;
-/// Box height, in `em` (two rows; fixed so a slot maps to a known centre). Sized
-/// to match the Swiss-stage boxes (`.sw-match`).
-pub const BOX_H_EM: f64 = 3.8;
+/// Must match `--bk-box-w` in `style/main.scss`.
+pub const BOX_W_EM: f64 = 9.0;
+/// Box height, in `em` (two rows, each tall enough for a two-line team name;
+/// fixed so a slot maps to a known centre). Must match `--bk-box-h` in
+/// `style/main.scss`.
+pub const BOX_H_EM: f64 = 4.8;
 
 /// Blank slots inserted between the stacked sections of a double-elim bracket —
 /// room for the lower bracket's banner + the grand final, which sits in the gap.
