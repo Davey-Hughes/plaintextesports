@@ -2860,6 +2860,12 @@ a.sw-link {
     text-align: left;
   }
 
+  // Left-align the last column (points/maps) too — header and values together —
+  // so it reads consistently with the W-L column rather than right-aligned.
+  .st-diff {
+    text-align: left;
+  }
+
   .st-team {
     text-align: left;
     width: 100%;
