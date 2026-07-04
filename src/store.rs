@@ -612,6 +612,17 @@ pub fn cache_put(
     Ok(())
 }
 
+/// Delete `result_cache` rows in `ns` last fetched before `cutoff_ms`, returning
+/// how many were removed. Bounds id-keyed namespaces (e.g. `box_score`) that would
+/// otherwise grow one row per distinct item ever cached. `fetched_at_ms` refreshes
+/// on each re-cache, so a time cutoff acts as least-recently-used eviction.
+pub fn prune_result_cache(conn: &Connection, ns: &str, cutoff_ms: i64) -> rusqlite::Result<usize> {
+    conn.execute(
+        "DELETE FROM result_cache WHERE ns = ?1 AND fetched_at_ms < ?2",
+        params![ns, cutoff_ms],
+    )
+}
+
 /// A stored Web Push reminder (one timer for one match).
 #[derive(Debug, Clone)]
 pub struct Reminder {
@@ -1971,6 +1982,28 @@ mod tests {
         assert!(cache_get(&conn, "motor_result", "missing")
             .unwrap()
             .is_none());
+    }
+
+    #[test]
+    fn prune_result_cache_drops_only_stale_rows_in_its_namespace() {
+        let conn = open(":memory:").unwrap();
+        cache_put(&conn, "box_score", "mlb:1", "{}", 100).unwrap(); // stale
+        cache_put(&conn, "box_score", "mlb:2", "{}", 10_000).unwrap(); // fresh
+        cache_put(&conn, "soccer_standings", "x", "[]", 100).unwrap(); // other ns, stale
+        let deleted = prune_result_cache(&conn, "box_score", 5_000).unwrap();
+        assert_eq!(deleted, 1, "only the one stale box_score row is pruned");
+        assert!(
+            cache_get(&conn, "box_score", "mlb:1").unwrap().is_none(),
+            "stale row gone"
+        );
+        assert!(
+            cache_get(&conn, "box_score", "mlb:2").unwrap().is_some(),
+            "fresh row kept"
+        );
+        assert!(
+            cache_get(&conn, "soccer_standings", "x").unwrap().is_some(),
+            "a different namespace is untouched"
+        );
     }
 
     #[test]
