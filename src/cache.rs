@@ -2993,6 +2993,7 @@ pub fn matches_in_window(
     tz: &Tz,
     now: DateTime<Utc>,
     hour24: bool,
+    live_from: Option<DateTime<Utc>>,
 ) -> Vec<MatchView> {
     snap.matches
         .iter()
@@ -3000,7 +3001,18 @@ pub fn matches_in_window(
         // Esports and traditional sports are separate top-level modes.
         .filter(|m| m.sport.traditional() == traditional)
         .filter(|m| sport.is_none_or(|g| m.sport == g))
-        .filter(|m| m.begin_at >= start && m.begin_at < end)
+        // The window itself, plus a carry-over for a match that began before it but
+        // is still live: a late-evening series that started before local midnight
+        // keeps `begin_at` on the previous day, so once the day ticks over it falls
+        // out of the "today onward" window even while it's on air. `live_from`
+        // (Some only for the homepage) admits such a match back, bounded to a short
+        // grace so a provider that leaves a match stuck `live` doesn't pin it here
+        // forever. The two bands are disjoint (`live_from < start`), so no double-count.
+        .filter(|m| {
+            (m.begin_at >= start && m.begin_at < end)
+                || (m.status == MatchStatus::Live
+                    && live_from.is_some_and(|lf| m.begin_at >= lf && m.begin_at < start))
+        })
         .map(|m| to_view(m, tz, now, hour24))
         .collect()
 }
@@ -3064,6 +3076,12 @@ fn assemble_schedule_view(
     }
 }
 
+/// How long a still-`live` match that began before today's local start is kept on
+/// the homepage. Covers a late series that started before midnight (so it doesn't
+/// vanish the instant the day rolls over) while bounding a provider that leaves a
+/// finished match stuck `live` — after this many hours it drops off on its own.
+const LIVE_CARRYOVER_HOURS: i64 = 8;
+
 /// The snapshot-dependent phase of the homepage view: filter the window, surface
 /// each motorsport series' current/next event, and collapse rally stages — every
 /// step that borrows `snap`. Returns owned rows + freshness meta so the caller can
@@ -3091,7 +3109,21 @@ fn homepage_rows(
         now + Duration::days(cfg.upcoming_days)
     };
 
-    let mut all = matches_in_window(snap, traditional, sport, start, end, tz, now, hour24);
+    // Carry a still-live match that began before today's start back into the
+    // window, so a late series that crossed local midnight stays on the homepage
+    // instead of dropping to "earlier days" the moment the day ticks over.
+    let live_from = now - Duration::hours(LIVE_CARRYOVER_HOURS);
+    let mut all = matches_in_window(
+        snap,
+        traditional,
+        sport,
+        start,
+        end,
+        tz,
+        now,
+        hour24,
+        Some(live_from),
+    );
     // Motorsport is episodic — events are days/weeks apart and span several days,
     // so the short daily window misses them. Always surface each series' (F1/WRC/
     // WEC) current-or-next event in full (MLB etc. stay compact). The client
@@ -3220,7 +3252,20 @@ pub fn day_view(date: &str, game_filter: &str, tz_name: &str, hour24: bool) -> S
     let end = local_day_start(&tz, day + Duration::days(1));
 
     let snap = SNAPSHOT.read().unwrap_or_else(PoisonError::into_inner);
-    let all = matches_in_window(&snap, traditional, sport, start, end, &tz, now, hour24);
+    // No live carry-over here: a single-day page is anchored to an explicit date,
+    // and a live match that began the evening before belongs to that day's page
+    // (reachable via prev/next), not this one.
+    let all = matches_in_window(
+        &snap,
+        traditional,
+        sport,
+        start,
+        end,
+        &tz,
+        now,
+        hour24,
+        None,
+    );
     let all = collapse_wrc_days(all, &tz, &snap);
     let (fetched_at, stale, using_fixture) = (snap.fetched_at, snap.stale, snap.using_fixture);
     drop(snap);
@@ -3271,7 +3316,19 @@ pub fn range_view(
     let end = local_day_start(&tz, end_day + Duration::days(1));
 
     let snap = SNAPSHOT.read().unwrap_or_else(PoisonError::into_inner);
-    let all = matches_in_window(&snap, traditional, sport, start, end, &tz, now, hour24);
+    // The range's start day is chosen explicitly, so it already includes whatever
+    // day a carried-over live match would belong to — no grace band needed.
+    let all = matches_in_window(
+        &snap,
+        traditional,
+        sport,
+        start,
+        end,
+        &tz,
+        now,
+        hour24,
+        None,
+    );
     let all = collapse_wrc_days(all, &tz, &snap);
     let (fetched_at, stale, using_fixture) = (snap.fetched_at, snap.stale, snap.using_fixture);
     drop(snap);
@@ -7107,6 +7164,74 @@ mod tests {
             &cached(vec![], false, MOTOR_RESULT_TTL_MIN + 1),
             now
         ));
+    }
+
+    #[test]
+    fn homepage_rows_carries_over_recent_live_from_previous_day() {
+        // Just after local midnight (00:30 EDT on Jun 30), so "today" starts at
+        // Jun 30 04:00Z. A match that began late the previous evening and is still
+        // live sits before the window start — it must be carried over so it doesn't
+        // vanish the instant the day ticks over, but only within the 8h stuck-status
+        // grace, and only while genuinely live.
+        let now = "2026-06-30T04:30:00Z".parse::<DateTime<Utc>>().unwrap();
+        let tz: Tz = "America/New_York".parse().unwrap();
+        let cfg = config();
+
+        // Started 23:00 EDT the night before (Jun 30 03:00Z) — before today's start,
+        // ~1.5h ago, still live → carried over.
+        let recent_live = demo_match(
+            1,
+            Sport::Cs2,
+            "IEM",
+            "s",
+            "2026-06-30T03:00:00Z".parse().unwrap(),
+            MatchStatus::Live,
+            3,
+            demo_team("A", Some(1)),
+            demo_team("B", Some(0)),
+        );
+        // Live but began 10.5h ago (Jun 29 18:00Z) — past the 8h grace, so its
+        // "live" is presumed stuck and it is NOT carried over.
+        let stale_live = demo_match(
+            2,
+            Sport::Cs2,
+            "IEM",
+            "s",
+            "2026-06-29T18:00:00Z".parse().unwrap(),
+            MatchStatus::Live,
+            3,
+            demo_team("C", Some(1)),
+            demo_team("D", Some(0)),
+        );
+        // Finished on the previous day, within the grace band by time — only live
+        // matches carry over, so this stays dropped.
+        let finished_prev = demo_match(
+            3,
+            Sport::Cs2,
+            "IEM",
+            "s",
+            "2026-06-30T03:30:00Z".parse().unwrap(),
+            MatchStatus::Finished,
+            3,
+            demo_team("E", Some(2)),
+            demo_team("F", Some(1)),
+        );
+
+        let snap = snapshot_from(vec![recent_live, stale_live, finished_prev], now);
+        let (rows, _meta) = homepage_rows(&snap, cfg, now, "all", &tz, false);
+        let ids: Vec<i64> = rows.iter().map(|m| m.id).collect();
+        assert!(
+            ids.contains(&1),
+            "recent live from the previous evening should carry over"
+        );
+        assert!(
+            !ids.contains(&2),
+            "live-but-stale past the 8h grace should be dropped"
+        );
+        assert!(
+            !ids.contains(&3),
+            "a finished previous-day match should not carry over"
+        );
     }
 
     #[test]
