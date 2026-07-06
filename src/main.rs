@@ -12,6 +12,11 @@ async fn main() {
     use plaintextesports::app::*;
     use tower_http::compression::CompressionLayer;
 
+    /// Lightweight liveness probe for Docker HEALTHCHECK / load-balancers.
+    async fn healthz() -> impl IntoResponse {
+        (axum::http::StatusCode::OK, "ok")
+    }
+
     /// Serve the Web Push service worker at the site root (scope `/`).
     async fn service_worker() -> impl IntoResponse {
         (
@@ -195,6 +200,7 @@ async fn main() {
         );
     }
     let app = app
+        .route("/healthz", axum::routing::get(healthz))
         .route("/sw.js", axum::routing::get(service_worker))
         .route("/api/push-migrate", axum::routing::post(push_migrate))
         .fallback(leptos_axum::file_and_error_handler(shell))
