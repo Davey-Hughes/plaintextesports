@@ -1,0 +1,36 @@
+name: ghcr-cleanup
+
+# Prune old GHCR image versions so the package doesn't grow without bound. Every push to
+# main moves the `latest` + `main` tags and adds a fresh `sha-<short>` tag, so the images
+# those tags used to point at become *untagged* and accumulate. This keeps the newest N
+# tagged images (plus `latest`) and deletes the untagged/dangling leftovers.
+on:
+  schedule:
+    - cron: "30 4 * * 0" # Sundays 04:30 UTC
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Preview only — list what would be deleted, delete nothing"
+        type: boolean
+        default: true
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    permissions:
+      packages: write # delete package versions
+    steps:
+      # Third-party action with delete access — pinned to a commit SHA (not the mutable
+      # @v1 tag) so a repointed tag can't inject code that runs against the package token.
+      # Bump the SHA (and the trailing version) when a new release is vetted.
+      - uses: dataaxiom/ghcr-cleanup-action@d52806a0dc70b430571a37da1fde39733ffd640f # v1.2.2
+        with:
+          # token defaults to GITHUB_TOKEN; package defaults to this repo's name
+          # (plaintextesports); owner defaults to the repo owner. All fine as-is.
+          delete-untagged: true # the main win: drop the superseded latest/main layers
+          keep-n-tagged: 10 # keep the 10 newest tagged images (sha-* + any semver)
+          exclude-tags: latest # never touch the `latest` tag
+          validate: true # sanity-check multi-arch integrity after pruning
+          # Manual runs default to a preview (dry run); the weekly scheduled run actually
+          # prunes. Uncheck the box on a manual run to prune on demand.
+          dry-run: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run }}
