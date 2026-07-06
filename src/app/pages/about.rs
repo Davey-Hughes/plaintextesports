@@ -47,6 +47,11 @@ pub(crate) fn AboutPage() -> impl IntoView {
                     "event, including ones added later."
                 </li>
             </ul>
+            <p class="about-note">
+                "On iOS, add this site to your home screen (Share → \"Add to Home Screen\") "
+                "and open it from there — Safari only delivers notifications reliably to the "
+                "installed app."
+            </p>
             <p class="about-note">"(No stars means reminders aren't enabled on this instance.)"</p>
 
             <h2>"Finding matches"</h2>
