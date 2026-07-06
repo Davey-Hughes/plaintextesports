@@ -34,44 +34,50 @@ FROM alpine:latest AS runner
 
 RUN apk add --no-cache ca-certificates curl
 
-WORKDIR /app
+# ── Build artifacts (immutable, baked into the image) ────────────────────
+# Binary + hash.txt must live in the same directory (Leptos resolves
+# hash.txt relative to current_exe).
+COPY --from=builder /out/plaintextesports /usr/local/bin/
+COPY --from=builder /out/hash.txt /usr/local/bin/
+COPY --from=builder /out/site /usr/local/share/plaintextesports/site
 
-COPY --from=builder /out/plaintextesports /app/
-COPY --from=builder /out/site /app/site
-# With hash-files enabled, the server reads the content hashes from hash.txt
-# next to the binary (current_exe dir), so it must sit alongside /app/plaintextesports.
-COPY --from=builder /out/hash.txt /app/
-
-RUN mkdir -p /app/data
+# ── User data directory (single mount point) ─────────────────────────────
+# Mount a single host directory at /data containing config.toml, data/,
+# and optionally icons/. Example:
+#
+#   docker run -p 8080:8080 \
+#     -v /path/to/plaintextesports:/data plaintextesports
+#
+# Or in docker-compose:
+#
+#   volumes:
+#     - /mnt/user/appdata/plaintextesports:/data
+#
+# The host directory should contain at minimum a config.toml. The data/
+# subdirectory (for the SQLite cache) will be created automatically.
+# Icons are optional — see scripts/icons/generate.sh.
+# Individual settings can also be passed as env (e.g. -e PANDASCORE_TOKEN=xxxx).
+# Without a token the app serves demo fixture data.
+WORKDIR /data
+RUN mkdir -p /data/data
 
 ENV RUST_LOG="info"
 ENV LEPTOS_SITE_ADDR="0.0.0.0:8080"
-ENV LEPTOS_SITE_ROOT="./site"
+ENV LEPTOS_SITE_ROOT="/usr/local/share/plaintextesports/site"
 # Must match `hash-files = true` in Cargo.toml so the server references the
-# content-hashed pkg filenames (resolved via the hash.txt copied above) at runtime.
+# content-hashed pkg filenames (resolved via the hash.txt in /usr/local/bin).
 ENV LEPTOS_HASH_FILES="true"
-ENV DB_PATH="/app/data/cache.db"
-# Mount config.toml (token, vapid, etc.), the data volume, and — optionally — the
-# site icons, e.g.:
-#   docker run -p 8080:8080 \
-#     -v ./config.toml:/app/config.toml -v pte-data:/app/data \
-#     -v "$(pwd)/icons:/app/icons:ro" plaintextesports
-# Individual settings can also be passed as env (e.g. -e PANDASCORE_TOKEN=xxxx).
-# Without a token the app serves demo fixture data.
-#
-# Favicon / PWA icons are optional and read at runtime from `icons_dir` (default
-# "icons", i.e. /app/icons given WORKDIR /app). They are deliberately NOT baked
-# into the image (the rasters are gitignored), so generate them once with
-# scripts/icons/generate.sh and bind-mount that dir at /app/icons as shown above
-# (or point icons_dir / the ICONS_DIR env at another mounted path). With nothing
-# mounted there the site runs fine with no favicon — the prior placeholder.
+# Paths are relative to WORKDIR /data, so config.toml, data/cache.db, and
+# icons/ all resolve inside the mounted volume.
+ENV CONFIG_PATH="/data/config.toml"
+ENV DB_PATH="/data/data/cache.db"
+ENV ICONS_DIR="/data/icons"
 
-# Persist the SQLite cache across container restarts.
-VOLUME ["/app/data"]
+VOLUME ["/data"]
 
 EXPOSE 8080
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
   CMD curl -f http://localhost:8080/healthz || exit 1
 
-CMD ["/app/plaintextesports"]
+CMD ["plaintextesports"]
