@@ -26,6 +26,17 @@ async fn main() {
         )
     }
 
+    /// Serve a loader.io domain-verification file live from disk as plain text
+    /// (404 if it has since been removed). The file is a drop-in (gitignored)
+    /// discovered at startup, so the token stays out of the repo and the binary.
+    async fn serve_loaderio(path: std::path::PathBuf) -> axum::response::Response {
+        use axum::http::StatusCode;
+        match tokio::fs::read(&path).await {
+            Ok(bytes) => ([(header::CONTENT_TYPE, "text/plain")], bytes).into_response(),
+            Err(_) => StatusCode::NOT_FOUND.into_response(),
+        }
+    }
+
     /// Serve one optional site-icon file from `dir` if it exists; 404 otherwise.
     /// Read live from disk so a dropped-in file serves without a restart.
     async fn serve_icon(
@@ -143,6 +154,21 @@ async fn main() {
     ];
     let icons_dir = std::path::PathBuf::from(&plaintextesports::config::config().icons_dir);
 
+    // Optionally serve a loader.io domain-verification file. Drop the file
+    // loader.io gives you (named `loaderio-<token>.txt`) into the working
+    // directory and it is served verbatim at `/<filename>`, so load tests can
+    // be authorized without committing the token to the repo. Discovered at
+    // startup — a newly added file needs a restart to be picked up.
+    let loaderio_file = std::fs::read_dir(".").ok().and_then(|entries| {
+        entries.flatten().find_map(|entry| {
+            entry
+                .file_name()
+                .to_str()
+                .filter(|name| name.starts_with("loaderio"))
+                .map(|name| (format!("/{name}"), entry.path()))
+        })
+    });
+
     let mut app = Router::new().leptos_routes(&leptos_options, routes, {
         let leptos_options = leptos_options.clone();
         move || shell(leptos_options.clone())
@@ -161,6 +187,13 @@ async fn main() {
             move || serve_manifest(dir.clone())
         }),
     );
+    if let Some((route, path)) = loaderio_file {
+        log!("serving loader.io verification file at {route}");
+        app = app.route(
+            &route,
+            axum::routing::get(move || serve_loaderio(path.clone())),
+        );
+    }
     let app = app
         .route("/sw.js", axum::routing::get(service_worker))
         .route("/api/push-migrate", axum::routing::post(push_migrate))
