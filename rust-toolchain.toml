@@ -1,3 +1,6 @@
 [toolchain]
 channel = "nightly"
+# rustfmt + clippy so CI (and a fresh local install) always has the components the
+# format/lint steps need; wasm32 is the hydrate/client build target for cargo-leptos.
+components = ["rustfmt", "clippy"]
 targets = ["wasm32-unknown-unknown"]

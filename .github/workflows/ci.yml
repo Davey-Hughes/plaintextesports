@@ -1,0 +1,81 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+# One CI run per ref; a newer push cancels the in-flight run (checks + image build).
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  rust:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # rust-toolchain.toml pins the channel (nightly), the rustfmt/clippy components,
+      # and the wasm32 target; `rustup show` installs exactly that. Nightly isn't
+      # preinstalled on the runner, so this step is required (unlike a stable project).
+      - name: Install Rust toolchain
+        run: rustup show
+      # Cache the cargo registry + target dir across runs — a Leptos dep tree is large,
+      # so a cold clippy+test compile is minutes; this makes unchanged-dep runs quick.
+      - uses: Swatinem/rust-cache@v2
+      - name: Format
+        run: cargo fmt --all --check
+      # `ssr` is the server build; the majority of the crate is behind it, so linting
+      # and testing without it would skip most of the code. --all-targets also covers
+      # the benches + examples.
+      - name: Clippy
+        run: cargo clippy --features ssr --all-targets -- -D warnings
+      - name: Test
+        run: cargo test --features ssr
+
+  # Build + publish the container image to ghcr.io — but ONLY after the rust checks pass
+  # (a red build never ships an image), and never on a pull request. Tags: latest (default
+  # branch), branch name, short SHA, and full semver on a v* tag. The image is built by the
+  # repo's Dockerfile (cargo-leptos release build → slim Alpine runtime).
+  docker:
+    needs: [rust]
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write # push to ghcr.io
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Docker metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository }}
+          tags: |
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=ref,event=branch
+            type=sha,format=short
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern={{major}}
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          # Cache image layers between runs so the toolchain/cargo-leptos install layers
+          # (and unchanged source layers) don't rebuild every push.
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
