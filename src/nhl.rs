@@ -7,8 +7,8 @@
 use crate::bracket_build::{self, RawSeries};
 use crate::feed::{NormalizedMatch, NormalizedTeam};
 use crate::types::{
-    stat_share, BoxScore, BracketRound, EventInfo, LeaderCard, LineRow, LineScore, MatchStatus,
-    PlayerRow, PlayerTable, ScoreEvent, Sport, StandingRow, StatPair, StreamView,
+    BoxScore, BracketRound, EventInfo, LeaderCard, LineRow, LineScore, MatchStatus, PlayerRow,
+    PlayerTable, ScoreEvent, Sport, StandingRow, StatPair, StreamView, stat_share,
 };
 use chrono::{DateTime, Duration, NaiveDate, Utc};
 use serde::Deserialize;
@@ -1061,14 +1061,16 @@ mod boxscore_tests {
 
         // Skater + goalie tables per team (4 total).
         assert_eq!(out.player_tables.len(), 4);
-        assert!(out
-            .player_tables
-            .iter()
-            .any(|t| t.title.starts_with("Skaters")));
-        assert!(out
-            .player_tables
-            .iter()
-            .any(|t| t.title.starts_with("Goalies")));
+        assert!(
+            out.player_tables
+                .iter()
+                .any(|t| t.title.starts_with("Skaters"))
+        );
+        assert!(
+            out.player_tables
+                .iter()
+                .any(|t| t.title.starts_with("Goalies"))
+        );
         let skaters = out
             .player_tables
             .iter()

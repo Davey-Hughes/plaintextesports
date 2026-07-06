@@ -307,10 +307,11 @@ async fn resolve_channel_id(ident: &str, key: &str) -> Option<String> {
 /// ephemeral keys (like video ids) can't grow it without limit. Not strict LRU —
 /// an evicted entry simply re-resolves.
 fn insert_bounded(map: &mut HashMap<String, String>, cap: usize, key: String, val: String) {
-    if map.len() >= cap && !map.contains_key(&key) {
-        if let Some(evict) = map.keys().next().cloned() {
-            map.remove(&evict);
-        }
+    if map.len() >= cap
+        && !map.contains_key(&key)
+        && let Some(evict) = map.keys().next().cloned()
+    {
+        map.remove(&evict);
     }
     map.insert(key, val);
 }
@@ -440,10 +441,10 @@ pub async fn live_status(idents: &[String]) -> HashMap<String, LiveInfo> {
 pub async fn live_one(ident: &str) -> Option<LiveInfo> {
     {
         let g = LIVE_CACHE.read().unwrap_or_else(PoisonError::into_inner);
-        if let Some((at, v)) = g.get(ident) {
-            if *at + Duration::seconds(LIVE_CACHE_TTL_SECS) > Utc::now() {
-                return v.clone();
-            }
+        if let Some((at, v)) = g.get(ident)
+            && *at + Duration::seconds(LIVE_CACHE_TTL_SECS) > Utc::now()
+        {
+            return v.clone();
         }
     }
     let map = live_status(std::slice::from_ref(&ident.to_string())).await;

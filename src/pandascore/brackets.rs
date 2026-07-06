@@ -7,7 +7,7 @@
 //! match-fetching client in [`super`] since it's a distinct concern, but it shares
 //! that module's `Raw*` team/result types and JSON helpers via `super::`.
 
-use super::{get_text, score_for, team_label, RawOpponent, RawResult, RawTeam, BASE_URL};
+use super::{BASE_URL, RawOpponent, RawResult, RawTeam, get_text, score_for, team_label};
 use crate::http::DynError;
 use crate::types::{BracketMatch, BracketRound, StandingRow, SwissBucket, SwissMatch, SwissRound};
 use serde::Deserialize;
@@ -454,11 +454,11 @@ fn build_rounds(raw: &[RawBracketMatch]) -> Vec<BracketRound> {
             let mut seen: std::collections::HashSet<i64> = std::collections::HashSet::new();
             for parent in &next_ms {
                 for pid in parent.previous_matches.iter().filter_map(|p| p.match_id) {
-                    if !seen.contains(&pid) {
-                        if let Some(m) = cur_ms.iter().find(|m| m.id == pid) {
-                            seen.insert(pid);
-                            ordered.push(*m);
-                        }
+                    if !seen.contains(&pid)
+                        && let Some(m) = cur_ms.iter().find(|m| m.id == pid)
+                    {
+                        seen.insert(pid);
+                        ordered.push(*m);
                     }
                 }
             }

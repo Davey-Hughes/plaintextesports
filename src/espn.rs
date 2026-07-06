@@ -10,8 +10,8 @@
 use crate::bracket_build::{self, RawSeries};
 use crate::feed::{NormalizedMatch, NormalizedTeam};
 use crate::types::{
-    stat_share, BoxScore, BracketRound, EventInfo, LeaderCard, LineRow, LineScore, MatchStatus,
-    PlayerRow, PlayerTable, ScoreEvent, Sport, StandingRow, StatPair, StreamView,
+    BoxScore, BracketRound, EventInfo, LeaderCard, LineRow, LineScore, MatchStatus, PlayerRow,
+    PlayerTable, ScoreEvent, Sport, StandingRow, StatPair, StreamView, stat_share,
 };
 use chrono::{DateTime, Datelike, NaiveDate, NaiveDateTime, Utc};
 use serde::Deserialize;

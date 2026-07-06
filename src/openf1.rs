@@ -11,8 +11,8 @@
 use crate::http::USER_AGENT;
 use crate::types::{F1Result, F1ResultRow};
 use chrono::{Duration, NaiveDate};
-use serde::de::DeserializeOwned;
 use serde::Deserialize;
+use serde::de::DeserializeOwned;
 
 const BASE: &str = "https://api.openf1.org/v1";
 

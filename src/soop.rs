@@ -134,10 +134,10 @@ pub async fn live_streams(bids: &[String]) -> HashMap<String, LiveInfo> {
             Ok(r) => r,
             Err(_) => continue,
         };
-        if let Ok(body) = resp.text().await {
-            if let Some(info) = parse_station(&body) {
-                out.insert(bid, info);
-            }
+        if let Ok(body) = resp.text().await
+            && let Some(info) = parse_station(&body)
+        {
+            out.insert(bid, info);
         }
     }
     out

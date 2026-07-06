@@ -297,10 +297,10 @@ pub fn build(series: Vec<RawSeries>) -> Vec<BracketRound> {
                     let s = &series[i];
                     let mut feeders = Vec::new();
                     for side in 0..2 {
-                        if let Some(c) = resolve_side(i, side) {
-                            if !feeders.contains(&c) {
-                                feeders.push(c);
-                            }
+                        if let Some(c) = resolve_side(i, side)
+                            && !feeders.contains(&c)
+                        {
+                            feeders.push(c);
                         }
                     }
                     BracketMatch {

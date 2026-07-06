@@ -95,10 +95,10 @@ async fn token() -> Option<String> {
     let secret = cfg.twitch_client_secret.clone().filter(|s| !s.is_empty())?;
     {
         let g = TOKEN.read().unwrap_or_else(PoisonError::into_inner);
-        if let Some(t) = g.as_ref() {
-            if t.expires_at > Utc::now() + Duration::minutes(5) {
-                return Some(t.token.clone());
-            }
+        if let Some(t) = g.as_ref()
+            && t.expires_at > Utc::now() + Duration::minutes(5)
+        {
+            return Some(t.token.clone());
         }
     }
     let resp = CLIENT
@@ -217,7 +217,7 @@ mod tests {
         );
         assert_eq!(m.get("esl_dota2").unwrap().viewers, 31);
         assert_eq!(m.get("esl_dota2").unwrap().language, ""); // absent → empty
-                                                              // Empty / malformed → empty map, never panics.
+        // Empty / malformed → empty map, never panics.
         assert!(parse_streams(r#"{"data":[]}"#).is_empty());
         assert!(parse_streams("not json").is_empty());
     }

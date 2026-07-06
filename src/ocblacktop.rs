@@ -747,14 +747,14 @@ pub async fn fetch_wrc_standings(client: &reqwest::Client, key: &str) -> MotorSt
         ("manufacturers", "Manufacturers"),
     ] {
         let url = format!("{BASE}/wrc/standings/{path}");
-        if let Ok(rows) = get::<Vec<RawStandRow>>(client, key, &url).await {
-            if !rows.is_empty() {
-                tables.push(MotorStandingTable {
-                    group: String::new(),
-                    title: title.to_string(),
-                    rows: stand_rows(&rows),
-                });
-            }
+        if let Ok(rows) = get::<Vec<RawStandRow>>(client, key, &url).await
+            && !rows.is_empty()
+        {
+            tables.push(MotorStandingTable {
+                group: String::new(),
+                title: title.to_string(),
+                rows: stand_rows(&rows),
+            });
         }
     }
     MotorStandings { tables }
@@ -1203,12 +1203,14 @@ mod tests {
         // One row per timed stage (2 special + the power stage), all WRC under the
         // season-qualified series, each carrying Greece's tz for a venue-local clock.
         assert_eq!(ms.len(), 3);
-        assert!(ms
-            .iter()
-            .all(|m| m.league == "WRC" && m.series_name == "EKO Acropolis Rally Greece 2026"));
-        assert!(ms
-            .iter()
-            .all(|m| m.venue_tz.as_deref() == Some("Europe/Athens")));
+        assert!(
+            ms.iter()
+                .all(|m| m.league == "WRC" && m.series_name == "EKO Acropolis Rally Greece 2026")
+        );
+        assert!(
+            ms.iter()
+                .all(|m| m.venue_tz.as_deref() == Some("Europe/Athens"))
+        );
         let ss1 = ms.iter().find(|m| m.team_a.label == "SS1 EKO SSS").unwrap();
         assert_eq!(ss1.begin_at.to_rfc3339(), "2026-06-25T16:02:00+00:00");
         assert_eq!(ss1.status, MatchStatus::Finished);
@@ -1284,7 +1286,7 @@ mod tests {
         assert_eq!(wrc_venue_tz("GR"), Some("Europe/Athens"));
         assert_eq!(wrc_venue_tz("jp"), Some("Asia/Tokyo")); // case-insensitive alpha-2
         assert_eq!(wrc_venue_tz("JPN"), Some("Asia/Tokyo")); // alpha-3, as the feed sends
-                                                             // Spain's round runs on the Canary Islands, an hour behind the mainland.
+        // Spain's round runs on the Canary Islands, an hour behind the mainland.
         assert_eq!(wrc_venue_tz("ES"), Some("Atlantic/Canary"));
         // Off-calendar countries simply have no venue clock.
         assert_eq!(wrc_venue_tz("US"), None);
@@ -1312,14 +1314,16 @@ mod tests {
             .collect();
         // One row per session, all under the same season-qualified series.
         assert_eq!(ms.len(), 3);
-        assert!(ms
-            .iter()
-            .all(|m| m.league == "WEC" && m.series_name == "24 Hours of Le Mans 2025"));
+        assert!(
+            ms.iter()
+                .all(|m| m.league == "WEC" && m.series_name == "24 Hours of Le Mans 2025")
+        );
         // Each session is labelled by its published name and carries the venue
         // tz, so every row gets the venue-local toggle (FR → Paris).
-        assert!(ms
-            .iter()
-            .all(|m| m.venue_tz.as_deref() == Some("Europe/Paris")));
+        assert!(
+            ms.iter()
+                .all(|m| m.venue_tz.as_deref() == Some("Europe/Paris"))
+        );
         let race = ms.iter().find(|m| m.team_a.label == "Race").unwrap();
         assert_eq!(race.begin_at.to_rfc3339(), "2025-06-14T14:00:00+00:00");
         assert_eq!(race.status, MatchStatus::Finished);
@@ -1365,8 +1369,8 @@ mod tests {
         // Single-zone hosts come straight from the country code.
         assert_eq!(wec_venue_tz("FR"), Some("Europe/Paris"));
         assert_eq!(wec_venue_tz("jp"), Some("Asia/Tokyo")); // case-insensitive
-                                                            // Multi-zone countries: the sole WEC venue pins the zone (COTA → Central,
-                                                            // Interlagos → São Paulo), not the country's "first" zone.
+        // Multi-zone countries: the sole WEC venue pins the zone (COTA → Central,
+        // Interlagos → São Paulo), not the country's "first" zone.
         assert_eq!(wec_venue_tz("US"), Some("America/Chicago"));
         assert_eq!(wec_venue_tz("BR"), Some("America/Sao_Paulo"));
         // The feed reports Japan as alpha-3 "JPN", not "JP" — both resolve.
@@ -1478,12 +1482,14 @@ mod tests {
         // One row per session, all MotoGP under the season-qualified series, with
         // Spain's venue tz available.
         assert_eq!(ms.len(), 4);
-        assert!(ms
-            .iter()
-            .all(|m| m.league == "MotoGP" && m.series_name == "GRAND PRIX OF VALENCIA 2026"));
-        assert!(ms
-            .iter()
-            .all(|m| m.venue_tz.as_deref() == Some("Europe/Madrid")));
+        assert!(
+            ms.iter()
+                .all(|m| m.league == "MotoGP" && m.series_name == "GRAND PRIX OF VALENCIA 2026")
+        );
+        assert!(
+            ms.iter()
+                .all(|m| m.venue_tz.as_deref() == Some("Europe/Madrid"))
+        );
         assert!(ms.iter().all(|m| m.id >= MOTOGP_ID_BASE));
         // Results-bearing sessions (race/sprint/qualifying) carry a result ref;
         // free practice doesn't.
@@ -1497,24 +1503,27 @@ mod tests {
             ),
             ("MotoGP", "gp-val", "s-race")
         );
-        assert!(ms
-            .iter()
-            .find(|m| m.team_a.label == "Sprint")
-            .unwrap()
-            .motor_result_ref
-            .is_some());
-        assert!(ms
-            .iter()
-            .find(|m| m.team_a.label == "Qualifying 2")
-            .unwrap()
-            .motor_result_ref
-            .is_some());
-        assert!(ms
-            .iter()
-            .find(|m| m.team_a.label == "Free Practice 1")
-            .unwrap()
-            .motor_result_ref
-            .is_none());
+        assert!(
+            ms.iter()
+                .find(|m| m.team_a.label == "Sprint")
+                .unwrap()
+                .motor_result_ref
+                .is_some()
+        );
+        assert!(
+            ms.iter()
+                .find(|m| m.team_a.label == "Qualifying 2")
+                .unwrap()
+                .motor_result_ref
+                .is_some()
+        );
+        assert!(
+            ms.iter()
+                .find(|m| m.team_a.label == "Free Practice 1")
+                .unwrap()
+                .motor_result_ref
+                .is_none()
+        );
     }
 
     #[test]

@@ -15,8 +15,8 @@ pub(crate) fn FilterUrlSync() -> impl IntoView {
     let _ = (games, leagues, traditional);
     #[cfg(feature = "hydrate")]
     {
-        use leptos_router::hooks::{use_location, use_navigate, use_query_map};
         use leptos_router::NavigateOptions;
+        use leptos_router::hooks::{use_location, use_navigate, use_query_map};
 
         fn parse_set(v: &str) -> HashSet<String> {
             v.split(',')
@@ -1048,8 +1048,8 @@ pub(crate) fn UpNextBar(day: DayGroup) -> impl IntoView {
 
     #[cfg(feature = "hydrate")]
     {
-        use wasm_bindgen::closure::Closure;
         use wasm_bindgen::JsCast;
+        use wasm_bindgen::closure::Closure;
         Effect::new(move |_| {
             let Some(doc) = web_sys::window().and_then(|w| w.document()) else {
                 return;
@@ -1554,7 +1554,7 @@ pub(crate) fn venue_time_cell(
 pub(crate) fn row_reveal(
     muid: &str,
     end_ms: i64,
-) -> (Memo<bool>, impl Fn(leptos::ev::MouseEvent) + Clone) {
+) -> (Memo<bool>, impl Fn(leptos::ev::MouseEvent) + Clone + use<>) {
     let global = use_context::<ShowScores>().map(|s| s.0);
     let revealed = use_context::<RevealedMatches>().map(|r| r.0);
     let reveal = {

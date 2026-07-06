@@ -1324,7 +1324,7 @@ mod tests {
         assert_eq!(MatchStatus::Finished.badge(), "Final");
         assert_eq!(MatchStatus::Canceled.badge(), "Canc.");
         assert_eq!(MatchStatus::Upcoming.badge(), ""); // no badge while upcoming
-                                                       // Row classes the SCSS keys off (note "final", not the wire "finished").
+        // Row classes the SCSS keys off (note "final", not the wire "finished").
         assert_eq!(MatchStatus::Live.row_class(), "live");
         assert_eq!(MatchStatus::Finished.row_class(), "final");
         assert_eq!(MatchStatus::Canceled.row_class(), "canceled");

@@ -9,8 +9,8 @@
 //!
 //! Run: `cargo bench --features ssr`
 
-use criterion::{black_box, criterion_group, criterion_main, Criterion};
-use plaintextesports::tiering::{is_tier_one, TierInput};
+use criterion::{Criterion, black_box, criterion_group, criterion_main};
+use plaintextesports::tiering::{TierInput, is_tier_one};
 use plaintextesports::types::Sport;
 
 fn bench_is_tier_one(c: &mut Criterion) {

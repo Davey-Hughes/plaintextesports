@@ -126,12 +126,12 @@ mod tests {
             Record {
                 key: "touched".into(),
                 end_ms: now - 30 * DAY,
-                touched_ms: now - 1 * DAY,
+                touched_ms: now - DAY,
             },
             // Untouched but ended recently → kept (just finished).
             Record {
                 key: "recent_end".into(),
-                end_ms: now - 1 * DAY,
+                end_ms: now - DAY,
                 touched_ms: now - 30 * DAY,
             },
             // Event still in the future (in progress) → kept regardless of touch.

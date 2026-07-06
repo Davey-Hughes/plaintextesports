@@ -94,7 +94,7 @@ mod tests {
             {"login":"Caedrel"},{"login":"sneaky"},{"login":""}
         ]}}}}"#;
         assert_eq!(parse_costreamers(json), vec!["caedrel", "sneaky"]); // lowercased, empty dropped
-                                                                        // Empty list / null / malformed → empty, no panic.
+        // Empty list / null / malformed → empty, no panic.
         assert!(
             parse_costreamers(r#"{"data":{"user":{"adProperties":{"costreamers":[]}}}}"#)
                 .is_empty()

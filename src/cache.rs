@@ -6,13 +6,14 @@
 //! they never touch the network. When no API token is configured we populate a
 //! demo fixture (relative to "now") so the UI is always usable.
 
-use crate::config::{config, Config};
+use crate::config::{Config, config};
 use crate::feed::{FetchResult, NormalizedMatch, NormalizedTeam};
 use crate::pandascore::fetch_game;
-use crate::twitch::{login_of, LiveInfo};
+use crate::twitch::{LiveInfo, login_of};
 use crate::types::{
-    event_name_eq, full_event_name, BracketMatch, BracketRound, DayGroup, EventInfo, LeagueGroup,
-    MatchStatus, MatchView, ScheduleView, SourceLink, Sport, StandingRow, StreamView, TeamView,
+    BracketMatch, BracketRound, DayGroup, EventInfo, LeagueGroup, MatchStatus, MatchView,
+    ScheduleView, SourceLink, Sport, StandingRow, StreamView, TeamView, event_name_eq,
+    full_event_name,
 };
 use chrono::{DateTime, Datelike, Duration, NaiveDate, TimeZone, Timelike, Utc};
 use chrono_tz::Tz;
@@ -178,7 +179,7 @@ fn update_bracket<E: std::fmt::Display>(
 /// when a game/series finishes).
 #[allow(clippy::let_underscore_future)]
 async fn refresh_brackets(client: &reqwest::Client, now: DateTime<Utc>) {
-    use crate::espn::{season_year, NBA, NFL, WORLD_CUP};
+    use crate::espn::{NBA, NFL, WORLD_CUP, season_year};
     let wc_year = now.year();
     // NFL labels its season by the start year but plays the postseason the next
     // January/February; NBA/NHL postseasons (Apr–June) fall in their end year;
@@ -413,10 +414,10 @@ pub async fn live_streams_for(sport: Sport, id: i64) -> Vec<StreamView> {
     }
     {
         let g = STREAM_STATUS.read().unwrap_or_else(PoisonError::into_inner);
-        if let Some(c) = g.get(&(sport, id)) {
-            if c.fetched_at + Duration::seconds(STREAM_STATUS_TTL_SECS) > Utc::now() {
-                return c.streams.clone();
-            }
+        if let Some(c) = g.get(&(sport, id))
+            && c.fetched_at + Duration::seconds(STREAM_STATUS_TTL_SECS) > Utc::now()
+        {
+            return c.streams.clone();
         }
     }
 
@@ -672,10 +673,10 @@ pub async fn mlb_series(
     // 1. Memory tier — keyed by match_id (tz-agnostic); format on read.
     {
         let cache = MLB_SERIES.read().unwrap_or_else(PoisonError::into_inner);
-        if let Some(c) = cache.get(&match_id) {
-            if Utc::now() - c.fetched_at < Duration::minutes(SERIES_TTL_MIN) {
-                return Some(crate::mlb::format_series(&c.raw, fmt_labels));
-            }
+        if let Some(c) = cache.get(&match_id)
+            && Utc::now() - c.fetched_at < Duration::minutes(SERIES_TTL_MIN)
+        {
+            return Some(crate::mlb::format_series(&c.raw, fmt_labels));
         }
     }
     // Pull the series ref + headline orientation from the snapshot, then drop the
@@ -697,20 +698,19 @@ pub async fn mlb_series(
     // 2. DB tier — persist non-empty raw series across restarts.
     if let Some((raw, fetched_at)) =
         db_cache_get::<crate::mlb::RawSeries>("mlb_series", &match_id.to_string())
+        && Utc::now() - fetched_at < Duration::minutes(SERIES_TTL_MIN)
     {
-        if Utc::now() - fetched_at < Duration::minutes(SERIES_TTL_MIN) {
-            MLB_SERIES
-                .write()
-                .unwrap_or_else(PoisonError::into_inner)
-                .insert(
-                    match_id,
-                    CachedRawSeries {
-                        raw: raw.clone(),
-                        fetched_at,
-                    },
-                );
-            return Some(crate::mlb::format_series(&raw, fmt_labels));
-        }
+        MLB_SERIES
+            .write()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(
+                match_id,
+                CachedRawSeries {
+                    raw: raw.clone(),
+                    fetched_at,
+                },
+            );
+        return Some(crate::mlb::format_series(&raw, fmt_labels));
     }
     // 3. API fetch.
     let now = Utc::now();
@@ -742,28 +742,27 @@ pub async fn f1_results(season: i64, round: i64) -> Vec<crate::types::F1Result> 
     let key = format!("{season}:{round}");
     {
         let cache = F1_RESULTS.read().unwrap_or_else(PoisonError::into_inner);
-        if let Some(c) = cache.get(&(season, round)) {
-            if Utc::now() - c.fetched_at < Duration::minutes(F1_RESULTS_TTL_MIN) {
-                return c.results.clone();
-            }
+        if let Some(c) = cache.get(&(season, round))
+            && Utc::now() - c.fetched_at < Duration::minutes(F1_RESULTS_TTL_MIN)
+        {
+            return c.results.clone();
         }
     }
     if let Some((results, fetched_at)) =
         db_cache_get::<Vec<crate::types::F1Result>>("f1_result", &key)
+        && Utc::now() - fetched_at < Duration::minutes(F1_RESULTS_TTL_MIN)
     {
-        if Utc::now() - fetched_at < Duration::minutes(F1_RESULTS_TTL_MIN) {
-            F1_RESULTS
-                .write()
-                .unwrap_or_else(PoisonError::into_inner)
-                .insert(
-                    (season, round),
-                    CachedF1Results {
-                        results: results.clone(),
-                        fetched_at,
-                    },
-                );
-            return results;
-        }
+        F1_RESULTS
+            .write()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(
+                (season, round),
+                CachedF1Results {
+                    results: results.clone(),
+                    fetched_at,
+                },
+            );
+        return results;
     }
     let now = Utc::now();
     let results = crate::f1::fetch_results(&HTTP, season, round).await;
@@ -791,10 +790,10 @@ pub async fn motor_result(r: &crate::types::MotorResultRef) -> Vec<crate::types:
     // 1. in-memory hot tier (still negative-caches errors/empties).
     {
         let cache = MOTOR_RESULTS.read().unwrap_or_else(PoisonError::into_inner);
-        if let Some(c) = cache.get(&cache_key) {
-            if motor_cache_fresh(c, Utc::now()) {
-                return c.rows.clone();
-            }
+        if let Some(c) = cache.get(&cache_key)
+            && motor_cache_fresh(c, Utc::now())
+        {
+            return c.rows.clone();
         }
     }
     // 2. durable tier: the DB only holds non-empty results (errored: false).
@@ -890,14 +889,14 @@ fn insert_capped(
     val: CachedBoxScore,
     cap: usize,
 ) {
-    if map.len() >= cap && !map.contains_key(&key) {
-        if let Some(oldest) = map
+    if map.len() >= cap
+        && !map.contains_key(&key)
+        && let Some(oldest) = map
             .iter()
             .min_by_key(|(_, c)| c.fetched_at)
             .map(|(k, _)| k.clone())
-        {
-            map.remove(&oldest);
-        }
+    {
+        map.remove(&oldest);
     }
     map.insert(key, val);
 }
@@ -922,23 +921,23 @@ pub async fn box_score(sport: crate::types::Sport, id: i64) -> crate::types::Box
         let cache = BOX_SCORES
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if let Some(c) = cache.get(&key) {
-            if box_score_fresh(c, Utc::now()) {
-                return c.bs.clone();
-            }
+        if let Some(c) = cache.get(&key)
+            && box_score_fresh(c, Utc::now())
+        {
+            return c.bs.clone();
         }
     }
     // 2. Durable tier: the DB only holds real results (not errors).
-    if let Some((bs, at)) = db_cache_get::<crate::types::BoxScore>("box_score", &key) {
-        if Utc::now() - at < Duration::minutes(BOXSCORE_TTL_MIN) {
-            let c = CachedBoxScore {
-                bs: bs.clone(),
-                fetched_at: at,
-                errored: false,
-            };
-            cache_box_score(key.clone(), c);
-            return bs;
-        }
+    if let Some((bs, at)) = db_cache_get::<crate::types::BoxScore>("box_score", &key)
+        && Utc::now() - at < Duration::minutes(BOXSCORE_TTL_MIN)
+    {
+        let c = CachedBoxScore {
+            bs: bs.clone(),
+            fetched_at: at,
+            errored: false,
+        };
+        cache_box_score(key.clone(), c);
+        return bs;
     }
     // 3. Fetch from upstream, then write through to memory (always) and DB
     //    (only for real results).
@@ -1048,10 +1047,10 @@ fn wrc_result_plan(rows: &[NormalizedMatch]) -> Vec<(String, crate::types::Motor
             },
         ));
     }
-    if let Some(ps) = wrc().find(|m| m.team_a.label.contains("Power Stage")) {
-        if let Some(r) = &ps.motor_result_ref {
-            plan.push((ps.team_a.label.clone(), r.clone()));
-        }
+    if let Some(ps) = wrc().find(|m| m.team_a.label.contains("Power Stage"))
+        && let Some(r) = &ps.motor_result_ref
+    {
+        plan.push((ps.team_a.label.clone(), r.clone()));
     }
     plan
 }
@@ -1108,28 +1107,27 @@ pub async fn f1_standings(season: i64, round: i64) -> crate::types::F1Standings 
     let key = format!("{season}:{round}");
     {
         let cache = F1_STANDINGS.read().unwrap_or_else(PoisonError::into_inner);
-        if let Some(c) = cache.get(&(season, round)) {
-            if Utc::now() - c.fetched_at < Duration::minutes(F1_STANDINGS_TTL_MIN) {
-                return c.standings.clone();
-            }
+        if let Some(c) = cache.get(&(season, round))
+            && Utc::now() - c.fetched_at < Duration::minutes(F1_STANDINGS_TTL_MIN)
+        {
+            return c.standings.clone();
         }
     }
     if let Some((standings, fetched_at)) =
         db_cache_get::<crate::types::F1Standings>("f1_standings", &key)
+        && Utc::now() - fetched_at < Duration::minutes(F1_STANDINGS_TTL_MIN)
     {
-        if Utc::now() - fetched_at < Duration::minutes(F1_STANDINGS_TTL_MIN) {
-            F1_STANDINGS
-                .write()
-                .unwrap_or_else(PoisonError::into_inner)
-                .insert(
-                    (season, round),
-                    CachedF1Standings {
-                        standings: standings.clone(),
-                        fetched_at,
-                    },
-                );
-            return standings;
-        }
+        F1_STANDINGS
+            .write()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(
+                (season, round),
+                CachedF1Standings {
+                    standings: standings.clone(),
+                    fetched_at,
+                },
+            );
+        return standings;
     }
     let now = Utc::now();
     let standings = crate::f1::fetch_standings(&HTTP, season, round).await;
@@ -1254,10 +1252,10 @@ fn db_cache_get_ns<T: serde::de::DeserializeOwned>(ns: &str) -> Vec<(String, T, 
 /// on boot, so a restart serves the last-known standings before the first poll.
 fn load_persisted_standings() {
     let fill_vec = |ns: &str, store: &RwLock<Vec<EventInfo>>| {
-        if let Some((tables, _)) = db_cache_get::<Vec<EventInfo>>(ns, "") {
-            if !tables.is_empty() {
-                *store.write().unwrap_or_else(PoisonError::into_inner) = tables;
-            }
+        if let Some((tables, _)) = db_cache_get::<Vec<EventInfo>>(ns, "")
+            && !tables.is_empty()
+        {
+            *store.write().unwrap_or_else(PoisonError::into_inner) = tables;
         }
     };
     fill_vec("mlb_standings", &MLB_STANDINGS);
@@ -1275,10 +1273,10 @@ fn load_persisted_standings() {
         }
     }
     let fill_motor = |ns: &str, store: &RwLock<crate::types::MotorStandings>| {
-        if let Some((s, _)) = db_cache_get::<crate::types::MotorStandings>(ns, "") {
-            if !s.tables.is_empty() {
-                *store.write().unwrap_or_else(PoisonError::into_inner) = s;
-            }
+        if let Some((s, _)) = db_cache_get::<crate::types::MotorStandings>(ns, "")
+            && !s.tables.is_empty()
+        {
+            *store.write().unwrap_or_else(PoisonError::into_inner) = s;
         }
     };
     fill_motor("wrc_standings", &WRC_STANDINGS);
@@ -1331,19 +1329,19 @@ pub fn spawn_poller() {
 
     // Serve persisted data immediately on boot.
     if let Some(conn) = store.as_ref() {
-        if let Ok(stored) = crate::store::load_all(conn) {
-            if !stored.is_empty() {
-                let fetched = crate::store::load_fetched_at(conn)
-                    .and_then(DateTime::from_timestamp_millis)
-                    .unwrap_or_else(Utc::now);
-                let mut snap = SNAPSHOT.write().unwrap_or_else(PoisonError::into_inner);
-                let n = stored.len();
-                snap.matches = stored;
-                snap.fetched_at = fetched;
-                snap.stale = true; // refreshed by the first live poll
-                snap.using_fixture = false;
-                leptos::logging::log!("loaded {n} matches from cache db");
-            }
+        if let Ok(stored) = crate::store::load_all(conn)
+            && !stored.is_empty()
+        {
+            let fetched = crate::store::load_fetched_at(conn)
+                .and_then(DateTime::from_timestamp_millis)
+                .unwrap_or_else(Utc::now);
+            let mut snap = SNAPSHOT.write().unwrap_or_else(PoisonError::into_inner);
+            let n = stored.len();
+            snap.matches = stored;
+            snap.fetched_at = fetched;
+            snap.stale = true; // refreshed by the first live poll
+            snap.using_fixture = false;
+            leptos::logging::log!("loaded {n} matches from cache db");
         }
         // Load cached event-page links.
         if let Ok(rows) = crate::store::load_event_links(conn) {
@@ -1462,7 +1460,7 @@ pub fn spawn_poller() {
             let espn_window = mlb_window;
             // F1 comes from its own keyless API (Jolpica); the whole season's
             // sessions are fetched and the snapshot windowing decides what shows.
-            use crate::espn::{european_season, season_year, EPL, NBA, NFL, WORLD_CUP};
+            use crate::espn::{EPL, NBA, NFL, WORLD_CUP, european_season, season_year};
             let (
                 cs_res,
                 lol_res,
@@ -2492,11 +2490,11 @@ pub fn to_view(m: &NormalizedMatch, tz: &Tz, now: DateTime<Utc>, hour24: bool) -
         abbrev: m.team_b.abbrev.clone(),
     };
     // Only a finished match has a winner; a leader mid-match isn't one yet.
-    if status == MatchStatus::Finished {
-        if let (Some(a), Some(b)) = (team_a.score, team_b.score) {
-            team_a.winner = a > b;
-            team_b.winner = b > a;
-        }
+    if status == MatchStatus::Finished
+        && let (Some(a), Some(b)) = (team_a.score, team_b.score)
+    {
+        team_a.winner = a > b;
+        team_b.winner = b > a;
     }
 
     // When the venue's timezone is known (MLB/F1), the same instant in that zone,
@@ -3855,14 +3853,14 @@ fn stages_matching(pred: impl Fn(&NormalizedMatch) -> bool) -> Vec<(i64, Sport)>
     let mut earliest: std::collections::HashMap<i64, (i64, Sport)> =
         std::collections::HashMap::new();
     for m in &snap.matches {
-        if pred(m) {
-            if let Some(tid) = m.tournament_id {
-                let ms = m.begin_at.timestamp_millis();
-                earliest
-                    .entry(tid)
-                    .and_modify(|e| e.0 = e.0.min(ms))
-                    .or_insert((ms, m.sport));
-            }
+        if pred(m)
+            && let Some(tid) = m.tournament_id
+        {
+            let ms = m.begin_at.timestamp_millis();
+            earliest
+                .entry(tid)
+                .and_modify(|e| e.0 = e.0.min(ms))
+                .or_insert((ms, m.sport));
         }
     }
     let mut stages: Vec<(i64, (i64, Sport))> = earliest.into_iter().collect();
@@ -3899,27 +3897,27 @@ pub async fn stages_info(stages: Vec<(i64, Sport)>, event: &str) -> Vec<EventInf
 pub async fn event_info(tournament_id: i64, sport: Sport) -> EventInfo {
     {
         let cache = EVENTS.read().unwrap_or_else(PoisonError::into_inner);
-        if let Some(c) = cache.get(&tournament_id) {
-            if Utc::now() - c.fetched_at < Duration::minutes(EVENT_TTL_MIN) {
-                return c.info.clone();
-            }
+        if let Some(c) = cache.get(&tournament_id)
+            && Utc::now() - c.fetched_at < Duration::minutes(EVENT_TTL_MIN)
+        {
+            return c.info.clone();
         }
     }
     let key = tournament_id.to_string();
-    if let Some((info, fetched_at)) = db_cache_get::<EventInfo>("event", &key) {
-        if Utc::now() - fetched_at < Duration::minutes(EVENT_TTL_MIN) {
-            EVENTS
-                .write()
-                .unwrap_or_else(PoisonError::into_inner)
-                .insert(
-                    tournament_id,
-                    CachedEvent {
-                        info: info.clone(),
-                        fetched_at,
-                    },
-                );
-            return info;
-        }
+    if let Some((info, fetched_at)) = db_cache_get::<EventInfo>("event", &key)
+        && Utc::now() - fetched_at < Duration::minutes(EVENT_TTL_MIN)
+    {
+        EVENTS
+            .write()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(
+                tournament_id,
+                CachedEvent {
+                    info: info.clone(),
+                    fetched_at,
+                },
+            );
+        return info;
     }
     fetch_event(tournament_id, sport).await
 }
@@ -4016,12 +4014,12 @@ fn active_tournaments(now: DateTime<Utc>) -> Vec<(i64, Sport)> {
     let mut seen = std::collections::HashSet::new();
     let mut out = Vec::new();
     for m in &snap.matches {
-        if let Some(tid) = m.tournament_id {
-            if !seen.contains(&tid) && active.contains(&full_event_name(&m.league, &m.series_name))
-            {
-                seen.insert(tid);
-                out.push((tid, m.sport));
-            }
+        if let Some(tid) = m.tournament_id
+            && !seen.contains(&tid)
+            && active.contains(&full_event_name(&m.league, &m.series_name))
+        {
+            seen.insert(tid);
+            out.push((tid, m.sport));
         }
     }
     out
@@ -4054,18 +4052,18 @@ fn seed_demo_events(matches: &[NormalizedMatch], now: DateTime<Utc>) {
     let mut ev = EVENTS.write().unwrap_or_else(PoisonError::into_inner);
     let mut seen = std::collections::HashSet::new();
     for m in matches {
-        if let Some(tid) = m.tournament_id {
-            if seen.insert(tid) {
-                let mut info = demo_event_info(&m.league);
-                info.tournament_id = tid;
-                ev.insert(
-                    tid,
-                    CachedEvent {
-                        info,
-                        fetched_at: now,
-                    },
-                );
-            }
+        if let Some(tid) = m.tournament_id
+            && seen.insert(tid)
+        {
+            let mut info = demo_event_info(&m.league);
+            info.tournament_id = tid;
+            ev.insert(
+                tid,
+                CachedEvent {
+                    info,
+                    fetched_at: now,
+                },
+            );
         }
     }
 }
@@ -4729,19 +4727,19 @@ fn enrich_streams(
             if present.contains(&login) {
                 continue;
             }
-            if let Some(info) = live.get(&login) {
-                if info.game.to_ascii_lowercase().contains(game_needle) {
-                    present.insert(login.clone());
-                    base.push(StreamView {
-                        url: format!("https://www.twitch.tv/{login}"),
-                        language: info.language.clone(),
-                        live: true,
-                        viewers: Some(info.viewers),
-                        official: false,
-                        group: "costream".to_string(),
-                        ..Default::default()
-                    });
-                }
+            if let Some(info) = live.get(&login)
+                && info.game.to_ascii_lowercase().contains(game_needle)
+            {
+                present.insert(login.clone());
+                base.push(StreamView {
+                    url: format!("https://www.twitch.tv/{login}"),
+                    language: info.language.clone(),
+                    live: true,
+                    viewers: Some(info.viewers),
+                    official: false,
+                    group: "costream".to_string(),
+                    ..Default::default()
+                });
             }
         }
     }
@@ -4965,11 +4963,11 @@ fn mark_and_append_youtube(
         .filter_map(|s| channel_of.get(&s.url).cloned())
         .collect();
     for s in &mut streams {
-        if let Some(cid) = channel_of.get(&s.url) {
-            if let Some(info) = yt_live.get(cid) {
-                s.live = true;
-                s.viewers = info.viewers;
-            }
+        if let Some(cid) = channel_of.get(&s.url)
+            && let Some(info) = yt_live.get(cid)
+        {
+            s.live = true;
+            s.viewers = info.viewers;
         }
     }
     for (cid, url) in seeds {
@@ -5803,18 +5801,20 @@ mod tests {
         );
         // The collapsed rows keep a real venue-local clock (not the blank date-only
         // cell), while the untouched placeholder stays date-only.
-        assert!(!out
-            .iter()
-            .find(|m| m.team_a.label == "Day 1")
-            .unwrap()
-            .clock_label
-            .is_empty());
-        assert!(out
-            .iter()
-            .find(|m| m.team_a.label == "Rally Estonia")
-            .unwrap()
-            .clock_label
-            .is_empty());
+        assert!(
+            !out.iter()
+                .find(|m| m.team_a.label == "Day 1")
+                .unwrap()
+                .clock_label
+                .is_empty()
+        );
+        assert!(
+            out.iter()
+                .find(|m| m.team_a.label == "Rally Estonia")
+                .unwrap()
+                .clock_label
+                .is_empty()
+        );
     }
 
     fn at(begin: DateTime<Utc>, status: MatchStatus) -> NormalizedMatch {
@@ -7464,7 +7464,7 @@ mod tests {
                 && !caedrel.official
         );
         assert_eq!(caedrel.language, "en"); // Helix stream language carried onto the co-stream
-                                            // gaules live but on the wrong game → NOT appended.
+        // gaules live but on the wrong game → NOT appended.
         assert!(out.iter().all(|s| !s.url.contains("gaules")));
         // esl_csgo is already a base stream → not double-appended as a costream.
         assert_eq!(out.iter().filter(|s| s.url.contains("esl_csgo")).count(), 1);
@@ -7723,9 +7723,10 @@ mod tests {
         assert!(!logins.contains(&"tiny".to_string())); // viewer floor
         assert!(!logins.contains(&"unrelated".to_string())); // no keyword
         assert!(!logins.contains(&"official".to_string())); // dedup
-        assert!(out
-            .iter()
-            .all(|s| s.group == "costream" && s.live && !s.official));
+        assert!(
+            out.iter()
+                .all(|s| s.group == "costream" && s.live && !s.official)
+        );
         let caedrel = out
             .iter()
             .find(|s| login_of(&s.url).as_deref() == Some("caedrel"))
