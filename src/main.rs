@@ -3,12 +3,12 @@
 #[cfg(feature = "ssr")]
 #[tokio::main]
 async fn main() {
+    use axum::Router;
     use axum::http::header;
     use axum::response::IntoResponse;
-    use axum::Router;
     use leptos::logging::log;
     use leptos::prelude::*;
-    use leptos_axum::{generate_route_list, LeptosRoutes};
+    use leptos_axum::{LeptosRoutes, generate_route_list};
     use plaintextesports::app::*;
     use tower_http::compression::CompressionLayer;
 

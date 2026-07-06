@@ -234,11 +234,7 @@ pub(crate) fn compute_effective(
                 let teams_known = c.feeders.iter().all(|&(r, i)| {
                     eff.get(r).and_then(|row| row.get(i)).copied().unwrap_or(0) >= 2
                 });
-                if teams_known {
-                    raw
-                } else {
-                    raw.min(1)
-                }
+                if teams_known { raw } else { raw.min(1) }
             })
             .collect();
         eff.push(stages);

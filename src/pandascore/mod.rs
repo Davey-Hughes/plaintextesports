@@ -9,7 +9,7 @@
 
 use crate::feed::{FetchResult, NormalizedMatch, NormalizedTeam};
 use crate::http::DynError;
-use crate::tiering::{is_tier_one, TierInput};
+use crate::tiering::{TierInput, is_tier_one};
 use crate::types::{MatchStatus, Sport, StreamView};
 use chrono::{DateTime, Duration, Utc};
 use serde::Deserialize;

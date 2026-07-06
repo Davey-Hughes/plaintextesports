@@ -130,8 +130,8 @@ pub(crate) fn parse_lead_min(s: &str) -> Vec<i64> {
 /// DEFLATE a byte slice (best compression). Empty on failure (the caller only
 /// uses the result when it's actually shorter than the uncompressed form).
 pub(crate) fn deflate(data: &[u8]) -> Vec<u8> {
-    use flate2::write::DeflateEncoder;
     use flate2::Compression;
+    use flate2::write::DeflateEncoder;
     use std::io::Write;
     let mut e = DeflateEncoder::new(Vec::new(), Compression::best());
     if e.write_all(data).is_err() {
@@ -482,19 +482,19 @@ pub(crate) fn NotificationsPage() -> impl IntoView {
     // Silently drop starred matches the server reports as finished/started, so
     // they neither show below nor linger in the export string.
     Effect::new(move |_| {
-        if let Some(Ok(view)) = starred_matches.get() {
-            if !view.stale.is_empty() {
-                let stale: HashSet<String> = view.stale.into_iter().collect();
-                let mut changed = false;
-                starred.update(|s| {
-                    let before = s.len();
-                    s.retain(|u| !stale.contains(u));
-                    changed = s.len() != before;
-                });
-                if changed {
-                    #[cfg(feature = "hydrate")]
-                    save_starred(&starred.get_untracked());
-                }
+        if let Some(Ok(view)) = starred_matches.get()
+            && !view.stale.is_empty()
+        {
+            let stale: HashSet<String> = view.stale.into_iter().collect();
+            let mut changed = false;
+            starred.update(|s| {
+                let before = s.len();
+                s.retain(|u| !stale.contains(u));
+                changed = s.len() != before;
+            });
+            if changed {
+                #[cfg(feature = "hydrate")]
+                save_starred(&starred.get_untracked());
             }
         }
     });
@@ -1343,9 +1343,11 @@ mod tests {
         let decoded = decode_backup(&encode_backup(&b)).expect("decodes");
         assert_eq!(decoded, b);
         // Tab/space-bearing keys (team names) survive the framing.
-        assert!(decoded
-            .subs
-            .contains(&"team|mlb|Detroit Tigers".to_string()));
+        assert!(
+            decoded
+                .subs
+                .contains(&"team|mlb|Detroit Tigers".to_string())
+        );
         // A bad prefix is rejected.
         assert!(decode_backup("nope").is_none());
         assert!(decode_backup("pte1:!!!notbase64").is_none());

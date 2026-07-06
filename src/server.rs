@@ -525,11 +525,7 @@ fn resolve_leads(leads: Vec<i64>, fallback_ms: i64) -> Vec<i64> {
     v.sort_unstable();
     v.dedup();
     v.truncate(10);
-    if v.is_empty() {
-        vec![fallback_ms]
-    } else {
-        v
-    }
+    if v.is_empty() { vec![fallback_ms] } else { v }
 }
 
 /// Subscribe to a whole sport ("sport"/"cs2"|"lol") or event ("league"/<name>).

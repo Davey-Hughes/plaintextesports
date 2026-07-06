@@ -107,8 +107,8 @@ pub(crate) fn scrollspy_update() {
 #[cfg(feature = "hydrate")]
 pub(crate) fn setup_scrollspy() {
     use std::cell::Cell;
-    use wasm_bindgen::closure::Closure;
     use wasm_bindgen::JsCast;
+    use wasm_bindgen::closure::Closure;
     thread_local! {
         static TICKING: Cell<bool> = const { Cell::new(false) };
     }
@@ -168,12 +168,13 @@ pub(crate) fn dec_segment(s: &str) -> String {
     let mut out = Vec::with_capacity(bytes.len());
     let mut i = 0;
     while i < bytes.len() {
-        if bytes[i] == b'%' && i + 2 < bytes.len() {
-            if let Ok(b) = u8::from_str_radix(&s[i + 1..i + 3], 16) {
-                out.push(b);
-                i += 3;
-                continue;
-            }
+        if bytes[i] == b'%'
+            && i + 2 < bytes.len()
+            && let Ok(b) = u8::from_str_radix(&s[i + 1..i + 3], 16)
+        {
+            out.push(b);
+            i += 3;
+            continue;
         }
         out.push(bytes[i]);
         i += 1;

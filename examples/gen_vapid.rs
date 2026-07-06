@@ -6,8 +6,8 @@
 //! ready to paste into `.env`.
 
 use base64ct::{Base64UrlUnpadded, Encoding};
-use web_push_native::p256::elliptic_curve::sec1::ToEncodedPoint;
 use web_push_native::p256::SecretKey;
+use web_push_native::p256::elliptic_curve::sec1::ToEncodedPoint;
 
 fn main() {
     // 32 random bytes from the OS → a P-256 private scalar (retry on the

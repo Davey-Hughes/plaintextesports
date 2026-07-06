@@ -11,7 +11,7 @@
 
 use chrono::{DateTime, Utc};
 use chrono_tz::Tz;
-use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
+use criterion::{BenchmarkId, Criterion, Throughput, black_box, criterion_group, criterion_main};
 use plaintextesports::cache;
 use plaintextesports::config::config;
 
@@ -63,7 +63,17 @@ fn bench_building_blocks(c: &mut Criterion) {
         let start = now - chrono::Duration::days(5);
         let end = now + chrono::Duration::days(15);
         b.iter(|| {
-            cache::matches_in_window(black_box(&snap), false, None, start, end, &tz, now, false)
+            cache::matches_in_window(
+                black_box(&snap),
+                false,
+                None,
+                start,
+                end,
+                &tz,
+                now,
+                false,
+                None,
+            )
         });
     });
 
@@ -71,7 +81,7 @@ fn bench_building_blocks(c: &mut Criterion) {
         // Pre-build the views once; measure only the collapse pass.
         let start = now - chrono::Duration::days(5);
         let end = now + chrono::Duration::days(15);
-        let views = cache::matches_in_window(&snap, true, None, start, end, &tz, now, false);
+        let views = cache::matches_in_window(&snap, true, None, start, end, &tz, now, false, None);
         b.iter_batched(
             || views.clone(),
             |v| cache::collapse_wrc_days(black_box(v), &tz, &snap),
@@ -82,7 +92,7 @@ fn bench_building_blocks(c: &mut Criterion) {
     g.bench_function("group_days", |b| {
         let start = now - chrono::Duration::days(5);
         let end = now + chrono::Duration::days(15);
-        let views = cache::matches_in_window(&snap, false, None, start, end, &tz, now, false);
+        let views = cache::matches_in_window(&snap, false, None, start, end, &tz, now, false, None);
         b.iter_batched(
             || views.clone(),
             |v| cache::group_days(black_box(v), &tz),

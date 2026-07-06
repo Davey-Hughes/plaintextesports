@@ -85,8 +85,8 @@ pub(crate) fn BrandSlot() -> impl IntoView {
     Effect::new(move |_| {
         #[cfg(feature = "hydrate")]
         {
-            use wasm_bindgen::closure::Closure;
             use wasm_bindgen::JsCast;
+            use wasm_bindgen::closure::Closure;
             let Some(w) = web_sys::window() else {
                 return;
             };

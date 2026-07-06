@@ -5,8 +5,8 @@
 use crate::bracket_build::{self, RawSeries as BracketSeries};
 use crate::feed::{NormalizedMatch, NormalizedTeam};
 use crate::types::{
-    stat_share, BoxScore, BracketRound, EventInfo, LeaderCard, LineRow, LineScore, MatchStatus,
-    PlayerRow, PlayerTable, Sport, StandingRow, StatPair, StreamView,
+    BoxScore, BracketRound, EventInfo, LeaderCard, LineRow, LineScore, MatchStatus, PlayerRow,
+    PlayerTable, Sport, StandingRow, StatPair, StreamView, stat_share,
 };
 use chrono::{DateTime, NaiveDate, Utc};
 use serde::Deserialize;
@@ -472,15 +472,15 @@ fn build_raw_series(
         };
         let status = status_of(&g.status);
         let mut winner = String::new();
-        if status == MatchStatus::Finished {
-            if let (Some(a), Some(b)) = (sa, sb) {
-                if a > b {
-                    wins_a += 1;
-                    winner = "a".to_string();
-                } else if b > a {
-                    wins_b += 1;
-                    winner = "b".to_string();
-                }
+        if status == MatchStatus::Finished
+            && let (Some(a), Some(b)) = (sa, sb)
+        {
+            if a > b {
+                wins_a += 1;
+                winner = "a".to_string();
+            } else if b > a {
+                wins_b += 1;
+                winner = "b".to_string();
             }
         }
         let venue_tz = Some(g.venue.time_zone.id.clone()).filter(|s| !s.is_empty());
@@ -1372,14 +1372,16 @@ mod boxscore_tests {
 
         // Two batting + two pitching tables (one per team).
         assert_eq!(out.player_tables.len(), 4);
-        assert!(out
-            .player_tables
-            .iter()
-            .any(|t| t.title.starts_with("Batting")));
-        assert!(out
-            .player_tables
-            .iter()
-            .any(|t| t.title.starts_with("Pitching")));
+        assert!(
+            out.player_tables
+                .iter()
+                .any(|t| t.title.starts_with("Batting"))
+        );
+        assert!(
+            out.player_tables
+                .iter()
+                .any(|t| t.title.starts_with("Pitching"))
+        );
         assert!(!out.unavailable);
 
         // Verify rows are actually populated — guards against wrong player-key format.

@@ -10,7 +10,7 @@ use crate::feed::{NormalizedMatch, NormalizedTeam};
 use crate::types::{MatchStatus, MotorResultRef, Sport};
 use chrono::{DateTime, Utc};
 use once_cell::sync::OnceCell;
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{Connection, OptionalExtension, params};
 use std::collections::HashSet;
 use std::path::Path;
 use std::sync::{Mutex, PoisonError};
@@ -55,10 +55,10 @@ pub fn shared(path: &str) -> rusqlite::Result<std::sync::MutexGuard<'static, Con
 
 /// Open (creating if needed) the cache DB and ensure the schema exists.
 pub fn open(path: &str) -> rusqlite::Result<Connection> {
-    if let Some(parent) = Path::new(path).parent() {
-        if !parent.as_os_str().is_empty() {
-            let _ = std::fs::create_dir_all(parent);
-        }
+    if let Some(parent) = Path::new(path).parent()
+        && !parent.as_os_str().is_empty()
+    {
+        let _ = std::fs::create_dir_all(parent);
     }
     let conn = Connection::open(path)?;
     conn.pragma_update(None, "journal_mode", "WAL")?;
@@ -1040,11 +1040,7 @@ fn parse_lead_list(s: &str, fallback: i64) -> Vec<i64> {
         .collect();
     v.sort_unstable();
     v.dedup();
-    if v.is_empty() {
-        vec![fallback]
-    } else {
-        v
-    }
+    if v.is_empty() { vec![fallback] } else { v }
 }
 
 /// The reminders-table WHERE clause matching a subscription scope (`?2` = value).
@@ -1362,12 +1358,13 @@ mod tests {
         let plain = sample(9, now);
         upsert_and_prune(&mut conn, &[plain], ms, cutoff, &[]).unwrap();
         let all = load_all(&conn).unwrap();
-        assert!(all
-            .iter()
-            .find(|m| m.id == 9)
-            .unwrap()
-            .motor_result_ref
-            .is_none());
+        assert!(
+            all.iter()
+                .find(|m| m.id == 9)
+                .unwrap()
+                .motor_result_ref
+                .is_none()
+        );
     }
 
     #[test]
@@ -1720,7 +1717,7 @@ mod tests {
         }
         // Simulate one push-sender tick at `now`: deliver everything due, marking
         // each delivered row sent, and report which lead offsets fired.
-        let mut tick = |now: i64| -> Vec<i64> {
+        let tick = |now: i64| -> Vec<i64> {
             let due = due_reminders(&conn, now).unwrap();
             let mut leads: Vec<i64> = due.iter().map(|r| r.lead_ms).collect();
             for r in &due {
@@ -2033,9 +2030,11 @@ mod tests {
         assert_eq!(got.value, "[9]");
         assert_eq!(got.fetched_at_ms, 2000);
         // Absent key → None.
-        assert!(cache_get(&conn, "motor_result", "missing")
-            .unwrap()
-            .is_none());
+        assert!(
+            cache_get(&conn, "motor_result", "missing")
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[test]

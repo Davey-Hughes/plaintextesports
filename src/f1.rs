@@ -807,13 +807,15 @@ mod tests {
             .collect();
         // FP1, FP2, FP3, Qualifying, Race — no sprint sessions this weekend.
         assert_eq!(ms.len(), 5);
-        assert!(ms
-            .iter()
-            .all(|m| m.sport == Sport::Motorsport && m.league == "F1"));
+        assert!(
+            ms.iter()
+                .all(|m| m.sport == Sport::Motorsport && m.league == "F1")
+        );
         // The series is the GP qualified by season, so editions don't collide.
-        assert!(ms
-            .iter()
-            .all(|m| m.series_name == "Austrian Grand Prix 2026"));
+        assert!(
+            ms.iter()
+                .all(|m| m.series_name == "Austrian Grand Prix 2026")
+        );
         let labels: Vec<&str> = ms.iter().map(|m| m.team_a.label.as_str()).collect();
         assert_eq!(
             labels,

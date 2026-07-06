@@ -103,10 +103,10 @@ pub async fn discover(game_id: &str, langs: &[String]) -> Vec<DiscoveredStream> 
         let g = DISCOVER_CACHE
             .read()
             .unwrap_or_else(PoisonError::into_inner);
-        if let Some((at, v)) = g.get(game_id) {
-            if *at + Duration::seconds(DISCOVER_TTL_SECS) > Utc::now() {
-                return v.clone();
-            }
+        if let Some((at, v)) = g.get(game_id)
+            && *at + Duration::seconds(DISCOVER_TTL_SECS) > Utc::now()
+        {
+            return v.clone();
         }
     }
     let Some(id) = config().twitch_client_id.clone().filter(|s| !s.is_empty()) else {

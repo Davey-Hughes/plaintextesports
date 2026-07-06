@@ -6,17 +6,17 @@ use crate::server::{
     get_youtube_live,
 };
 use crate::types::{
-    competition_kind, full_event_name, DayGroup, EventInfo, F1Result, F1Standings, MatchDetail,
-    MatchResults, MatchStatus, MatchView, MotorResult, MotorStandingTable, MotorStandings,
-    ScheduleView, Series, SeriesGame, Sport, StreamView,
+    DayGroup, EventInfo, F1Result, F1Standings, MatchDetail, MatchResults, MatchStatus, MatchView,
+    MotorResult, MotorStandingTable, MotorStandings, ScheduleView, Series, SeriesGame, Sport,
+    StreamView, competition_kind, full_event_name,
 };
 use leptos::prelude::*;
-use leptos_meta::{provide_meta_context, HashedStylesheet, MetaTags, Title};
+use leptos_meta::{HashedStylesheet, MetaTags, Title, provide_meta_context};
 use leptos_router::{
-    components::{Route, Router, Routes, A},
+    ParamSegment, StaticSegment,
+    components::{A, Route, Router, Routes},
     hooks::use_params,
     params::Params,
-    ParamSegment, StaticSegment,
 };
 use std::collections::{BTreeMap, HashSet};
 
@@ -187,10 +187,8 @@ pub(crate) fn hide_deflected_to_global(
     flash: Option<RwSignal<u32>>,
 ) -> bool {
     let on = global.is_some_and(|g| g.get_untracked());
-    if on {
-        if let Some(f) = flash {
-            f.update(|n| *n = n.wrapping_add(1));
-        }
+    if on && let Some(f) = flash {
+        f.update(|n| *n = n.wrapping_add(1));
     }
     on
 }
@@ -538,12 +536,12 @@ mod tests {
         // for the bug where notification arming defaulted to 12h (via
         // `unwrap_or(false)`) while the display defaulted to 24h, so a
         // default-settings viewer got 12h notifications.
-        assert!(DEFAULT_HOUR24);
+        const { assert!(DEFAULT_HOUR24) };
         assert!(resolve_hour24(None), "never set ⇒ 24h");
         assert!(!resolve_hour24(Some("0")), "explicit 12h");
         assert!(resolve_hour24(Some("1")), "explicit 24h");
         // The notification fallback and the display fallback must agree when unset.
-        assert_eq!(None::<bool>.unwrap_or(DEFAULT_HOUR24), resolve_hour24(None));
+        assert_eq!(DEFAULT_HOUR24, resolve_hour24(None));
     }
 
     #[test]
@@ -659,7 +657,7 @@ mod tests {
         // "show later days" extends the forward end, capped at TRAD_FORWARD_MAX.
         assert_eq!(trad_day_bounds("2026-06-24", 0, 4).1, "2026-06-30"); // +6
         assert_eq!(trad_day_bounds("2026-06-24", 0, 100).1, "2026-07-01"); // capped +7
-                                                                           // "show earlier days" pushes the start back.
+        // "show earlier days" pushes the start back.
         assert_eq!(trad_day_bounds("2026-06-24", 3, 0).0, "2026-06-21");
     }
 
@@ -916,9 +914,11 @@ mod tests {
         assert!(names_of(&names(&["cs2"])).is_empty());
         assert_eq!(names_of(&names(&["lol"])), vec!["LCK", "LEC", "LPL"]);
         // Each chip carries its match's sport, for the sport-scoped subscribe key.
-        assert!(leagues_for_games(&s, &HashSet::new())
-            .iter()
-            .all(|(_, sp)| *sp == Sport::Lol));
+        assert!(
+            leagues_for_games(&s, &HashSet::new())
+                .iter()
+                .all(|(_, sp)| *sp == Sport::Lol)
+        );
     }
 
     #[test]
@@ -1050,7 +1050,7 @@ mod tests {
         assert!(resolve_sport_mode(None, Some("nhl"), None)); // traditional
         assert!(!resolve_sport_mode(None, Some("cs2"), Some("sports"))); // esports slug overrides cookie
         assert!(resolve_sport_mode(None, Some("cs2,mlb"), None)); // any traditional ⇒ sports
-                                                                  // An unknown ?g (no known slug) falls through to the cookie.
+        // An unknown ?g (no known slug) falls through to the cookie.
         assert!(resolve_sport_mode(None, Some("bogus"), Some("sports")));
         // Else the cookie, defaulting to esports.
         assert!(resolve_sport_mode(None, None, Some("sports")));
