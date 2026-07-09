@@ -499,10 +499,15 @@ pub async fn add_reminder(req: ReminderReq) -> Result<(), ServerFnError> {
             .filter(|s| s.is_armable(now))
             .map(|s| s.into_reminder(req.sub.clone()))
             .collect();
-        let conn = crate::store::shared(&cfg.db_path)
-            .map_err(|e| ServerFnError::new(format!("db: {e}")))?;
-        crate::store::set_match_reminders(&conn, &reminders)
-            .map_err(|e| ServerFnError::new(format!("db: {e}")))?;
+        tokio::task::spawn_blocking(move || {
+            let conn = crate::store::shared(&cfg.db_path)
+                .map_err(|e| ServerFnError::new(format!("db: {e}")))?;
+            crate::store::set_match_reminders(&conn, &reminders)
+                .map_err(|e| ServerFnError::new(format!("db: {e}")))?;
+            Ok::<(), ServerFnError>(())
+        })
+        .await
+        .unwrap_or_else(|_| Err(ServerFnError::new("task panicked")))?;
         Ok(())
     }
     #[cfg(not(feature = "ssr"))]
@@ -537,8 +542,6 @@ pub async fn add_subscription(req: SubscribeReq) -> Result<(), ServerFnError> {
         if !cfg.push_enabled() || cfg.db_path.is_empty() {
             return Err(ServerFnError::new("subscriptions are not available"));
         }
-        let conn = crate::store::shared(&cfg.db_path)
-            .map_err(|e| ServerFnError::new(format!("db: {e}")))?;
         let lead_list = resolve_leads(req.leads, cfg.reminder_lead_ms);
         let s = crate::store::Subscription {
             endpoint: req.sub.endpoint,
@@ -553,8 +556,15 @@ pub async fn add_subscription(req: SubscribeReq) -> Result<(), ServerFnError> {
             tz: req.tz,
             hour24: req.hour24,
         };
-        crate::store::add_subscription(&conn, &s)
-            .map_err(|e| ServerFnError::new(format!("db: {e}")))?;
+        tokio::task::spawn_blocking(move || {
+            let conn = crate::store::shared(&cfg.db_path)
+                .map_err(|e| ServerFnError::new(format!("db: {e}")))?;
+            crate::store::add_subscription(&conn, &s)
+                .map_err(|e| ServerFnError::new(format!("db: {e}")))?;
+            Ok::<(), ServerFnError>(())
+        })
+        .await
+        .unwrap_or_else(|_| Err(ServerFnError::new("task panicked")))?;
         Ok(())
     }
     #[cfg(not(feature = "ssr"))]
@@ -577,12 +587,17 @@ pub async fn remove_subscription(
         if cfg.db_path.is_empty() {
             return Ok(());
         }
-        let conn = crate::store::shared(&cfg.db_path)
-            .map_err(|e| ServerFnError::new(format!("db: {e}")))?;
-        crate::store::remove_subscription(&conn, &endpoint, &kind, &value)
-            .map_err(|e| ServerFnError::new(format!("db: {e}")))?;
-        crate::store::delete_unsent_reminders_by_scope(&conn, &endpoint, &kind, &value)
-            .map_err(|e| ServerFnError::new(format!("db: {e}")))?;
+        tokio::task::spawn_blocking(move || {
+            let conn = crate::store::shared(&cfg.db_path)
+                .map_err(|e| ServerFnError::new(format!("db: {e}")))?;
+            crate::store::remove_subscription(&conn, &endpoint, &kind, &value)
+                .map_err(|e| ServerFnError::new(format!("db: {e}")))?;
+            crate::store::delete_unsent_reminders_by_scope(&conn, &endpoint, &kind, &value)
+                .map_err(|e| ServerFnError::new(format!("db: {e}")))?;
+            Ok::<(), ServerFnError>(())
+        })
+        .await
+        .unwrap_or_else(|_| Err(ServerFnError::new("task panicked")))?;
         Ok(())
     }
     #[cfg(not(feature = "ssr"))]
@@ -605,10 +620,15 @@ pub async fn remove_reminder(
         if cfg.db_path.is_empty() {
             return Ok(());
         }
-        let conn = crate::store::shared(&cfg.db_path)
-            .map_err(|e| ServerFnError::new(format!("db: {e}")))?;
-        crate::store::remove_reminder(&conn, &endpoint, match_id, &sport)
-            .map_err(|e| ServerFnError::new(format!("db: {e}")))?;
+        tokio::task::spawn_blocking(move || {
+            let conn = crate::store::shared(&cfg.db_path)
+                .map_err(|e| ServerFnError::new(format!("db: {e}")))?;
+            crate::store::remove_reminder(&conn, &endpoint, match_id, &sport)
+                .map_err(|e| ServerFnError::new(format!("db: {e}")))?;
+            Ok::<(), ServerFnError>(())
+        })
+        .await
+        .unwrap_or_else(|_| Err(ServerFnError::new("task panicked")))?;
         Ok(())
     }
     #[cfg(not(feature = "ssr"))]
@@ -630,10 +650,15 @@ pub async fn exclude_reminder(req: ReminderReq) -> Result<(), ServerFnError> {
         }
         // An opt-out needs no derived fields — just tombstone the match so every
         // covering subscription's timers skip it.
-        let conn = crate::store::shared(&cfg.db_path)
-            .map_err(|e| ServerFnError::new(format!("db: {e}")))?;
-        crate::store::exclude_match(&conn, &req.sub.endpoint, req.match_id, &req.sport)
-            .map_err(|e| ServerFnError::new(format!("db: {e}")))?;
+        tokio::task::spawn_blocking(move || {
+            let conn = crate::store::shared(&cfg.db_path)
+                .map_err(|e| ServerFnError::new(format!("db: {e}")))?;
+            crate::store::exclude_match(&conn, &req.sub.endpoint, req.match_id, &req.sport)
+                .map_err(|e| ServerFnError::new(format!("db: {e}")))?;
+            Ok::<(), ServerFnError>(())
+        })
+        .await
+        .unwrap_or_else(|_| Err(ServerFnError::new("task panicked")))?;
         Ok(())
     }
     #[cfg(not(feature = "ssr"))]
@@ -653,10 +678,15 @@ pub async fn clear_notifications(endpoint: String) -> Result<(), ServerFnError> 
         if cfg.db_path.is_empty() {
             return Ok(());
         }
-        let conn = crate::store::shared(&cfg.db_path)
-            .map_err(|e| ServerFnError::new(format!("db: {e}")))?;
-        crate::store::clear_endpoint(&conn, &endpoint)
-            .map_err(|e| ServerFnError::new(format!("db: {e}")))?;
+        tokio::task::spawn_blocking(move || {
+            let conn = crate::store::shared(&cfg.db_path)
+                .map_err(|e| ServerFnError::new(format!("db: {e}")))?;
+            crate::store::clear_endpoint(&conn, &endpoint)
+                .map_err(|e| ServerFnError::new(format!("db: {e}")))?;
+            Ok::<(), ServerFnError>(())
+        })
+        .await
+        .unwrap_or_else(|_| Err(ServerFnError::new("task panicked")))?;
         Ok(())
     }
     #[cfg(not(feature = "ssr"))]
