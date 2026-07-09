@@ -53,9 +53,13 @@ async fn main() {
                     let (parts, body) = res.into_parts();
                     match axum::body::to_bytes(body, usize::MAX).await {
                         Ok(bytes) => {
-                            cache
-                                .insert(key, (parts.headers.clone(), bytes.clone()))
-                                .await;
+                            // Never cache Set-Cookie: stored headers are replayed
+                            // to every client sharing this key, so a cached cookie
+                            // would leak across users (session fixation). The
+                            // originating response below keeps its own headers.
+                            let mut cached_headers = parts.headers.clone();
+                            cached_headers.remove(axum::http::header::SET_COOKIE);
+                            cache.insert(key, (cached_headers, bytes.clone())).await;
                             let mut cached_res = bytes.into_response();
                             *cached_res.headers_mut() = parts.headers;
                             return cached_res;
@@ -215,6 +219,16 @@ async fn main() {
     let html_cache: cache_middleware::HtmlCache = std::sync::Arc::new(
         moka::future::Cache::builder()
             .time_to_live(std::time::Duration::from_secs(15))
+            // Bound total cached HTML: the cache key embeds the client-supplied
+            // Cookie header, so a flood of distinct cookies could otherwise grow
+            // the cache without limit within the TTL window. Weighed by body
+            // size, evicted once the total exceeds the ceiling.
+            .max_capacity(64 * 1024 * 1024)
+            .weigher(
+                |_key: &String, value: &(axum::http::HeaderMap, axum::body::Bytes)| {
+                    value.1.len().try_into().unwrap_or(u32::MAX)
+                },
+            )
             .build(),
     );
 
