@@ -7,6 +7,73 @@ static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 #[cfg(feature = "ssr")]
 #[tokio::main]
 async fn main() {
+    #[cfg(feature = "ssr")]
+    mod cache_middleware {
+        use axum::{
+            extract::{Request, State},
+            middleware::Next,
+            response::{IntoResponse, Response},
+        };
+        use moka::future::Cache;
+        use std::sync::Arc;
+
+        pub type HtmlCache = Arc<Cache<String, (axum::http::HeaderMap, axum::body::Bytes)>>;
+
+        pub async fn html_cache_middleware(
+            State(cache): State<HtmlCache>,
+            req: Request,
+            next: Next,
+        ) -> Response {
+            if req.method() != axum::http::Method::GET || req.uri().path().starts_with("/api") {
+                return next.run(req).await;
+            }
+
+            let cookie_str = req
+                .headers()
+                .get(axum::http::header::COOKIE)
+                .and_then(|h| h.to_str().ok())
+                .unwrap_or("");
+            let key = format!("{}|{}", req.uri(), cookie_str);
+
+            if let Some((headers, body_bytes)) = cache.get(&key).await {
+                let mut res = body_bytes.into_response();
+                *res.headers_mut() = headers;
+                return res;
+            }
+
+            let res = next.run(req).await;
+
+            if res.status().is_success() {
+                let is_html = res
+                    .headers()
+                    .get(axum::http::header::CONTENT_TYPE)
+                    .is_some_and(|ct| ct.as_bytes().starts_with(b"text/html"));
+
+                if is_html {
+                    let (parts, body) = res.into_parts();
+                    match axum::body::to_bytes(body, usize::MAX).await {
+                        Ok(bytes) => {
+                            cache
+                                .insert(key, (parts.headers.clone(), bytes.clone()))
+                                .await;
+                            let mut cached_res = bytes.into_response();
+                            *cached_res.headers_mut() = parts.headers;
+                            return cached_res;
+                        }
+                        Err(_) => {
+                            return axum::response::Response::from_parts(
+                                parts,
+                                axum::body::Body::empty(),
+                            );
+                        }
+                    }
+                }
+            }
+
+            res
+        }
+    }
+
     use axum::Router;
     use axum::http::header;
     use axum::response::IntoResponse;
@@ -116,8 +183,8 @@ async fn main() {
             p256dh: b.p256dh,
             auth: b.auth,
         };
-        tokio::task::spawn_blocking(move || {
-            match plaintextesports::store::shared(&cfg.db_path) {
+        tokio::task::spawn_blocking(
+            move || match plaintextesports::store::shared(&cfg.db_path) {
                 Ok(conn) => {
                     match plaintextesports::store::migrate_endpoint(&conn, &b.old_endpoint, &new) {
                         Ok(()) => StatusCode::OK,
@@ -131,8 +198,10 @@ async fn main() {
                     log!("push-migrate db open failed: {e}");
                     StatusCode::INTERNAL_SERVER_ERROR
                 }
-            }
-        }).await.unwrap_or(StatusCode::INTERNAL_SERVER_ERROR)
+            },
+        )
+        .await
+        .unwrap_or(StatusCode::INTERNAL_SERVER_ERROR)
     }
 
     // Load .env (PANDASCORE_TOKEN, DISPLAY_TZ, ...) if present.
@@ -142,6 +211,12 @@ async fn main() {
     let addr = conf.leptos_options.site_addr;
     let leptos_options = conf.leptos_options;
     let routes = generate_route_list(App);
+
+    let html_cache: cache_middleware::HtmlCache = std::sync::Arc::new(
+        moka::future::Cache::builder()
+            .time_to_live(std::time::Duration::from_secs(15))
+            .build(),
+    );
 
     // Start polling PandaScore (or load demo data if no token is set), and the
     // Web Push reminder sender (no-op unless VAPID keys are configured).
@@ -211,6 +286,10 @@ async fn main() {
         .route("/api/push-migrate", axum::routing::post(push_migrate))
         .fallback(leptos_axum::file_and_error_handler(shell))
         .with_state(leptos_options)
+        .layer(axum::middleware::from_fn_with_state(
+            html_cache,
+            cache_middleware::html_cache_middleware,
+        ))
         .layer(CompressionLayer::new());
 
     log!("listening on http://{}", &addr);
