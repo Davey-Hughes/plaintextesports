@@ -116,21 +116,23 @@ async fn main() {
             p256dh: b.p256dh,
             auth: b.auth,
         };
-        match plaintextesports::store::shared(&cfg.db_path) {
-            Ok(conn) => {
-                match plaintextesports::store::migrate_endpoint(&conn, &b.old_endpoint, &new) {
-                    Ok(()) => StatusCode::OK,
-                    Err(e) => {
-                        log!("push-migrate failed: {e}");
-                        StatusCode::INTERNAL_SERVER_ERROR
+        tokio::task::spawn_blocking(move || {
+            match plaintextesports::store::shared(&cfg.db_path) {
+                Ok(conn) => {
+                    match plaintextesports::store::migrate_endpoint(&conn, &b.old_endpoint, &new) {
+                        Ok(()) => StatusCode::OK,
+                        Err(e) => {
+                            log!("push-migrate failed: {e}");
+                            StatusCode::INTERNAL_SERVER_ERROR
+                        }
                     }
                 }
+                Err(e) => {
+                    log!("push-migrate db open failed: {e}");
+                    StatusCode::INTERNAL_SERVER_ERROR
+                }
             }
-            Err(e) => {
-                log!("push-migrate db open failed: {e}");
-                StatusCode::INTERNAL_SERVER_ERROR
-            }
-        }
+        }).await.unwrap_or(StatusCode::INTERNAL_SERVER_ERROR)
     }
 
     // Load .env (PANDASCORE_TOKEN, DISPLAY_TZ, ...) if present.
