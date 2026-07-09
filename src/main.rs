@@ -1,6 +1,10 @@
 #![recursion_limit = "256"]
 
 #[cfg(feature = "ssr")]
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
+#[cfg(feature = "ssr")]
 #[tokio::main]
 async fn main() {
     use axum::Router;
