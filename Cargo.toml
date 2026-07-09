@@ -76,7 +76,7 @@ toml = { version = "1.1.2", default-features = false, features = [
   "serde",
 ], optional = true }
 mimalloc = { version = "0.1.52", optional = true }
-moka = { version = "0.12.15", features = ["future"] }
+moka = { version = "0.12.15", features = ["future"], optional = true }
 
 [features]
 hydrate = [
@@ -106,6 +106,7 @@ ssr = [
   "dep:http",
   "dep:toml",
   "dep:mimalloc",
+  "dep:moka",
   "leptos/ssr",
   "leptos_meta/ssr",
   "leptos_router/ssr",
