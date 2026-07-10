@@ -10,8 +10,10 @@
 //! low rate + aggressive caching + CC-BY-SA attribution).
 
 use crate::feed::{NormalizedMatch, NormalizedTeam};
+use crate::http::DynError;
 use crate::types::{MatchStatus, Sport};
 use chrono::{DateTime, Duration, Utc};
+use serde::Deserialize;
 use tl::{HTMLTag, Parser, ParserOptions};
 
 /// TFT ids sit in their own high range so they never collide with another
@@ -250,6 +252,54 @@ fn decode_one(ent: &str) -> Option<char> {
     }
 }
 
+// ----- Fetching -------------------------------------------------------------
+
+const API: &str = "https://liquipedia.net/teamfighttactics/api.php";
+
+/// The `action=parse` URL for the upcoming-and-ongoing matches page.
+fn upcoming_url() -> String {
+    format!("{API}?action=parse&page=Liquipedia:Upcoming_and_ongoing_matches&prop=text&format=json")
+}
+
+#[derive(Deserialize)]
+struct ParseResp {
+    parse: ParseBody,
+}
+#[derive(Deserialize)]
+struct ParseBody {
+    text: ParseText,
+}
+#[derive(Deserialize)]
+struct ParseText {
+    #[serde(rename = "*")]
+    star: String,
+}
+
+/// Fetch + parse the upcoming-matches page into schedule rows. Returns an empty
+/// vec on a valid-but-emptily-parsed page (the caller treats that as "keep the
+/// cached rows", never a wipe). Errors only on transport/JSON failure.
+///
+/// The `client` must send `Accept-Encoding: gzip` (Liquipedia rejects requests
+/// without it, 406) and a contact User-Agent — both hold for the poll loop's
+/// shared reqwest client (built with the `gzip` feature + `USER_AGENT`).
+pub async fn fetch_tft(
+    client: &reqwest::Client,
+    now: DateTime<Utc>,
+) -> Result<Vec<NormalizedMatch>, DynError> {
+    let resp = client
+        .get(upcoming_url())
+        .send()
+        .await?
+        .error_for_status()?
+        .json::<ParseResp>()
+        .await?;
+    let rows = parse_upcoming(&resp.parse.text.star)
+        .iter()
+        .map(|s| session_to_match(s, now))
+        .collect();
+    Ok(rows)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -316,6 +366,16 @@ mod tests {
             session_to_match(&s("2026-07-10T10:00:00Z"), now).status,
             MatchStatus::Finished
         );
+    }
+
+    #[test]
+    fn builds_the_action_parse_url() {
+        let url = upcoming_url();
+        assert!(url.starts_with("https://liquipedia.net/teamfighttactics/api.php?"));
+        assert!(url.contains("action=parse"));
+        assert!(url.contains("page=Liquipedia:Upcoming_and_ongoing_matches"));
+        assert!(url.contains("prop=text"));
+        assert!(url.contains("format=json"));
     }
 
     #[test]

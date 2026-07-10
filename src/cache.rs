@@ -1424,6 +1424,18 @@ pub fn spawn_poller() {
         // up to a full idle day off. The persisted daily cap still bounds it, so even
         // a crash loop can't exceed the budget.
         let mut ocb_initial = true;
+        // TFT (Liquipedia): resume the day's budget + last-fetch gate from meta so
+        // a restart doesn't refetch or reset the cap. Mirrors the OCB accounting.
+        let mut liq_day: Option<NaiveDate> = store
+            .as_ref()
+            .and_then(|c| crate::store::get_meta(c, LIQ_META_DAY))
+            .and_then(|s| s.parse::<NaiveDate>().ok());
+        let mut liq_used: u64 = store
+            .as_ref()
+            .and_then(|c| crate::store::get_meta(c, LIQ_META_USED))
+            .and_then(|s| s.parse::<u64>().ok())
+            .unwrap_or(0);
+        let mut liq_at = ocb_load_at(store.as_ref(), LIQ_META_AT);
         loop {
             let now = Utc::now();
             let active = {
@@ -1656,18 +1668,66 @@ pub fn spawn_poller() {
                 }
             };
             // The keyless feeds return a reqwest error; lift each to the shared
-            // FetchResult (the first tuple pins the type, so `into` is inferred).
+            // FetchResult (the annotation pins the error type so `into` is inferred).
+            let mut feeds: Vec<(Sport, FetchResult)> = vec![
+                (Sport::Cs2, cs_res),
+                (Sport::Lol, lol_res),
+                (Sport::Mlb, mlb_raw.map_err(Into::into)),
+                (Sport::Nhl, nhl_raw.map_err(Into::into)),
+                (Sport::Nba, nba_raw.map_err(Into::into)),
+                (Sport::Nfl, nfl_raw.map_err(Into::into)),
+                (Sport::Soccer, soccer_res),
+                (Sport::Motorsport, motorsport_res),
+            ];
+
+            // TFT (Liquipedia), opt-in + gated. One page per due cycle on a
+            // proximity cadence (>=30s floor for `action=parse`), capped per UTC
+            // day. On an empty parse (200 but 0 rows) or a fetch error, TFT is
+            // simply omitted from this cycle's feeds — apply_poll then leaves the
+            // cached rows untouched, so a Liquipedia markup change can't wipe the
+            // schedule (it just goes stale until the parser is fixed).
+            if cfg.liquipedia_enabled {
+                if liq_day != Some(now.date_naive()) {
+                    liq_day = Some(now.date_naive());
+                    liq_used = 0;
+                    if let Some(c) = store.as_ref() {
+                        let _ =
+                            crate::store::set_meta(c, LIQ_META_DAY, &now.date_naive().to_string());
+                        let _ = crate::store::set_meta(c, LIQ_META_USED, "0");
+                    }
+                }
+                let tft_rows: Vec<NormalizedMatch> = {
+                    let snap = SNAPSHOT.read().unwrap_or_else(PoisonError::into_inner);
+                    snap.matches
+                        .iter()
+                        .filter(|m| m.sport == Sport::Tft)
+                        .cloned()
+                        .collect()
+                };
+                let live = Duration::seconds(cfg.ocblacktop_live_poll.as_secs().max(30) as i64);
+                let near = Duration::seconds(cfg.ocblacktop_near_poll.as_secs() as i64);
+                let idle = Duration::seconds(cfg.idle_poll.as_secs() as i64);
+                let iv = series_cadence(&tft_rows, now, live, near, idle);
+                const LIQ_DAILY_CAP: u64 = 200;
+                if liq_at.is_none_or(|t| now - t >= iv) && liq_used < LIQ_DAILY_CAP {
+                    match crate::tft::fetch_tft(&client, now).await {
+                        Ok(rows) if !rows.is_empty() => feeds.push((Sport::Tft, Ok(rows))),
+                        Ok(_) => leptos::logging::log!(
+                            "TFT: parsed 0 sessions (200 OK) — keeping cached rows (possible markup drift)"
+                        ),
+                        Err(e) => leptos::logging::log!("TFT fetch failed: {e}"),
+                    }
+                    liq_used += 1;
+                    liq_at = Some(now);
+                    ocb_save_at(store.as_ref(), LIQ_META_AT, now);
+                    if let Some(c) = store.as_ref() {
+                        let _ = crate::store::set_meta(c, LIQ_META_USED, &liq_used.to_string());
+                    }
+                }
+            }
+
             apply_poll(
-                vec![
-                    (Sport::Cs2, cs_res),
-                    (Sport::Lol, lol_res),
-                    (Sport::Mlb, mlb_raw.map_err(Into::into)),
-                    (Sport::Nhl, nhl_raw.map_err(Into::into)),
-                    (Sport::Nba, nba_raw.map_err(Into::into)),
-                    (Sport::Nfl, nfl_raw.map_err(Into::into)),
-                    (Sport::Soccer, soccer_res),
-                    (Sport::Motorsport, motorsport_res),
-                ],
+                feeds,
                 store.as_mut(),
                 cfg.archive_cutoff(now).timestamp_millis(),
             );
@@ -1958,6 +2018,12 @@ const OCB_META_WRC_AT: &str = "ocb_wrc_at";
 const OCB_META_WEC_AT: &str = "ocb_wec_at";
 const OCB_META_MOTOGP_AT: &str = "ocb_motogp_at";
 const OCB_META_STANDINGS_AT: &str = "ocb_standings_at";
+
+// TFT (Liquipedia) poll state: per-UTC-day request budget + last fetch time.
+// Persisted like the OCB gates so restarts resume the day rather than refetch.
+const LIQ_META_DAY: &str = "liq_budget_day";
+const LIQ_META_USED: &str = "liq_budget_used";
+const LIQ_META_AT: &str = "liq_upcoming_at";
 
 /// Load a persisted millisecond timestamp from the meta table.
 fn ocb_load_at(store: Option<&rusqlite::Connection>, key: &str) -> Option<DateTime<Utc>> {
