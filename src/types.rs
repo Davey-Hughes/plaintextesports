@@ -648,6 +648,19 @@ pub struct StandingRow {
     pub gb: String,
 }
 
+/// One row of a TFT tournament's final placement table (parsed from Liquipedia's
+/// prizepool table). TFT is a lobby game, so a result is a ranked placement with
+/// a prize, not a win/loss record — hence its own type rather than [`StandingRow`].
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TftPlacement {
+    /// The finishing place, e.g. "1", "2", "3-4".
+    pub place: String,
+    /// The player/team name.
+    pub participant: String,
+    /// The prize as shown, e.g. "$150,000"; empty when none.
+    pub prize: String,
+}
+
 /// One match within a bracket round.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BracketMatch {

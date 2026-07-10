@@ -11,7 +11,7 @@
 
 use crate::feed::{NormalizedMatch, NormalizedTeam};
 use crate::http::DynError;
-use crate::types::{MatchStatus, Sport};
+use crate::types::{MatchStatus, Sport, TftPlacement};
 use chrono::{DateTime, Duration, Utc};
 use serde::Deserialize;
 use tl::{HTMLTag, Parser, ParserOptions};
@@ -300,6 +300,123 @@ pub async fn fetch_tft(
     Ok(rows)
 }
 
+// ----- Final placements (results) -------------------------------------------
+//
+// A tournament's final placements live in the single `table.prizepooltable` on
+// its *parent* page (e.g. `/tft/Space_Gods/Tacticians_Crown`), not the per-stage
+// pages our sessions link to. Each body row is
+// `td.prizepooltable-place` (place) + `td.prizepooltable-col-team` (with a
+// `span.name` participant) + a trailing prize `td`.
+
+/// Parse the prizepool table into placement rows (name-agnostic: yields "TBD"
+/// while undecided, real names once the tournament is finished).
+pub fn parse_placements(html: &str) -> Vec<TftPlacement> {
+    let Ok(dom) = tl::parse(html, ParserOptions::default()) else {
+        return Vec::new();
+    };
+    let parser = dom.parser();
+    let Some(table) = dom
+        .query_selector("table.prizepooltable")
+        .and_then(|mut it| it.next())
+        .and_then(|h| h.get(parser))
+        .and_then(|n| n.as_tag())
+    else {
+        return Vec::new();
+    };
+    let Some(rows) = table.query_selector(parser, "tr") else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for rh in rows {
+        let Some(row) = rh.get(parser).and_then(|n| n.as_tag()) else {
+            continue;
+        };
+        // The place cell is absent on the header row — skip those.
+        let Some(place) = row
+            .query_selector(parser, "td.prizepooltable-place")
+            .and_then(|mut i| i.next())
+            .and_then(|h| h.get(parser))
+            .map(|n| normalize_ws(&decode_entities(&n.inner_text(parser))))
+            .filter(|s| !s.is_empty())
+        else {
+            continue;
+        };
+        let participant = row
+            .query_selector(parser, "span.name")
+            .and_then(|mut i| i.next())
+            .and_then(|h| h.get(parser))
+            .map(|n| normalize_ws(&decode_entities(&n.inner_text(parser))))
+            .unwrap_or_default();
+        // The prize is the row's last cell.
+        let prize = row
+            .query_selector(parser, "td")
+            .and_then(|it| it.last())
+            .and_then(|h| h.get(parser))
+            .map(|n| normalize_ws(&decode_entities(&n.inner_text(parser))))
+            .unwrap_or_default();
+        out.push(TftPlacement {
+            place,
+            participant,
+            prize,
+        });
+    }
+    out
+}
+
+/// Keep only decided placements — an undecided row (empty or "TBD" participant)
+/// means the tournament isn't finished, so it contributes nothing to display.
+pub fn filter_decided(placements: Vec<TftPlacement>) -> Vec<TftPlacement> {
+    placements
+        .into_iter()
+        .filter(|p| {
+            let n = p.participant.trim();
+            !n.is_empty() && !n.eq_ignore_ascii_case("TBD")
+        })
+        .collect()
+}
+
+/// The parent tournament page URL for a session's stage URL, by keeping the
+/// `/tft/<Set>/<Event>` prefix (dropping any deeper `/Stage` segment). A URL that
+/// is already a tournament page — or a single-segment event — is returned as-is.
+pub fn parent_tournament_url(session_url: &str) -> String {
+    let Some((prefix, path)) = session_url.split_once("/tft/") else {
+        return session_url.to_string();
+    };
+    let mut segs = path.split('/');
+    let set = segs.next().unwrap_or_default();
+    let event = segs.next().unwrap_or_default();
+    if event.is_empty() {
+        session_url.to_string()
+    } else {
+        format!("{prefix}/tft/{set}/{event}")
+    }
+}
+
+/// Fetch + parse a parent tournament page's final placements (decided rows only).
+/// `action=parse`, like [`fetch_tft`] — subject to Liquipedia's 1-per-30s limit,
+/// so the caller must not run it in the same poll cycle as `fetch_tft`.
+pub async fn fetch_placements(
+    client: &reqwest::Client,
+    parent_url: &str,
+) -> Result<Vec<TftPlacement>, DynError> {
+    // e.g. ".../tft/Space_Gods/Tacticians_Crown" → page title "Space_Gods/Tacticians_Crown".
+    let page = parent_url.rsplit("/tft/").next().unwrap_or(parent_url);
+    let resp = client
+        .get(API)
+        .query(&[
+            ("action", "parse"),
+            ("page", page),
+            ("prop", "text"),
+            ("format", "json"),
+        ])
+        .send()
+        .await?
+        .error_for_status()?
+        .json::<ParseResp>()
+        .await?;
+    Ok(filter_decided(parse_placements(&resp.parse.text.star)))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -422,6 +539,43 @@ mod tests {
             "https://liquipedia.net/tft/Space_Gods/Tacticians_Crown/Swiss_Stage"
         );
         assert_eq!(first.begin_at.timestamp(), 1_783_767_600);
+    }
+
+    #[test]
+    fn parses_prizepool_placements_from_fixture() {
+        let html = include_str!("fixtures/tft_prizepool.html");
+        let p = parse_placements(html);
+        assert_eq!(p.len(), 5, "fixture has five body rows");
+        assert_eq!(p[0].place, "1");
+        assert_eq!(p[0].participant, "TBD"); // ongoing tournament — undecided
+        assert_eq!(p[0].prize, "$150,000");
+        assert_eq!(p[1].place, "2");
+        assert_eq!(p[1].prize, "$50,000");
+        assert_eq!(p[2].prize, "$25,000");
+    }
+
+    #[test]
+    fn filter_decided_drops_tbd_and_empty() {
+        let mk = |name: &str| TftPlacement {
+            place: "1".into(),
+            participant: name.into(),
+            prize: "$1".into(),
+        };
+        let kept = filter_decided(vec![mk("TBD"), mk(""), mk("Player A"), mk("tbd"), mk("  ")]);
+        assert_eq!(kept.len(), 1);
+        assert_eq!(kept[0].participant, "Player A");
+    }
+
+    #[test]
+    fn parent_tournament_url_strips_the_stage_segment() {
+        let base = "https://liquipedia.net/tft/Space_Gods/Tacticians_Crown";
+        assert_eq!(parent_tournament_url(&format!("{base}/Swiss_Stage")), base);
+        assert_eq!(parent_tournament_url(&format!("{base}/Grand_Finals")), base);
+        // Already a tournament page → unchanged.
+        assert_eq!(parent_tournament_url(base), base);
+        // Single-segment event → unchanged (nothing to strip).
+        let single = "https://liquipedia.net/tft/Some_Event";
+        assert_eq!(parent_tournament_url(single), single);
     }
 
     /// Live smoke test of the whole fetch path (reqwest + gzip → 200 → JSON →
