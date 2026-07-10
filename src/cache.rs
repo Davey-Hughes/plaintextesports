@@ -86,6 +86,12 @@ static WEC_STANDINGS: Lazy<RwLock<crate::types::MotorStandings>> =
     Lazy::new(|| RwLock::new(crate::types::MotorStandings::default()));
 static MOTOGP_STANDINGS: Lazy<RwLock<crate::types::MotorStandings>> =
     Lazy::new(|| RwLock::new(crate::types::MotorStandings::default()));
+// TFT tournament final placements (Liquipedia prizepool), keyed by full event
+// name (`full_event_name("TFT", series_name)`) so an event page looks up
+// directly. Refreshed by the poller, served from here + result_cache; never
+// fetched per request.
+static TFT_PLACEMENTS: Lazy<RwLock<HashMap<String, Vec<crate::types::TftPlacement>>>> =
+    Lazy::new(|| RwLock::new(HashMap::new()));
 
 /// The WRC, WEC, or MotoGP championship standings (empty until first fetched), by
 /// series league name. Any other name yields empty tables.
@@ -98,6 +104,18 @@ pub fn motor_standings(league: &str) -> crate::types::MotorStandings {
         _ => return crate::types::MotorStandings::default(),
     };
     store.read().unwrap_or_else(PoisonError::into_inner).clone()
+}
+
+/// This event's TFT final placements (empty until its tournament finishes), keyed
+/// by full event name.
+#[must_use]
+pub fn tft_placements(event: &str) -> Vec<crate::types::TftPlacement> {
+    TFT_PLACEMENTS
+        .read()
+        .unwrap_or_else(PoisonError::into_inner)
+        .get(event)
+        .cloned()
+        .unwrap_or_default()
 }
 
 /// Snapshot a standings store.
@@ -1282,6 +1300,17 @@ fn load_persisted_standings() {
     fill_motor("wrc_standings", &WRC_STANDINGS);
     fill_motor("wec_standings", &WEC_STANDINGS);
     fill_motor("motogp_standings", &MOTOGP_STANDINGS);
+    {
+        let mut placements = TFT_PLACEMENTS
+            .write()
+            .unwrap_or_else(PoisonError::into_inner);
+        for (event, rows, _) in db_cache_get_ns::<Vec<crate::types::TftPlacement>>("tft_placements")
+        {
+            if !rows.is_empty() {
+                placements.insert(event, rows);
+            }
+        }
+    }
     {
         let mut brackets = PLAYOFF_BRACKETS
             .write()
