@@ -47,6 +47,12 @@ pub enum Sport {
     /// the Grand Prix / race meeting / rally. Single-entity (no opponent). The
     /// series are the sub-league chips, like soccer's competitions.
     Motorsport,
+    /// Teamfight Tactics — a Riot auto-battler esport. No commercial data API
+    /// covers it, so its schedule comes from Liquipedia's MediaWiki API (see
+    /// `crate::tft`). Single-entity: a "match" is one broadcast session (a
+    /// tournament day/stage), not two opposing teams. Opt-in behind
+    /// `liquipedia_enabled`.
+    Tft,
 }
 
 impl Sport {
@@ -62,6 +68,7 @@ impl Sport {
         Self::Nfl,
         Self::Soccer,
         Self::Motorsport,
+        Self::Tft,
     ];
 
     /// Display name. Traditional sports use the sport (not the league), so the
@@ -80,6 +87,7 @@ impl Sport {
             Self::Soccer => "Soccer",
             // The category is motorsport; the series (F1, …) is its sub-filter.
             Self::Motorsport => "Motorsport",
+            Self::Tft => "TFT",
         }
     }
 
@@ -94,6 +102,7 @@ impl Sport {
             Self::Nfl => "nfl",
             Self::Soccer => "football",
             Self::Motorsport => "motorsport",
+            Self::Tft => "tft",
         }
     }
 
@@ -110,7 +119,7 @@ impl Sport {
     /// shows one competitor label rather than "A vs B".
     #[must_use]
     pub const fn single_entity(self) -> bool {
-        matches!(self, Self::Motorsport)
+        matches!(self, Self::Motorsport | Self::Tft)
     }
 
     /// Whether this sport's leagues are a genuine sub-categorisation worth a
@@ -147,6 +156,8 @@ impl Sport {
             Self::Nhl | Self::Soccer => "PTS",
             Self::Nfl => "PCT",
             Self::Motorsport => "",
+            // No standings table in the schedule feed (placements are a follow-on).
+            Self::Tft => "",
         }
     }
 
@@ -175,6 +186,7 @@ impl Sport {
             // "f1" kept for back-compat with saved filters/links from when the
             // motorsport sport's slug was "f1" (now "motorsport").
             "motorsport" | "f1" => Some(Self::Motorsport),
+            "tft" => Some(Self::Tft),
             _ => None,
         }
     }
@@ -1252,10 +1264,21 @@ mod tests {
         // persists `slug()` and reads it back with `from_filter`, so a mismatch
         // would make a row load as a different (default) sport. Also asserts `ALL`
         // is exhaustive (a new variant trips the count).
-        assert_eq!(Sport::ALL.len(), 8);
+        assert_eq!(Sport::ALL.len(), 9);
         for &g in Sport::ALL {
             assert_eq!(Sport::from_filter(g.slug()), Some(g), "slug {:?}", g.slug());
         }
+    }
+
+    #[test]
+    fn tft_is_a_single_entity_esport_with_roundtrip_slug() {
+        assert_eq!(Sport::Tft.label(), "TFT");
+        assert_eq!(Sport::Tft.slug(), "tft");
+        // Esports (not traditional), and single-entity like motorsport (a session,
+        // not two opposing teams).
+        assert!(!Sport::Tft.traditional());
+        assert!(Sport::Tft.single_entity());
+        assert_eq!(Sport::from_filter("tft"), Some(Sport::Tft));
     }
 
     #[test]

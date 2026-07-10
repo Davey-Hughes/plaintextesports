@@ -289,7 +289,7 @@ pub fn team_standings_for_match(
         Sport::Nba => tables_with_team(&read_tables(&NBA_STANDINGS), a_name, b_name),
         Sport::Nfl => tables_with_team(&read_tables(&NFL_STANDINGS), a_name, b_name),
         Sport::Soccer => tables_with_team(&soccer_tables(league), a_name, b_name),
-        Sport::Cs2 | Sport::Lol | Sport::Motorsport => Vec::new(),
+        Sport::Cs2 | Sport::Lol | Sport::Motorsport | Sport::Tft => Vec::new(),
     }
 }
 
@@ -2609,7 +2609,9 @@ fn traditional_event_url(sport: Sport, league: &str) -> String {
             "World Cup" => "https://www.fifa.com/en/tournaments/mens/worldcup/canadamexicousa2026",
             _ => "",
         },
-        Sport::Cs2 | Sport::Lol => "",
+        // Esports (incl. TFT) have no traditional official site; TFT rows carry
+        // their exact Liquipedia page as `league_url`, used before this fallback.
+        Sport::Cs2 | Sport::Lol | Sport::Tft => "",
     }
     .to_string()
 }
@@ -2850,7 +2852,11 @@ fn group_by(views: Vec<MatchView>, tz: &Tz, chain: bool) -> Vec<DayGroup> {
                 Some(Sport::Nfl) => 5,
                 Some(Sport::Soccer) => 6,
                 Some(Sport::Motorsport) => 7,
-                None => 8,
+                // TFT is esports; it only co-occurs with CS2/LoL (the esports/
+                // traditional split keeps the two modes apart), so it sorts after
+                // them here without disturbing the traditional order.
+                Some(Sport::Tft) => 8,
+                None => 9,
             });
     }
     days

@@ -20,8 +20,16 @@ const fn wiki(sport: Sport) -> &'static str {
     match sport {
         Sport::Cs2 => "counterstrike",
         Sport::Lol => "leagueoflegends",
-        // Traditional sports aren't resolved against Liquipedia.
-        Sport::Mlb | Sport::Nhl | Sport::Nba | Sport::Nfl | Sport::Soccer | Sport::Motorsport => "",
+        // Traditional sports aren't resolved against Liquipedia. TFT isn't either:
+        // its sessions already carry their exact Liquipedia page, so the fuzzy
+        // full-text resolver would only risk overriding a correct URL.
+        Sport::Mlb
+        | Sport::Nhl
+        | Sport::Nba
+        | Sport::Nfl
+        | Sport::Soccer
+        | Sport::Motorsport
+        | Sport::Tft => "",
     }
 }
 
