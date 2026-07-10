@@ -2357,8 +2357,9 @@ fn collect_resolution_candidates() -> Vec<Candidate> {
     let mut seen = std::collections::HashSet::new();
     let mut out = Vec::new();
     for m in &snap.matches {
-        // Traditional sports (MLB) aren't on Liquipedia — never resolve them.
-        if m.sport.traditional() {
+        // Only resolve sports with a Liquipedia wiki. Skips traditional sports
+        // (not on Liquipedia) and TFT (its rows already carry their exact page).
+        if !crate::liquipedia::resolvable(m.sport) {
             continue;
         }
         let year = m.begin_at.year();

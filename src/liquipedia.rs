@@ -33,6 +33,14 @@ const fn wiki(sport: Sport) -> &'static str {
     }
 }
 
+/// Whether events for this sport can be resolved against a Liquipedia wiki (it
+/// has a wiki subdomain). False for traditional sports and for TFT — TFT rows
+/// already carry their exact Liquipedia page, so the fuzzy full-text resolver
+/// would only add a wasted request and a failed-resolve log line.
+pub(crate) fn resolvable(sport: Sport) -> bool {
+    !wiki(sport).is_empty()
+}
+
 #[derive(Deserialize)]
 struct SearchResp {
     #[serde(default)]
