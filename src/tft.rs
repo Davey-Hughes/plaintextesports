@@ -423,4 +423,28 @@ mod tests {
         );
         assert_eq!(first.begin_at.timestamp(), 1_783_767_600);
     }
+
+    /// Live smoke test of the whole fetch path (reqwest + gzip → 200 → JSON →
+    /// parse → map), against the real Liquipedia API. Ignored by default; run
+    /// with `cargo test --features ssr live_fetch -- --ignored --nocapture`.
+    #[test]
+    #[ignore = "hits the live Liquipedia API"]
+    fn live_fetch_returns_tft_sessions() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let client = reqwest::Client::builder()
+            .user_agent(crate::http::USER_AGENT)
+            .timeout(std::time::Duration::from_secs(15))
+            .build()
+            .unwrap();
+        let rows = rt.block_on(fetch_tft(&client, Utc::now())).unwrap();
+        assert!(!rows.is_empty(), "live page should yield sessions");
+        assert!(rows.iter().all(|m| m.sport == Sport::Tft));
+        assert!(rows.iter().all(|m| !m.series_name.is_empty()));
+        for m in rows.iter().take(4) {
+            eprintln!(
+                "TFT | {} | {} | {} | {:?}",
+                m.series_name, m.team_a.label, m.begin_at, m.status
+            );
+        }
+    }
 }
