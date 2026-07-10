@@ -206,7 +206,9 @@ pub(crate) fn TftPlacementsView(placements: Vec<TftPlacement>, event: String) ->
                     }}
                 </span>
             </button>
-            <ol class="f1-standings">{body}</ol>
+            // The 3-column (`-con`) grid: pos · participant · prize — matching the
+            // three cells per row (the plain `.f1-standings` grid is 4-column).
+            <ol class="f1-standings f1-standings-con">{body}</ol>
         </section>
     }
     .into_any()
