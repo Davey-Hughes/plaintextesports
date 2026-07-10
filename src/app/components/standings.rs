@@ -1,6 +1,7 @@
 //! Standings view components that aren't the playoff bracket: F1 / motorsport
 //! championship tables and the traditional-sports standings wrapper.
 use crate::app::*;
+use crate::types::TftPlacement;
 
 /// The drivers' and constructors' championship standings as of a GP's round,
 /// shown on the F1 event page. Spoiler-gated as one block (it encodes results).
@@ -158,6 +159,57 @@ pub(crate) fn MotorStandingsView(standings: MotorStandings, league: String) -> i
             <div class="motor-standings">{body}</div>
         </section>
     }
+}
+
+/// A TFT tournament's final placements (place · participant · prize), shown on its
+/// event page. Spoiler-gated as one block (it's a result); the place stays visible
+/// to reserve height while the names/prizes hide. Nothing renders when empty
+/// (undecided tournament / non-TFT event).
+#[component]
+pub(crate) fn TftPlacementsView(placements: Vec<TftPlacement>, event: String) -> impl IntoView {
+    if placements.is_empty() {
+        return ().into_any();
+    }
+    let (revealed, toggle) = section_reveal(format!("tftplace:{event}"));
+    let rows = StoredValue::new(placements);
+    let body = move || {
+        let show = revealed.get();
+        rows.get_value()
+            .into_iter()
+            .map(|p| {
+                let (name, prize) = if show {
+                    (p.participant, p.prize)
+                } else {
+                    (String::new(), String::new())
+                };
+                view! {
+                    <li class="f1-standing-row">
+                        <span class="f1-pos">{p.place}</span>
+                        <span class="f1-standing-name">{name}</span>
+                        <span class="f1-standing-pts">{prize}</span>
+                    </li>
+                }
+            })
+            .collect_view()
+    };
+    view! {
+        <section class="detail-section" id="tftsec-placements">
+            <h2 class="section-title f1-results-title">"Final Placements"</h2>
+            <button class="f1-session-head" on:click=toggle>
+                <span class="f1-session-toggle">
+                    {move || {
+                        if revealed.get() {
+                            "hide placements".to_string()
+                        } else {
+                            "show placements".to_string()
+                        }
+                    }}
+                </span>
+            </button>
+            <ol class="f1-standings">{body}</ol>
+        </section>
+    }
+    .into_any()
 }
 
 /// The division/conference/group standings for a single traditional league,

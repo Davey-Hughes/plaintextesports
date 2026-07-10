@@ -5,7 +5,7 @@
 use crate::types::Sport;
 use crate::types::{
     EventInfo, F1Result, F1Standings, MatchDetail, MatchResults, MotorResult, MotorStandings,
-    ReminderReq, ScheduleView, SiteInfo, StreamView, SubscribeReq,
+    ReminderReq, ScheduleView, SiteInfo, StreamView, SubscribeReq, TftPlacement,
 };
 use leptos::prelude::*;
 
@@ -405,6 +405,22 @@ pub async fn get_motor_standings(league: String) -> Result<MotorStandings, Serve
     {
         let _ = league;
         Ok(MotorStandings::default())
+    }
+}
+
+/// A TFT tournament's final placements (Liquipedia prizepool), by full event name.
+/// Empty for non-TFT events and tournaments that aren't finished. Served from the
+/// poller cache — never fetched per request.
+#[server(GetTftPlacements, "/api")]
+pub async fn get_tft_placements(event: String) -> Result<Vec<TftPlacement>, ServerFnError> {
+    #[cfg(feature = "ssr")]
+    {
+        Ok(crate::cache::tft_placements(&event))
+    }
+    #[cfg(not(feature = "ssr"))]
+    {
+        let _ = event;
+        Ok(Vec::new())
     }
 }
 
