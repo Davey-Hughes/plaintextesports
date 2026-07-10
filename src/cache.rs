@@ -1465,6 +1465,9 @@ pub fn spawn_poller() {
             .and_then(|s| s.parse::<u64>().ok())
             .unwrap_or(0);
         let mut liq_at = ocb_load_at(store.as_ref(), LIQ_META_AT);
+        // Per-parent-tournament last-placements-fetch time (in-memory; a restart
+        // just refetches, well under the daily cap given how few tournaments run).
+        let mut liq_placement_at: HashMap<String, DateTime<Utc>> = HashMap::new();
         loop {
             let now = Utc::now();
             let active = {
@@ -1738,6 +1741,10 @@ pub fn spawn_poller() {
                 let idle = Duration::seconds(cfg.idle_poll.as_secs() as i64);
                 let iv = series_cadence(&tft_rows, now, live, near, idle);
                 const LIQ_DAILY_CAP: u64 = 200;
+                // At most one Liquipedia `action=parse` per cycle (their 1-req/30s
+                // rule): the upcoming-matches page when it's due, else one due
+                // tournament's final placements. Poll cycles are >=60s apart, so
+                // consecutive parses always clear the 30s floor.
                 if liq_at.is_none_or(|t| now - t >= iv) && liq_used < LIQ_DAILY_CAP {
                     match crate::tft::fetch_tft(&client, now).await {
                         Ok(rows) if !rows.is_empty() => feeds.push((Sport::Tft, Ok(rows))),
@@ -1750,6 +1757,18 @@ pub fn spawn_poller() {
                     liq_at = Some(now);
                     ocb_save_at(store.as_ref(), LIQ_META_AT, now);
                     if let Some(c) = store.as_ref() {
+                        let _ = crate::store::set_meta(c, LIQ_META_USED, &liq_used.to_string());
+                    }
+                } else if liq_used < LIQ_DAILY_CAP {
+                    let billed = refresh_tft_placements(
+                        &client,
+                        &tft_rows,
+                        now,
+                        &mut liq_placement_at,
+                        &mut liq_used,
+                    )
+                    .await;
+                    if billed && let Some(c) = store.as_ref() {
                         let _ = crate::store::set_meta(c, LIQ_META_USED, &liq_used.to_string());
                     }
                 }
@@ -2053,6 +2072,74 @@ const OCB_META_STANDINGS_AT: &str = "ocb_standings_at";
 const LIQ_META_DAY: &str = "liq_budget_day";
 const LIQ_META_USED: &str = "liq_budget_used";
 const LIQ_META_AT: &str = "liq_upcoming_at";
+
+/// Refresh one due tournament's final placements — the ≤1-per-cycle Liquipedia
+/// `action=parse` used when the upcoming-matches fetch didn't run this cycle.
+/// Picks the first parent tournament (derived from the current TFT rows' Liquipedia
+/// URLs) whose placements are missing or >12h old, fetches them, and — when
+/// decided — stores them under each of that tournament's stage events (in-memory +
+/// result_cache). Returns whether it billed a request (so the caller persists the
+/// day's budget). Takes no DB connection: it must not hold one across the await.
+async fn refresh_tft_placements(
+    client: &reqwest::Client,
+    tft_rows: &[NormalizedMatch],
+    now: DateTime<Utc>,
+    last_at: &mut HashMap<String, DateTime<Utc>>,
+    used: &mut u64,
+) -> bool {
+    let mut parents: Vec<String> = tft_rows
+        .iter()
+        .filter_map(|m| m.league_url.as_deref())
+        .map(crate::tft::parent_tournament_url)
+        .filter(|u| u.contains("/tft/"))
+        .collect();
+    parents.sort();
+    parents.dedup();
+    let Some(parent) = parents.into_iter().find(|p| {
+        last_at
+            .get(p)
+            .is_none_or(|t| now - *t >= Duration::hours(12))
+    }) else {
+        return false;
+    };
+    match crate::tft::fetch_placements(client, &parent).await {
+        Ok(placements) if !placements.is_empty() => {
+            // Every stage event sharing this parent tournament shows its placements.
+            let events: std::collections::HashSet<String> = tft_rows
+                .iter()
+                .filter(|m| {
+                    m.league_url
+                        .as_deref()
+                        .map(crate::tft::parent_tournament_url)
+                        .as_deref()
+                        == Some(parent.as_str())
+                })
+                .map(|m| crate::types::full_event_name(&m.league, &m.series_name))
+                .collect();
+            {
+                let mut sp = TFT_PLACEMENTS
+                    .write()
+                    .unwrap_or_else(PoisonError::into_inner);
+                for ev in &events {
+                    sp.insert(ev.clone(), placements.clone());
+                }
+            }
+            for ev in &events {
+                db_cache_put("tft_placements", ev, &placements, now);
+            }
+            leptos::logging::log!(
+                "TFT placements: {} row(s) for {} event(s) from {parent}",
+                placements.len(),
+                events.len()
+            );
+        }
+        Ok(_) => {} // undecided / no prizepool — nothing to show yet
+        Err(e) => leptos::logging::log!("TFT placements fetch failed ({parent}): {e}"),
+    }
+    last_at.insert(parent, now);
+    *used += 1;
+    true
+}
 
 /// Load a persisted millisecond timestamp from the meta table.
 fn ocb_load_at(store: Option<&rusqlite::Connection>, key: &str) -> Option<DateTime<Utc>> {
