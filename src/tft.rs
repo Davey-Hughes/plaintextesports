@@ -347,12 +347,16 @@ pub fn parse_placements(html: &str) -> Vec<TftPlacement> {
             .and_then(|h| h.get(parser))
             .map(|n| normalize_ws(&decode_entities(&n.inner_text(parser))))
             .unwrap_or_default();
-        // The prize is the row's last cell.
+        // The prize is the cell carrying a currency amount. A finished event adds
+        // trailing "qualified-for" / points columns, so it isn't simply the last
+        // cell; a place with no prize money has none (left empty).
         let prize = row
             .query_selector(parser, "td")
-            .and_then(|it| it.last())
-            .and_then(|h| h.get(parser))
+            .into_iter()
+            .flatten()
+            .filter_map(|h| h.get(parser))
             .map(|n| normalize_ws(&decode_entities(&n.inner_text(parser))))
+            .find(|t| t.contains('$'))
             .unwrap_or_default();
         out.push(TftPlacement {
             place,
@@ -555,6 +559,24 @@ mod tests {
     }
 
     #[test]
+    fn parses_finished_prizepool_with_real_names_and_prize() {
+        // A finished tournament: 5-td rows (place, participant, prize, qualified-
+        // for, points) with real names — the prize must be the `$` cell, not the
+        // trailing one.
+        let html = include_str!("fixtures/tft_prizepool_finished.html");
+        let p = parse_placements(html);
+        assert_eq!(p.len(), 3);
+        assert_eq!(p[0].place, "1");
+        assert_eq!(p[0].participant, "Dishsoap");
+        assert_eq!(p[0].prize, "$150,000");
+        assert_eq!(p[1].participant, "Jedusor");
+        assert_eq!(p[1].prize, "$50,000");
+        assert_eq!(p[2].prize, "$25,000");
+        // All decided → survive the filter.
+        assert_eq!(filter_decided(p).len(), 3);
+    }
+
+    #[test]
     fn filter_decided_drops_tbd_and_empty() {
         let mk = |name: &str| TftPlacement {
             place: "1".into(),
@@ -599,6 +621,32 @@ mod tests {
                 "TFT | {} | {} | {} | {:?}",
                 m.series_name, m.team_a.label, m.begin_at, m.status
             );
+        }
+    }
+
+    /// Live smoke test of the placements path against a *finished* tournament,
+    /// which — unlike an ongoing one — has real (non-"TBD") names. Ignored by
+    /// default; run with `cargo test --features ssr live_fetch_placements -- --ignored --nocapture`.
+    #[test]
+    #[ignore = "hits the live Liquipedia API"]
+    fn live_fetch_placements_returns_real_names() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let client = reqwest::Client::builder()
+            .user_agent(crate::http::USER_AGENT)
+            .timeout(std::time::Duration::from_secs(15))
+            .build()
+            .unwrap();
+        let url = "https://liquipedia.net/tft/Into_the_Arcane/Tacticians_Crown";
+        let p = rt.block_on(fetch_placements(&client, url)).unwrap();
+        assert!(
+            !p.is_empty(),
+            "a finished tournament has decided placements"
+        );
+        assert!(p.iter().all(|x| !x.participant.eq_ignore_ascii_case("TBD")));
+        assert_eq!(p[0].place, "1");
+        assert!(!p[0].participant.is_empty());
+        for x in p.iter().take(3) {
+            eprintln!("PLACE {} | {} | {}", x.place, x.participant, x.prize);
         }
     }
 }
