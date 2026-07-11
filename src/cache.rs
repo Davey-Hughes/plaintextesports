@@ -442,9 +442,8 @@ pub async fn live_streams_for(sport: Sport, id: i64) -> Vec<StreamView> {
 
     // Twitch category discovery runs only for a live esports match with the sport
     // enabled — so an otherwise-inert match still triggers a scan when it's on.
-    let discovery_on = matches!(status, MatchStatus::Live)
-        && matches!(sport, Sport::Cs2 | Sport::Lol | Sport::Tft)
-        && config().discovery_enabled(sport);
+    let discovery_on =
+        matches!(status, MatchStatus::Live) && sport.esports() && config().discovery_enabled(sport);
     if base_logins.is_empty() && tw_seeds.is_empty() && !yt_enabled && !discovery_on && !soop_on {
         return base;
     }
@@ -3810,6 +3809,49 @@ pub fn event_view(event: &str, tz_name: &str, hour24: bool) -> ScheduleView {
     }
 }
 
+/// Pick the `(sport, id)` of an event's "focus" match for its stream list — the
+/// match whose streams best answer "where do I watch this event right now": a live
+/// session leads (the most recently started first), then the soonest upcoming,
+/// then the most recent finished. Only esports matches of `event` that actually
+/// carry streams are considered; `None` when the event has no such match. Pure
+/// (no globals/IO) so the ranking is unit-testable; `event_streams` feeds it the
+/// live snapshot. `event` is the full edition name (league + series).
+fn focus_stream_match(matches: &[NormalizedMatch], event: &str) -> Option<(Sport, i64)> {
+    matches
+        .iter()
+        .filter(|m| m.sport.esports())
+        .filter(|m| m.status != MatchStatus::Canceled)
+        .filter(|m| !m.streams.is_empty())
+        .filter(|m| event_name_eq(&m.league, &m.series_name, event))
+        .min_by_key(|m| {
+            let ms = m.begin_at.timestamp_millis();
+            // Group live/upcoming/finished, then tie-break by start: live and
+            // finished want the most recent (negate), upcoming the soonest.
+            match m.status {
+                MatchStatus::Live => (0u8, -ms),
+                MatchStatus::Upcoming => (1u8, ms),
+                _ => (2u8, -ms),
+            }
+        })
+        .map(|m| (m.sport, m.id))
+}
+
+/// The streams to surface on an event page: the enriched stream list of the
+/// event's focus match (see [`focus_stream_match`]), so the page shows where to
+/// watch the event right now — live Twitch/YouTube status merged in exactly like
+/// the match page. Empty for non-esports events and events whose matches carry no
+/// streams. `event` is the full edition name.
+pub async fn event_streams(event: &str) -> Vec<StreamView> {
+    let focus = {
+        let snap = SNAPSHOT.read().unwrap_or_else(PoisonError::into_inner);
+        focus_stream_match(&snap.matches, event)
+    };
+    match focus {
+        Some((sport, id)) => live_streams_for(sport, id).await,
+        None => Vec::new(),
+    }
+}
+
 /// All cached matches involving a team (matched on its full name), past +
 /// upcoming, grouped by day. Backs the team page.
 #[must_use]
@@ -6330,6 +6372,83 @@ mod tests {
         let href = d2.row_href.as_deref().unwrap();
         assert!(href.starts_with("/event/tft/"), "got {href}");
         assert!(href.ends_with("#day-2026-07-11"), "got {href}");
+    }
+
+    /// A `tft_session` carrying a stream, with an explicit status — the shape
+    /// `focus_stream_match` ranks over.
+    fn streamed_session(
+        id: i64,
+        series: &str,
+        begin: &str,
+        status: MatchStatus,
+    ) -> NormalizedMatch {
+        let mut m = tft_session(id, "Game", series, begin);
+        m.status = status;
+        m.streams = vec![StreamView {
+            url: "https://twitch.tv/tft".into(),
+            ..Default::default()
+        }];
+        m
+    }
+
+    #[test]
+    fn focus_stream_match_ranks_live_over_upcoming_over_finished() {
+        let series = "Space Gods Tacticians Crown - Swiss Stage";
+        let ev = format!("TFT {series}");
+        let finished_old =
+            streamed_session(1, series, "2026-07-11T11:00:00Z", MatchStatus::Finished);
+        let finished_new =
+            streamed_session(2, series, "2026-07-11T14:00:00Z", MatchStatus::Finished);
+        let upcoming_soon =
+            streamed_session(3, series, "2026-07-12T11:00:00Z", MatchStatus::Upcoming);
+        let upcoming_late =
+            streamed_session(4, series, "2026-07-12T15:00:00Z", MatchStatus::Upcoming);
+        let live = streamed_session(5, series, "2026-07-11T13:00:00Z", MatchStatus::Live);
+
+        // A live session wins outright, whatever else is around it.
+        let all = vec![
+            finished_old.clone(),
+            finished_new.clone(),
+            upcoming_soon.clone(),
+            upcoming_late.clone(),
+            live,
+        ];
+        assert_eq!(focus_stream_match(&all, &ev), Some((Sport::Tft, 5)));
+
+        // No live → the soonest upcoming session.
+        let no_live = vec![finished_new.clone(), upcoming_late, upcoming_soon];
+        assert_eq!(focus_stream_match(&no_live, &ev), Some((Sport::Tft, 3)));
+
+        // Only finished → the most recent one.
+        let done = vec![finished_old, finished_new];
+        assert_eq!(focus_stream_match(&done, &ev), Some((Sport::Tft, 2)));
+    }
+
+    #[test]
+    fn focus_stream_match_skips_streamless_canceled_and_other_events() {
+        let series = "Space Gods Tacticians Crown - Swiss Stage";
+        let ev = format!("TFT {series}");
+        // Live, but no streams parsed yet → skipped in favour of a streamed match.
+        let mut live_no_streams = tft_session(1, "Game", series, "2026-07-11T13:00:00Z");
+        live_no_streams.status = MatchStatus::Live;
+        let upcoming = streamed_session(2, series, "2026-07-12T13:00:00Z", MatchStatus::Upcoming);
+        assert_eq!(
+            focus_stream_match(&[live_no_streams.clone(), upcoming.clone()], &ev),
+            Some((Sport::Tft, 2)),
+        );
+
+        // A canceled session never qualifies, even with streams.
+        let mut canceled =
+            streamed_session(3, series, "2026-07-12T13:00:00Z", MatchStatus::Canceled);
+        canceled.id = 3;
+        assert_eq!(
+            focus_stream_match(&[live_no_streams.clone(), canceled], &ev),
+            None,
+        );
+
+        // Wrong event, and a streamless-only event, both yield nothing.
+        assert_eq!(focus_stream_match(&[upcoming], "TFT Other Event"), None);
+        assert_eq!(focus_stream_match(&[live_no_streams], &ev), None);
     }
 
     fn at(begin: DateTime<Utc>, status: MatchStatus) -> NormalizedMatch {

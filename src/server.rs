@@ -286,6 +286,23 @@ pub async fn get_event_schedule(
     }
 }
 
+/// The streams to show on an event page — the enriched stream list of the event's
+/// focus match (its live session, else next upcoming, else most recent), by full
+/// edition name. Live Twitch/YouTube status is merged in like the match page's
+/// streams. Empty for non-esports events and events without stream data.
+#[server(GetEventStreams, "/api")]
+pub async fn get_event_streams(league: String) -> Result<Vec<StreamView>, ServerFnError> {
+    #[cfg(feature = "ssr")]
+    {
+        Ok(crate::cache::event_streams(&league).await)
+    }
+    #[cfg(not(feature = "ssr"))]
+    {
+        let _ = league;
+        Ok(Vec::new())
+    }
+}
+
 /// The given (starred) match uids that are still upcoming, sorted by start, for
 /// the notifications page. Started/finished matches are dropped server-side.
 #[server(GetNotifications, "/api")]

@@ -301,6 +301,28 @@ pub(crate) fn EventPage() -> impl IntoView {
             }
         },
     );
+    // Esports (CS2/LoL/TFT) event pages surface the streams of the event's focus
+    // match — the live session if one's under way, else the next upcoming, else
+    // the most recent — enriched with live Twitch/YouTube status, like the match
+    // page. Keyed off the schedule so it fires once the sport is known; the source
+    // is empty (→ no fetch) for non-esports events.
+    let streams = Resource::new(
+        move || {
+            schedule
+                .get()
+                .and_then(Result::ok)
+                .filter(schedule_is_esports)
+                .map(|_| league())
+                .unwrap_or_default()
+        },
+        |lg| async move {
+            if lg.is_empty() {
+                Vec::new()
+            } else {
+                get_event_streams(lg).await.unwrap_or_default()
+            }
+        },
+    );
     setup_autorefresh(schedule);
 
     // The pinned "up next" bar lives inside the content subtree that gets rebuilt
@@ -607,6 +629,18 @@ pub(crate) fn EventPage() -> impl IntoView {
                                 {nav}
                                 {f1_nav}
                                 {motor_nav}
+                                // Esports "where to watch": the event's focus-match
+                                // streams (live session / next up / most recent),
+                                // enriched with live status. Absent for non-esports
+                                // events and events without stream data. Renders
+                                // inside the page's outer Transition, appearing once
+                                // the resource resolves (no loader flash).
+                                {move || {
+                                    streams
+                                        .get()
+                                        .filter(|list| !list.is_empty())
+                                        .map(|list| view! { <StreamsList streams=list /> })
+                                }}
                                 <div id="sched" class="spy">
                                     {render_schedule(s, false, push, true, windowed)}
                                 </div>

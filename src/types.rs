@@ -115,6 +115,14 @@ impl Sport {
         )
     }
 
+    /// An esports title (CS2/LoL/TFT), as opposed to a traditional sport or
+    /// motorsport — the sports whose matches carry Twitch/YouTube stream links and
+    /// co-streamer enrichment.
+    #[must_use]
+    pub const fn esports(self) -> bool {
+        matches!(self, Self::Cs2 | Self::Lol | Self::Tft)
+    }
+
     /// A single-entity sport (a race/session, not two opposing teams) — the row
     /// shows one competitor label rather than "A vs B".
     #[must_use]
