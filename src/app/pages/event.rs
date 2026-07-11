@@ -301,44 +301,6 @@ pub(crate) fn EventPage() -> impl IntoView {
             }
         },
     );
-    // TFT event pages show the tournament's final placements once decided (from
-    // the Liquipedia poller cache); empty for non-TFT events / unfinished ones.
-    let tft_placements = Resource::new(
-        move || {
-            let lg = league();
-            if lg.starts_with("TFT") {
-                lg
-            } else {
-                String::new()
-            }
-        },
-        |ev| async move {
-            if ev.is_empty() {
-                Vec::new()
-            } else {
-                get_tft_placements(ev).await.unwrap_or_default()
-            }
-        },
-    );
-    // TFT lobby standings (rank/player/per-game points/total), same gating as
-    // placements; empty for non-TFT events / before results exist.
-    let tft_standings = Resource::new(
-        move || {
-            let lg = league();
-            if lg.starts_with("TFT") {
-                lg
-            } else {
-                String::new()
-            }
-        },
-        |ev| async move {
-            if ev.is_empty() {
-                crate::types::TftStandings::default()
-            } else {
-                get_tft_standings(ev).await.unwrap_or_default()
-            }
-        },
-    );
     setup_autorefresh(schedule);
 
     // The pinned "up next" bar lives inside the content subtree that gets rebuilt
@@ -707,37 +669,13 @@ pub(crate) fn EventPage() -> impl IntoView {
                                             view! { <MotorStandingsView standings=standings league=lg /> }
                                         })
                                 }}
-                                // TFT: the lobby standings (rank/player/per-game/
-                                // total), empty for non-TFT events / before results.
-                                // Shown above the placements.
-                                {move || {
-                                    tft_standings
-                                        .get()
-                                        .filter(|s| !s.is_empty())
-                                        .map(|standings| {
-                                            view! {
-                                                <TftStandingsView
-                                                    standings=standings
-                                                    event=league()
-                                                />
-                                            }
-                                        })
-                                }}
-                                // TFT: the tournament's final placements (empty
-                                // until finished / for non-TFT events).
-                                {move || {
-                                    tft_placements
-                                        .get()
-                                        .filter(|p| !p.is_empty())
-                                        .map(|placements| {
-                                            view! {
-                                                <TftPlacementsView
-                                                    placements=placements
-                                                    event=league()
-                                                />
-                                            }
-                                        })
-                                }}
+                                // TFT: the lobby standings + final placements, side
+                                // by side (from the Liquipedia poller cache; nothing
+                                // for non-TFT events / before results exist).
+                                <TftEventResults event=Signal::derive(move || {
+                                    let lg = league();
+                                    if lg.starts_with("TFT") { lg } else { String::new() }
+                                }) />
                             </article>
                         }
                             .into_any()

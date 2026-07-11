@@ -295,48 +295,135 @@ fn scoped_text(tag: &HTMLTag, parser: &Parser, sel: &str) -> String {
         .unwrap_or_default()
 }
 
-/// Parse the lobby standings panel-table into ranked, per-game rows. Header rows
-/// (no numeric rank) are skipped; `game_count` is the widest row's game count.
-pub fn parse_standings(html: &str) -> TftStandings {
+/// One standings panel parsed from a parent tournament page, tagged with the
+/// minute-truncated unix times of its games. A parent page transcludes one panel
+/// per stage (Swiss day 1 ≈40 players, Swiss day 2 ≈32, Grand Finals top 8 …);
+/// the game times let the caller attach each panel to the stage *event* whose
+/// sessions run at those times, instead of concatenating every stage's rows into
+/// one long, confusing table (rank 1..40, then 1..32, then 1..8).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StandingsTable {
+    /// Minute-truncated unix times of this panel's games, read from its header
+    /// row's per-game countdown spans. Empty if the panel carries no game clock.
+    pub game_minutes: Vec<i64>,
+    pub standings: TftStandings,
+}
+
+/// Parse one panel-table's rows (rank · participant · total · per-game points).
+/// Header rows (no numeric rank) yield `None`.
+fn parse_standings_row(row: &HTMLTag, parser: &Parser) -> Option<TftStandingRow> {
+    // Rank like "1st" → "1"; the header row has "Rank" → skipped.
+    let rank: String = scoped_text(row, parser, "div.cell--rank")
+        .chars()
+        .take_while(char::is_ascii_digit)
+        .collect();
+    if rank.is_empty() {
+        return None;
+    }
+    let participant = scoped_text(row, parser, "span.name");
+    let total = scoped_text(row, parser, "div.cell--total-points");
+    let games: Vec<String> = row
+        .query_selector(parser, "div.cell--game")
+        .into_iter()
+        .flatten()
+        .filter_map(|h| h.get(parser))
+        .map(|n| normalize_ws(&decode_entities(&n.inner_text(parser))))
+        .collect();
+    Some(TftStandingRow {
+        rank,
+        participant,
+        total,
+        games,
+    })
+}
+
+/// Drop game columns that are empty in every row. An ongoing stage renders its
+/// per-game points client-side, so the static HTML we parse leaves those cells
+/// blank (the running totals are still baked in); showing empty G1..Gn columns
+/// is just noise. Positional: column `j` survives iff some row has a value there,
+/// so a finished stage (all columns filled) keeps every game, and a half-played
+/// stage keeps only the games with results.
+fn drop_empty_game_columns(rows: &mut [TftStandingRow]) {
+    let width = rows.iter().map(|r| r.games.len()).max().unwrap_or(0);
+    let keep: Vec<bool> = (0..width)
+        .map(|j| {
+            rows.iter()
+                .any(|r| r.games.get(j).is_some_and(|v| !v.is_empty()))
+        })
+        .collect();
+    if keep.iter().all(|k| *k) {
+        return;
+    }
+    for r in rows.iter_mut() {
+        r.games = r
+            .games
+            .iter()
+            .enumerate()
+            .filter(|(j, _)| keep.get(*j).copied().unwrap_or(false))
+            .map(|(_, v)| v.clone())
+            .collect();
+    }
+}
+
+/// Parse every lobby-standings panel on the page into its own table. Each
+/// `div.panel-table` is one stage's battle-royale standings; rows are scoped to
+/// their own panel so stages never bleed into each other. `game_count` is the
+/// widest row's game count; empty panels are dropped.
+pub fn parse_standings_tables(html: &str) -> Vec<StandingsTable> {
     let decoded = html.replace("&#95;", "_");
     let Ok(dom) = tl::parse(&decoded, ParserOptions::default()) else {
-        return TftStandings::default();
+        return Vec::new();
     };
     let parser = dom.parser();
-    let Some(rows_sel) = dom.query_selector("div.panel-table__row") else {
-        return TftStandings::default();
+    let Some(tables) = dom.query_selector("div.panel-table") else {
+        return Vec::new();
     };
-    let mut rows = Vec::new();
-    for rh in rows_sel {
-        let Some(row) = rh.get(parser).and_then(|n| n.as_tag()) else {
+    let mut out = Vec::new();
+    for th in tables {
+        let Some(table) = th.get(parser).and_then(|n| n.as_tag()) else {
             continue;
         };
-        // Rank like "1st" → "1"; the header row has "Rank" → skipped.
-        let rank: String = scoped_text(row, parser, "div.cell--rank")
-            .chars()
-            .take_while(char::is_ascii_digit)
-            .collect();
-        if rank.is_empty() {
-            continue;
-        }
-        let participant = scoped_text(row, parser, "span.name");
-        let total = scoped_text(row, parser, "div.cell--total-points");
-        let games: Vec<String> = row
-            .query_selector(parser, "div.cell--game")
+        // Game times live in the header row's countdown spans (one per game).
+        let game_minutes: Vec<i64> = table
+            .query_selector(parser, "div.row--header")
+            .and_then(|mut it| it.next())
+            .and_then(|h| h.get(parser))
+            .and_then(|n| n.as_tag())
+            .map(|hdr| {
+                hdr.query_selector(parser, "span.timer-object")
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|h| h.get(parser).and_then(|n| n.as_tag()))
+                    .filter_map(|s| attr_str(s, "data-timestamp"))
+                    .filter_map(|s| s.trim().parse::<i64>().ok())
+                    .map(|ts| ts / 60)
+                    .collect()
+            })
+            .unwrap_or_default();
+        let mut rows: Vec<TftStandingRow> = table
+            .query_selector(parser, "div.panel-table__row")
             .into_iter()
             .flatten()
-            .filter_map(|h| h.get(parser))
-            .map(|n| normalize_ws(&decode_entities(&n.inner_text(parser))))
+            .filter_map(|rh| rh.get(parser).and_then(|n| n.as_tag()))
+            .filter_map(|row| parse_standings_row(row, parser))
             .collect();
-        rows.push(TftStandingRow {
-            rank,
-            participant,
-            total,
-            games,
+        if rows.is_empty() {
+            continue;
+        }
+        // Skip a table with no real participants: an upcoming/seeding stage lists
+        // only ranks (names rendered client-side) or all-"TBD" placeholders — an
+        // empty shell, not standings worth showing.
+        if !rows.iter().any(|r| is_real_participant(&r.participant)) {
+            continue;
+        }
+        drop_empty_game_columns(&mut rows);
+        let game_count = rows.iter().map(|r| r.games.len()).max().unwrap_or(0);
+        out.push(StandingsTable {
+            game_minutes,
+            standings: TftStandings { game_count, rows },
         });
     }
-    let game_count = rows.iter().map(|r| r.games.len()).max().unwrap_or(0);
-    TftStandings { game_count, rows }
+    out
 }
 
 // ----- Fetching -------------------------------------------------------------
@@ -454,10 +541,16 @@ pub fn parse_placements(html: &str) -> Vec<TftPlacement> {
     out
 }
 
+/// Whether a participant label is a real competitor — non-blank and not the
+/// "TBD" placeholder Liquipedia uses for an undecided slot.
+fn is_real_participant(name: &str) -> bool {
+    let n = name.trim();
+    !n.is_empty() && !n.eq_ignore_ascii_case("TBD")
+}
+
 /// Whether a placement is decided — a real participant, not blank or "TBD".
 pub fn is_decided(p: &TftPlacement) -> bool {
-    let n = p.participant.trim();
-    !n.is_empty() && !n.eq_ignore_ascii_case("TBD")
+    is_real_participant(&p.participant)
 }
 
 /// Whether any placement is decided — used to decide whether to surface a
@@ -490,7 +583,7 @@ pub fn parent_tournament_url(session_url: &str) -> String {
 pub async fn fetch_tournament_results(
     client: &reqwest::Client,
     parent_url: &str,
-) -> Result<(Vec<TftPlacement>, TftStandings), DynError> {
+) -> Result<(Vec<TftPlacement>, Vec<StandingsTable>), DynError> {
     // e.g. ".../tft/Space_Gods/Tacticians_Crown" → page title "Space_Gods/Tacticians_Crown".
     let page = parent_url.rsplit("/tft/").next().unwrap_or(parent_url);
     let resp = client
@@ -508,8 +601,10 @@ pub async fn fetch_tournament_results(
         .await?;
     let html = &resp.parse.text.star;
     // Keep every placement row (including an ongoing tournament's still-"TBD"
-    // places) so the table reads as complete; undecided places render blank.
-    Ok((parse_placements(html), parse_standings(html)))
+    // places) so the table reads as complete; undecided places render blank. The
+    // standings come back as one table per stage (matched to events by the
+    // caller), not one concatenated blob.
+    Ok((parse_placements(html), parse_standings_tables(html)))
 }
 
 #[cfg(test)]
@@ -699,15 +794,123 @@ mod tests {
     #[test]
     fn parses_lobby_standings_from_fixture() {
         let html = include_str!("fixtures/tft_standings.html");
-        let s = parse_standings(html);
+        let tables = parse_standings_tables(html);
+        assert_eq!(tables.len(), 1, "single-panel fixture");
+        let t = &tables[0];
+        // The panel's six game clocks are captured (minute-truncated) so the
+        // caller can match this panel to the stage running at those times.
+        assert_eq!(t.game_minutes.len(), 6);
+        assert_eq!(t.game_minutes[0], 1_783_681_200 / 60);
+        let s = &t.standings;
         assert_eq!(s.rows.len(), 3, "fixture has 3 data rows");
-        assert!(s.game_count > 0, "has game columns");
         assert_eq!(s.game_count, 6);
         let r0 = &s.rows[0];
         assert_eq!(r0.rank, "1");
         assert_eq!(r0.participant, "A Long");
         assert_eq!(r0.total, "40");
         assert_eq!(r0.games, ["7", "6", "8", "6", "8", "5"]); // sums to the total
+    }
+
+    #[test]
+    fn splits_panels_and_captures_per_panel_game_times() {
+        // Two stages transcluded on one parent page: a 2-game panel (2 players)
+        // and a 1-game panel (1 player). Rows must not bleed across panels, and
+        // each panel keeps its own game clocks (the split that fixes the
+        // "rank 1..40, then 1..32, then 1..8" concatenation).
+        let html = r#"
+<div class="panel-table&#95;&#95;wrap">
+  <div class="panel-table" data-js-battle-royale="table">
+    <div class="panel-table&#95;&#95;row row--header">
+      <div class="cell--game"><span class="timer-object" data-timestamp="1000000"></span></div>
+      <div class="cell--game"><span class="timer-object" data-timestamp="1000600"></span></div>
+    </div>
+    <div class="panel-table&#95;&#95;row">
+      <div class="cell--rank" data-sort-val="1"><span>1st</span></div>
+      <div class="cell--team"><span class="name">Alpha</span></div>
+      <div class="cell--total-points">14</div>
+      <div class="cell--game">7</div><div class="cell--game">7</div>
+    </div>
+    <div class="panel-table&#95;&#95;row">
+      <div class="cell--rank" data-sort-val="2"><span>2nd</span></div>
+      <div class="cell--team"><span class="name">Beta</span></div>
+      <div class="cell--total-points">10</div>
+      <div class="cell--game">5</div><div class="cell--game">5</div>
+    </div>
+  </div>
+  <div class="panel-table" data-js-battle-royale="table">
+    <div class="panel-table&#95;&#95;row row--header">
+      <div class="cell--game"><span class="timer-object" data-timestamp="2000000"></span></div>
+    </div>
+    <div class="panel-table&#95;&#95;row">
+      <div class="cell--rank" data-sort-val="1"><span>1st</span></div>
+      <div class="cell--team"><span class="name">Gamma</span></div>
+      <div class="cell--total-points">9</div>
+      <div class="cell--game">9</div>
+    </div>
+  </div>
+</div>"#;
+        let tables = parse_standings_tables(html);
+        assert_eq!(tables.len(), 2, "two panels → two tables");
+        assert_eq!(tables[0].standings.rows.len(), 2);
+        assert_eq!(tables[0].standings.game_count, 2);
+        assert_eq!(tables[0].game_minutes, [1_000_000 / 60, 1_000_600 / 60]);
+        assert_eq!(tables[0].standings.rows[0].participant, "Alpha");
+        assert_eq!(tables[0].standings.rows[1].participant, "Beta");
+        // The second panel inherits neither the first's rows nor its clocks.
+        assert_eq!(tables[1].standings.rows.len(), 1);
+        assert_eq!(tables[1].game_minutes, [2_000_000 / 60]);
+        assert_eq!(tables[1].standings.rows[0].participant, "Gamma");
+    }
+
+    #[test]
+    fn drops_empty_game_columns_for_ongoing_stages() {
+        // An ongoing stage renders per-game points client-side, so the static
+        // HTML's game cells are blank while the running total is baked in. The
+        // empty columns are dropped (game_count → 0) but the total is kept.
+        let html = r#"
+<div class="panel-table" data-js-battle-royale="table">
+  <div class="panel-table&#95;&#95;row row--header">
+    <div class="cell--game"><span class="timer-object" data-timestamp="60"></span></div>
+    <div class="cell--game"><span class="timer-object" data-timestamp="120"></span></div>
+  </div>
+  <div class="panel-table&#95;&#95;row">
+    <div class="cell--rank" data-sort-val="1"><span>1st</span></div>
+    <div class="cell--team"><span class="name">Solo</span></div>
+    <div class="cell--total-points">40</div>
+    <div class="cell--game"></div><div class="cell--game"></div>
+  </div>
+</div>"#;
+        let tables = parse_standings_tables(html);
+        assert_eq!(tables.len(), 1);
+        let s = &tables[0].standings;
+        assert_eq!(s.game_count, 0, "all-blank game columns are dropped");
+        assert!(s.rows[0].games.is_empty());
+        assert_eq!(s.rows[0].total, "40", "the running total is kept");
+        assert_eq!(s.rows[0].participant, "Solo");
+    }
+
+    #[test]
+    fn skips_shell_tables_without_real_participants() {
+        // A seeding/upcoming stage lists ranks with no names (rendered client
+        // side) or all-"TBD" seeds — an empty shell that must not surface.
+        let html = r#"
+<div class="panel-table" data-js-battle-royale="table">
+  <div class="panel-table&#95;&#95;row row--header"></div>
+  <div class="panel-table&#95;&#95;row">
+    <div class="cell--rank" data-sort-val="1"><span>1st</span></div>
+    <div class="cell--team"><span class="name">TBD</span></div>
+    <div class="cell--total-points"></div>
+  </div>
+  <div class="panel-table&#95;&#95;row">
+    <div class="cell--rank" data-sort-val="2"><span>2nd</span></div>
+    <div class="cell--team"><span class="name"></span></div>
+    <div class="cell--total-points"></div>
+  </div>
+</div>"#;
+        assert!(
+            parse_standings_tables(html).is_empty(),
+            "a nameless / all-TBD shell table is skipped"
+        );
     }
 
     #[test]
@@ -775,20 +978,30 @@ mod tests {
             .build()
             .unwrap();
         let url = "https://liquipedia.net/tft/Into_the_Arcane/Tacticians_Crown";
-        let (p, s) = rt.block_on(fetch_tournament_results(&client, url)).unwrap();
+        let (p, tables) = rt.block_on(fetch_tournament_results(&client, url)).unwrap();
         assert!(any_decided(&p), "a finished tournament has decided places");
         assert_eq!(p[0].place, "1");
         assert!(is_decided(&p[0]), "the winner is decided");
         for x in p.iter().take(3) {
             eprintln!("PLACE {} | {} | {}", x.place, x.participant, x.prize);
         }
-        // The same page also yields the lobby standings.
-        assert!(!s.rows.is_empty(), "finished tournament has standings");
-        for r in s.rows.iter().take(3) {
+        // The same page also yields the lobby standings — one panel per stage.
+        assert!(
+            !tables.is_empty(),
+            "finished tournament has standings panels"
+        );
+        for (i, t) in tables.iter().enumerate() {
             eprintln!(
-                "STAND {} | {} | {} | {:?}",
-                r.rank, r.participant, r.total, r.games
+                "PANEL {i}: {} rows, minutes={:?}",
+                t.standings.rows.len(),
+                t.game_minutes
             );
+            for r in t.standings.rows.iter().take(3) {
+                eprintln!(
+                    "  STAND {} | {} | {} | {:?}",
+                    r.rank, r.participant, r.total, r.games
+                );
+            }
         }
     }
 }

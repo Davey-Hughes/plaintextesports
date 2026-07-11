@@ -161,152 +161,167 @@ pub(crate) fn MotorStandingsView(standings: MotorStandings, league: String) -> i
     }
 }
 
-/// A TFT tournament's final placements (place · participant · prize), shown on its
-/// event page. Spoiler-gated as one block (it's a result); the place stays visible
-/// to reserve height while the names/prizes hide. Nothing renders when empty
-/// (undecided tournament / non-TFT event).
-#[component]
-pub(crate) fn TftPlacementsView(placements: Vec<TftPlacement>, event: String) -> impl IntoView {
-    if placements.is_empty() {
-        return ().into_any();
-    }
-    let (revealed, toggle) = section_reveal(format!("tftplace:{event}"));
-    let rows = StoredValue::new(placements);
-    let body = move || {
-        let show = revealed.get();
-        rows.get_value()
-            .into_iter()
-            .map(|p| {
-                // Undecided places (an ongoing tournament's still-"TBD" spots) show
-                // a dash for the name, so the table reads as complete.
-                let decided = {
-                    let n = p.participant.trim();
-                    !n.is_empty() && !n.eq_ignore_ascii_case("TBD")
-                };
-                let (name, prize) = if show {
-                    let name = if decided {
-                        p.participant
-                    } else {
-                        "—".to_string()
-                    };
-                    (name, p.prize)
-                } else {
-                    (String::new(), String::new())
-                };
-                view! {
-                    <li class="f1-standing-row">
-                        <span class="f1-pos">{p.place}</span>
-                        <span class="f1-standing-name">{name}</span>
-                        <span class="f1-standing-pts">{prize}</span>
-                    </li>
-                }
-            })
-            .collect_view()
-    };
-    view! {
-        <section class="detail-section" id="tftsec-placements">
-            <h2 class="section-title f1-results-title">"Final Placements"</h2>
-            <button class="f1-session-head" on:click=toggle>
-                <span class="f1-session-toggle">
-                    {move || {
-                        if revealed.get() {
-                            "hide placements".to_string()
-                        } else {
-                            "show placements".to_string()
-                        }
-                    }}
-                </span>
-            </button>
-            // The 3-column (`-con`) grid: pos · participant · prize — matching the
-            // three cells per row (the plain `.f1-standings` grid is 4-column).
-            <ol class="f1-standings f1-standings-con">{body}</ol>
-        </section>
-    }
-    .into_any()
+/// Whether a participant label is a real competitor (non-blank, not "TBD").
+/// Mirrors the server-only `tft::is_real_participant` — re-inlined because this
+/// component compiles for the client too, where the `tft` module isn't present.
+fn tft_real(name: &str) -> bool {
+    let n = name.trim();
+    !n.is_empty() && !n.eq_ignore_ascii_case("TBD")
 }
 
-/// A TFT lobby standings grid (rank · player · per-game points · total), shown on
-/// its event page. Spoiler-gated as one block; the ranks stay visible while the
-/// names/points hide. The grid is wide, so it scrolls horizontally within its own
-/// container. Nothing renders when empty.
+/// One row of the merged TFT results ladder: a tournament position with whoever
+/// holds it, plus the value we have for them — live points for a player still in,
+/// prize money for one who's out.
+#[derive(Clone)]
+struct MergedRow {
+    pos: String,
+    player: String,
+    points: String,
+    prize: String,
+    /// Placement locked in (player eliminated) — muted, below the divider.
+    is_final: bool,
+    /// An open slot with no live-standings player behind it — rendered "—".
+    blank: bool,
+}
+
+/// Fold a stage's live standings and the tournament's final placements into one
+/// ranked ladder. The two are disjoint: standings holds the players still
+/// competing (ranked by points, placement still "TBD"); the *decided* placement
+/// rows are the eliminated players (final place + prize). Since anyone still in
+/// finishes above anyone already out, they stack cleanly — active players fill the
+/// open ("TBD") slots from the top in standings order, eliminated players sit
+/// below with their locked place. Positions come from the placement ladder; with
+/// no placements yet it's simply the standings.
+fn merge_tft_results(standings: &TftStandings, placements: &[TftPlacement]) -> Vec<MergedRow> {
+    let mut active = standings.rows.iter();
+    let mut out = Vec::new();
+    for p in placements {
+        if tft_real(&p.participant) {
+            // A decided (eliminated) place: final, carrying the prize.
+            out.push(MergedRow {
+                pos: p.place.clone(),
+                player: p.participant.clone(),
+                points: String::new(),
+                prize: p.prize.clone(),
+                is_final: true,
+                blank: false,
+            });
+        } else if let Some(a) = active.next() {
+            // A still-open place, filled by the next live-standings player.
+            out.push(MergedRow {
+                pos: p.place.clone(),
+                player: a.participant.clone(),
+                points: a.total.clone(),
+                prize: String::new(),
+                is_final: false,
+                blank: false,
+            });
+        } else {
+            // Open place with no standings behind it (e.g. a finals with no live
+            // table) — a blank slot so the ladder still reads as complete.
+            out.push(MergedRow {
+                pos: p.place.clone(),
+                player: String::new(),
+                points: String::new(),
+                prize: String::new(),
+                is_final: false,
+                blank: true,
+            });
+        }
+    }
+    // No placement ladder yet (early stage) — show the standings on their own.
+    for a in active {
+        out.push(MergedRow {
+            pos: (out.len() + 1).to_string(),
+            player: a.participant.clone(),
+            points: a.total.clone(),
+            prize: String::new(),
+            is_final: false,
+            blank: false,
+        });
+    }
+    out
+}
+
+/// A TFT event's results as ONE ranked ladder (# · player · pts · prize) — the
+/// live lobby standings and the tournament's final placements merged by
+/// [`merge_tft_results`]. Players still competing sit on top with their points; a
+/// labelled divider separates the eliminated players below, muted, with their
+/// final place + prize. Spoiler-gated as one block; positions stay visible to
+/// reserve height while names/points/prizes hide. Column widths are precomputed
+/// in monospace `ch` so revealing never reflows. Nothing renders when empty.
 #[component]
-pub(crate) fn TftStandingsView(standings: TftStandings, event: String) -> impl IntoView {
-    if standings.rows.is_empty() {
+fn TftResultsTable(
+    standings: TftStandings,
+    placements: Vec<TftPlacement>,
+    event: String,
+) -> impl IntoView {
+    let data = merge_tft_results(&standings, &placements);
+    if data.is_empty() {
         return ().into_any();
     }
-    let (revealed, toggle) = section_reveal(format!("tftstand:{event}"));
-    let game_count = standings.game_count;
-    let data = standings.rows;
-    // Precompute each column's width (in monospace `ch`) from the shown values, so
-    // the grid is laid out identically whether the spoiler is hidden or shown —
-    // revealing never reflows the columns/headers. Widths cover the header labels
-    // too, and the name column is capped (longer names ellipsize).
+    let (revealed, toggle) = section_reveal(format!("tftres:{event}"));
     let chars = |s: &str| s.chars().count();
-    let rank_w = data
-        .iter()
-        .map(|r| chars(&r.rank))
-        .max()
-        .unwrap_or(0)
-        .max(1);
+    let pos_w = data.iter().map(|r| chars(&r.pos)).max().unwrap_or(1).max(1);
     let name_w = data
         .iter()
-        .map(|r| chars(&r.participant))
+        .map(|r| chars(&r.player))
         .max()
         .unwrap_or(0)
         .clamp(6, 22);
-    let total_w = data
+    let pts_w = data
         .iter()
-        .map(|r| chars(&r.total))
+        .map(|r| chars(&r.points))
+        .max()
+        .unwrap_or(0)
+        .max(3);
+    let prize_w = data
+        .iter()
+        .map(|r| chars(&r.prize))
         .max()
         .unwrap_or(0)
         .max(5);
-    let game_w = data
-        .iter()
-        .flat_map(|r| r.games.iter())
-        .map(|g| chars(g))
-        .max()
-        .unwrap_or(0)
-        .max(chars(&format!("G{game_count}")));
-    let grid = format!(
-        "grid-template-columns:{rank_w}ch {name_w}ch repeat({game_count},{game_w}ch) {total_w}ch;"
-    );
+    let grid = format!("grid-template-columns:{pos_w}ch {name_w}ch {pts_w}ch {prize_w}ch;");
     let rows = StoredValue::new(data);
-    let head_games = (1..=game_count)
-        .map(|i| view! { <span class="tft-h tft-g">{format!("G{i}")}</span> })
-        .collect_view();
     let body = move || {
         let show = revealed.get();
+        // The eliminated block is contiguous at the bottom, so one divider (before
+        // the first final row) cleanly splits live from final.
+        let mut sep_shown = false;
         rows.get_value()
             .into_iter()
             .map(|r| {
-                let games = (0..game_count)
-                    .map(|i| {
-                        let v = if show {
-                            r.games.get(i).cloned().unwrap_or_default()
-                        } else {
-                            String::new()
-                        };
-                        view! { <span class="tft-g">{v}</span> }
-                    })
-                    .collect_view();
-                let (name, total) = if show {
-                    (r.participant, r.total)
+                let sep = (r.is_final && !sep_shown)
+                    .then(|| view! { <div class="tft-elim-sep">"eliminated"</div> });
+                if r.is_final {
+                    sep_shown = true;
+                }
+                let is_final = r.is_final;
+                let pos = r.pos.clone();
+                let (name, points, prize) = if show {
+                    let name = if r.blank {
+                        "—".to_string()
+                    } else {
+                        r.player.clone()
+                    };
+                    (name, r.points.clone(), r.prize.clone())
                 } else {
-                    (String::new(), String::new())
+                    (String::new(), String::new(), String::new())
                 };
                 view! {
-                    <div class="tft-row">
-                        <span class="tft-rank">{r.rank}</span>
+                    {sep}
+                    <div class="tft-row" class:tft-final=is_final>
+                        <span class="tft-rank">{pos}</span>
                         <span class="tft-name">{name}</span>
-                        {games}
-                        <span class="tft-total">{total}</span>
+                        <span class="tft-pts">{points}</span>
+                        <span class="tft-prize">{prize}</span>
                     </div>
                 }
             })
             .collect_view()
     };
     view! {
-        <section class="detail-section" id="tftsec-standings">
+        <section class="detail-section" id="tftsec-results">
             <h2 class="section-title f1-results-title">"Standings"</h2>
             <button class="f1-session-head" on:click=toggle>
                 <span class="f1-session-toggle">
@@ -324,8 +339,8 @@ pub(crate) fn TftStandingsView(standings: TftStandings, event: String) -> impl I
                     <div class="tft-row">
                         <span class="tft-h tft-rank">"#"</span>
                         <span class="tft-h tft-name">"Player"</span>
-                        {head_games}
-                        <span class="tft-h tft-total">"Total"</span>
+                        <span class="tft-h tft-pts">"Pts"</span>
+                        <span class="tft-h tft-prize">"Prize"</span>
                     </div>
                     {body}
                 </div>
@@ -333,6 +348,56 @@ pub(crate) fn TftStandingsView(standings: TftStandings, event: String) -> impl I
         </section>
     }
     .into_any()
+}
+
+/// A TFT event's results — the live lobby standings and the tournament's final
+/// placements folded into one ranked ladder ([`TftResultsTable`]). Self-contained:
+/// it owns the two Liquipedia-poller-cache resources keyed by `event` (the full
+/// event name; empty → nothing renders), so it drops into both the event page and
+/// the front-page single-event section.
+#[component]
+pub(crate) fn TftEventResults(event: Signal<String>) -> impl IntoView {
+    let standings = Resource::new(
+        move || event.get(),
+        |ev| async move {
+            if ev.is_empty() {
+                TftStandings::default()
+            } else {
+                get_tft_standings(ev).await.unwrap_or_default()
+            }
+        },
+    );
+    let placements = Resource::new(
+        move || event.get(),
+        |ev| async move {
+            if ev.is_empty() {
+                Vec::new()
+            } else {
+                get_tft_placements(ev).await.unwrap_or_default()
+            }
+        },
+    );
+    view! {
+        // Transition (not Suspense) so re-keying on a new event — switching the
+        // single-event filter — keeps the current table up while the next loads.
+        <Transition>
+            {move || {
+                let ev = event.get();
+                if ev.is_empty() {
+                    return ().into_any();
+                }
+                let s = standings.get().unwrap_or_default();
+                let p = placements.get().unwrap_or_default();
+                // Show only when there's real content: live standings, or at least
+                // one decided placement. (All-"TBD" placements with no standings —
+                // an untouched prizepool — render nothing.)
+                if s.is_empty() && !p.iter().any(|x| tft_real(&x.participant)) {
+                    return ().into_any();
+                }
+                view! { <TftResultsTable standings=s placements=p event=ev /> }.into_any()
+            }}
+        </Transition>
+    }
 }
 
 /// The division/conference/group standings for a single traditional league,
@@ -364,5 +429,84 @@ pub(crate) fn TraditionalStandings(league: Memo<String>) -> impl IntoView {
                     .map(|v| view! { <EventStages stages=v /> })
             }}
         </Transition>
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::types::TftStandingRow;
+
+    fn stand(rows: &[(&str, &str)]) -> TftStandings {
+        TftStandings {
+            game_count: 0,
+            rows: rows
+                .iter()
+                .enumerate()
+                .map(|(i, (name, total))| TftStandingRow {
+                    rank: (i + 1).to_string(),
+                    participant: (*name).to_string(),
+                    total: (*total).to_string(),
+                    games: Vec::new(),
+                })
+                .collect(),
+        }
+    }
+    fn place(p: &str, name: &str, prize: &str) -> TftPlacement {
+        TftPlacement {
+            place: p.to_string(),
+            participant: name.to_string(),
+            prize: prize.to_string(),
+        }
+    }
+
+    #[test]
+    fn merges_live_standings_over_eliminated_placements() {
+        let standings = stand(&[("Alpha", "40"), ("Beta", "37")]);
+        // Two open (TBD) places on top, one decided (eliminated) below.
+        let placements = vec![
+            place("1", "TBD", "$100"),
+            place("2", "", "$50"),
+            place("3", "Zed", "$25"),
+        ];
+        let rows = merge_tft_results(&standings, &placements);
+        assert_eq!(rows.len(), 3);
+        // Open slots filled by live standings, in standings order — points, no
+        // prize, provisional.
+        assert_eq!(
+            (rows[0].player.as_str(), rows[0].points.as_str()),
+            ("Alpha", "40")
+        );
+        assert!(rows[0].prize.is_empty() && !rows[0].is_final && !rows[0].blank);
+        assert_eq!(rows[1].player, "Beta");
+        // Decided place: final, muted, prize, no live points.
+        assert_eq!(
+            (rows[2].player.as_str(), rows[2].prize.as_str()),
+            ("Zed", "$25")
+        );
+        assert!(rows[2].is_final && rows[2].points.is_empty());
+    }
+
+    #[test]
+    fn merge_without_placements_is_just_standings() {
+        let rows = merge_tft_results(&stand(&[("Solo", "9")]), &[]);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(
+            (rows[0].pos.as_str(), rows[0].player.as_str()),
+            ("1", "Solo")
+        );
+        assert!(!rows[0].is_final);
+    }
+
+    #[test]
+    fn merge_without_standings_blanks_open_slots() {
+        let placements = vec![place("1", "TBD", "$100"), place("2", "Out", "$50")];
+        let rows = merge_tft_results(&TftStandings::default(), &placements);
+        assert_eq!(rows.len(), 2);
+        assert!(
+            rows[0].blank,
+            "an open slot with no live standings is blank"
+        );
+        assert!(rows[1].is_final && rows[1].player == "Out");
     }
 }

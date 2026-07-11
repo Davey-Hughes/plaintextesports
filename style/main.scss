@@ -2842,8 +2842,8 @@ a.sw-link {
   }
 
   .tft-rank,
-  .tft-g,
-  .tft-total {
+  .tft-pts,
+  .tft-prize {
     text-align: right;
   }
 
@@ -2859,8 +2859,22 @@ a.sw-link {
     opacity: 0.75;
   }
 
-  .tft-total {
-    font-weight: 600;
+  // Eliminated (final-placement) rows sit muted below the divider.
+  .tft-row.tft-final > span {
+    opacity: 0.5;
+  }
+
+  // Full-width rule marking where the live standings end and the eliminated
+  // (final-place) players, shown with their prize, begin.
+  .tft-elim-sep {
+    grid-column: 1 / -1;
+    margin-top: 0.4rem;
+    padding-top: 0.3rem;
+    border-top: 1px dotted var(--border);
+    font-size: 11px;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    opacity: 0.55;
   }
 }
 

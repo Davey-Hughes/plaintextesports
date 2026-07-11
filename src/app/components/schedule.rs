@@ -683,6 +683,53 @@ pub(crate) fn ScheduleSection(
             f1_home_season.set(season);
         }
     });
+    // The sole TFT event (full event name) currently in view, or empty when none
+    // or several are shown — the esports analogue of `single_league`, but keyed
+    // per-event (every TFT stage shares the league "TFT", so the chip filter
+    // can't distinguish them). When it resolves, the front page shows that event's
+    // lobby standings + final placements below the schedule. Written from an
+    // effect (reads the resource) and only on change, like the effect above.
+    let single_tft_event = RwSignal::new(String::new());
+    Effect::new(move |_| {
+        let ev = if traditional.get() {
+            String::new()
+        } else if let Some(Ok(s)) = resource.get() {
+            let g = games.get();
+            let l = leagues.get();
+            let mut events: Vec<String> = Vec::new();
+            for day in &s.days {
+                for lg in &day.leagues {
+                    let Some(sport) = lg.matches.first().map(|m| m.sport) else {
+                        continue;
+                    };
+                    if sport != Sport::Tft {
+                        continue;
+                    }
+                    // Respect the active game/league filters (the same axes the
+                    // schedule itself is filtered by) so this tracks what's shown.
+                    if !g.is_empty() && !g.contains(sport.slug()) {
+                        continue;
+                    }
+                    if !l.is_empty() && !l.contains(&lg.league) {
+                        continue;
+                    }
+                    let name = full_event_name(&lg.league, &lg.series_name);
+                    if !events.contains(&name) {
+                        events.push(name);
+                    }
+                }
+            }
+            match events.as_slice() {
+                [only] => only.clone(),
+                _ => String::new(),
+            }
+        } else {
+            String::new()
+        };
+        if single_tft_event.get_untracked() != ev {
+            single_tft_event.set(ev);
+        }
+    });
     // The team sports show their division/group tables; the motorsport series
     // (F1/WRC/WEC/MotoGP) have no such tables — they get championship standings
     // instead (handled below), so they're excluded here.
@@ -856,6 +903,9 @@ pub(crate) fn ScheduleSection(
         </Transition>
         // When exactly one esports event is selected, show its standings/bracket.
         {move || (!traditional.get()).then(|| view! { <EventSection leagues=leagues /> })}
+        // A single TFT event in view shows its lobby standings + final placements,
+        // the same pair the event page renders (empty when zero/multiple shown).
+        <TftEventResults event=Signal::derive(move || single_tft_event.get()) />
         // Likewise, a single traditional league shows its division/group tables.
         <TraditionalStandings league=trad_standings_league />
         // F1 has no league table — when narrowed to it, show the current

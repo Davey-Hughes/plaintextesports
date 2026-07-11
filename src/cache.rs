@@ -2129,54 +2129,81 @@ async fn refresh_tft_results(
         return false;
     };
     match crate::tft::fetch_tournament_results(client, &parent).await {
-        Ok((placements, standings)) => {
-            // Every stage event sharing this parent tournament shows these results.
-            let events: std::collections::HashSet<String> = tft_rows
-                .iter()
-                .filter(|m| {
-                    m.league_url
-                        .as_deref()
-                        .map(crate::tft::parent_tournament_url)
-                        .as_deref()
-                        == Some(parent.as_str())
-                })
-                .map(|m| crate::types::full_event_name(&m.league, &m.series_name))
-                .collect();
-            // Surface the placement table once at least one place is decided —
-            // then keep the whole table (undecided places render blank), so it
-            // reads as complete during an ongoing tournament.
+        Ok((placements, tables)) => {
+            // The stage events sharing this parent tournament, each mapped to the
+            // set of minute-truncated session times it runs at — used to match a
+            // standings panel (which carries its own game times) to the right
+            // stage instead of pasting every stage's rows onto every page.
+            let mut event_minutes: HashMap<String, std::collections::HashSet<i64>> = HashMap::new();
+            for m in tft_rows.iter().filter(|m| {
+                m.league_url
+                    .as_deref()
+                    .map(crate::tft::parent_tournament_url)
+                    .as_deref()
+                    == Some(parent.as_str())
+            }) {
+                let ev = crate::types::full_event_name(&m.league, &m.series_name);
+                event_minutes
+                    .entry(ev)
+                    .or_default()
+                    .insert(m.begin_at.timestamp() / 60);
+            }
+            // Placements are the tournament's overall result, so they attach to
+            // every stage event. Surface the table once at least one place is
+            // decided — then keep the whole table (undecided places render blank),
+            // so it reads as complete during an ongoing tournament.
             if crate::tft::any_decided(&placements) {
                 {
                     let mut sp = TFT_PLACEMENTS
                         .write()
                         .unwrap_or_else(PoisonError::into_inner);
-                    for ev in &events {
+                    for ev in event_minutes.keys() {
                         sp.insert(ev.clone(), placements.clone());
                     }
                 }
-                for ev in &events {
+                for ev in event_minutes.keys() {
                     db_cache_put("tft_placements", ev, &placements, now);
                 }
             }
-            if !standings.is_empty() {
+            // Standings are per-stage: give each event the panel whose game times
+            // overlap that stage's session times the most, so a Swiss page shows
+            // its own ~32-row table and Grand Finals its 8-row one. An event with
+            // no overlapping panel (e.g. a showmatch) is cleared to empty, which
+            // also purges any stale concatenated blob from before this split.
+            let mut standings_events = 0usize;
+            for (ev, minutes) in &event_minutes {
+                let matched = tables
+                    .iter()
+                    .map(|t| {
+                        let overlap = t
+                            .game_minutes
+                            .iter()
+                            .filter(|m| minutes.contains(m))
+                            .count();
+                        (t, overlap)
+                    })
+                    .filter(|(_, n)| *n > 0)
+                    .max_by_key(|(_, n)| *n)
+                    .map(|(t, _)| t.standings.clone())
+                    .unwrap_or_default();
+                if !matched.is_empty() {
+                    standings_events += 1;
+                }
                 {
                     let mut ss = TFT_STANDINGS
                         .write()
                         .unwrap_or_else(PoisonError::into_inner);
-                    for ev in &events {
-                        ss.insert(ev.clone(), standings.clone());
-                    }
+                    ss.insert(ev.clone(), matched.clone());
                 }
-                for ev in &events {
-                    db_cache_put("tft_standings", ev, &standings, now);
-                }
+                db_cache_put("tft_standings", ev, &matched, now);
             }
-            if !placements.is_empty() || !standings.is_empty() {
+            if crate::tft::any_decided(&placements) || standings_events > 0 {
                 leptos::logging::log!(
-                    "TFT results: {} placement(s) + {} standing(s) for {} event(s) from {parent}",
+                    "TFT results: {} placement(s) for {} event(s) + standings for {}/{} stage(s) from {parent}",
                     placements.len(),
-                    standings.rows.len(),
-                    events.len()
+                    event_minutes.len(),
+                    standings_events,
+                    event_minutes.len()
                 );
             }
         }
