@@ -3227,84 +3227,99 @@ pub(crate) fn group_chains(views: Vec<MatchView>, tz: &Tz) -> Vec<DayGroup> {
 pub fn collapse_wrc_days(views: Vec<MatchView>, tz: &Tz, snap: &Snapshot) -> Vec<MatchView> {
     use std::collections::{BTreeSet, HashMap, HashSet};
 
-    let is_stage = |m: &MatchView| {
-        m.sport == Sport::Motorsport && m.league == "WRC" && !m.clock_label.is_empty()
-    };
-
-    // Only WRC stage rows get condensed. With none in view — every esports page,
-    // and any traditional page with no WRC stage in window (the common case) —
-    // skip the full O(n) cross-sport snapshot pre-scan and the regroup entirely;
-    // just keep the input time-sorted (the homepage appends out-of-window
-    // motorsport rows, so the sort still matters).
-    if !views.iter().any(is_stage) {
-        let mut views = views;
-        views.sort_by_key(|m| m.begin_at_ms);
-        return views;
-    }
-
-    // Leg ordinal + power-stage flag per (series, local day), taken from the whole
+    // Leg ordinal + power-stage flag per (event, local day), taken from the whole
     // rally in the snapshot — not just the windowed subset — so a single-day view
-    // still numbers its leg from the rally's first day.
-    let mut days_by_series: HashMap<&str, BTreeSet<String>> = HashMap::new();
+    // still numbers its leg from the rally's first day. (Placeholder rows without a
+    // venue tz are skipped; a real WRC stage always has one.)
+    let mut days_by_event: HashMap<String, BTreeSet<String>> = HashMap::new();
     let mut power_days: HashSet<(String, String)> = HashSet::new();
     for m in &snap.matches {
         if m.sport != Sport::Motorsport || m.league != "WRC" || m.venue_tz.is_none() {
             continue;
         }
+        let event = full_event_name(&m.league, &m.series_name);
         let day = m.begin_at.with_timezone(tz).format("%Y-%m-%d").to_string();
         if m.team_a.label.contains("Power Stage") {
-            power_days.insert((m.series_name.clone(), day.clone()));
+            power_days.insert((event.clone(), day.clone()));
         }
-        days_by_series
-            .entry(m.series_name.as_str())
-            .or_default()
-            .insert(day);
+        days_by_event.entry(event).or_default().insert(day);
+    }
+
+    collapse_days(
+        views,
+        tz,
+        |m| m.sport == Sport::Motorsport && m.league == "WRC" && !m.clock_label.is_empty(),
+        |m| full_event_name(&m.league, &m.series_name),
+        |_stages, event, day| {
+            let ordinal = days_by_event
+                .get(event)
+                .and_then(|days| days.iter().position(|d| d == day))
+                .map_or(1, |i| i + 1);
+            if power_days.contains(&(event.to_string(), day.to_string())) {
+                format!("Day {ordinal} · Power Stage")
+            } else {
+                format!("Day {ordinal}")
+            }
+        },
+    )
+}
+
+/// Shared core of the per-day collapse used by WRC and TFT: fold the `is_target`
+/// rows into one representative row per `(event, local-day)` — labelled by
+/// `label_of`, linking to that day on the event page — while every other row
+/// passes straight through. The representative anchors at the day's first row (its
+/// real start time). Output is re-sorted by start time (which also reorders any
+/// out-of-window rows the homepage appended); with no target rows in view it's a
+/// cheap sort-and-return. The `event`-specific ordinal/label scan of the whole
+/// snapshot lives in each caller's `label_of` closure, since the filters differ.
+fn collapse_days(
+    views: Vec<MatchView>,
+    tz: &Tz,
+    is_target: impl Fn(&MatchView) -> bool,
+    key_of: impl Fn(&MatchView) -> String,
+    label_of: impl Fn(&[MatchView], &str, &str) -> String,
+) -> Vec<MatchView> {
+    use std::collections::HashMap;
+
+    // Nothing to condense (every esports page; a traditional page with no such
+    // rows in window — the common case): just keep the input time-sorted.
+    if !views.iter().any(&is_target) {
+        let mut views = views;
+        views.sort_by_key(|m| m.begin_at_ms);
+        return views;
     }
 
     let mut out: Vec<MatchView> = Vec::new();
     let mut groups: HashMap<(String, String), Vec<MatchView>> = HashMap::new();
     for v in views {
-        if is_stage(&v) {
+        if is_target(&v) {
             let day = DateTime::from_timestamp_millis(v.begin_at_ms)
                 .unwrap_or_else(Utc::now)
                 .with_timezone(tz)
                 .format("%Y-%m-%d")
                 .to_string();
-            groups
-                .entry((v.series_name.clone(), day))
-                .or_default()
-                .push(v);
+            groups.entry((key_of(&v), day)).or_default().push(v);
         } else {
             out.push(v);
         }
     }
 
-    for ((series, day), mut stages) in groups {
-        stages.sort_by_key(|m| m.begin_at_ms);
+    for ((event, day), mut sessions) in groups {
+        sessions.sort_by_key(|m| m.begin_at_ms);
         // The group came from a non-empty push, so a first element exists.
-        let mut rep = stages[0].clone();
-        let ordinal = days_by_series
-            .get(series.as_str())
-            .and_then(|days| days.iter().position(|d| *d == day))
-            .map_or(1, |i| i + 1);
-        // Clicking the collapsed leg jumps to that day on the rally's event page,
-        // where its stages are listed individually — the schedule can't show them
-        // itself without undoing the per-day condensing the day grouping relies on.
-        let event = full_event_name(&rep.league, &series);
-        // The event route is sport-scoped (`/event/{slug}/{name}`); WRC is Motorsport.
+        let mut rep = sessions[0].clone();
+        rep.team_a.label = label_of(&sessions, &event, &day);
+        rep.team_a.name = String::new();
+        // Clicking the collapsed day jumps to that day on the event page, where the
+        // day's rows are listed individually. Route is sport-scoped (`/event/{slug}
+        // /{name}`).
         rep.row_href = Some(format!(
             "/event/{}/{}#day-{}",
             rep.sport.slug(),
             pct_encode(&event),
             day
         ));
-        rep.team_a.label = if power_days.contains(&(series, day)) {
-            format!("Day {ordinal} · Power Stage")
-        } else {
-            format!("Day {ordinal}")
-        };
-        rep.team_a.name = String::new();
-        rep.status = day_status(&stages);
+        rep.status = day_status(&sessions);
         out.push(rep);
     }
 
@@ -3351,13 +3366,6 @@ fn tft_day_label(
 pub fn collapse_tft_days(views: Vec<MatchView>, tz: &Tz, snap: &Snapshot) -> Vec<MatchView> {
     use std::collections::{BTreeSet, HashMap};
 
-    let is_session = |m: &MatchView| m.sport == Sport::Tft;
-    if !views.iter().any(is_session) {
-        let mut views = views;
-        views.sort_by_key(|m| m.begin_at_ms);
-        return views;
-    }
-
     // Distinct local days per event (from the whole snapshot, not just the window)
     // for the ordinal fallback label.
     let mut days_by_event: HashMap<String, BTreeSet<String>> = HashMap::new();
@@ -3370,41 +3378,13 @@ pub fn collapse_tft_days(views: Vec<MatchView>, tz: &Tz, snap: &Snapshot) -> Vec
         days_by_event.entry(event).or_default().insert(day);
     }
 
-    let mut out: Vec<MatchView> = Vec::new();
-    let mut groups: HashMap<(String, String), Vec<MatchView>> = HashMap::new();
-    for v in views {
-        if is_session(&v) {
-            let day = DateTime::from_timestamp_millis(v.begin_at_ms)
-                .unwrap_or_else(Utc::now)
-                .with_timezone(tz)
-                .format("%Y-%m-%d")
-                .to_string();
-            let event = full_event_name(&v.league, &v.series_name);
-            groups.entry((event, day)).or_default().push(v);
-        } else {
-            out.push(v);
-        }
-    }
-
-    for ((event, day), mut sessions) in groups {
-        sessions.sort_by_key(|m| m.begin_at_ms);
-        let mut rep = sessions[0].clone();
-        rep.team_a.label = tft_day_label(&sessions, &event, &day, &days_by_event);
-        rep.team_a.name = String::new();
-        // Clicking the collapsed day jumps to that day on the event page, where the
-        // day's individual games are listed.
-        rep.row_href = Some(format!(
-            "/event/{}/{}#day-{}",
-            rep.sport.slug(),
-            pct_encode(&event),
-            day
-        ));
-        rep.status = day_status(&sessions);
-        out.push(rep);
-    }
-
-    out.sort_by_key(|m| m.begin_at_ms);
-    out
+    collapse_days(
+        views,
+        tz,
+        |m| m.sport == Sport::Tft,
+        |m| full_event_name(&m.league, &m.series_name),
+        |sessions, event, day| tft_day_label(sessions, event, day, &days_by_event),
+    )
 }
 
 /// Aggregate status of a rally day from its stages: live if any stage is, finished

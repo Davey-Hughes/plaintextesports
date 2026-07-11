@@ -257,11 +257,7 @@ fn table_timestamp(tag: &HTMLTag, parser: &Parser) -> Option<DateTime<Utc>> {
 
 /// The session label from the table's `td.versus` (e.g. "Day 2 - Game 1").
 fn table_label(tag: &HTMLTag, parser: &Parser) -> Option<String> {
-    let node = tag
-        .query_selector(parser, "td.versus")?
-        .next()?
-        .get(parser)?;
-    let text = normalize_ws(&decode_entities(&node.inner_text(parser)));
+    let text = scoped_text(tag, parser, "td.versus");
     (!text.is_empty()).then_some(text)
 }
 
@@ -279,9 +275,9 @@ fn table_tournament(tag: &HTMLTag, parser: &Parser) -> Option<(String, String)> 
         }
         // Prefer the `title` (full edition); fall back to the anchor text.
         let title = attr_str(a, "title")
-            .map(|t| normalize_ws(&decode_entities(&t)))
+            .map(|t| clean(&t))
             .filter(|t| !t.is_empty());
-        let name = title.unwrap_or_else(|| normalize_ws(&decode_entities(&a.inner_text(parser))));
+        let name = title.unwrap_or_else(|| clean(&a.inner_text(parser)));
         if !name.is_empty() {
             return Some((name, format!("{WIKI_HOST}{href}")));
         }
@@ -293,6 +289,17 @@ fn table_tournament(tag: &HTMLTag, parser: &Parser) -> Option<(String, String)> 
 /// litters through these labels) to single ASCII spaces.
 fn normalize_ws(s: &str) -> String {
     s.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// Clean an already-extracted string (e.g. an attribute value): decode the HTML
+/// entities `tl` leaves raw, then normalize whitespace.
+fn clean(s: &str) -> String {
+    normalize_ws(&decode_entities(s))
+}
+
+/// A node's cleaned inner text — the extraction idiom every parser here shares.
+fn node_text(n: &tl::Node, parser: &Parser) -> String {
+    clean(&n.inner_text(parser))
 }
 
 /// Decode the handful of HTML entities MediaWiki emits here: the named ones plus
@@ -350,7 +357,7 @@ fn scoped_text(tag: &HTMLTag, parser: &Parser, sel: &str) -> String {
     tag.query_selector(parser, sel)
         .and_then(|mut it| it.next())
         .and_then(|h| h.get(parser))
-        .map(|n| normalize_ws(&decode_entities(&n.inner_text(parser))))
+        .map(|n| node_text(n, parser))
         .unwrap_or_default()
 }
 
@@ -388,7 +395,7 @@ fn parse_standings_row(row: &HTMLTag, parser: &Parser) -> Option<TftStandingRow>
         .into_iter()
         .flatten()
         .filter_map(|h| h.get(parser))
-        .map(|n| normalize_ws(&decode_entities(&n.inner_text(parser))))
+        .map(|n| node_text(n, parser))
         .collect();
     Some(TftStandingRow {
         rank,
@@ -566,21 +573,11 @@ pub fn parse_placements(html: &str) -> Vec<TftPlacement> {
             continue;
         };
         // The place cell is absent on the header row — skip those.
-        let Some(place) = row
-            .query_selector(parser, "td.prizepooltable-place")
-            .and_then(|mut i| i.next())
-            .and_then(|h| h.get(parser))
-            .map(|n| normalize_ws(&decode_entities(&n.inner_text(parser))))
-            .filter(|s| !s.is_empty())
-        else {
+        let place = scoped_text(row, parser, "td.prizepooltable-place");
+        if place.is_empty() {
             continue;
-        };
-        let participant = row
-            .query_selector(parser, "span.name")
-            .and_then(|mut i| i.next())
-            .and_then(|h| h.get(parser))
-            .map(|n| normalize_ws(&decode_entities(&n.inner_text(parser))))
-            .unwrap_or_default();
+        }
+        let participant = scoped_text(row, parser, "span.name");
         // The prize is the cell carrying a currency amount. A finished event adds
         // trailing "qualified-for" / points columns, so it isn't simply the last
         // cell; a place with no prize money has none (left empty).
@@ -589,7 +586,7 @@ pub fn parse_placements(html: &str) -> Vec<TftPlacement> {
             .into_iter()
             .flatten()
             .filter_map(|h| h.get(parser))
-            .map(|n| normalize_ws(&decode_entities(&n.inner_text(parser))))
+            .map(|n| node_text(n, parser))
             .find(|t| t.contains('$'))
             .unwrap_or_default();
         out.push(TftPlacement {

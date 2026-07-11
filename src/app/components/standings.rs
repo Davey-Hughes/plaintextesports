@@ -300,25 +300,28 @@ fn tab_layout(panels: &[TftDayPanel], current: &[MergedRow]) -> TabLayout {
     }
 }
 
+/// The `grid-template-columns` for a standings grid: rank · name · (the shared
+/// `max_games` game columns, when any) · the trailing value column(s) — "Total"
+/// on a day tab, "Pts" + "Prize" on the current tab. Shared so the two grids stay
+/// column-aligned.
+fn grid_cols(l: &TabLayout, trailing: &[usize]) -> String {
+    let tail: String = trailing.iter().map(|w| format!(" {w}ch")).collect();
+    if l.max_games == 0 {
+        format!("grid-template-columns:{}ch {}ch{tail};", l.rank_w, l.name_w)
+    } else {
+        format!(
+            "grid-template-columns:{}ch {}ch repeat({},{}ch){tail};",
+            l.rank_w, l.name_w, l.max_games, l.game_w
+        )
+    }
+}
+
 /// A raw day-panel grid: rank · player · per-game points · total. The game columns
 /// are the shared `max_games` width (blank past this day's own game count), so the
 /// total column lines up with the other tabs. Reveal-blanked.
 fn day_grid_view(s: &TftStandings, l: &TabLayout, show: bool) -> AnyView {
-    let TabLayout {
-        rank_w,
-        name_w,
-        max_games,
-        game_w,
-        val_w,
-        ..
-    } = *l;
-    let grid = if max_games == 0 {
-        format!("grid-template-columns:{rank_w}ch {name_w}ch {val_w}ch;")
-    } else {
-        format!(
-            "grid-template-columns:{rank_w}ch {name_w}ch repeat({max_games},{game_w}ch) {val_w}ch;"
-        )
-    };
+    let max_games = l.max_games;
+    let grid = grid_cols(l, &[l.val_w]);
     let gc = s.game_count;
     let head_games = (0..max_games)
         .map(|i| {
@@ -379,21 +382,8 @@ fn day_grid_view(s: &TftStandings, l: &TabLayout, show: bool) -> AnyView {
 /// final place + prize. The `max_games` game columns are reserved (blank) so the
 /// "Pts" column lines up with the day tabs' "Total". Reveal-blanked.
 fn current_grid_view(rows: &[MergedRow], l: &TabLayout, show: bool) -> AnyView {
-    let TabLayout {
-        rank_w,
-        name_w,
-        max_games,
-        game_w,
-        val_w,
-        prize_w,
-    } = *l;
-    let grid = if max_games == 0 {
-        format!("grid-template-columns:{rank_w}ch {name_w}ch {val_w}ch {prize_w}ch;")
-    } else {
-        format!(
-            "grid-template-columns:{rank_w}ch {name_w}ch repeat({max_games},{game_w}ch) {val_w}ch {prize_w}ch;"
-        )
-    };
+    let max_games = l.max_games;
+    let grid = grid_cols(l, &[l.val_w, l.prize_w]);
     // The eliminated block is contiguous at the bottom, so one divider (before the
     // first final row) cleanly splits live from final.
     let mut sep_shown = false;
