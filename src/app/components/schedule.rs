@@ -683,12 +683,13 @@ pub(crate) fn ScheduleSection(
             f1_home_season.set(season);
         }
     });
-    // The sole TFT event (full event name) currently in view, or empty when none
-    // or several are shown — the esports analogue of `single_league`, but keyed
-    // per-event (every TFT stage shares the league "TFT", so the chip filter
-    // can't distinguish them). When it resolves, the front page shows that event's
-    // lobby standings + final placements below the schedule. Written from an
-    // effect (reads the resource) and only on change, like the effect above.
+    // The stage (full event name) whose results to show below the schedule when a
+    // single TFT *tournament* is in view — every TFT stage shares the league "TFT"
+    // and a tournament's chip covers all its stages, so when exactly one tournament
+    // is shown we surface its *current* stage: the started (live/finished) stage
+    // with the latest session, else the earliest upcoming one. Empty when zero or
+    // several tournaments are shown. Written from an effect (reads the resource)
+    // and only on change, like the effect above.
     let single_tft_event = RwSignal::new(String::new());
     Effect::new(move |_| {
         let ev = if traditional.get() {
@@ -696,7 +697,8 @@ pub(crate) fn ScheduleSection(
         } else if let Some(Ok(s)) = resource.get() {
             let g = games.get();
             let l = leagues.get();
-            let mut events: Vec<String> = Vec::new();
+            // Per stage in view: (tournament, latest session ms, has it begun).
+            let mut stages: HashMap<String, (String, i64, bool)> = HashMap::new();
             for day in &s.days {
                 for lg in &day.leagues {
                     let Some(sport) = lg.matches.first().map(|m| m.sport) else {
@@ -710,18 +712,37 @@ pub(crate) fn ScheduleSection(
                     if !g.is_empty() && !g.contains(sport.slug()) {
                         continue;
                     }
-                    if !l.is_empty() && !l.contains(&lg.league) {
+                    if !l.is_empty() && !l.contains(&chip_key(lg)) {
                         continue;
                     }
-                    let name = full_event_name(&lg.league, &lg.series_name);
-                    if !events.contains(&name) {
-                        events.push(name);
+                    let tournament = chip_key(lg);
+                    let ev_name = full_event_name(&lg.league, &lg.series_name);
+                    for m in &lg.matches {
+                        let begun = !matches!(m.status, MatchStatus::Upcoming);
+                        let e = stages.entry(ev_name.clone()).or_insert((
+                            tournament.clone(),
+                            m.begin_at_ms,
+                            begun,
+                        ));
+                        e.1 = e.1.max(m.begin_at_ms);
+                        e.2 = e.2 || begun;
                     }
                 }
             }
-            match events.as_slice() {
-                [only] => only.clone(),
-                _ => String::new(),
+            let tournaments: std::collections::HashSet<&str> =
+                stages.values().map(|(t, _, _)| t.as_str()).collect();
+            if tournaments.len() == 1 {
+                // The current stage: the started stage with the latest session, or
+                // (before anything's begun) the earliest upcoming one.
+                stages
+                    .iter()
+                    .filter(|(_, (_, _, begun))| *begun)
+                    .max_by_key(|(_, (_, t, _))| *t)
+                    .or_else(|| stages.iter().min_by_key(|(_, (_, t, _))| *t))
+                    .map(|(ev_name, _)| ev_name.clone())
+                    .unwrap_or_default()
+            } else {
+                String::new()
             }
         } else {
             String::new()
@@ -936,9 +957,25 @@ pub(crate) fn ScheduleSection(
     }
 }
 
-/// Distinct league names among groups whose sport passes the filter (empty set =
-/// all games), in first-appearance order. Drives the event chip list, so the
-/// chips reflect the selected games.
+/// The filter/chip identity for a league group. Normally the league name — but
+/// every TFT stage shares the league "TFT", so a TFT group is keyed by its
+/// tournament (one chip for the whole event, not one per stage). The TFT series is
+/// "<Tournament> - <Stage>" (e.g. "Space Gods Tactician's Crown - Swiss Stage"), so
+/// key on the part before the first " - ". Non-TFT groups are unaffected.
+pub(crate) fn chip_key(lg: &crate::types::LeagueGroup) -> String {
+    if lg.league == "TFT" {
+        lg.series_name
+            .split_once(" - ")
+            .map(|(tournament, _)| tournament.to_string())
+            .unwrap_or_else(|| lg.series_name.clone())
+    } else {
+        lg.league.clone()
+    }
+}
+
+/// Distinct competition chips among groups whose sport passes the filter (empty
+/// set = all games), in first-appearance order. Drives the event chip list, so the
+/// chips reflect the selected games. Keyed by [`chip_key`] (per-event for TFT).
 pub(crate) fn leagues_for_games(s: &ScheduleView, games: &HashSet<String>) -> Vec<(String, Sport)> {
     let mut out: Vec<(String, Sport)> = Vec::new();
     for day in &s.days {
@@ -946,9 +983,10 @@ pub(crate) fn leagues_for_games(s: &ScheduleView, games: &HashSet<String>) -> Ve
             let Some(sport) = lg.matches.first().map(|m| m.sport) else {
                 continue;
             };
+            let key = chip_key(lg);
             let game_ok = games.is_empty() || games.contains(sport.slug());
-            if game_ok && !out.iter().any(|(l, _)| l == &lg.league) {
-                out.push((lg.league.clone(), sport));
+            if game_ok && !out.iter().any(|(l, _)| l == &key) {
+                out.push((key, sport));
             }
         }
     }
@@ -975,7 +1013,7 @@ pub(crate) fn filter_schedule(
                     .matches
                     .first()
                     .is_some_and(|m| games.contains(m.sport.slug()));
-            let league_ok = leagues.is_empty() || leagues.contains(&lg.league);
+            let league_ok = leagues.is_empty() || leagues.contains(&chip_key(lg));
             game_ok && league_ok
         });
     }
