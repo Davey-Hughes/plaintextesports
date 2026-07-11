@@ -707,6 +707,22 @@ pub(crate) fn EventPage() -> impl IntoView {
                                             view! { <MotorStandingsView standings=standings league=lg /> }
                                         })
                                 }}
+                                // TFT: the lobby standings (rank/player/per-game/
+                                // total), empty for non-TFT events / before results.
+                                // Shown above the placements.
+                                {move || {
+                                    tft_standings
+                                        .get()
+                                        .filter(|s| !s.is_empty())
+                                        .map(|standings| {
+                                            view! {
+                                                <TftStandingsView
+                                                    standings=standings
+                                                    event=league()
+                                                />
+                                            }
+                                        })
+                                }}
                                 // TFT: the tournament's final placements (empty
                                 // until finished / for non-TFT events).
                                 {move || {
@@ -717,21 +733,6 @@ pub(crate) fn EventPage() -> impl IntoView {
                                             view! {
                                                 <TftPlacementsView
                                                     placements=placements
-                                                    event=league()
-                                                />
-                                            }
-                                        })
-                                }}
-                                // TFT: the lobby standings (rank/player/per-game/
-                                // total), empty for non-TFT events / before results.
-                                {move || {
-                                    tft_standings
-                                        .get()
-                                        .filter(|s| !s.is_empty())
-                                        .map(|standings| {
-                                            view! {
-                                                <TftStandingsView
-                                                    standings=standings
                                                     event=league()
                                                 />
                                             }
