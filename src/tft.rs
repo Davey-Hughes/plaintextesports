@@ -11,7 +11,7 @@
 
 use crate::feed::{NormalizedMatch, NormalizedTeam};
 use crate::http::DynError;
-use crate::types::{MatchStatus, Sport, TftPlacement};
+use crate::types::{MatchStatus, Sport, TftPlacement, TftStandingRow, TftStandings};
 use chrono::{DateTime, Duration, Utc};
 use serde::Deserialize;
 use tl::{HTMLTag, Parser, ParserOptions};
@@ -276,6 +276,67 @@ fn decode_one(ent: &str) -> Option<char> {
             char::from_u32(code)
         }
     }
+}
+
+// ----- Lobby standings (points) ---------------------------------------------
+//
+// The standings are Liquipedia's "battle-royale" panel-table: each
+// `div.panel-table__row` has `cell--rank` (rank), `cell--team` (a `span.name`
+// participant), `cell--total-points` (total), and one `cell--game` per game
+// (points). The `panel-table__*` classes are `&#95;`-encoded, so we decode them
+// to `_` before selecting; the `cell--*` classes are already plain.
+
+/// First matching descendant's normalized text, or empty.
+fn scoped_text(tag: &HTMLTag, parser: &Parser, sel: &str) -> String {
+    tag.query_selector(parser, sel)
+        .and_then(|mut it| it.next())
+        .and_then(|h| h.get(parser))
+        .map(|n| normalize_ws(&decode_entities(&n.inner_text(parser))))
+        .unwrap_or_default()
+}
+
+/// Parse the lobby standings panel-table into ranked, per-game rows. Header rows
+/// (no numeric rank) are skipped; `game_count` is the widest row's game count.
+pub fn parse_standings(html: &str) -> TftStandings {
+    let decoded = html.replace("&#95;", "_");
+    let Ok(dom) = tl::parse(&decoded, ParserOptions::default()) else {
+        return TftStandings::default();
+    };
+    let parser = dom.parser();
+    let Some(rows_sel) = dom.query_selector("div.panel-table__row") else {
+        return TftStandings::default();
+    };
+    let mut rows = Vec::new();
+    for rh in rows_sel {
+        let Some(row) = rh.get(parser).and_then(|n| n.as_tag()) else {
+            continue;
+        };
+        // Rank like "1st" → "1"; the header row has "Rank" → skipped.
+        let rank: String = scoped_text(row, parser, "div.cell--rank")
+            .chars()
+            .take_while(char::is_ascii_digit)
+            .collect();
+        if rank.is_empty() {
+            continue;
+        }
+        let participant = scoped_text(row, parser, "span.name");
+        let total = scoped_text(row, parser, "div.cell--total-points");
+        let games: Vec<String> = row
+            .query_selector(parser, "div.cell--game")
+            .into_iter()
+            .flatten()
+            .filter_map(|h| h.get(parser))
+            .map(|n| normalize_ws(&decode_entities(&n.inner_text(parser))))
+            .collect();
+        rows.push(TftStandingRow {
+            rank,
+            participant,
+            total,
+            games,
+        });
+    }
+    let game_count = rows.iter().map(|r| r.games.len()).max().unwrap_or(0);
+    TftStandings { game_count, rows }
 }
 
 // ----- Fetching -------------------------------------------------------------
@@ -628,6 +689,20 @@ mod tests {
         assert_eq!(p[2].prize, "$25,000");
         // All decided → survive the filter.
         assert_eq!(filter_decided(p).len(), 3);
+    }
+
+    #[test]
+    fn parses_lobby_standings_from_fixture() {
+        let html = include_str!("fixtures/tft_standings.html");
+        let s = parse_standings(html);
+        assert_eq!(s.rows.len(), 3, "fixture has 3 data rows");
+        assert!(s.game_count > 0, "has game columns");
+        assert_eq!(s.game_count, 6);
+        let r0 = &s.rows[0];
+        assert_eq!(r0.rank, "1");
+        assert_eq!(r0.participant, "A Long");
+        assert_eq!(r0.total, "40");
+        assert_eq!(r0.games, ["7", "6", "8", "6", "8", "5"]); // sums to the total
     }
 
     #[test]

@@ -661,6 +661,33 @@ pub struct TftPlacement {
     pub prize: String,
 }
 
+/// One player's row in a TFT lobby standings table (from Liquipedia's
+/// battle-royale panel-table): a rank, the player, per-game points, and the total.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TftStandingRow {
+    pub rank: String,
+    pub participant: String,
+    /// Total points across the games played.
+    pub total: String,
+    /// Points scored in each game, in order (blank/"-" where not yet played).
+    pub games: Vec<String>,
+}
+
+/// A TFT lobby/stage standings table: the ranked rows plus how many game columns
+/// to render (`G1..Gn`).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TftStandings {
+    pub game_count: usize,
+    pub rows: Vec<TftStandingRow>,
+}
+
+impl TftStandings {
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.rows.is_empty()
+    }
+}
+
 /// One match within a bracket round.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BracketMatch {
