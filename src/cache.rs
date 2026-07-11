@@ -3157,6 +3157,101 @@ pub fn collapse_wrc_days(views: Vec<MatchView>, tz: &Tz, snap: &Snapshot) -> Vec
     out
 }
 
+/// The stage/day part of a TFT session label — everything before "- Game N".
+/// `None` for a bare "Game N" (no stage prefix). "Day 2 - Game 1" -> "Day 2";
+/// "Grand Finals - Game 3" -> "Grand Finals".
+fn tft_stage_part(label: &str) -> Option<&str> {
+    let cut = label.split(" - Game").next().unwrap_or(label).trim();
+    (!cut.is_empty() && !cut.starts_with("Game")).then_some(cut)
+}
+
+/// The label for a collapsed TFT day: the shared stage/day prefix across the day's
+/// sessions ("Day 2", "Grand Finals"), else the day's ordinal within the event.
+fn tft_day_label(
+    sessions: &[MatchView],
+    event: &str,
+    day: &str,
+    days_by_event: &std::collections::HashMap<String, std::collections::BTreeSet<String>>,
+) -> String {
+    let parts: Vec<Option<&str>> = sessions
+        .iter()
+        .map(|m| tft_stage_part(&m.team_a.label))
+        .collect();
+    if let Some(Some(p)) = parts.first().copied()
+        && parts.iter().all(|x| *x == Some(p))
+    {
+        return p.to_string();
+    }
+    let ordinal = days_by_event
+        .get(event)
+        .and_then(|days| days.iter().position(|d| d == day))
+        .map_or(1, |i| i + 1);
+    format!("Day {ordinal}")
+}
+
+/// Fold each TFT (event, local-day) group of session rows into one collapsed
+/// schedule row, like [`collapse_wrc_days`] does for rally stages: the home/day/
+/// range views show one "Day 2" / "Grand Finals" row linking to the event page
+/// (which lists every game), instead of a row per game. Non-TFT rows pass through.
+pub fn collapse_tft_days(views: Vec<MatchView>, tz: &Tz, snap: &Snapshot) -> Vec<MatchView> {
+    use std::collections::{BTreeSet, HashMap};
+
+    let is_session = |m: &MatchView| m.sport == Sport::Tft;
+    if !views.iter().any(is_session) {
+        let mut views = views;
+        views.sort_by_key(|m| m.begin_at_ms);
+        return views;
+    }
+
+    // Distinct local days per event (from the whole snapshot, not just the window)
+    // for the ordinal fallback label.
+    let mut days_by_event: HashMap<String, BTreeSet<String>> = HashMap::new();
+    for m in &snap.matches {
+        if m.sport != Sport::Tft {
+            continue;
+        }
+        let event = full_event_name(&m.league, &m.series_name);
+        let day = m.begin_at.with_timezone(tz).format("%Y-%m-%d").to_string();
+        days_by_event.entry(event).or_default().insert(day);
+    }
+
+    let mut out: Vec<MatchView> = Vec::new();
+    let mut groups: HashMap<(String, String), Vec<MatchView>> = HashMap::new();
+    for v in views {
+        if is_session(&v) {
+            let day = DateTime::from_timestamp_millis(v.begin_at_ms)
+                .unwrap_or_else(Utc::now)
+                .with_timezone(tz)
+                .format("%Y-%m-%d")
+                .to_string();
+            let event = full_event_name(&v.league, &v.series_name);
+            groups.entry((event, day)).or_default().push(v);
+        } else {
+            out.push(v);
+        }
+    }
+
+    for ((event, day), mut sessions) in groups {
+        sessions.sort_by_key(|m| m.begin_at_ms);
+        let mut rep = sessions[0].clone();
+        rep.team_a.label = tft_day_label(&sessions, &event, &day, &days_by_event);
+        rep.team_a.name = String::new();
+        // Clicking the collapsed day jumps to that day on the event page, where the
+        // day's individual games are listed.
+        rep.row_href = Some(format!(
+            "/event/{}/{}#day-{}",
+            rep.sport.slug(),
+            pct_encode(&event),
+            day
+        ));
+        rep.status = day_status(&sessions);
+        out.push(rep);
+    }
+
+    out.sort_by_key(|m| m.begin_at_ms);
+    out
+}
+
 /// Aggregate status of a rally day from its stages: live if any stage is, finished
 /// only once every stage is, otherwise still upcoming.
 fn day_status(stages: &[MatchView]) -> MatchStatus {
@@ -3328,6 +3423,7 @@ fn homepage_rows(
     }
     // Condense each rally's stages into per-day rows and re-sort by start.
     let all = collapse_wrc_days(all, tz, snap);
+    let all = collapse_tft_days(all, tz, snap);
     let meta = FreshMeta {
         fetched_at: snap.fetched_at,
         stale: snap.stale,
@@ -3454,6 +3550,7 @@ pub fn day_view(date: &str, game_filter: &str, tz_name: &str, hour24: bool) -> S
         None,
     );
     let all = collapse_wrc_days(all, &tz, &snap);
+    let all = collapse_tft_days(all, &tz, &snap);
     let (fetched_at, stale, using_fixture) = (snap.fetched_at, snap.stale, snap.using_fixture);
     drop(snap);
 
@@ -3517,6 +3614,7 @@ pub fn range_view(
         None,
     );
     let all = collapse_wrc_days(all, &tz, &snap);
+    let all = collapse_tft_days(all, &tz, &snap);
     let (fetched_at, stale, using_fixture) = (snap.fetched_at, snap.stale, snap.using_fixture);
     drop(snap);
 
@@ -6004,6 +6102,82 @@ mod tests {
                 .clock_label
                 .is_empty()
         );
+    }
+
+    fn tft_session(id: i64, label: &str, series: &str, begin: &str) -> NormalizedMatch {
+        let mut m = NormalizedMatch::team_sport(
+            id,
+            Sport::Tft,
+            "TFT",
+            begin.parse::<DateTime<Utc>>().unwrap(),
+            MatchStatus::Upcoming,
+            NormalizedTeam {
+                label: label.into(),
+                name: label.into(),
+                abbrev: String::new(),
+                score: None,
+            },
+            NormalizedTeam {
+                label: String::new(),
+                name: String::new(),
+                abbrev: String::new(),
+                score: None,
+            },
+        );
+        m.series_name = series.into();
+        m.league_url = Some(format!(
+            "https://liquipedia.net/tft/{}",
+            series.replace(' ', "_")
+        ));
+        m
+    }
+
+    #[test]
+    fn collapse_folds_tft_games_into_per_day_rows() {
+        let swiss = "Space Gods Tacticians Crown - Swiss Stage";
+        let finals = "Space Gods Tacticians Crown - Grand Finals";
+        let vegas = "Vegas Open 2026 - Round 1";
+        let matches = vec![
+            tft_session(1, "Day 2 - Game 1", swiss, "2026-07-11T11:00:00Z"),
+            tft_session(2, "Day 2 - Game 2", swiss, "2026-07-11T11:45:00Z"),
+            tft_session(3, "Day 2 - Game 3", swiss, "2026-07-11T12:30:00Z"),
+            tft_session(4, "Grand Finals - Game 1", finals, "2026-07-12T15:00:00Z"),
+            tft_session(5, "Grand Finals - Game 2", finals, "2026-07-12T15:45:00Z"),
+            // Multiple lobbies at once with no shared stage → ordinal-label fallback.
+            tft_session(6, "Lobby A - Game 1", vegas, "2026-07-13T18:00:00Z"),
+            tft_session(7, "Lobby B - Game 1", vegas, "2026-07-13T18:00:00Z"),
+        ];
+        let tz: Tz = "UTC".parse().unwrap();
+        let now = "2026-07-10T00:00:00Z".parse::<DateTime<Utc>>().unwrap();
+        let snap = Snapshot {
+            matches,
+            fetched_at: now,
+            stale: false,
+            using_fixture: false,
+        };
+        let views: Vec<MatchView> = snap
+            .matches
+            .iter()
+            .map(|m| to_view(m, &tz, now, false))
+            .collect();
+        let out = collapse_tft_days(views, &tz, &snap);
+
+        // 7 games → 3 collapsed day rows: shared-prefix labels for Swiss/Finals,
+        // ordinal fallback for the multi-lobby day.
+        let labels: Vec<&str> = out.iter().map(|m| m.team_a.label.as_str()).collect();
+        assert_eq!(labels, ["Day 2", "Grand Finals", "Day 1"]);
+        // The Swiss day row anchors at its first game and links to that day.
+        let d2 = out.iter().find(|m| m.team_a.label == "Day 2").unwrap();
+        assert_eq!(
+            d2.begin_at_ms,
+            "2026-07-11T11:00:00Z"
+                .parse::<DateTime<Utc>>()
+                .unwrap()
+                .timestamp_millis()
+        );
+        let href = d2.row_href.as_deref().unwrap();
+        assert!(href.starts_with("/event/tft/"), "got {href}");
+        assert!(href.ends_with("#day-2026-07-11"), "got {href}");
     }
 
     fn at(begin: DateTime<Utc>, status: MatchStatus) -> NormalizedMatch {
