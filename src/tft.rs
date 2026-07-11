@@ -148,7 +148,33 @@ pub fn parse_upcoming(html: &str) -> Vec<ParsedSession> {
             tournament_url,
         });
     }
-    out
+    dedup_twins(out)
+}
+
+/// Liquipedia lists each game twice — once prefixed ("Day 2 - Game 1", "Grand
+/// Finals - Game 1", "Lobby A - Game 1") and once bare ("Game 1"). Drop the bare
+/// row when a longer session ending in the same "… Game N" exists at the same
+/// tournament and time; the prefixed one is more informative.
+fn dedup_twins(sessions: Vec<ParsedSession>) -> Vec<ParsedSession> {
+    let keep: Vec<bool> = sessions
+        .iter()
+        .map(|a| {
+            // A leading space so "Game 1" only matches on a word boundary
+            // ("… - Game 1"), never mid-word ("Endgame 1").
+            let suffix = format!(" {}", a.session_label);
+            !sessions.iter().any(|b| {
+                b.session_label.len() > a.session_label.len()
+                    && b.tournament == a.tournament
+                    && b.begin_at == a.begin_at
+                    && b.session_label.ends_with(&suffix)
+            })
+        })
+        .collect();
+    sessions
+        .into_iter()
+        .zip(keep)
+        .filter_map(|(s, k)| k.then_some(s))
+        .collect()
 }
 
 /// An attribute's value as an owned string (`tl` stores raw, entity-encoded).
@@ -543,6 +569,34 @@ mod tests {
             "https://liquipedia.net/tft/Space_Gods/Tacticians_Crown/Swiss_Stage"
         );
         assert_eq!(first.begin_at.timestamp(), 1_783_767_600);
+    }
+
+    #[test]
+    fn dedup_twins_drops_the_bare_game_row() {
+        let t0 = at("2026-07-11T11:00:00Z");
+        let s = |label: &str, when: DateTime<Utc>| ParsedSession {
+            tournament: "T".into(),
+            session_label: label.into(),
+            begin_at: when,
+            tournament_url: String::new(),
+        };
+        // Bare "Game 1" dropped in favor of the prefixed twin at the same time.
+        let out = dedup_twins(vec![s("Day 2 - Game 1", t0), s("Game 1", t0)]);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].session_label, "Day 2 - Game 1");
+        // A bare game with no prefixed twin survives.
+        assert_eq!(dedup_twins(vec![s("Game 5", t0)]).len(), 1);
+        // Same label at a different time is not a twin.
+        let t1 = at("2026-07-11T12:00:00Z");
+        assert_eq!(
+            dedup_twins(vec![s("Day 2 - Game 1", t0), s("Game 1", t1)]).len(),
+            2
+        );
+        // "Endgame 1" is not a twin of bare "Game 1" (word boundary).
+        assert_eq!(
+            dedup_twins(vec![s("Endgame 1", t0), s("Game 1", t0)]).len(),
+            2
+        );
     }
 
     #[test]
