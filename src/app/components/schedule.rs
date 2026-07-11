@@ -965,8 +965,9 @@ pub(crate) fn UpNextBar(day: DayGroup) -> impl IntoView {
         day: RwSignal::new(false),
         foot: RwSignal::new(false),
     });
-    // Flatten the day's matches (time + teams), capped so the bar stays slim.
-    const CAP: usize = 4;
+    // Flatten the day's matches (time + teams), capped so the bar stays slim —
+    // a couple of previews plus a "+N more" for the rest.
+    const CAP: usize = 2;
     let all: Vec<MatchView> = day.leagues.into_iter().flat_map(|lg| lg.matches).collect();
     // "Up next" while the day still has unplayed matches; "Latest" once it's a
     // finished event and we're pointing at its most recent day instead.
