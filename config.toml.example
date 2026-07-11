@@ -64,6 +64,7 @@ youtube_api_key = ""
 # [costreamers]
 # lol = ["caedrel", "doublelift", "sneaky"]
 # cs2 = ["ohnepixel"]
+# tft = ["k3soju", "mortdog"]   # TFT players/creators who stream these events
 # LPL = ["lpl"]
 
 # Discover unlisted co-streamers by scanning a match's Twitch game category while
@@ -71,7 +72,7 @@ youtube_api_key = ""
 # above. A discovered stream is attached to a league's live match when its title
 # or tags contain one of that league's keywords (see [twitch_league_aliases]).
 # [twitch_discovery]
-# enabled_sports = ["lol", "cs2"]   # sport slugs; empty/absent = off
+# enabled_sports = ["lol", "cs2", "tft"]  # sport slugs; empty/absent = off
 # languages      = ["en"]           # only surface streams in these languages
 # min_viewers    = 300              # skip streams below this viewer count
 # max_per_match  = 6                # cap appended co-streams (highest-viewer first)
@@ -80,6 +81,7 @@ youtube_api_key = ""
 # [twitch_discovery.game_ids]
 # lol = "21779"
 # cs2 = "32399"
+# tft = "513143"
 
 # League name (exactly as stored) -> Twitch title keywords, so a stream titled
 # "MSI ..." attaches to the "Mid-Season Invitational" league. Most leagues already

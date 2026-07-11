@@ -443,7 +443,7 @@ pub async fn live_streams_for(sport: Sport, id: i64) -> Vec<StreamView> {
     // Twitch category discovery runs only for a live esports match with the sport
     // enabled — so an otherwise-inert match still triggers a scan when it's on.
     let discovery_on = matches!(status, MatchStatus::Live)
-        && matches!(sport, Sport::Cs2 | Sport::Lol)
+        && matches!(sport, Sport::Cs2 | Sport::Lol | Sport::Tft)
         && config().discovery_enabled(sport);
     if base_logins.is_empty() && tw_seeds.is_empty() && !yt_enabled && !discovery_on && !soop_on {
         return base;
@@ -519,7 +519,7 @@ pub async fn live_streams_for(sport: Sport, id: i64) -> Vec<StreamView> {
     // GQL API, keyed off the match's official Twitch broadcast channel(s).
     if config().twitch_discovery.gql_costreamers
         && matches!(status, MatchStatus::Live)
-        && matches!(sport, Sport::Cs2 | Sport::Lol)
+        && matches!(sport, Sport::Cs2 | Sport::Lol | Sport::Tft)
     {
         let officials: Vec<String> = enriched
             .iter()
@@ -5116,6 +5116,7 @@ fn game_needle(sport: Sport) -> &'static str {
     match sport {
         Sport::Cs2 => "counter-strike",
         Sport::Lol => "league of legends",
+        Sport::Tft => "teamfight tactics",
         _ => "",
     }
 }
@@ -5265,6 +5266,22 @@ fn event_day_keywords(
     window: Duration,
 ) -> Vec<String> {
     let mut out = league_keywords(league, aliases);
+    // Single-entity sports (TFT) have no team names to key on and share one league
+    // ("TFT") across every tournament, so add the series/edition's own word tokens
+    // (≥4 chars) — the tournament name ("Space Gods", "Tactician's Crown") is the
+    // only per-event signal a co-streamer's title can carry.
+    if sport.single_entity() {
+        for tok in series_name.split_whitespace() {
+            let tok: String = tok
+                .chars()
+                .filter(|c| c.is_alphanumeric())
+                .collect::<String>()
+                .to_ascii_lowercase();
+            if tok.chars().count() >= 4 && !out.contains(&tok) {
+                out.push(tok);
+            }
+        }
+    }
     let window_min = window.num_minutes();
     for m in matches {
         // Same sport + event (league + edition), within the day window.
