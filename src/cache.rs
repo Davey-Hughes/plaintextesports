@@ -2142,7 +2142,10 @@ async fn refresh_tft_results(
                 })
                 .map(|m| crate::types::full_event_name(&m.league, &m.series_name))
                 .collect();
-            if !placements.is_empty() {
+            // Surface the placement table once at least one place is decided —
+            // then keep the whole table (undecided places render blank), so it
+            // reads as complete during an ongoing tournament.
+            if crate::tft::any_decided(&placements) {
                 {
                     let mut sp = TFT_PLACEMENTS
                         .write()

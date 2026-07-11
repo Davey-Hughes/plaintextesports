@@ -2828,21 +2828,33 @@ a.sw-link {
 }
 
 .tft-standings {
-  border-collapse: collapse;
+  display: grid;
+  // `grid-template-columns` is set inline, computed in `ch` from the shown
+  // values, so the columns never reflow when the spoiler is revealed.
+  width: max-content;
+  align-items: baseline;
+  gap: 0.15rem 0.6rem;
   font-size: 13px;
+  font-variant-numeric: tabular-nums;
 
-  th,
-  td {
-    padding: 0.15rem 0.5rem;
+  .tft-row {
+    display: contents;
+  }
+
+  .tft-rank,
+  .tft-g,
+  .tft-total {
     text-align: right;
-    white-space: nowrap;
   }
 
   .tft-name {
     text-align: left;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
-  thead th {
+  .tft-h {
     font-weight: 600;
     opacity: 0.75;
   }

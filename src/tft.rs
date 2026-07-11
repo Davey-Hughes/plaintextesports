@@ -454,16 +454,16 @@ pub fn parse_placements(html: &str) -> Vec<TftPlacement> {
     out
 }
 
-/// Keep only decided placements — an undecided row (empty or "TBD" participant)
-/// means the tournament isn't finished, so it contributes nothing to display.
-pub fn filter_decided(placements: Vec<TftPlacement>) -> Vec<TftPlacement> {
-    placements
-        .into_iter()
-        .filter(|p| {
-            let n = p.participant.trim();
-            !n.is_empty() && !n.eq_ignore_ascii_case("TBD")
-        })
-        .collect()
+/// Whether a placement is decided — a real participant, not blank or "TBD".
+pub fn is_decided(p: &TftPlacement) -> bool {
+    let n = p.participant.trim();
+    !n.is_empty() && !n.eq_ignore_ascii_case("TBD")
+}
+
+/// Whether any placement is decided — used to decide whether to surface a
+/// tournament's placement table at all (an all-"TBD" table isn't worth showing).
+pub fn any_decided(placements: &[TftPlacement]) -> bool {
+    placements.iter().any(is_decided)
 }
 
 /// The parent tournament page URL for a session's stage URL, by keeping the
@@ -507,10 +507,9 @@ pub async fn fetch_tournament_results(
         .json::<ParseResp>()
         .await?;
     let html = &resp.parse.text.star;
-    Ok((
-        filter_decided(parse_placements(html)),
-        parse_standings(html),
-    ))
+    // Keep every placement row (including an ongoing tournament's still-"TBD"
+    // places) so the table reads as complete; undecided places render blank.
+    Ok((parse_placements(html), parse_standings(html)))
 }
 
 #[cfg(test)]
@@ -692,8 +691,9 @@ mod tests {
         assert_eq!(p[1].participant, "Jedusor");
         assert_eq!(p[1].prize, "$50,000");
         assert_eq!(p[2].prize, "$25,000");
-        // All decided → survive the filter.
-        assert_eq!(filter_decided(p).len(), 3);
+        // All three are decided.
+        assert!(any_decided(&p));
+        assert!(p.iter().all(is_decided));
     }
 
     #[test]
@@ -711,15 +711,19 @@ mod tests {
     }
 
     #[test]
-    fn filter_decided_drops_tbd_and_empty() {
+    fn decided_predicate_ignores_tbd_and_blank() {
         let mk = |name: &str| TftPlacement {
             place: "1".into(),
             participant: name.into(),
             prize: "$1".into(),
         };
-        let kept = filter_decided(vec![mk("TBD"), mk(""), mk("Player A"), mk("tbd"), mk("  ")]);
-        assert_eq!(kept.len(), 1);
-        assert_eq!(kept[0].participant, "Player A");
+        assert!(is_decided(&mk("Player A")));
+        assert!(!is_decided(&mk("TBD")));
+        assert!(!is_decided(&mk("tbd")));
+        assert!(!is_decided(&mk("")));
+        assert!(!is_decided(&mk("  ")));
+        assert!(any_decided(&[mk("TBD"), mk("Player A")]));
+        assert!(!any_decided(&[mk("TBD"), mk("")]));
     }
 
     #[test]
@@ -772,13 +776,9 @@ mod tests {
             .unwrap();
         let url = "https://liquipedia.net/tft/Into_the_Arcane/Tacticians_Crown";
         let (p, s) = rt.block_on(fetch_tournament_results(&client, url)).unwrap();
-        assert!(
-            !p.is_empty(),
-            "a finished tournament has decided placements"
-        );
-        assert!(p.iter().all(|x| !x.participant.eq_ignore_ascii_case("TBD")));
+        assert!(any_decided(&p), "a finished tournament has decided places");
         assert_eq!(p[0].place, "1");
-        assert!(!p[0].participant.is_empty());
+        assert!(is_decided(&p[0]), "the winner is decided");
         for x in p.iter().take(3) {
             eprintln!("PLACE {} | {} | {}", x.place, x.participant, x.prize);
         }

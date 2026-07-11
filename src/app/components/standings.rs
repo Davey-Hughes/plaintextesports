@@ -177,8 +177,19 @@ pub(crate) fn TftPlacementsView(placements: Vec<TftPlacement>, event: String) ->
         rows.get_value()
             .into_iter()
             .map(|p| {
+                // Undecided places (an ongoing tournament's still-"TBD" spots) show
+                // a dash for the name, so the table reads as complete.
+                let decided = {
+                    let n = p.participant.trim();
+                    !n.is_empty() && !n.eq_ignore_ascii_case("TBD")
+                };
                 let (name, prize) = if show {
-                    (p.participant, p.prize)
+                    let name = if decided {
+                        p.participant
+                    } else {
+                        "—".to_string()
+                    };
+                    (name, p.prize)
                 } else {
                     (String::new(), String::new())
                 };
@@ -225,9 +236,43 @@ pub(crate) fn TftStandingsView(standings: TftStandings, event: String) -> impl I
     }
     let (revealed, toggle) = section_reveal(format!("tftstand:{event}"));
     let game_count = standings.game_count;
-    let rows = StoredValue::new(standings.rows);
+    let data = standings.rows;
+    // Precompute each column's width (in monospace `ch`) from the shown values, so
+    // the grid is laid out identically whether the spoiler is hidden or shown —
+    // revealing never reflows the columns/headers. Widths cover the header labels
+    // too, and the name column is capped (longer names ellipsize).
+    let chars = |s: &str| s.chars().count();
+    let rank_w = data
+        .iter()
+        .map(|r| chars(&r.rank))
+        .max()
+        .unwrap_or(0)
+        .max(1);
+    let name_w = data
+        .iter()
+        .map(|r| chars(&r.participant))
+        .max()
+        .unwrap_or(0)
+        .clamp(6, 22);
+    let total_w = data
+        .iter()
+        .map(|r| chars(&r.total))
+        .max()
+        .unwrap_or(0)
+        .max(5);
+    let game_w = data
+        .iter()
+        .flat_map(|r| r.games.iter())
+        .map(|g| chars(g))
+        .max()
+        .unwrap_or(0)
+        .max(chars(&format!("G{game_count}")));
+    let grid = format!(
+        "grid-template-columns:{rank_w}ch {name_w}ch repeat({game_count},{game_w}ch) {total_w}ch;"
+    );
+    let rows = StoredValue::new(data);
     let head_games = (1..=game_count)
-        .map(|i| view! { <th class="tft-g">{format!("G{i}")}</th> })
+        .map(|i| view! { <span class="tft-h tft-g">{format!("G{i}")}</span> })
         .collect_view();
     let body = move || {
         let show = revealed.get();
@@ -241,7 +286,7 @@ pub(crate) fn TftStandingsView(standings: TftStandings, event: String) -> impl I
                         } else {
                             String::new()
                         };
-                        view! { <td class="tft-g">{v}</td> }
+                        view! { <span class="tft-g">{v}</span> }
                     })
                     .collect_view();
                 let (name, total) = if show {
@@ -250,12 +295,12 @@ pub(crate) fn TftStandingsView(standings: TftStandings, event: String) -> impl I
                     (String::new(), String::new())
                 };
                 view! {
-                    <tr>
-                        <td class="tft-rank">{r.rank}</td>
-                        <td class="tft-name">{name}</td>
+                    <div class="tft-row">
+                        <span class="tft-rank">{r.rank}</span>
+                        <span class="tft-name">{name}</span>
                         {games}
-                        <td class="tft-total">{total}</td>
-                    </tr>
+                        <span class="tft-total">{total}</span>
+                    </div>
                 }
             })
             .collect_view()
@@ -275,17 +320,15 @@ pub(crate) fn TftStandingsView(standings: TftStandings, event: String) -> impl I
                 </span>
             </button>
             <div class="tft-standings-wrap">
-                <table class="tft-standings">
-                    <thead>
-                        <tr>
-                            <th class="tft-rank">"#"</th>
-                            <th class="tft-name">"Player"</th>
-                            {head_games}
-                            <th class="tft-total">"Total"</th>
-                        </tr>
-                    </thead>
-                    <tbody>{body}</tbody>
-                </table>
+                <div class="tft-standings" style=grid>
+                    <div class="tft-row">
+                        <span class="tft-h tft-rank">"#"</span>
+                        <span class="tft-h tft-name">"Player"</span>
+                        {head_games}
+                        <span class="tft-h tft-total">"Total"</span>
+                    </div>
+                    {body}
+                </div>
             </div>
         </section>
     }
