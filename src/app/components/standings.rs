@@ -1,7 +1,7 @@
 //! Standings view components that aren't the playoff bracket: F1 / motorsport
 //! championship tables and the traditional-sports standings wrapper.
 use crate::app::*;
-use crate::types::TftPlacement;
+use crate::types::{TftPlacement, TftStandings};
 
 /// The drivers' and constructors' championship standings as of a GP's round,
 /// shown on the F1 event page. Spoiler-gated as one block (it encodes results).
@@ -209,6 +209,84 @@ pub(crate) fn TftPlacementsView(placements: Vec<TftPlacement>, event: String) ->
             // The 3-column (`-con`) grid: pos · participant · prize — matching the
             // three cells per row (the plain `.f1-standings` grid is 4-column).
             <ol class="f1-standings f1-standings-con">{body}</ol>
+        </section>
+    }
+    .into_any()
+}
+
+/// A TFT lobby standings grid (rank · player · per-game points · total), shown on
+/// its event page. Spoiler-gated as one block; the ranks stay visible while the
+/// names/points hide. The grid is wide, so it scrolls horizontally within its own
+/// container. Nothing renders when empty.
+#[component]
+pub(crate) fn TftStandingsView(standings: TftStandings, event: String) -> impl IntoView {
+    if standings.rows.is_empty() {
+        return ().into_any();
+    }
+    let (revealed, toggle) = section_reveal(format!("tftstand:{event}"));
+    let game_count = standings.game_count;
+    let rows = StoredValue::new(standings.rows);
+    let head_games = (1..=game_count)
+        .map(|i| view! { <th class="tft-g">{format!("G{i}")}</th> })
+        .collect_view();
+    let body = move || {
+        let show = revealed.get();
+        rows.get_value()
+            .into_iter()
+            .map(|r| {
+                let games = (0..game_count)
+                    .map(|i| {
+                        let v = if show {
+                            r.games.get(i).cloned().unwrap_or_default()
+                        } else {
+                            String::new()
+                        };
+                        view! { <td class="tft-g">{v}</td> }
+                    })
+                    .collect_view();
+                let (name, total) = if show {
+                    (r.participant, r.total)
+                } else {
+                    (String::new(), String::new())
+                };
+                view! {
+                    <tr>
+                        <td class="tft-rank">{r.rank}</td>
+                        <td class="tft-name">{name}</td>
+                        {games}
+                        <td class="tft-total">{total}</td>
+                    </tr>
+                }
+            })
+            .collect_view()
+    };
+    view! {
+        <section class="detail-section" id="tftsec-standings">
+            <h2 class="section-title f1-results-title">"Standings"</h2>
+            <button class="f1-session-head" on:click=toggle>
+                <span class="f1-session-toggle">
+                    {move || {
+                        if revealed.get() {
+                            "hide standings".to_string()
+                        } else {
+                            "show standings".to_string()
+                        }
+                    }}
+                </span>
+            </button>
+            <div class="tft-standings-wrap">
+                <table class="tft-standings">
+                    <thead>
+                        <tr>
+                            <th class="tft-rank">"#"</th>
+                            <th class="tft-name">"Player"</th>
+                            {head_games}
+                            <th class="tft-total">"Total"</th>
+                        </tr>
+                    </thead>
+                    <tbody>{body}</tbody>
+                </table>
+            </div>
         </section>
     }
     .into_any()

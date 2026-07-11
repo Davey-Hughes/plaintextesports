@@ -2819,6 +2819,39 @@ a.sw-link {
   display: contents;
 }
 
+// TFT lobby standings — a wide per-game grid, so it scrolls horizontally within
+// its own container (never the page body); safe down to 320px. Ranks + column
+// headers stay visible while names/points are the spoiler.
+.tft-standings-wrap {
+  overflow-x: auto;
+  max-width: 100%;
+}
+
+.tft-standings {
+  border-collapse: collapse;
+  font-size: 13px;
+
+  th,
+  td {
+    padding: 0.15rem 0.5rem;
+    text-align: right;
+    white-space: nowrap;
+  }
+
+  .tft-name {
+    text-align: left;
+  }
+
+  thead th {
+    font-weight: 600;
+    opacity: 0.75;
+  }
+
+  .tft-total {
+    font-weight: 600;
+  }
+}
+
 .f1-standing-name {
   overflow: hidden;
   text-overflow: ellipsis;

@@ -320,6 +320,25 @@ pub(crate) fn EventPage() -> impl IntoView {
             }
         },
     );
+    // TFT lobby standings (rank/player/per-game points/total), same gating as
+    // placements; empty for non-TFT events / before results exist.
+    let tft_standings = Resource::new(
+        move || {
+            let lg = league();
+            if lg.starts_with("TFT") {
+                lg
+            } else {
+                String::new()
+            }
+        },
+        |ev| async move {
+            if ev.is_empty() {
+                crate::types::TftStandings::default()
+            } else {
+                get_tft_standings(ev).await.unwrap_or_default()
+            }
+        },
+    );
     setup_autorefresh(schedule);
 
     // The pinned "up next" bar lives inside the content subtree that gets rebuilt
@@ -698,6 +717,21 @@ pub(crate) fn EventPage() -> impl IntoView {
                                             view! {
                                                 <TftPlacementsView
                                                     placements=placements
+                                                    event=league()
+                                                />
+                                            }
+                                        })
+                                }}
+                                // TFT: the lobby standings (rank/player/per-game/
+                                // total), empty for non-TFT events / before results.
+                                {move || {
+                                    tft_standings
+                                        .get()
+                                        .filter(|s| !s.is_empty())
+                                        .map(|standings| {
+                                            view! {
+                                                <TftStandingsView
+                                                    standings=standings
                                                     event=league()
                                                 />
                                             }
