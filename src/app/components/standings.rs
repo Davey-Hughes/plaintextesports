@@ -243,59 +243,100 @@ fn merge_tft_results(standings: &TftStandings, placements: &[TftPlacement]) -> V
     out
 }
 
-/// A raw day-panel grid: rank · player · per-game points · total (the per-game
-/// columns appear only when that day recorded them). Reveal-blanked like the
-/// merged view; column widths precomputed in monospace `ch` so revealing never
-/// reflows.
-fn day_grid_view(s: &TftStandings, show: bool) -> AnyView {
-    let chars = |x: &str| x.chars().count();
-    let game_count = s.game_count;
-    let rank_w = s
-        .rows
+/// Shared column widths (monospace `ch`) so every tab lays out identically — the
+/// total/points column lines up across the day tabs and with the current tab, and
+/// switching tabs never shifts a column. `max_games` reserves the widest day's
+/// game columns on every tab (left blank where a day / the current view has none).
+#[derive(Clone, Copy)]
+struct TabLayout {
+    rank_w: usize,
+    name_w: usize,
+    max_games: usize,
+    game_w: usize,
+    /// Width of the aligned value column — "Total" on day tabs, "Pts" on current.
+    val_w: usize,
+    prize_w: usize,
+}
+
+/// Compute the shared layout across all day panels and the current-tab rows.
+fn tab_layout(panels: &[TftDayPanel], current: &[MergedRow]) -> TabLayout {
+    let chars = |s: &str| s.chars().count();
+    let mut rank_w = 1;
+    let mut name_w = 6; // "Player"
+    let mut val_w = 5; // fits "Total" (and "Pts")
+    let mut game_w = 2;
+    let max_games = panels
         .iter()
-        .map(|r| chars(&r.rank))
+        .map(|p| p.standings.game_count)
         .max()
-        .unwrap_or(1)
-        .max(1);
-    let name_w = s
-        .rows
-        .iter()
-        .map(|r| chars(&r.participant))
-        .max()
-        .unwrap_or(0)
-        .clamp(6, 22);
-    let total_w = s
-        .rows
-        .iter()
-        .map(|r| chars(&r.total))
-        .max()
-        .unwrap_or(0)
-        .max(3);
-    let game_w = s
-        .rows
-        .iter()
-        .flat_map(|r| r.games.iter())
-        .map(|g| chars(g))
-        .max()
-        .unwrap_or(0)
-        .max(2);
-    let grid = if game_count == 0 {
-        format!("grid-template-columns:{rank_w}ch {name_w}ch {total_w}ch;")
+        .unwrap_or(0);
+    for p in panels {
+        for r in &p.standings.rows {
+            rank_w = rank_w.max(chars(&r.rank));
+            name_w = name_w.max(chars(&r.participant));
+            val_w = val_w.max(chars(&r.total));
+            for g in &r.games {
+                game_w = game_w.max(chars(g));
+            }
+        }
+    }
+    let mut prize_w = 5; // "Prize"
+    for r in current {
+        rank_w = rank_w.max(chars(&r.pos));
+        name_w = name_w.max(chars(&r.player));
+        val_w = val_w.max(chars(&r.points));
+        prize_w = prize_w.max(chars(&r.prize));
+    }
+    if max_games > 0 {
+        game_w = game_w.max(chars(&format!("G{max_games}")));
+    }
+    TabLayout {
+        rank_w,
+        name_w: name_w.clamp(6, 22),
+        max_games,
+        game_w,
+        val_w,
+        prize_w,
+    }
+}
+
+/// A raw day-panel grid: rank · player · per-game points · total. The game columns
+/// are the shared `max_games` width (blank past this day's own game count), so the
+/// total column lines up with the other tabs. Reveal-blanked.
+fn day_grid_view(s: &TftStandings, l: &TabLayout, show: bool) -> AnyView {
+    let TabLayout {
+        rank_w,
+        name_w,
+        max_games,
+        game_w,
+        val_w,
+        ..
+    } = *l;
+    let grid = if max_games == 0 {
+        format!("grid-template-columns:{rank_w}ch {name_w}ch {val_w}ch;")
     } else {
         format!(
-            "grid-template-columns:{rank_w}ch {name_w}ch repeat({game_count},{game_w}ch) {total_w}ch;"
+            "grid-template-columns:{rank_w}ch {name_w}ch repeat({max_games},{game_w}ch) {val_w}ch;"
         )
     };
-    let head_games = (1..=game_count)
-        .map(|i| view! { <span class="tft-h tft-g">{format!("G{i}")}</span> })
+    let gc = s.game_count;
+    let head_games = (0..max_games)
+        .map(|i| {
+            let lab = if i < gc {
+                format!("G{}", i + 1)
+            } else {
+                String::new()
+            };
+            view! { <span class="tft-h tft-g">{lab}</span> }
+        })
         .collect_view();
     let rows = s
         .rows
         .iter()
         .map(|r| {
-            let games = (0..game_count)
+            let games = (0..max_games)
                 .map(|i| {
-                    let v = if show {
+                    let v = if show && i < gc {
                         r.games.get(i).cloned().unwrap_or_default()
                     } else {
                         String::new()
@@ -335,29 +376,24 @@ fn day_grid_view(s: &TftStandings, show: bool) -> AnyView {
 
 /// The merged "current" grid: rank · player · live points · prize — players still
 /// in on top, a muted "eliminated" divider, then the eliminated (dimmed) with their
-/// final place + prize. Reveal-blanked; widths precomputed.
-fn current_grid_view(rows: &[MergedRow], show: bool) -> AnyView {
-    let chars = |s: &str| s.chars().count();
-    let pos_w = rows.iter().map(|r| chars(&r.pos)).max().unwrap_or(1).max(1);
-    let name_w = rows
-        .iter()
-        .map(|r| chars(&r.player))
-        .max()
-        .unwrap_or(0)
-        .clamp(6, 22);
-    let pts_w = rows
-        .iter()
-        .map(|r| chars(&r.points))
-        .max()
-        .unwrap_or(0)
-        .max(3);
-    let prize_w = rows
-        .iter()
-        .map(|r| chars(&r.prize))
-        .max()
-        .unwrap_or(0)
-        .max(5);
-    let grid = format!("grid-template-columns:{pos_w}ch {name_w}ch {pts_w}ch {prize_w}ch;");
+/// final place + prize. The `max_games` game columns are reserved (blank) so the
+/// "Pts" column lines up with the day tabs' "Total". Reveal-blanked.
+fn current_grid_view(rows: &[MergedRow], l: &TabLayout, show: bool) -> AnyView {
+    let TabLayout {
+        rank_w,
+        name_w,
+        max_games,
+        game_w,
+        val_w,
+        prize_w,
+    } = *l;
+    let grid = if max_games == 0 {
+        format!("grid-template-columns:{rank_w}ch {name_w}ch {val_w}ch {prize_w}ch;")
+    } else {
+        format!(
+            "grid-template-columns:{rank_w}ch {name_w}ch repeat({max_games},{game_w}ch) {val_w}ch {prize_w}ch;"
+        )
+    };
     // The eliminated block is contiguous at the bottom, so one divider (before the
     // first final row) cleanly splits live from final.
     let mut sep_shown = false;
@@ -381,22 +417,30 @@ fn current_grid_view(rows: &[MergedRow], show: bool) -> AnyView {
             } else {
                 (String::new(), String::new(), String::new())
             };
+            let spacers = (0..max_games)
+                .map(|_| view! { <span class="tft-g"></span> })
+                .collect_view();
             view! {
                 {sep}
                 <div class="tft-row" class:tft-final=is_final>
                     <span class="tft-rank">{pos}</span>
                     <span class="tft-name">{name}</span>
+                    {spacers}
                     <span class="tft-pts">{points}</span>
                     <span class="tft-prize">{prize}</span>
                 </div>
             }
         })
         .collect_view();
+    let head_spacers = (0..max_games)
+        .map(|_| view! { <span class="tft-h tft-g"></span> })
+        .collect_view();
     view! {
         <div class="tft-standings" style=grid>
             <div class="tft-row">
                 <span class="tft-h tft-rank">"#"</span>
                 <span class="tft-h tft-name">"Player"</span>
+                {head_spacers}
                 <span class="tft-h tft-pts">"Pts"</span>
                 <span class="tft-h tft-prize">"Prize"</span>
             </div>
@@ -439,6 +483,8 @@ fn TftResultsTabs(
     } else {
         n_days.saturating_sub(1)
     });
+    // One shared layout so the total/points column lines up across every tab.
+    let layout = tab_layout(&panels, &current);
     let panels = StoredValue::new(panels);
     let current = StoredValue::new(current);
     let tab_bar = tabs
@@ -460,9 +506,9 @@ fn TftResultsTabs(
         let idx = active.get();
         let days = panels.get_value();
         if idx < days.len() {
-            day_grid_view(&days[idx].standings, show)
+            day_grid_view(&days[idx].standings, &layout, show)
         } else {
-            current_grid_view(&current.get_value(), show)
+            current_grid_view(&current.get_value(), &layout, show)
         }
     };
     view! {
