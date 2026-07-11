@@ -2299,12 +2299,23 @@ fn apply_poll(
                     .collect()
             };
             let wrc_keep = reconcile_wrc(&mut fresh, &prev_wrc_stages);
+            // TFT (league "TFT") is fully-enumerated like WRC — `fetch_tft` returns
+            // the whole upcoming page each poll — so league-scoped replace it: drop
+            // any TFT row whose id isn't in this poll's (deduped) set. This purges
+            // stale twin rows ("Game 1" superseded by "Day 2 - Game 1") and games
+            // that have dropped off the page. Empty (no TFT this cycle) ⇒ skipped,
+            // so a non-fetch cycle never clears the league.
+            let tft_keep: Vec<i64> = fresh
+                .iter()
+                .filter(|m| m.sport == Sport::Tft)
+                .map(|m| m.id)
+                .collect();
             if let Err(e) = crate::store::upsert_and_prune(
                 conn,
                 &fresh,
                 now.timestamp_millis(),
                 cutoff_ms,
-                &[("WRC", wrc_keep)],
+                &[("WRC", wrc_keep), ("TFT", tft_keep)],
             ) {
                 leptos::logging::log!("cache db write failed: {e}");
             }
