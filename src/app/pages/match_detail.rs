@@ -309,7 +309,11 @@ pub(crate) fn detail_view(d: MatchDetail, results: Resource<MatchResults>) -> im
     };
 
     let muid = m.uid();
-    let is_esports = matches!(m.sport, Sport::Cs2 | Sport::Lol);
+    // Esports stream handling (call the live-stream enrichment resource + render
+    // url-derived stream rows) — TFT joins CS2/LoL here: its Liquipedia streams
+    // enrich with Twitch/YouTube viewers the same way (co-stream discovery stays
+    // CS2/LoL-only, gated separately in `live_streams_for`).
+    let is_esports = matches!(m.sport, Sport::Cs2 | Sport::Lol | Sport::Tft);
     let (sa, sb) = (m.team_a.score, m.team_b.score);
     let has_score = sa.is_some() && sb.is_some();
     // "Played" = under way or done (an upcoming match can still carry a 0-0

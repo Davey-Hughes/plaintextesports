@@ -2232,6 +2232,8 @@ async fn refresh_tft_results(
                         session_label: format!("{label} - Game {}", gi + 1),
                         begin_at: DateTime::from_timestamp(ts, 0).unwrap_or(now),
                         tournament_url: nearest.league_url.clone().unwrap_or_default(),
+                        // Past game — finished, no live stream to carry.
+                        streams: Vec::new(),
                     };
                     past_sessions.push(crate::tft::session_to_match(&ps, now));
                 }
@@ -2417,6 +2419,20 @@ fn apply_poll(
                     .filter(|m| !m.streams.is_empty() || m.mlb_series.is_some())
                     .map(|m| (m.id, (m.streams, m.mlb_series)))
                     .collect();
+                // Carry forward streams for matches this poll didn't refetch: a
+                // sport on a slow cadence (TFT — one Liquipedia call every few
+                // cycles) isn't in every poll's `fresh`, so without this its
+                // in-memory streams would blink out on the intervening cycles.
+                // `fresh` still wins (only fills gaps), so refetched matches update.
+                {
+                    let prev = SNAPSHOT.read().unwrap_or_else(PoisonError::into_inner);
+                    for m in &prev.matches {
+                        if !m.streams.is_empty() {
+                            live.entry(m.id)
+                                .or_insert_with(|| (m.streams.clone(), m.mlb_series));
+                        }
+                    }
+                }
                 for m in &mut all {
                     if let Some((s, series)) = live.remove(&m.id) {
                         if !s.is_empty() {

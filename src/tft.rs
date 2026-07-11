@@ -11,7 +11,7 @@
 
 use crate::feed::{NormalizedMatch, NormalizedTeam};
 use crate::http::DynError;
-use crate::types::{MatchStatus, Sport, TftPlacement, TftStandingRow, TftStandings};
+use crate::types::{MatchStatus, Sport, StreamView, TftPlacement, TftStandingRow, TftStandings};
 use chrono::{DateTime, Duration, Utc};
 use serde::Deserialize;
 use tl::{HTMLTag, Parser, ParserOptions};
@@ -36,6 +36,9 @@ pub struct ParsedSession {
     pub begin_at: DateTime<Utc>,
     /// Absolute Liquipedia URL of the tournament page (source-link attribution).
     pub tournament_url: String,
+    /// Official broadcast streams parsed from the session's `Special:Stream` links
+    /// (Twitch/YouTube), ready to enrich with live viewers like a CS2/LoL match.
+    pub streams: Vec<StreamView>,
 }
 
 /// A stable 0..1e9 FNV-1a hash of a string.
@@ -99,6 +102,7 @@ pub fn session_to_match(s: &ParsedSession, now: DateTime<Utc>) -> NormalizedMatc
     if !s.tournament_url.is_empty() {
         m.league_url = Some(s.tournament_url.clone());
     }
+    m.streams = s.streams.clone();
     m
 }
 
@@ -146,9 +150,64 @@ pub fn parse_upcoming(html: &str) -> Vec<ParsedSession> {
             session_label,
             begin_at,
             tournament_url,
+            streams: parse_streams(tag, parser),
         });
     }
     dedup_twins(out)
+}
+
+/// Parse a match table's official broadcast streams from its `Special:Stream`
+/// links (`/tft/Special:Stream/<platform>/<channel>`). Builds a clickable
+/// [`StreamView`] per Twitch/YouTube channel — the platform+channel map cleanly to
+/// `twitch.tv/<channel>` / `youtube.com/@<channel>`, which the live-stream
+/// enrichment can then look up for viewers, exactly like a PandaScore esports
+/// stream. Other platforms (douyu/huya) are skipped — their URL isn't reliably
+/// derivable from the Liquipedia key and the enrichment/UI don't recognize them.
+fn parse_streams(tag: &HTMLTag, parser: &Parser) -> Vec<StreamView> {
+    let mut seen = std::collections::HashSet::new();
+    let mut out = Vec::new();
+    let Some(anchors) = tag.query_selector(parser, "a") else {
+        return out;
+    };
+    for h in anchors {
+        let Some(a) = h.get(parser).and_then(|n| n.as_tag()) else {
+            continue;
+        };
+        let Some(rest) = attr_str(a, "href")
+            .as_deref()
+            .and_then(|href| href.strip_prefix("/tft/Special:Stream/"))
+            .map(str::to_string)
+        else {
+            continue;
+        };
+        let mut parts = rest.splitn(2, '/');
+        let platform = parts.next().unwrap_or_default();
+        let channel = parts.next().unwrap_or_default();
+        if channel.is_empty() {
+            continue;
+        }
+        // Official broadcast channels; language defaults to English (the "TFT"
+        // channels are Riot's English streams — a per-channel language isn't in the
+        // link). Twitch is the primary/main stream.
+        let (url, main) = match platform {
+            "twitch" => (format!("https://www.twitch.tv/{channel}"), true),
+            "youtube" => (format!("https://www.youtube.com/@{channel}"), false),
+            _ => continue,
+        };
+        if !seen.insert(url.clone()) {
+            continue;
+        }
+        out.push(StreamView {
+            url,
+            language: "en".to_string(),
+            official: true,
+            main,
+            curated: true,
+            ..Default::default()
+        });
+    }
+    crate::types::order_streams(&mut out);
+    out
 }
 
 /// Liquipedia lists each game twice — once prefixed ("Day 2 - Game 1", "Grand
@@ -638,6 +697,7 @@ mod tests {
             session_label: "Day 1 - Swiss".into(),
             begin_at: at("2026-07-10T12:30:00Z"),
             tournament_url: "https://liquipedia.net/teamfighttactics/Tactician's_Crown".into(),
+            streams: Vec::new(),
         };
         let m = session_to_match(&s, now);
         assert_eq!(m.sport, Sport::Tft);
@@ -657,6 +717,7 @@ mod tests {
             session_label: "S".into(),
             begin_at: at(begin),
             tournament_url: String::new(),
+            streams: Vec::new(),
         };
         let now = at("2026-07-10T14:00:00Z");
         // Future -> Upcoming.
@@ -730,6 +791,20 @@ mod tests {
             "https://liquipedia.net/tft/Space_Gods/Tacticians_Crown/Swiss_Stage"
         );
         assert_eq!(first.begin_at.timestamp(), 1_783_767_600);
+        // The session's `Special:Stream` links become clickable Twitch/YouTube
+        // broadcasts (douyu/huya skipped), Twitch as the `main` official stream.
+        let urls: Vec<&str> = first.streams.iter().map(|s| s.url.as_str()).collect();
+        assert_eq!(
+            urls,
+            ["https://www.twitch.tv/TFT", "https://www.youtube.com/@TFT"]
+        );
+        assert!(
+            first
+                .streams
+                .iter()
+                .all(|s| s.official && s.curated && s.language == "en")
+        );
+        assert!(first.streams[0].main, "twitch is the main stream");
     }
 
     #[test]
@@ -740,6 +815,7 @@ mod tests {
             session_label: label.into(),
             begin_at: when,
             tournament_url: String::new(),
+            streams: Vec::new(),
         };
         // Bare "Game 1" dropped in favor of the prefixed twin at the same time.
         let out = dedup_twins(vec![s("Day 2 - Game 1", t0), s("Game 1", t0)]);
