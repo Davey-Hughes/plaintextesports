@@ -92,9 +92,11 @@ static MOTOGP_STANDINGS: Lazy<RwLock<crate::types::MotorStandings>> =
 // fetched per request.
 static TFT_PLACEMENTS: Lazy<RwLock<HashMap<String, Vec<crate::types::TftPlacement>>>> =
     Lazy::new(|| RwLock::new(HashMap::new()));
-// TFT lobby standings (rank/player/per-game points/total), same keying + lifecycle
-// as TFT_PLACEMENTS — fetched from the same tournament page in the same request.
-static TFT_STANDINGS: Lazy<RwLock<HashMap<String, crate::types::TftStandings>>> =
+// TFT standings as a chronological list of day/stage panels (each rank/player/
+// per-game/total), same keying + lifecycle as TFT_PLACEMENTS — every stage event
+// of a tournament stores the tournament's full set of day panels, fetched from the
+// same page in the same request. The UI shows them as tabs + a "current" tab.
+static TFT_STANDINGS: Lazy<RwLock<HashMap<String, Vec<crate::types::TftDayPanel>>>> =
     Lazy::new(|| RwLock::new(HashMap::new()));
 
 /// The WRC, WEC, or MotoGP championship standings (empty until first fetched), by
@@ -122,9 +124,10 @@ pub fn tft_placements(event: &str) -> Vec<crate::types::TftPlacement> {
         .unwrap_or_default()
 }
 
-/// This event's TFT lobby standings (empty until fetched), keyed by full event name.
+/// This event's TFT standings as day/stage panels (empty until fetched), keyed by
+/// full event name.
 #[must_use]
-pub fn tft_standings(event: &str) -> crate::types::TftStandings {
+pub fn tft_standings(event: &str) -> Vec<crate::types::TftDayPanel> {
     TFT_STANDINGS
         .read()
         .unwrap_or_else(PoisonError::into_inner)
@@ -1330,9 +1333,10 @@ fn load_persisted_standings() {
         let mut standings = TFT_STANDINGS
             .write()
             .unwrap_or_else(PoisonError::into_inner);
-        for (event, s, _) in db_cache_get_ns::<crate::types::TftStandings>("tft_standings") {
-            if !s.rows.is_empty() {
-                standings.insert(event, s);
+        for (event, panels, _) in db_cache_get_ns::<Vec<crate::types::TftDayPanel>>("tft_standings")
+        {
+            if !panels.is_empty() {
+                standings.insert(event, panels);
             }
         }
     }
@@ -2165,44 +2169,58 @@ async fn refresh_tft_results(
                     db_cache_put("tft_placements", ev, &placements, now);
                 }
             }
-            // Standings are per-stage: give each event the panel whose game times
-            // overlap that stage's session times the most, so a Swiss page shows
-            // its own ~32-row table and Grand Finals its 8-row one. An event with
-            // no overlapping panel (e.g. a showmatch) is cleared to empty, which
-            // also purges any stale concatenated blob from before this split.
-            let mut standings_events = 0usize;
-            for (ev, minutes) in &event_minutes {
-                let matched = tables
-                    .iter()
-                    .map(|t| {
-                        let overlap = t
-                            .game_minutes
-                            .iter()
-                            .filter(|m| minutes.contains(m))
-                            .count();
-                        (t, overlap)
-                    })
-                    .filter(|(_, n)| *n > 0)
-                    .max_by_key(|(_, n)| *n)
-                    .map(|(t, _)| t.standings.clone())
-                    .unwrap_or_default();
-                if !matched.is_empty() {
-                    standings_events += 1;
-                }
-                {
-                    let mut ss = TFT_STANDINGS
-                        .write()
-                        .unwrap_or_else(PoisonError::into_inner);
-                    ss.insert(ev.clone(), matched.clone());
-                }
-                db_cache_put("tft_standings", ev, &matched, now);
+            // Standings: build labelled day panels (chronological) and store the
+            // whole set under every stage event, so any stage page and the front
+            // page show all the day tabs (each panel keeps its per-game detail).
+            // Label each panel by the stage of a session running at its game times
+            // ("Day 2", "Grand Finals"), else "Day N" by order — a finished day
+            // whose sessions have already left the upcoming feed.
+            let mut minute_to_stage: HashMap<i64, String> = HashMap::new();
+            for m in tft_rows.iter().filter(|m| {
+                m.league_url
+                    .as_deref()
+                    .map(crate::tft::parent_tournament_url)
+                    .as_deref()
+                    == Some(parent.as_str())
+            }) {
+                let stage = tft_stage_part(&m.team_a.label)
+                    .unwrap_or(m.team_a.label.as_str())
+                    .to_string();
+                minute_to_stage.insert(m.begin_at.timestamp() / 60, stage);
             }
-            if crate::tft::any_decided(&placements) || standings_events > 0 {
+            let mut tables = tables;
+            tables.sort_by_key(|t| t.game_minutes.iter().copied().min().unwrap_or(i64::MAX));
+            let day_panels: Vec<crate::types::TftDayPanel> = tables
+                .into_iter()
+                .enumerate()
+                .map(|(i, t)| {
+                    let label = t
+                        .game_minutes
+                        .iter()
+                        .find_map(|mn| minute_to_stage.get(mn).cloned())
+                        .unwrap_or_else(|| format!("Day {}", i + 1));
+                    crate::types::TftDayPanel {
+                        label,
+                        standings: t.standings,
+                    }
+                })
+                .collect();
+            {
+                let mut ss = TFT_STANDINGS
+                    .write()
+                    .unwrap_or_else(PoisonError::into_inner);
+                for ev in event_minutes.keys() {
+                    ss.insert(ev.clone(), day_panels.clone());
+                }
+            }
+            for ev in event_minutes.keys() {
+                db_cache_put("tft_standings", ev, &day_panels, now);
+            }
+            if crate::tft::any_decided(&placements) || !day_panels.is_empty() {
                 leptos::logging::log!(
-                    "TFT results: {} placement(s) for {} event(s) + standings for {}/{} stage(s) from {parent}",
+                    "TFT results: {} placement(s) + {} day-panel(s) for {} event(s) from {parent}",
                     placements.len(),
-                    event_minutes.len(),
-                    standings_events,
+                    day_panels.len(),
                     event_minutes.len()
                 );
             }

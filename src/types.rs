@@ -688,6 +688,16 @@ impl TftStandings {
     }
 }
 
+/// One day/stage panel of a TFT tournament's standings — a labelled ("Day 1",
+/// "Grand Finals", …) lobby table. A tournament page carries one per day; the UI
+/// shows them as tabs (each with per-game detail) plus a synthesized "current"
+/// tab. Ordered chronologically, so the last is the most recent.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TftDayPanel {
+    pub label: String,
+    pub standings: TftStandings,
+}
+
 /// One match within a bracket round.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BracketMatch {

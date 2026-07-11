@@ -5,7 +5,7 @@
 use crate::types::Sport;
 use crate::types::{
     EventInfo, F1Result, F1Standings, MatchDetail, MatchResults, MotorResult, MotorStandings,
-    ReminderReq, ScheduleView, SiteInfo, StreamView, SubscribeReq, TftPlacement, TftStandings,
+    ReminderReq, ScheduleView, SiteInfo, StreamView, SubscribeReq, TftDayPanel, TftPlacement,
 };
 use leptos::prelude::*;
 
@@ -428,7 +428,7 @@ pub async fn get_tft_placements(event: String) -> Result<Vec<TftPlacement>, Serv
 /// by full event name. Empty for non-TFT events / before results exist. Served
 /// from the poller cache — never fetched per request.
 #[server(GetTftStandings, "/api")]
-pub async fn get_tft_standings(event: String) -> Result<TftStandings, ServerFnError> {
+pub async fn get_tft_standings(event: String) -> Result<Vec<TftDayPanel>, ServerFnError> {
     #[cfg(feature = "ssr")]
     {
         Ok(crate::cache::tft_standings(&event))
@@ -436,7 +436,7 @@ pub async fn get_tft_standings(event: String) -> Result<TftStandings, ServerFnEr
     #[cfg(not(feature = "ssr"))]
     {
         let _ = event;
-        Ok(TftStandings::default())
+        Ok(Vec::new())
     }
 }
 

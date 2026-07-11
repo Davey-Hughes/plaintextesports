@@ -1,7 +1,7 @@
 //! Standings view components that aren't the playoff bracket: F1 / motorsport
 //! championship tables and the traditional-sports standings wrapper.
 use crate::app::*;
-use crate::types::{TftPlacement, TftStandings};
+use crate::types::{TftDayPanel, TftPlacement, TftStandings};
 
 /// The drivers' and constructors' championship standings as of a GP's round,
 /// shown on the F1 event page. Spoiler-gated as one block (it encodes results).
@@ -243,82 +243,227 @@ fn merge_tft_results(standings: &TftStandings, placements: &[TftPlacement]) -> V
     out
 }
 
-/// A TFT event's results as ONE ranked ladder (# · player · pts · prize) — the
-/// live lobby standings and the tournament's final placements merged by
-/// [`merge_tft_results`]. Players still competing sit on top with their points; a
-/// labelled divider separates the eliminated players below, muted, with their
-/// final place + prize. Spoiler-gated as one block; positions stay visible to
-/// reserve height while names/points/prizes hide. Column widths are precomputed
-/// in monospace `ch` so revealing never reflows. Nothing renders when empty.
-#[component]
-fn TftResultsTable(
-    standings: TftStandings,
-    placements: Vec<TftPlacement>,
-    event: String,
-) -> impl IntoView {
-    let data = merge_tft_results(&standings, &placements);
-    if data.is_empty() {
-        return ().into_any();
+/// A raw day-panel grid: rank · player · per-game points · total (the per-game
+/// columns appear only when that day recorded them). Reveal-blanked like the
+/// merged view; column widths precomputed in monospace `ch` so revealing never
+/// reflows.
+fn day_grid_view(s: &TftStandings, show: bool) -> AnyView {
+    let chars = |x: &str| x.chars().count();
+    let game_count = s.game_count;
+    let rank_w = s
+        .rows
+        .iter()
+        .map(|r| chars(&r.rank))
+        .max()
+        .unwrap_or(1)
+        .max(1);
+    let name_w = s
+        .rows
+        .iter()
+        .map(|r| chars(&r.participant))
+        .max()
+        .unwrap_or(0)
+        .clamp(6, 22);
+    let total_w = s
+        .rows
+        .iter()
+        .map(|r| chars(&r.total))
+        .max()
+        .unwrap_or(0)
+        .max(3);
+    let game_w = s
+        .rows
+        .iter()
+        .flat_map(|r| r.games.iter())
+        .map(|g| chars(g))
+        .max()
+        .unwrap_or(0)
+        .max(2);
+    let grid = if game_count == 0 {
+        format!("grid-template-columns:{rank_w}ch {name_w}ch {total_w}ch;")
+    } else {
+        format!(
+            "grid-template-columns:{rank_w}ch {name_w}ch repeat({game_count},{game_w}ch) {total_w}ch;"
+        )
+    };
+    let head_games = (1..=game_count)
+        .map(|i| view! { <span class="tft-h tft-g">{format!("G{i}")}</span> })
+        .collect_view();
+    let rows = s
+        .rows
+        .iter()
+        .map(|r| {
+            let games = (0..game_count)
+                .map(|i| {
+                    let v = if show {
+                        r.games.get(i).cloned().unwrap_or_default()
+                    } else {
+                        String::new()
+                    };
+                    view! { <span class="tft-g">{v}</span> }
+                })
+                .collect_view();
+            let (name, total) = if show {
+                (r.participant.clone(), r.total.clone())
+            } else {
+                (String::new(), String::new())
+            };
+            let rank = r.rank.clone();
+            view! {
+                <div class="tft-row">
+                    <span class="tft-rank">{rank}</span>
+                    <span class="tft-name">{name}</span>
+                    {games}
+                    <span class="tft-total">{total}</span>
+                </div>
+            }
+        })
+        .collect_view();
+    view! {
+        <div class="tft-standings" style=grid>
+            <div class="tft-row">
+                <span class="tft-h tft-rank">"#"</span>
+                <span class="tft-h tft-name">"Player"</span>
+                {head_games}
+                <span class="tft-h tft-total">"Total"</span>
+            </div>
+            {rows}
+        </div>
     }
-    let (revealed, toggle) = section_reveal(format!("tftres:{event}"));
+    .into_any()
+}
+
+/// The merged "current" grid: rank · player · live points · prize — players still
+/// in on top, a muted "eliminated" divider, then the eliminated (dimmed) with their
+/// final place + prize. Reveal-blanked; widths precomputed.
+fn current_grid_view(rows: &[MergedRow], show: bool) -> AnyView {
     let chars = |s: &str| s.chars().count();
-    let pos_w = data.iter().map(|r| chars(&r.pos)).max().unwrap_or(1).max(1);
-    let name_w = data
+    let pos_w = rows.iter().map(|r| chars(&r.pos)).max().unwrap_or(1).max(1);
+    let name_w = rows
         .iter()
         .map(|r| chars(&r.player))
         .max()
         .unwrap_or(0)
         .clamp(6, 22);
-    let pts_w = data
+    let pts_w = rows
         .iter()
         .map(|r| chars(&r.points))
         .max()
         .unwrap_or(0)
         .max(3);
-    let prize_w = data
+    let prize_w = rows
         .iter()
         .map(|r| chars(&r.prize))
         .max()
         .unwrap_or(0)
         .max(5);
     let grid = format!("grid-template-columns:{pos_w}ch {name_w}ch {pts_w}ch {prize_w}ch;");
-    let rows = StoredValue::new(data);
+    // The eliminated block is contiguous at the bottom, so one divider (before the
+    // first final row) cleanly splits live from final.
+    let mut sep_shown = false;
+    let body = rows
+        .iter()
+        .map(|r| {
+            let sep = (r.is_final && !sep_shown)
+                .then(|| view! { <div class="tft-elim-sep">"eliminated"</div> });
+            if r.is_final {
+                sep_shown = true;
+            }
+            let is_final = r.is_final;
+            let pos = r.pos.clone();
+            let (name, points, prize) = if show {
+                let name = if r.blank {
+                    "—".to_string()
+                } else {
+                    r.player.clone()
+                };
+                (name, r.points.clone(), r.prize.clone())
+            } else {
+                (String::new(), String::new(), String::new())
+            };
+            view! {
+                {sep}
+                <div class="tft-row" class:tft-final=is_final>
+                    <span class="tft-rank">{pos}</span>
+                    <span class="tft-name">{name}</span>
+                    <span class="tft-pts">{points}</span>
+                    <span class="tft-prize">{prize}</span>
+                </div>
+            }
+        })
+        .collect_view();
+    view! {
+        <div class="tft-standings" style=grid>
+            <div class="tft-row">
+                <span class="tft-h tft-rank">"#"</span>
+                <span class="tft-h tft-name">"Player"</span>
+                <span class="tft-h tft-pts">"Pts"</span>
+                <span class="tft-h tft-prize">"Prize"</span>
+            </div>
+            {body}
+        </div>
+    }
+    .into_any()
+}
+
+/// A TFT event's standings shown as tabs: one per day/stage panel (each with its
+/// per-game detail) plus a synthesized "Current" tab — the latest day's standing
+/// folded together with the final placements (eliminated players + prizes). One
+/// spoiler reveal gates them all; the tab bar and positions stay visible while the
+/// values hide. Defaults to the "Current" tab.
+#[component]
+fn TftResultsTabs(
+    panels: Vec<TftDayPanel>,
+    placements: Vec<TftPlacement>,
+    event: String,
+) -> impl IntoView {
+    let latest = panels
+        .last()
+        .map(|p| p.standings.clone())
+        .unwrap_or_default();
+    let current = merge_tft_results(&latest, &placements);
+    let has_current = !current.is_empty();
+    if panels.is_empty() && !has_current {
+        return ().into_any();
+    }
+    let (revealed, toggle) = section_reveal(format!("tftres:{event}"));
+    let n_days = panels.len();
+    // Tabs: day panels at 0..n_days, then "Current" at n_days. Start on Current.
+    let mut tabs: Vec<(usize, String)> =
+        panels.iter().map(|p| p.label.clone()).enumerate().collect();
+    if has_current {
+        tabs.push((n_days, "Current".to_string()));
+    }
+    let active = RwSignal::new(if has_current {
+        n_days
+    } else {
+        n_days.saturating_sub(1)
+    });
+    let panels = StoredValue::new(panels);
+    let current = StoredValue::new(current);
+    let tab_bar = tabs
+        .into_iter()
+        .map(|(i, label)| {
+            view! {
+                <button
+                    class="tft-tab"
+                    class:tft-tab-active=move || active.get() == i
+                    on:click=move |_| active.set(i)
+                >
+                    {label}
+                </button>
+            }
+        })
+        .collect_view();
     let body = move || {
         let show = revealed.get();
-        // The eliminated block is contiguous at the bottom, so one divider (before
-        // the first final row) cleanly splits live from final.
-        let mut sep_shown = false;
-        rows.get_value()
-            .into_iter()
-            .map(|r| {
-                let sep = (r.is_final && !sep_shown)
-                    .then(|| view! { <div class="tft-elim-sep">"eliminated"</div> });
-                if r.is_final {
-                    sep_shown = true;
-                }
-                let is_final = r.is_final;
-                let pos = r.pos.clone();
-                let (name, points, prize) = if show {
-                    let name = if r.blank {
-                        "—".to_string()
-                    } else {
-                        r.player.clone()
-                    };
-                    (name, r.points.clone(), r.prize.clone())
-                } else {
-                    (String::new(), String::new(), String::new())
-                };
-                view! {
-                    {sep}
-                    <div class="tft-row" class:tft-final=is_final>
-                        <span class="tft-rank">{pos}</span>
-                        <span class="tft-name">{name}</span>
-                        <span class="tft-pts">{points}</span>
-                        <span class="tft-prize">{prize}</span>
-                    </div>
-                }
-            })
-            .collect_view()
+        let idx = active.get();
+        let days = panels.get_value();
+        if idx < days.len() {
+            day_grid_view(&days[idx].standings, show)
+        } else {
+            current_grid_view(&current.get_value(), show)
+        }
     };
     view! {
         <section class="detail-section" id="tftsec-results">
@@ -334,34 +479,25 @@ fn TftResultsTable(
                     }}
                 </span>
             </button>
-            <div class="tft-standings-wrap">
-                <div class="tft-standings" style=grid>
-                    <div class="tft-row">
-                        <span class="tft-h tft-rank">"#"</span>
-                        <span class="tft-h tft-name">"Player"</span>
-                        <span class="tft-h tft-pts">"Pts"</span>
-                        <span class="tft-h tft-prize">"Prize"</span>
-                    </div>
-                    {body}
-                </div>
-            </div>
+            <div class="tft-tabs">{tab_bar}</div>
+            <div class="tft-standings-wrap">{body}</div>
         </section>
     }
     .into_any()
 }
 
-/// A TFT event's results — the live lobby standings and the tournament's final
-/// placements folded into one ranked ladder ([`TftResultsTable`]). Self-contained:
-/// it owns the two Liquipedia-poller-cache resources keyed by `event` (the full
-/// event name; empty → nothing renders), so it drops into both the event page and
-/// the front-page single-event section.
+/// A TFT event's results — the tournament's day/stage standings panels plus its
+/// final placements, shown as tabs ([`TftResultsTabs`]). Self-contained: it owns
+/// the two Liquipedia-poller-cache resources keyed by `event` (the full event
+/// name; empty → nothing renders), so it drops into both the event page and the
+/// front-page single-event section.
 #[component]
 pub(crate) fn TftEventResults(event: Signal<String>) -> impl IntoView {
-    let standings = Resource::new(
+    let panels = Resource::new(
         move || event.get(),
         |ev| async move {
             if ev.is_empty() {
-                TftStandings::default()
+                Vec::new()
             } else {
                 get_tft_standings(ev).await.unwrap_or_default()
             }
@@ -379,22 +515,24 @@ pub(crate) fn TftEventResults(event: Signal<String>) -> impl IntoView {
     );
     view! {
         // Transition (not Suspense) so re-keying on a new event — switching the
-        // single-event filter — keeps the current table up while the next loads.
+        // single-event filter — keeps the current tabs up while the next loads.
         <Transition>
             {move || {
                 let ev = event.get();
                 if ev.is_empty() {
                     return ().into_any();
                 }
-                let s = standings.get().unwrap_or_default();
-                let p = placements.get().unwrap_or_default();
-                // Show only when there's real content: live standings, or at least
-                // one decided placement. (All-"TBD" placements with no standings —
-                // an untouched prizepool — render nothing.)
-                if s.is_empty() && !p.iter().any(|x| tft_real(&x.participant)) {
+                let ps = panels.get().unwrap_or_default();
+                let pl = placements.get().unwrap_or_default();
+                // Show only when there's real content: at least one non-empty day
+                // panel, or a decided placement. (An untouched all-"TBD" prizepool
+                // with no standings renders nothing.)
+                let has_panels = ps.iter().any(|p| !p.standings.is_empty());
+                let has_decided = pl.iter().any(|x| tft_real(&x.participant));
+                if !has_panels && !has_decided {
                     return ().into_any();
                 }
-                view! { <TftResultsTable standings=s placements=p event=ev /> }.into_any()
+                view! { <TftResultsTabs panels=ps placements=pl event=ev /> }.into_any()
             }}
         </Transition>
     }
