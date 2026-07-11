@@ -1789,7 +1789,7 @@ pub fn spawn_poller() {
                         let _ = crate::store::set_meta(c, LIQ_META_USED, &liq_used.to_string());
                     }
                 } else if liq_used < LIQ_DAILY_CAP {
-                    let billed = refresh_tft_results(
+                    let (billed, past_sessions) = refresh_tft_results(
                         &client,
                         &tft_rows,
                         now,
@@ -1797,6 +1797,11 @@ pub fn spawn_poller() {
                         &mut liq_used,
                     )
                     .await;
+                    // Reconstructed finished-day rows join this cycle's feed so the
+                    // schedule keeps past days (they're not on the upcoming page).
+                    if !past_sessions.is_empty() {
+                        feeds.push((Sport::Tft, Ok(past_sessions)));
+                    }
                     if billed && let Some(c) = store.as_ref() {
                         let _ = crate::store::set_meta(c, LIQ_META_USED, &liq_used.to_string());
                     }
@@ -2108,15 +2113,16 @@ const LIQ_META_AT: &str = "liq_upcoming_at";
 /// tournament (derived from the current TFT rows' Liquipedia URLs) whose results
 /// are missing or >12h old, fetches them, and stores each non-empty table under
 /// every stage event of that tournament (in-memory + result_cache). Returns
-/// whether it billed a request. Takes no DB connection: must not hold one across
-/// the await.
+/// `(billed, reconstructed_past_sessions)` — the finished-day schedule rows the
+/// caller should upsert. Takes no DB connection: must not hold one across the
+/// await.
 async fn refresh_tft_results(
     client: &reqwest::Client,
     tft_rows: &[NormalizedMatch],
     now: DateTime<Utc>,
     last_at: &mut HashMap<String, DateTime<Utc>>,
     used: &mut u64,
-) -> bool {
+) -> (bool, Vec<NormalizedMatch>) {
     let mut parents: Vec<String> = tft_rows
         .iter()
         .filter_map(|m| m.league_url.as_deref())
@@ -2130,27 +2136,42 @@ async fn refresh_tft_results(
             .get(p)
             .is_none_or(|t| now - *t >= Duration::hours(12))
     }) else {
-        return false;
+        return (false, Vec::new());
     };
+    // Finished-day schedule rows reconstructed from the results panels (the games
+    // that have dropped off the upcoming feed) — returned for the poller to upsert.
+    let mut past_sessions: Vec<NormalizedMatch> = Vec::new();
     match crate::tft::fetch_tournament_results(client, &parent).await {
         Ok((placements, tables)) => {
-            // The stage events sharing this parent tournament, each mapped to the
-            // set of minute-truncated session times it runs at — used to match a
-            // standings panel (which carries its own game times) to the right
-            // stage instead of pasting every stage's rows onto every page.
+            // Sessions of this parent tournament currently in the schedule. From
+            // them we derive: the stage events (each with the minute-truncated
+            // times it runs at, to match a standings panel to the right stage), the
+            // minute→stage map (to label a panel), and the series/URL to stamp onto
+            // reconstructed finished-day rows.
+            let parent_sessions: Vec<&NormalizedMatch> = tft_rows
+                .iter()
+                .filter(|m| {
+                    m.league_url
+                        .as_deref()
+                        .map(crate::tft::parent_tournament_url)
+                        .as_deref()
+                        == Some(parent.as_str())
+                })
+                .collect();
             let mut event_minutes: HashMap<String, std::collections::HashSet<i64>> = HashMap::new();
-            for m in tft_rows.iter().filter(|m| {
-                m.league_url
-                    .as_deref()
-                    .map(crate::tft::parent_tournament_url)
-                    .as_deref()
-                    == Some(parent.as_str())
-            }) {
-                let ev = crate::types::full_event_name(&m.league, &m.series_name);
+            let mut minute_to_stage: HashMap<i64, String> = HashMap::new();
+            for m in &parent_sessions {
+                let min = m.begin_at.timestamp() / 60;
                 event_minutes
-                    .entry(ev)
+                    .entry(crate::types::full_event_name(&m.league, &m.series_name))
                     .or_default()
-                    .insert(m.begin_at.timestamp() / 60);
+                    .insert(min);
+                minute_to_stage.insert(
+                    min,
+                    tft_stage_part(&m.team_a.label)
+                        .unwrap_or(m.team_a.label.as_str())
+                        .to_string(),
+                );
             }
             // Placements are the tournament's overall result, so they attach to
             // every stage event. Surface the table once at least one place is
@@ -2175,34 +2196,52 @@ async fn refresh_tft_results(
             // Label each panel by the stage of a session running at its game times
             // ("Day 2", "Grand Finals"), else "Day N" by order — a finished day
             // whose sessions have already left the upcoming feed.
-            let mut minute_to_stage: HashMap<i64, String> = HashMap::new();
-            for m in tft_rows.iter().filter(|m| {
-                m.league_url
-                    .as_deref()
-                    .map(crate::tft::parent_tournament_url)
-                    .as_deref()
-                    == Some(parent.as_str())
-            }) {
-                let stage = tft_stage_part(&m.team_a.label)
-                    .unwrap_or(m.team_a.label.as_str())
-                    .to_string();
-                minute_to_stage.insert(m.begin_at.timestamp() / 60, stage);
-            }
             let mut tables = tables;
-            tables.sort_by_key(|t| t.game_minutes.iter().copied().min().unwrap_or(i64::MAX));
-            let day_panels: Vec<crate::types::TftDayPanel> = tables
-                .into_iter()
+            tables.sort_by_key(|t| t.game_times.iter().copied().min().unwrap_or(i64::MAX));
+            let labels: Vec<String> = tables
+                .iter()
                 .enumerate()
                 .map(|(i, t)| {
-                    let label = t
-                        .game_minutes
+                    t.game_times
                         .iter()
-                        .find_map(|mn| minute_to_stage.get(mn).cloned())
-                        .unwrap_or_else(|| format!("Day {}", i + 1));
-                    crate::types::TftDayPanel {
-                        label,
-                        standings: t.standings,
+                        .find_map(|ts| minute_to_stage.get(&(ts / 60)).cloned())
+                        .unwrap_or_else(|| format!("Day {}", i + 1))
+                })
+                .collect();
+            // Reconstruct schedule rows for this tournament's finished-day games
+            // that have already dropped off the upcoming feed, so past days still
+            // show in the schedule. Each game inherits the series/URL of the current
+            // session nearest in time (the same tournament's live/upcoming stage).
+            let current_minutes: std::collections::HashSet<i64> = parent_sessions
+                .iter()
+                .map(|m| m.begin_at.timestamp() / 60)
+                .collect();
+            for (t, label) in tables.iter().zip(&labels) {
+                for (gi, &ts) in t.game_times.iter().enumerate() {
+                    if current_minutes.contains(&(ts / 60)) {
+                        continue;
                     }
+                    let Some(nearest) = parent_sessions
+                        .iter()
+                        .min_by_key(|m| (m.begin_at.timestamp() - ts).abs())
+                    else {
+                        continue;
+                    };
+                    let ps = crate::tft::ParsedSession {
+                        tournament: nearest.series_name.clone(),
+                        session_label: format!("{label} - Game {}", gi + 1),
+                        begin_at: DateTime::from_timestamp(ts, 0).unwrap_or(now),
+                        tournament_url: nearest.league_url.clone().unwrap_or_default(),
+                    };
+                    past_sessions.push(crate::tft::session_to_match(&ps, now));
+                }
+            }
+            let day_panels: Vec<crate::types::TftDayPanel> = tables
+                .into_iter()
+                .zip(labels)
+                .map(|(t, label)| crate::types::TftDayPanel {
+                    label,
+                    standings: t.standings,
                 })
                 .collect();
             {
@@ -2218,9 +2257,10 @@ async fn refresh_tft_results(
             }
             if crate::tft::any_decided(&placements) || !day_panels.is_empty() {
                 leptos::logging::log!(
-                    "TFT results: {} placement(s) + {} day-panel(s) for {} event(s) from {parent}",
+                    "TFT results: {} placement(s) + {} day-panel(s) + {} reconstructed past game(s) for {} event(s) from {parent}",
                     placements.len(),
                     day_panels.len(),
+                    past_sessions.len(),
                     event_minutes.len()
                 );
             }
@@ -2229,7 +2269,7 @@ async fn refresh_tft_results(
     }
     last_at.insert(parent, now);
     *used += 1;
-    true
+    (true, past_sessions)
 }
 
 /// Load a persisted millisecond timestamp from the meta table.
@@ -2344,23 +2384,20 @@ fn apply_poll(
                     .collect()
             };
             let wrc_keep = reconcile_wrc(&mut fresh, &prev_wrc_stages);
-            // TFT (league "TFT") is fully-enumerated like WRC — `fetch_tft` returns
-            // the whole upcoming page each poll — so league-scoped replace it: drop
-            // any TFT row whose id isn't in this poll's (deduped) set. This purges
-            // stale twin rows ("Game 1" superseded by "Day 2 - Game 1") and games
-            // that have dropped off the page. Empty (no TFT this cycle) ⇒ skipped,
-            // so a non-fetch cycle never clears the league.
-            let tft_keep: Vec<i64> = fresh
-                .iter()
-                .filter(|m| m.sport == Sport::Tft)
-                .map(|m| m.id)
-                .collect();
+            // TFT is NOT league-scoped replaced: its feed alternates between the
+            // upcoming page and reconstructed finished-day rows, so neither is a
+            // complete enumeration — replacing would prune whichever the other cycle
+            // added. Finished days are meant to persist (kept back to
+            // `archive_months`), so TFT relies on id-keyed upsert + age pruning.
+            // Tradeoff: a session pulled from Liquipedia's upcoming page (never a
+            // reconstruction) lingers until it ages out rather than vanishing at
+            // once. Twins are prevented at parse time (`dedup_twins`).
             if let Err(e) = crate::store::upsert_and_prune(
                 conn,
                 &fresh,
                 now.timestamp_millis(),
                 cutoff_ms,
-                &[("WRC", wrc_keep), ("TFT", tft_keep)],
+                &[("WRC", wrc_keep)],
             ) {
                 leptos::logging::log!("cache db write failed: {e}");
             }

@@ -303,9 +303,11 @@ fn scoped_text(tag: &HTMLTag, parser: &Parser, sel: &str) -> String {
 /// one long, confusing table (rank 1..40, then 1..32, then 1..8).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StandingsTable {
-    /// Minute-truncated unix times of this panel's games, read from its header
-    /// row's per-game countdown spans. Empty if the panel carries no game clock.
-    pub game_minutes: Vec<i64>,
+    /// Unix (second) start times of this panel's games, read from its header row's
+    /// per-game countdown spans. Empty if the panel carries no game clock. Used to
+    /// match the panel to a stage event and to reconstruct finished-day schedule
+    /// rows that have dropped off the upcoming feed.
+    pub game_times: Vec<i64>,
     pub standings: TftStandings,
 }
 
@@ -384,7 +386,7 @@ pub fn parse_standings_tables(html: &str) -> Vec<StandingsTable> {
             continue;
         };
         // Game times live in the header row's countdown spans (one per game).
-        let game_minutes: Vec<i64> = table
+        let game_times: Vec<i64> = table
             .query_selector(parser, "div.row--header")
             .and_then(|mut it| it.next())
             .and_then(|h| h.get(parser))
@@ -396,7 +398,6 @@ pub fn parse_standings_tables(html: &str) -> Vec<StandingsTable> {
                     .filter_map(|h| h.get(parser).and_then(|n| n.as_tag()))
                     .filter_map(|s| attr_str(s, "data-timestamp"))
                     .filter_map(|s| s.trim().parse::<i64>().ok())
-                    .map(|ts| ts / 60)
                     .collect()
             })
             .unwrap_or_default();
@@ -419,7 +420,7 @@ pub fn parse_standings_tables(html: &str) -> Vec<StandingsTable> {
         drop_empty_game_columns(&mut rows);
         let game_count = rows.iter().map(|r| r.games.len()).max().unwrap_or(0);
         out.push(StandingsTable {
-            game_minutes,
+            game_times,
             standings: TftStandings { game_count, rows },
         });
     }
@@ -797,10 +798,10 @@ mod tests {
         let tables = parse_standings_tables(html);
         assert_eq!(tables.len(), 1, "single-panel fixture");
         let t = &tables[0];
-        // The panel's six game clocks are captured (minute-truncated) so the
-        // caller can match this panel to the stage running at those times.
-        assert_eq!(t.game_minutes.len(), 6);
-        assert_eq!(t.game_minutes[0], 1_783_681_200 / 60);
+        // The panel's six game clocks are captured (unix seconds) so the caller can
+        // match this panel to the stage running at those times.
+        assert_eq!(t.game_times.len(), 6);
+        assert_eq!(t.game_times[0], 1_783_681_200);
         let s = &t.standings;
         assert_eq!(s.rows.len(), 3, "fixture has 3 data rows");
         assert_eq!(s.game_count, 6);
@@ -853,12 +854,12 @@ mod tests {
         assert_eq!(tables.len(), 2, "two panels → two tables");
         assert_eq!(tables[0].standings.rows.len(), 2);
         assert_eq!(tables[0].standings.game_count, 2);
-        assert_eq!(tables[0].game_minutes, [1_000_000 / 60, 1_000_600 / 60]);
+        assert_eq!(tables[0].game_times, [1_000_000, 1_000_600]);
         assert_eq!(tables[0].standings.rows[0].participant, "Alpha");
         assert_eq!(tables[0].standings.rows[1].participant, "Beta");
         // The second panel inherits neither the first's rows nor its clocks.
         assert_eq!(tables[1].standings.rows.len(), 1);
-        assert_eq!(tables[1].game_minutes, [2_000_000 / 60]);
+        assert_eq!(tables[1].game_times, [2_000_000]);
         assert_eq!(tables[1].standings.rows[0].participant, "Gamma");
     }
 
@@ -992,9 +993,9 @@ mod tests {
         );
         for (i, t) in tables.iter().enumerate() {
             eprintln!(
-                "PANEL {i}: {} rows, minutes={:?}",
+                "PANEL {i}: {} rows, times={:?}",
                 t.standings.rows.len(),
-                t.game_minutes
+                t.game_times
             );
             for r in t.standings.rows.iter().take(3) {
                 eprintln!(
