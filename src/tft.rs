@@ -483,13 +483,14 @@ pub fn parent_tournament_url(session_url: &str) -> String {
     }
 }
 
-/// Fetch + parse a parent tournament page's final placements (decided rows only).
-/// `action=parse`, like [`fetch_tft`] — subject to Liquipedia's 1-per-30s limit,
-/// so the caller must not run it in the same poll cycle as `fetch_tft`.
-pub async fn fetch_placements(
+/// Fetch a parent tournament page once and parse both its final placements
+/// (decided rows only) and its lobby standings — they share the page, so this is
+/// a single `action=parse` (subject to Liquipedia's 1-per-30s limit, so the caller
+/// must not run it in the same poll cycle as `fetch_tft`).
+pub async fn fetch_tournament_results(
     client: &reqwest::Client,
     parent_url: &str,
-) -> Result<Vec<TftPlacement>, DynError> {
+) -> Result<(Vec<TftPlacement>, TftStandings), DynError> {
     // e.g. ".../tft/Space_Gods/Tacticians_Crown" → page title "Space_Gods/Tacticians_Crown".
     let page = parent_url.rsplit("/tft/").next().unwrap_or(parent_url);
     let resp = client
@@ -505,7 +506,11 @@ pub async fn fetch_placements(
         .error_for_status()?
         .json::<ParseResp>()
         .await?;
-    Ok(filter_decided(parse_placements(&resp.parse.text.star)))
+    let html = &resp.parse.text.star;
+    Ok((
+        filter_decided(parse_placements(html)),
+        parse_standings(html),
+    ))
 }
 
 #[cfg(test)]
@@ -766,7 +771,7 @@ mod tests {
             .build()
             .unwrap();
         let url = "https://liquipedia.net/tft/Into_the_Arcane/Tacticians_Crown";
-        let p = rt.block_on(fetch_placements(&client, url)).unwrap();
+        let (p, s) = rt.block_on(fetch_tournament_results(&client, url)).unwrap();
         assert!(
             !p.is_empty(),
             "a finished tournament has decided placements"
@@ -776,6 +781,14 @@ mod tests {
         assert!(!p[0].participant.is_empty());
         for x in p.iter().take(3) {
             eprintln!("PLACE {} | {} | {}", x.place, x.participant, x.prize);
+        }
+        // The same page also yields the lobby standings.
+        assert!(!s.rows.is_empty(), "finished tournament has standings");
+        for r in s.rows.iter().take(3) {
+            eprintln!(
+                "STAND {} | {} | {} | {:?}",
+                r.rank, r.participant, r.total, r.games
+            );
         }
     }
 }

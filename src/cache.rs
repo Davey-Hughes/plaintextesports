@@ -92,6 +92,10 @@ static MOTOGP_STANDINGS: Lazy<RwLock<crate::types::MotorStandings>> =
 // fetched per request.
 static TFT_PLACEMENTS: Lazy<RwLock<HashMap<String, Vec<crate::types::TftPlacement>>>> =
     Lazy::new(|| RwLock::new(HashMap::new()));
+// TFT lobby standings (rank/player/per-game points/total), same keying + lifecycle
+// as TFT_PLACEMENTS — fetched from the same tournament page in the same request.
+static TFT_STANDINGS: Lazy<RwLock<HashMap<String, crate::types::TftStandings>>> =
+    Lazy::new(|| RwLock::new(HashMap::new()));
 
 /// The WRC, WEC, or MotoGP championship standings (empty until first fetched), by
 /// series league name. Any other name yields empty tables.
@@ -111,6 +115,17 @@ pub fn motor_standings(league: &str) -> crate::types::MotorStandings {
 #[must_use]
 pub fn tft_placements(event: &str) -> Vec<crate::types::TftPlacement> {
     TFT_PLACEMENTS
+        .read()
+        .unwrap_or_else(PoisonError::into_inner)
+        .get(event)
+        .cloned()
+        .unwrap_or_default()
+}
+
+/// This event's TFT lobby standings (empty until fetched), keyed by full event name.
+#[must_use]
+pub fn tft_standings(event: &str) -> crate::types::TftStandings {
+    TFT_STANDINGS
         .read()
         .unwrap_or_else(PoisonError::into_inner)
         .get(event)
@@ -1312,6 +1327,16 @@ fn load_persisted_standings() {
         }
     }
     {
+        let mut standings = TFT_STANDINGS
+            .write()
+            .unwrap_or_else(PoisonError::into_inner);
+        for (event, s, _) in db_cache_get_ns::<crate::types::TftStandings>("tft_standings") {
+            if !s.rows.is_empty() {
+                standings.insert(event, s);
+            }
+        }
+    }
+    {
         let mut brackets = PLAYOFF_BRACKETS
             .write()
             .unwrap_or_else(PoisonError::into_inner);
@@ -1760,7 +1785,7 @@ pub fn spawn_poller() {
                         let _ = crate::store::set_meta(c, LIQ_META_USED, &liq_used.to_string());
                     }
                 } else if liq_used < LIQ_DAILY_CAP {
-                    let billed = refresh_tft_placements(
+                    let billed = refresh_tft_results(
                         &client,
                         &tft_rows,
                         now,
@@ -2073,14 +2098,15 @@ const LIQ_META_DAY: &str = "liq_budget_day";
 const LIQ_META_USED: &str = "liq_budget_used";
 const LIQ_META_AT: &str = "liq_upcoming_at";
 
-/// Refresh one due tournament's final placements — the ≤1-per-cycle Liquipedia
-/// `action=parse` used when the upcoming-matches fetch didn't run this cycle.
-/// Picks the first parent tournament (derived from the current TFT rows' Liquipedia
-/// URLs) whose placements are missing or >12h old, fetches them, and — when
-/// decided — stores them under each of that tournament's stage events (in-memory +
-/// result_cache). Returns whether it billed a request (so the caller persists the
-/// day's budget). Takes no DB connection: it must not hold one across the await.
-async fn refresh_tft_placements(
+/// Refresh one due tournament's results — final placements AND lobby standings,
+/// both from one `action=parse` (the ≤1-per-cycle Liquipedia call used when the
+/// upcoming-matches fetch didn't run this cycle). Picks the first parent
+/// tournament (derived from the current TFT rows' Liquipedia URLs) whose results
+/// are missing or >12h old, fetches them, and stores each non-empty table under
+/// every stage event of that tournament (in-memory + result_cache). Returns
+/// whether it billed a request. Takes no DB connection: must not hold one across
+/// the await.
+async fn refresh_tft_results(
     client: &reqwest::Client,
     tft_rows: &[NormalizedMatch],
     now: DateTime<Utc>,
@@ -2102,9 +2128,9 @@ async fn refresh_tft_placements(
     }) else {
         return false;
     };
-    match crate::tft::fetch_placements(client, &parent).await {
-        Ok(placements) if !placements.is_empty() => {
-            // Every stage event sharing this parent tournament shows its placements.
+    match crate::tft::fetch_tournament_results(client, &parent).await {
+        Ok((placements, standings)) => {
+            // Every stage event sharing this parent tournament shows these results.
             let events: std::collections::HashSet<String> = tft_rows
                 .iter()
                 .filter(|m| {
@@ -2116,25 +2142,42 @@ async fn refresh_tft_placements(
                 })
                 .map(|m| crate::types::full_event_name(&m.league, &m.series_name))
                 .collect();
-            {
-                let mut sp = TFT_PLACEMENTS
-                    .write()
-                    .unwrap_or_else(PoisonError::into_inner);
+            if !placements.is_empty() {
+                {
+                    let mut sp = TFT_PLACEMENTS
+                        .write()
+                        .unwrap_or_else(PoisonError::into_inner);
+                    for ev in &events {
+                        sp.insert(ev.clone(), placements.clone());
+                    }
+                }
                 for ev in &events {
-                    sp.insert(ev.clone(), placements.clone());
+                    db_cache_put("tft_placements", ev, &placements, now);
                 }
             }
-            for ev in &events {
-                db_cache_put("tft_placements", ev, &placements, now);
+            if !standings.is_empty() {
+                {
+                    let mut ss = TFT_STANDINGS
+                        .write()
+                        .unwrap_or_else(PoisonError::into_inner);
+                    for ev in &events {
+                        ss.insert(ev.clone(), standings.clone());
+                    }
+                }
+                for ev in &events {
+                    db_cache_put("tft_standings", ev, &standings, now);
+                }
             }
-            leptos::logging::log!(
-                "TFT placements: {} row(s) for {} event(s) from {parent}",
-                placements.len(),
-                events.len()
-            );
+            if !placements.is_empty() || !standings.is_empty() {
+                leptos::logging::log!(
+                    "TFT results: {} placement(s) + {} standing(s) for {} event(s) from {parent}",
+                    placements.len(),
+                    standings.rows.len(),
+                    events.len()
+                );
+            }
         }
-        Ok(_) => {} // undecided / no prizepool — nothing to show yet
-        Err(e) => leptos::logging::log!("TFT placements fetch failed ({parent}): {e}"),
+        Err(e) => leptos::logging::log!("TFT results fetch failed ({parent}): {e}"),
     }
     last_at.insert(parent, now);
     *used += 1;
