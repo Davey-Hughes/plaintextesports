@@ -106,6 +106,10 @@ static TFT_BROADCASTS: Lazy<RwLock<HashMap<String, Vec<crate::types::TftBroadcas
     Lazy::new(|| RwLock::new(HashMap::new()));
 static TFT_LOBBIES: Lazy<RwLock<HashMap<String, Vec<crate::types::TftLobbyRound>>>> =
     Lazy::new(|| RwLock::new(HashMap::new()));
+// Full event names CompeteTFT owns this run — the Liquipedia branch skips these
+// so the two sources never double-write the same event (CompeteTFT is primary).
+static COMPETETFT_COVERED: Lazy<RwLock<std::collections::HashSet<String>>> =
+    Lazy::new(|| RwLock::new(std::collections::HashSet::new()));
 
 /// The WRC, WEC, or MotoGP championship standings (empty until first fetched), by
 /// series league name. Any other name yields empty tables.
@@ -1563,6 +1567,10 @@ pub fn spawn_poller() {
             .and_then(|s| s.parse::<u64>().ok())
             .unwrap_or(0);
         let mut liq_at = ocb_load_at(store.as_ref(), LIQ_META_AT);
+        // CompeteTFT: per-cycle cadence gate + round-robin cursor over the
+        // discovered tournaments (in-memory; a restart just re-refreshes, cheaply).
+        let mut ctft_at: Option<DateTime<Utc>> = None;
+        let mut ctft_cursor: usize = 0;
         // Per-parent-tournament last-placements-fetch time (in-memory; a restart
         // just refetches, well under the daily cap given how few tournaments run).
         let mut liq_placement_at: HashMap<String, DateTime<Utc>> = HashMap::new();
@@ -1810,6 +1818,66 @@ pub fn spawn_poller() {
                 (Sport::Motorsport, motorsport_res),
             ];
 
+            // CompeteTFT (first-party), opt-in + gated. Runs before Liquipedia so
+            // it can claim its events (COMPETETFT_COVERED). The schedule feed is
+            // fetched cheaply each due cycle (discovery + precise per-day times),
+            // then one discovered tournament is fully refreshed (overview + sheet
+            // tabs) per cycle, round-robin. An empty/failed parse keeps cached rows
+            // (apply_poll no-ops on an omitted feed).
+            if cfg.competetft_enabled {
+                let iv = {
+                    let rows: Vec<NormalizedMatch> = {
+                        let snap = SNAPSHOT.read().unwrap_or_else(PoisonError::into_inner);
+                        snap.matches
+                            .iter()
+                            .filter(|m| m.sport == Sport::Tft)
+                            .cloned()
+                            .collect()
+                    };
+                    let live = Duration::seconds(cfg.ocblacktop_live_poll.as_secs().max(30) as i64);
+                    let near = Duration::seconds(cfg.ocblacktop_near_poll.as_secs() as i64);
+                    let idle = Duration::seconds(cfg.idle_poll.as_secs() as i64);
+                    series_cadence(&rows, now, live, near, idle)
+                };
+                if ctft_at.is_none_or(|t| now - t >= iv) {
+                    let events = crate::competetft::fetch_schedule(&client).await;
+                    let mut feed_ids: Vec<String> =
+                        events.iter().map(|e| e.tournament_id.clone()).collect();
+                    feed_ids.dedup();
+                    let ids = competetft_discovery_ids(
+                        &feed_ids,
+                        &cfg.competetft_pins,
+                        &cfg.competetft_exclude,
+                        cfg.competetft_autodiscover,
+                    );
+                    if !ids.is_empty() {
+                        let id = ids[ctft_cursor % ids.len()].clone();
+                        ctft_cursor = ctft_cursor.wrapping_add(1);
+                        match crate::competetft::refresh_competetft_tournament(
+                            &client, &id, &events,
+                        )
+                        .await
+                        {
+                            Some(data) => {
+                                let rows: Vec<NormalizedMatch> = data
+                                    .sessions
+                                    .iter()
+                                    .map(|s| crate::tft::session_to_match(s, now))
+                                    .collect();
+                                apply_competetft(&data, now);
+                                if !rows.is_empty() {
+                                    feeds.push((Sport::Tft, Ok(rows)));
+                                }
+                            }
+                            None => leptos::logging::log!(
+                                "CompeteTFT: no data for tournament {id} this cycle — keeping cached rows"
+                            ),
+                        }
+                    }
+                    ctft_at = Some(now);
+                }
+            }
+
             // TFT (Liquipedia), opt-in + gated. One page per due cycle on a
             // proximity cadence (>=30s floor for `action=parse`), capped per UTC
             // day. On an empty parse (200 but 0 rows) or a fetch error, TFT is
@@ -1838,6 +1906,20 @@ pub fn spawn_poller() {
                 let near = Duration::seconds(cfg.ocblacktop_near_poll.as_secs() as i64);
                 let idle = Duration::seconds(cfg.idle_poll.as_secs() as i64);
                 let iv = series_cadence(&tft_rows, now, live, near, idle);
+                // CompeteTFT is primary: drop any Liquipedia rows for an event
+                // CompeteTFT already owns this run (matched by full event name),
+                // so the schedule never shows the same event from both sources.
+                // A no-op unless both sources are on and name the event alike.
+                let drop_covered = |rows: Vec<NormalizedMatch>| -> Vec<NormalizedMatch> {
+                    let covered = COMPETETFT_COVERED
+                        .read()
+                        .unwrap_or_else(PoisonError::into_inner);
+                    rows.into_iter()
+                        .filter(|m| {
+                            !covered.contains(&crate::types::full_event_name("TFT", &m.series_name))
+                        })
+                        .collect()
+                };
                 const LIQ_DAILY_CAP: u64 = 200;
                 // At most one Liquipedia `action=parse` per cycle (their 1-req/30s
                 // rule): the upcoming-matches page when it's due, else one due
@@ -1845,7 +1927,12 @@ pub fn spawn_poller() {
                 // consecutive parses always clear the 30s floor.
                 if liq_at.is_none_or(|t| now - t >= iv) && liq_used < LIQ_DAILY_CAP {
                     match crate::tft::fetch_tft(&client, now).await {
-                        Ok(rows) if !rows.is_empty() => feeds.push((Sport::Tft, Ok(rows))),
+                        Ok(rows) if !rows.is_empty() => {
+                            let rows = drop_covered(rows);
+                            if !rows.is_empty() {
+                                feeds.push((Sport::Tft, Ok(rows)));
+                            }
+                        }
                         Ok(_) => leptos::logging::log!(
                             "TFT: parsed 0 sessions (200 OK) — keeping cached rows (possible markup drift)"
                         ),
@@ -1869,7 +1956,10 @@ pub fn spawn_poller() {
                     // Reconstructed finished-day rows join this cycle's feed so the
                     // schedule keeps past days (they're not on the upcoming page).
                     if !past_sessions.is_empty() {
-                        feeds.push((Sport::Tft, Ok(past_sessions)));
+                        let past = drop_covered(past_sessions);
+                        if !past.is_empty() {
+                            feeds.push((Sport::Tft, Ok(past)));
+                        }
                     }
                     if billed && let Some(c) = store.as_ref() {
                         let _ = crate::store::set_meta(c, LIQ_META_USED, &liq_used.to_string());
@@ -2185,6 +2275,80 @@ const LIQ_META_AT: &str = "liq_upcoming_at";
 /// `(billed, reconstructed_past_sessions)` — the finished-day schedule rows the
 /// caller should upsert. Takes no DB connection: must not hold one across the
 /// await.
+/// The tournament ids CompeteTFT should pull this cycle: the schedule feed's ids
+/// (when `autodiscover` is on) plus configured pins, minus excludes,
+/// order-preserved and de-duplicated.
+fn competetft_discovery_ids(
+    feed_ids: &[String],
+    pins: &[String],
+    exclude: &[String],
+    autodiscover: bool,
+) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let push = |id: &String, out: &mut Vec<String>| {
+        if !exclude.contains(id) && !out.contains(id) {
+            out.push(id.clone());
+        }
+    };
+    if autodiscover {
+        for id in feed_ids {
+            push(id, &mut out);
+        }
+    }
+    for id in pins {
+        push(id, &mut out);
+    }
+    out
+}
+
+/// Store one CompeteTFT tournament's results into the caches (in-memory +
+/// SQLite), keyed by its full event name, and record the event as
+/// CompeteTFT-owned so the Liquipedia branch won't clobber or duplicate it.
+/// Empty sections are skipped, so a partial parse never wipes cached rows.
+#[cfg(feature = "ssr")]
+fn apply_competetft(data: &crate::competetft::CompeteTournamentData, now: DateTime<Utc>) {
+    let ev = crate::types::full_event_name("TFT", &data.tournament);
+    COMPETETFT_COVERED
+        .write()
+        .unwrap_or_else(PoisonError::into_inner)
+        .insert(ev.clone());
+    if !data.placements.is_empty() {
+        TFT_PLACEMENTS
+            .write()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(ev.clone(), data.placements.clone());
+        db_cache_put("tft_placements", &ev, &data.placements, now);
+    }
+    if !data.standings.is_empty() {
+        TFT_STANDINGS
+            .write()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(ev.clone(), data.standings.clone());
+        db_cache_put("tft_standings", &ev, &data.standings, now);
+    }
+    if !data.streamers.is_empty() {
+        TFT_STREAMERS
+            .write()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(ev.clone(), data.streamers.clone());
+        db_cache_put("tft_streamers", &ev, &data.streamers, now);
+    }
+    if !data.broadcasts.is_empty() {
+        TFT_BROADCASTS
+            .write()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(ev.clone(), data.broadcasts.clone());
+        db_cache_put("tft_broadcasts", &ev, &data.broadcasts, now);
+    }
+    if !data.lobbies.is_empty() {
+        TFT_LOBBIES
+            .write()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(ev.clone(), data.lobbies.clone());
+        db_cache_put("tft_lobbies", &ev, &data.lobbies, now);
+    }
+}
+
 async fn refresh_tft_results(
     client: &reqwest::Client,
     tft_rows: &[NormalizedMatch],
@@ -6127,6 +6291,17 @@ mod tests {
         assert!(tft_streamers("nope").is_empty());
         assert!(tft_broadcasts("nope").is_empty());
         assert!(tft_lobbies("nope").is_empty());
+    }
+
+    #[test]
+    fn discovery_merges_pins_and_excludes() {
+        let evs = vec!["a".to_string(), "b".to_string()];
+        // autodiscover on: feed ∪ pins ∖ exclude, order-preserved, deduped
+        let got = competetft_discovery_ids(&evs, &["c".into()], &["b".into()], true);
+        assert_eq!(got, vec!["a".to_string(), "c".to_string()]);
+        // autodiscover off: pins only
+        let got = competetft_discovery_ids(&evs, &["c".into()], &[], false);
+        assert_eq!(got, vec!["c".to_string()]);
     }
 
     #[test]
