@@ -43,6 +43,8 @@ pub mod soop;
 #[cfg(feature = "ssr")]
 pub mod store;
 #[cfg(feature = "ssr")]
+pub mod tft;
+#[cfg(feature = "ssr")]
 pub mod tiering;
 #[cfg(feature = "ssr")]
 pub mod twitch;

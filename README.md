@@ -86,6 +86,7 @@ container `-e` flags.
 | `upcoming_days` | `UPCOMING_DAYS` | `30` | Days ahead on the homepage (1–60) |
 | `db_path` | `DB_PATH` | `data/cache.db` | SQLite cache path; empty = memory-only |
 | `resolve_links` | `ENABLE_LIQUIPEDIA` | `true` | Resolve exact event pages via Liquipedia |
+| `liquipedia_enabled` | `LIQUIPEDIA_ENABLED` | `false` | Add TFT (schedule + final placements) via Liquipedia's MediaWiki API |
 | `[vapid] public/private/subject` | `VAPID_*` | _(none)_ | Web Push reminder keys; all three enable reminders |
 
 ## Reminders (Web Push)

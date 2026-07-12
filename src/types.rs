@@ -47,6 +47,12 @@ pub enum Sport {
     /// the Grand Prix / race meeting / rally. Single-entity (no opponent). The
     /// series are the sub-league chips, like soccer's competitions.
     Motorsport,
+    /// Teamfight Tactics — a Riot auto-battler esport. No commercial data API
+    /// covers it, so its schedule comes from Liquipedia's MediaWiki API (see
+    /// `crate::tft`). Single-entity: a "match" is one broadcast session (a
+    /// tournament day/stage), not two opposing teams. Opt-in behind
+    /// `liquipedia_enabled`.
+    Tft,
 }
 
 impl Sport {
@@ -62,6 +68,7 @@ impl Sport {
         Self::Nfl,
         Self::Soccer,
         Self::Motorsport,
+        Self::Tft,
     ];
 
     /// Display name. Traditional sports use the sport (not the league), so the
@@ -80,6 +87,7 @@ impl Sport {
             Self::Soccer => "Soccer",
             // The category is motorsport; the series (F1, …) is its sub-filter.
             Self::Motorsport => "Motorsport",
+            Self::Tft => "TFT",
         }
     }
 
@@ -94,6 +102,7 @@ impl Sport {
             Self::Nfl => "nfl",
             Self::Soccer => "football",
             Self::Motorsport => "motorsport",
+            Self::Tft => "tft",
         }
     }
 
@@ -106,11 +115,19 @@ impl Sport {
         )
     }
 
+    /// An esports title (CS2/LoL/TFT), as opposed to a traditional sport or
+    /// motorsport — the sports whose matches carry Twitch/YouTube stream links and
+    /// co-streamer enrichment.
+    #[must_use]
+    pub const fn esports(self) -> bool {
+        matches!(self, Self::Cs2 | Self::Lol | Self::Tft)
+    }
+
     /// A single-entity sport (a race/session, not two opposing teams) — the row
     /// shows one competitor label rather than "A vs B".
     #[must_use]
     pub const fn single_entity(self) -> bool {
-        matches!(self, Self::Motorsport)
+        matches!(self, Self::Motorsport | Self::Tft)
     }
 
     /// Whether this sport's leagues are a genuine sub-categorisation worth a
@@ -147,6 +164,8 @@ impl Sport {
             Self::Nhl | Self::Soccer => "PTS",
             Self::Nfl => "PCT",
             Self::Motorsport => "",
+            // No standings table in the schedule feed (placements are a follow-on).
+            Self::Tft => "",
         }
     }
 
@@ -175,6 +194,7 @@ impl Sport {
             // "f1" kept for back-compat with saved filters/links from when the
             // motorsport sport's slug was "f1" (now "motorsport").
             "motorsport" | "f1" => Some(Self::Motorsport),
+            "tft" => Some(Self::Tft),
             _ => None,
         }
     }
@@ -634,6 +654,56 @@ pub struct StandingRow {
     /// leader. Empty for esports standings, which don't use it.
     #[serde(default)]
     pub gb: String,
+}
+
+/// One row of a TFT tournament's final placement table (parsed from Liquipedia's
+/// prizepool table). TFT is a lobby game, so a result is a ranked placement with
+/// a prize, not a win/loss record — hence its own type rather than [`StandingRow`].
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TftPlacement {
+    /// The finishing place, e.g. "1", "2", "3-4".
+    pub place: String,
+    /// The player/team name.
+    pub participant: String,
+    /// The prize as shown, e.g. "$150,000"; empty when none.
+    pub prize: String,
+}
+
+/// One player's row in a TFT lobby standings table (from Liquipedia's
+/// battle-royale panel-table): a rank, the player, per-game points, and the total.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TftStandingRow {
+    pub rank: String,
+    pub participant: String,
+    /// Total points across the games played.
+    pub total: String,
+    /// Points scored in each game, in order (blank/"-" where not yet played).
+    pub games: Vec<String>,
+}
+
+/// A TFT lobby/stage standings table: the ranked rows plus how many game columns
+/// to render (`G1..Gn`).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TftStandings {
+    pub game_count: usize,
+    pub rows: Vec<TftStandingRow>,
+}
+
+impl TftStandings {
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.rows.is_empty()
+    }
+}
+
+/// One day/stage panel of a TFT tournament's standings — a labelled ("Day 1",
+/// "Grand Finals", …) lobby table. A tournament page carries one per day; the UI
+/// shows them as tabs (each with per-game detail) plus a synthesized "current"
+/// tab. Ordered chronologically, so the last is the most recent.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TftDayPanel {
+    pub label: String,
+    pub standings: TftStandings,
 }
 
 /// One match within a bracket round.
@@ -1252,10 +1322,21 @@ mod tests {
         // persists `slug()` and reads it back with `from_filter`, so a mismatch
         // would make a row load as a different (default) sport. Also asserts `ALL`
         // is exhaustive (a new variant trips the count).
-        assert_eq!(Sport::ALL.len(), 8);
+        assert_eq!(Sport::ALL.len(), 9);
         for &g in Sport::ALL {
             assert_eq!(Sport::from_filter(g.slug()), Some(g), "slug {:?}", g.slug());
         }
+    }
+
+    #[test]
+    fn tft_is_a_single_entity_esport_with_roundtrip_slug() {
+        assert_eq!(Sport::Tft.label(), "TFT");
+        assert_eq!(Sport::Tft.slug(), "tft");
+        // Esports (not traditional), and single-entity like motorsport (a session,
+        // not two opposing teams).
+        assert!(!Sport::Tft.traditional());
+        assert!(Sport::Tft.single_entity());
+        assert_eq!(Sport::from_filter("tft"), Some(Sport::Tft));
     }
 
     #[test]
