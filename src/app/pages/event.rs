@@ -703,10 +703,19 @@ pub(crate) fn EventPage() -> impl IntoView {
                                             view! { <MotorStandingsView standings=standings league=lg /> }
                                         })
                                 }}
-                                // TFT: the lobby standings + final placements, side
-                                // by side (from the Liquipedia poller cache; nothing
+                                // TFT event sections: standings + final placements,
+                                // then the CompeteTFT-only player streams and
+                                // official broadcasts (from the poller cache; nothing
                                 // for non-TFT events / before results exist).
                                 <TftEventResults event=Signal::derive(move || {
+                                    let lg = league();
+                                    if lg.starts_with("TFT") { lg } else { String::new() }
+                                }) />
+                                <TftStreamers event=Signal::derive(move || {
+                                    let lg = league();
+                                    if lg.starts_with("TFT") { lg } else { String::new() }
+                                }) />
+                                <TftBroadcasts event=Signal::derive(move || {
                                     let lg = league();
                                     if lg.starts_with("TFT") { lg } else { String::new() }
                                 }) />
