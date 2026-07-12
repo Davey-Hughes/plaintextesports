@@ -402,6 +402,7 @@ fn parse_standings_row(row: &HTMLTag, parser: &Parser) -> Option<TftStandingRow>
         participant,
         total,
         games,
+        status: String::new(),
     })
 }
 

@@ -622,6 +622,7 @@ mod tests {
                     participant: (*name).to_string(),
                     total: (*total).to_string(),
                     games: Vec::new(),
+                    status: String::new(),
                 })
                 .collect(),
         }

@@ -679,6 +679,10 @@ pub struct TftStandingRow {
     pub total: String,
     /// Points scored in each game, in order (blank/"-" where not yet played).
     pub games: Vec<String>,
+    /// Qualification note from the CompeteTFT leaderboard (e.g. "→ Day 3").
+    /// Empty for the Liquipedia source and eliminated rows.
+    #[serde(default)]
+    pub status: String,
 }
 
 /// A TFT lobby/stage standings table: the ranked rows plus how many game columns
@@ -704,6 +708,89 @@ impl TftStandings {
 pub struct TftDayPanel {
     pub label: String,
     pub standings: TftStandings,
+}
+
+/// One competitor's personal stream (CompeteTFT co-streamer directory).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TftStreamer {
+    pub player: String,
+    pub url: String,
+    pub platform: String, // "twitch" | "youtube" | "tiktok" | "other"
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum TftBroadcastKind {
+    Regional,
+    OfficialCostream,
+    WatchParty,
+}
+
+/// An official broadcast / sanctioned co-stream / watch party channel.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TftBroadcast {
+    pub label: String,    // "EN · Official", "KR", or talent name
+    pub language: String, // "" when implied by label
+    pub kind: TftBroadcastKind,
+    pub links: Vec<(String, String)>, // (platform, url)
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TftLobbyEntry {
+    pub player: String,
+    pub placement: String, // "1".."8" (8 = 1st/win); "" if unknown
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TftLobby {
+    pub label: String, // "Lobby 1"
+    pub caster_url: Option<String>,
+    pub players: Vec<TftLobbyEntry>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TftLobbyRound {
+    pub label: String, // "Day 1 · Round 3"
+    pub lobbies: Vec<TftLobby>,
+}
+
+#[cfg(test)]
+mod type_tests {
+    use super::*;
+
+    #[test]
+    fn tft_new_types_roundtrip() {
+        let b = TftBroadcast {
+            label: "KR".into(),
+            language: String::new(),
+            kind: TftBroadcastKind::Regional,
+            links: vec![("twitch".into(), "https://twitch.tv/tft".into())],
+        };
+        let s = serde_json::to_string(&b).unwrap();
+        assert_eq!(b, serde_json::from_str::<TftBroadcast>(&s).unwrap());
+
+        let round = TftLobbyRound {
+            label: "Day 1 · Round 1".into(),
+            lobbies: vec![TftLobby {
+                label: "Lobby 1".into(),
+                caster_url: Some("https://twitch.tv/frodan".into()),
+                players: vec![TftLobbyEntry {
+                    player: "AUR Huanmie".into(),
+                    placement: "7".into(),
+                }],
+            }],
+        };
+        assert_eq!(
+            round,
+            serde_json::from_str(&serde_json::to_string(&round).unwrap()).unwrap()
+        );
+
+        // status defaults on old blobs that lack it
+        let row: TftStandingRow = serde_json::from_str(
+            r#"{"rank":"1","participant":"A","total":"75","games":["7","5"]}"#,
+        )
+        .unwrap();
+        assert_eq!(row.status, "");
+    }
 }
 
 /// One match within a bracket round.

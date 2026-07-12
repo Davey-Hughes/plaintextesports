@@ -80,6 +80,9 @@ moka = { version = "0.12.15", features = ["future"], optional = true }
 # HTML parser for the TFT/Liquipedia schedule scrape (server-only; must never
 # reach the wasm bundle). Lean, pure-Rust, minimal deps.
 tl = { version = "0.7.8", optional = true }
+# CSV parser for the CompeteTFT published-sheet exports (server-only; quoted +
+# multi-line cells make a hand-rolled split unsafe). Never reaches wasm.
+csv = { version = "1.3", optional = true }
 
 [features]
 hydrate = [
@@ -111,6 +114,7 @@ ssr = [
   "dep:mimalloc",
   "dep:moka",
   "dep:tl",
+  "dep:csv",
   "leptos/ssr",
   "leptos_meta/ssr",
   "leptos_router/ssr",
