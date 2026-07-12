@@ -1,4 +1,4 @@
-use crate::types::{TftPlacement, TftStandingRow, TftStandings};
+use crate::types::{TftPlacement, TftStandingRow, TftStandings, TftStreamer};
 use csv::ReaderBuilder;
 
 /// Parse published-sheet CSV into rows of string cells. Tolerant: ragged rows
@@ -194,9 +194,108 @@ pub fn parse_leaderboard(rows: &[Vec<String>], _finals: bool) -> Leaderboard {
     }
 }
 
+/// Normalize a raw stream cell into `(platform, absolute_url)`. Accepts bare
+/// hosts (`twitch.tv/x`), full URLs, and youtube/tiktok links; returns None for
+/// an empty cell.
+#[must_use]
+pub fn normalize_stream_url(raw: &str) -> Option<(String, String)> {
+    let t = raw.trim();
+    if t.is_empty() {
+        return None;
+    }
+    let url = if t.starts_with("http") {
+        t.to_string()
+    } else {
+        format!("https://{t}")
+    };
+    let low = url.to_ascii_lowercase();
+    let platform = if low.contains("twitch.tv") {
+        "twitch"
+    } else if low.contains("youtube.com") || low.contains("youtu.be") {
+        "youtube"
+    } else if low.contains("tiktok.com") {
+        "tiktok"
+    } else {
+        "other"
+    };
+    Some((platform.to_string(), url))
+}
+
+/// Parse the player co-streamer directory tab (`… BROADCAST NAME, REGION,
+/// STREAM LINK, …`) into per-player stream entries. Rows without a name or a
+/// usable link are skipped.
+#[must_use]
+pub fn parse_streamers(rows: &[Vec<String>]) -> Vec<TftStreamer> {
+    let Some(h) = rows.iter().position(|r| {
+        let up = r
+            .iter()
+            .map(|c| c.to_ascii_uppercase())
+            .collect::<Vec<_>>()
+            .join("|");
+        up.contains("BROADCAST NAME") && up.contains("STREAM LINK")
+    }) else {
+        return vec![];
+    };
+    let header: Vec<String> = rows[h].iter().map(|c| c.to_ascii_uppercase()).collect();
+    let name_i = header
+        .iter()
+        .position(|c| c == "BROADCAST NAME")
+        .unwrap_or(2);
+    let link_i = header.iter().position(|c| c == "STREAM LINK").unwrap_or(4);
+    let mut out = Vec::new();
+    for r in &rows[h + 1..] {
+        let name = r.get(name_i).map(|s| s.trim()).unwrap_or("");
+        let link = r.get(link_i).map(|s| s.trim()).unwrap_or("");
+        if name.is_empty() {
+            continue;
+        }
+        if let Some((platform, url)) = normalize_stream_url(link) {
+            out.push(TftStreamer {
+                player: name.to_string(),
+                url,
+                platform,
+            });
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn normalizes_stream_urls() {
+        assert_eq!(
+            normalize_stream_url("twitch.tv/guillosko"),
+            Some(("twitch".into(), "https://twitch.tv/guillosko".into()))
+        );
+        assert_eq!(
+            normalize_stream_url("https://www.twitch.tv/horox335")
+                .unwrap()
+                .0,
+            "twitch"
+        );
+        assert_eq!(
+            normalize_stream_url("youtube.com/@steppytft").unwrap().0,
+            "youtube"
+        );
+        assert_eq!(normalize_stream_url(""), None);
+    }
+
+    #[test]
+    fn parses_streamers() {
+        let rows = read_csv(include_str!("../fixtures/competetft_streams.csv"));
+        let s = parse_streamers(&rows);
+        assert!(s.iter().any(|x| x.player == "Guillosko"
+            && x.url.ends_with("/guillosko")
+            && x.platform == "twitch"));
+        assert!(s.len() >= 15);
+        assert!(
+            s.iter()
+                .all(|x| !x.player.is_empty() && x.url.starts_with("http"))
+        );
+    }
 
     #[test]
     fn classifies_each_tab() {
