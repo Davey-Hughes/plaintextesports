@@ -107,9 +107,113 @@ pub fn parse_schedule(html: &str) -> Vec<CompeteEvent> {
     out
 }
 
+/// One stage tab of a tournament: its stage id (joins to a schedule event), its
+/// display title ("Day 1"/"Finals"), and the published-sheet key + gid it links.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CompeteStage {
+    pub stage_id: String,
+    pub title: String,
+    pub sheet_key: String,
+    pub gid: Option<String>,
+}
+
+/// A tournament's overview: name, Set label, and its stage → sheet map.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CompeteTournament {
+    pub id: String,
+    pub name: String,
+    pub set_label: String,
+    pub stages: Vec<CompeteStage>,
+}
+
+/// The published-sheet key and gid from a `…/d/e/<KEY>/pubhtml#gid=<GID>` URL.
+fn sheet_key_gid(url: &str) -> Option<(String, Option<String>)> {
+    let key = url.split("/d/e/").nth(1)?.split('/').next()?.to_string();
+    let gid = url
+        .split("gid=")
+        .nth(1)
+        .map(|g| g.trim_matches(|c: char| !c.is_ascii_digit()).to_string())
+        .filter(|g| !g.is_empty());
+    Some((key, gid))
+}
+
+/// The substring of `blob` between `start` and the next `end` char after it.
+fn between(blob: &str, start: &str, end: char) -> Option<String> {
+    let s = blob.find(start)? + start.len();
+    let e = blob[s..].find(end)? + s;
+    Some(blob[s..e].to_string())
+}
+
+/// Parse a tournament `/overview` page into its name, Set label, and stage tabs.
+/// The name comes from the page title (`Compete TFT | <name>`); the Set from the
+/// `Set N Champion` heading; each stage is a `{id,title,url}` object whose URL is
+/// a published Google Sheet.
+#[must_use]
+pub fn parse_tournament(id: &str, html: &str) -> CompeteTournament {
+    let blob = rsc_blob(html);
+    let name = between(&blob, "Compete TFT | ", '"').unwrap_or_default();
+    let set_label = between(&blob, "\"children\":\"Set ", '"')
+        .map(|s| format!("Set {s}"))
+        .unwrap_or_default();
+
+    let mut stages = Vec::new();
+    let anchor = "\"url\":\"https://docs.google.com/spreadsheets";
+    let mut from = 0;
+    while let Some(rel) = blob[from..].find(anchor) {
+        let url_start = from + rel + "\"url\":\"".len();
+        let url_end = blob[url_start..]
+            .find('"')
+            .map_or(blob.len(), |e| url_start + e);
+        let url = &blob[url_start..url_end];
+        // The object's id + title precede its url; take the closest of each.
+        let window = &blob[from..url_start];
+        let back = |k: &str| -> Option<String> {
+            let pat = format!("\"{k}\":\"");
+            let s = window.rfind(&pat)? + pat.len();
+            let e = window[s..].find('"')? + s;
+            Some(window[s..e].to_string())
+        };
+        if let (Some(stage_id), Some(title), Some((sheet_key, gid))) =
+            (back("id"), back("title"), sheet_key_gid(url))
+            && !stages.iter().any(|s: &CompeteStage| s.stage_id == stage_id)
+        {
+            stages.push(CompeteStage {
+                stage_id,
+                title,
+                sheet_key,
+                gid,
+            });
+        }
+        from = url_end;
+    }
+    CompeteTournament {
+        id: id.to_string(),
+        name,
+        set_label,
+        stages,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parses_tournament_overview() {
+        let html = include_str!("../fixtures/competetft_tournament.html");
+        let t = parse_tournament("116323184504995859", html);
+        assert!(t.name.contains("Tactician"));
+        assert!(t.set_label.contains("Set 17"));
+        let day2 = t
+            .stages
+            .iter()
+            .find(|s| s.stage_id == "116323184505454613")
+            .unwrap();
+        assert_eq!(day2.title, "Day 2");
+        assert!(day2.sheet_key.starts_with("2PACX-"));
+        assert_eq!(day2.gid.as_deref(), Some("532077851"));
+        assert_eq!(t.stages.len(), 3);
+    }
 
     #[test]
     fn parses_schedule_feed() {
