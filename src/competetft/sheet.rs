@@ -1,3 +1,4 @@
+use crate::types::{TftPlacement, TftStandingRow, TftStandings};
 use csv::ReaderBuilder;
 
 /// Parse published-sheet CSV into rows of string cells. Tolerant: ragged rows
@@ -59,6 +60,140 @@ pub fn classify_tab(rows: &[Vec<String>]) -> TabKind {
     }
 }
 
+/// A tab's leaderboard: the ranked standings plus any prize placements carried
+/// in the same table (an eliminated row's Prize/Tiebreakers cell holds a payout
+/// instead of a qualify note).
+pub struct Leaderboard {
+    pub standings: TftStandings,
+    pub placements: Vec<TftPlacement>,
+}
+
+/// The header row: the first row whose cells contain both `POSITION` and
+/// `POINTS` (case-insensitive, whole-cell match).
+fn header_idx(rows: &[Vec<String>]) -> Option<usize> {
+    rows.iter().position(|r| {
+        let up: Vec<String> = r.iter().map(|c| c.to_ascii_uppercase()).collect();
+        up.iter().any(|c| c == "POSITION") && up.iter().any(|c| c == "POINTS")
+    })
+}
+
+/// Normalize a prize/qualify cell into `(prize, status)`: a `$`-prize passes
+/// through as-is; a qualify marker like `Qualify to Day 3` becomes the status
+/// `"→ Day 3"`; anything else (including empty) yields both empty.
+fn prize_or_status(cell: &str) -> (String, String) {
+    let t = cell.trim();
+    if t.starts_with('$') {
+        (t.to_string(), String::new())
+    } else if t.to_ascii_uppercase().contains("QUALIFY") || t.starts_with('→') {
+        // "Qualify to Day 3" → "→ Day 3"
+        let tail = t
+            .split_whitespace()
+            .skip_while(|w| !w.eq_ignore_ascii_case("to"))
+            .skip(1)
+            .collect::<Vec<_>>()
+            .join(" ");
+        (
+            String::new(),
+            if tail.is_empty() {
+                "→ advance".into()
+            } else {
+                format!("→ {tail}")
+            },
+        )
+    } else {
+        (String::new(), String::new())
+    }
+}
+
+/// Whether a cell is a row's prize/qualify marker (a `$`-prize or a
+/// "Qualify..." note) rather than a round score.
+fn is_prize_cell(cell: &str) -> bool {
+    cell.starts_with('$') || cell.to_ascii_uppercase().contains("QUALIFY")
+}
+
+/// Parse a leaderboard tab (`Position, Name, [REGION], Points, Round 1..Round
+/// K, Prize ($), [Tiebreakers]`) into ranked standings plus any prize
+/// placements.
+///
+/// The published sheet is ragged: a row can carry one fewer round value than
+/// the header's `Round N` columns (Google Sheets drops the cell rather than
+/// leaving it blank), which shifts that row's trailing cells left by one. That
+/// means the Prize/qualify cell can't be found at a fixed header offset — it's
+/// located by content (starts with `$`, or mentions "qualify") scanning
+/// forward from just past the Points column, and everything before it up to
+/// that column is the row's round values, padded (or truncated) to the
+/// header's round-column count so every row's `games` is the same length.
+#[must_use]
+pub fn parse_leaderboard(rows: &[Vec<String>], _finals: bool) -> Leaderboard {
+    let Some(h) = header_idx(rows) else {
+        return Leaderboard {
+            standings: TftStandings {
+                game_count: 0,
+                rows: vec![],
+            },
+            placements: vec![],
+        };
+    };
+    let header: Vec<String> = rows[h].iter().map(|c| c.to_ascii_uppercase()).collect();
+    let col = |name: &str| header.iter().position(|c| c == name);
+    let pos_i = col("POSITION").unwrap_or(0);
+    let name_i = col("NAME").unwrap_or(1);
+    let pts_i = col("POINTS").unwrap_or(3);
+    let game_count = header.iter().filter(|c| c.starts_with("ROUND")).count();
+
+    let mut out_rows = Vec::new();
+    let mut placements = Vec::new();
+    for r in &rows[h + 1..] {
+        let get = |i: usize| {
+            r.get(i)
+                .map(String::as_str)
+                .unwrap_or("")
+                .trim()
+                .to_string()
+        };
+        let rank = get(pos_i);
+        let name = get(name_i);
+        if rank.is_empty() || name.is_empty() {
+            continue;
+        }
+        // Round values run from just after Points up to the first prize/qualify
+        // cell (found by content, since a dropped round shifts a fixed header
+        // offset off by one for that row).
+        let start = pts_i + 1;
+        let prize_idx = (start..r.len()).find(|&i| is_prize_cell(&get(i)));
+        let end = prize_idx.unwrap_or(r.len());
+        let mut games: Vec<String> = (start..end)
+            .map(get)
+            .map(|v| if v == "-" { String::new() } else { v })
+            .collect();
+        games.resize(game_count, String::new());
+        let (prize, status) = prize_idx
+            .map(|i| prize_or_status(&get(i)))
+            .unwrap_or_default();
+        out_rows.push(TftStandingRow {
+            rank: rank.clone(),
+            participant: name.clone(),
+            total: get(pts_i),
+            games,
+            status,
+        });
+        if !prize.is_empty() {
+            placements.push(TftPlacement {
+                place: rank,
+                participant: name,
+                prize,
+            });
+        }
+    }
+    Leaderboard {
+        standings: TftStandings {
+            game_count,
+            rows: out_rows,
+        },
+        placements,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -98,5 +233,25 @@ mod tests {
         let rows = read_csv("a,b\n\"x\ny\",z\n");
         assert_eq!(rows[1][0], "x\ny");
         assert_eq!(rows[1][1], "z");
+    }
+
+    #[test]
+    fn parses_leaderboard() {
+        let rows = read_csv(include_str!("../fixtures/competetft_leaderboard.csv"));
+        let lb = parse_leaderboard(&rows, false);
+        // rank 1 known row
+        let first = &lb.standings.rows[0];
+        assert_eq!(first.rank, "1");
+        assert_eq!(first.participant, "AUR Huanmie");
+        assert_eq!(first.total, "75");
+        assert_eq!(first.games.len(), lb.standings.game_count);
+        assert_eq!(first.status, "→ Day 3"); // "Qualify to Day 3" normalized
+        // an eliminated row carries a prize placement, no qualify status
+        let paid = lb
+            .placements
+            .iter()
+            .find(|p| p.participant == "bruhbruhbruhwho")
+            .unwrap();
+        assert_eq!(paid.prize, "$11,000");
     }
 }
