@@ -5,7 +5,8 @@
 use crate::types::Sport;
 use crate::types::{
     EventInfo, F1Result, F1Standings, MatchDetail, MatchResults, MotorResult, MotorStandings,
-    ReminderReq, ScheduleView, SiteInfo, StreamView, SubscribeReq, TftDayPanel, TftPlacement,
+    ReminderReq, ScheduleView, SiteInfo, StreamView, SubscribeReq, TftBroadcast, TftDayPanel,
+    TftLobbyRound, TftPlacement, TftStreamer,
 };
 use leptos::prelude::*;
 
@@ -449,6 +450,51 @@ pub async fn get_tft_standings(event: String) -> Result<Vec<TftDayPanel>, Server
     #[cfg(feature = "ssr")]
     {
         Ok(crate::cache::tft_standings(&event))
+    }
+    #[cfg(not(feature = "ssr"))]
+    {
+        let _ = event;
+        Ok(Vec::new())
+    }
+}
+
+/// This TFT event's CompeteTFT per-player stream directory, by full event name.
+/// Empty for non-CompeteTFT events. Served from the poller cache.
+#[server(GetTftStreamers, "/api")]
+pub async fn get_tft_streamers(event: String) -> Result<Vec<TftStreamer>, ServerFnError> {
+    #[cfg(feature = "ssr")]
+    {
+        Ok(crate::cache::tft_streamers(&event))
+    }
+    #[cfg(not(feature = "ssr"))]
+    {
+        let _ = event;
+        Ok(Vec::new())
+    }
+}
+
+/// This TFT event's official broadcast channels (regional + co-streams + watch
+/// parties), by full event name. Served from the poller cache.
+#[server(GetTftBroadcasts, "/api")]
+pub async fn get_tft_broadcasts(event: String) -> Result<Vec<TftBroadcast>, ServerFnError> {
+    #[cfg(feature = "ssr")]
+    {
+        Ok(crate::cache::tft_broadcasts(&event))
+    }
+    #[cfg(not(feature = "ssr"))]
+    {
+        let _ = event;
+        Ok(Vec::new())
+    }
+}
+
+/// This TFT event's per-round lobby breakdowns, by full event name. Served from
+/// the poller cache.
+#[server(GetTftLobbies, "/api")]
+pub async fn get_tft_lobbies(event: String) -> Result<Vec<TftLobbyRound>, ServerFnError> {
+    #[cfg(feature = "ssr")]
+    {
+        Ok(crate::cache::tft_lobbies(&event))
     }
     #[cfg(not(feature = "ssr"))]
     {

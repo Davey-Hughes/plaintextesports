@@ -98,6 +98,14 @@ static TFT_PLACEMENTS: Lazy<RwLock<HashMap<String, Vec<crate::types::TftPlacemen
 // same page in the same request. The UI shows them as tabs + a "current" tab.
 static TFT_STANDINGS: Lazy<RwLock<HashMap<String, Vec<crate::types::TftDayPanel>>>> =
     Lazy::new(|| RwLock::new(HashMap::new()));
+// CompeteTFT extras, same keying + lifecycle as TFT_STANDINGS: per-player stream
+// directory, official broadcast channels, and per-round lobby breakdowns.
+static TFT_STREAMERS: Lazy<RwLock<HashMap<String, Vec<crate::types::TftStreamer>>>> =
+    Lazy::new(|| RwLock::new(HashMap::new()));
+static TFT_BROADCASTS: Lazy<RwLock<HashMap<String, Vec<crate::types::TftBroadcast>>>> =
+    Lazy::new(|| RwLock::new(HashMap::new()));
+static TFT_LOBBIES: Lazy<RwLock<HashMap<String, Vec<crate::types::TftLobbyRound>>>> =
+    Lazy::new(|| RwLock::new(HashMap::new()));
 
 /// The WRC, WEC, or MotoGP championship standings (empty until first fetched), by
 /// series league name. Any other name yields empty tables.
@@ -129,6 +137,39 @@ pub fn tft_placements(event: &str) -> Vec<crate::types::TftPlacement> {
 #[must_use]
 pub fn tft_standings(event: &str) -> Vec<crate::types::TftDayPanel> {
     TFT_STANDINGS
+        .read()
+        .unwrap_or_else(PoisonError::into_inner)
+        .get(event)
+        .cloned()
+        .unwrap_or_default()
+}
+
+/// This event's CompeteTFT per-player stream directory (empty until fetched).
+#[must_use]
+pub fn tft_streamers(event: &str) -> Vec<crate::types::TftStreamer> {
+    TFT_STREAMERS
+        .read()
+        .unwrap_or_else(PoisonError::into_inner)
+        .get(event)
+        .cloned()
+        .unwrap_or_default()
+}
+
+/// This event's CompeteTFT official broadcast channels (empty until fetched).
+#[must_use]
+pub fn tft_broadcasts(event: &str) -> Vec<crate::types::TftBroadcast> {
+    TFT_BROADCASTS
+        .read()
+        .unwrap_or_else(PoisonError::into_inner)
+        .get(event)
+        .cloned()
+        .unwrap_or_default()
+}
+
+/// This event's CompeteTFT per-round lobby breakdowns (empty until fetched).
+#[must_use]
+pub fn tft_lobbies(event: &str) -> Vec<crate::types::TftLobbyRound> {
+    TFT_LOBBIES
         .read()
         .unwrap_or_else(PoisonError::into_inner)
         .get(event)
@@ -1336,6 +1377,35 @@ fn load_persisted_standings() {
         {
             if !panels.is_empty() {
                 standings.insert(event, panels);
+            }
+        }
+    }
+    {
+        let mut m = TFT_STREAMERS
+            .write()
+            .unwrap_or_else(PoisonError::into_inner);
+        for (event, rows, _) in db_cache_get_ns::<Vec<crate::types::TftStreamer>>("tft_streamers") {
+            if !rows.is_empty() {
+                m.insert(event, rows);
+            }
+        }
+    }
+    {
+        let mut m = TFT_BROADCASTS
+            .write()
+            .unwrap_or_else(PoisonError::into_inner);
+        for (event, rows, _) in db_cache_get_ns::<Vec<crate::types::TftBroadcast>>("tft_broadcasts")
+        {
+            if !rows.is_empty() {
+                m.insert(event, rows);
+            }
+        }
+    }
+    {
+        let mut m = TFT_LOBBIES.write().unwrap_or_else(PoisonError::into_inner);
+        for (event, rows, _) in db_cache_get_ns::<Vec<crate::types::TftLobbyRound>>("tft_lobbies") {
+            if !rows.is_empty() {
+                m.insert(event, rows);
             }
         }
     }
@@ -6051,6 +6121,13 @@ pub fn synthetic_snapshot(n: usize, now: DateTime<Utc>) -> Snapshot {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tft_extra_accessors_default_empty() {
+        assert!(tft_streamers("nope").is_empty());
+        assert!(tft_broadcasts("nope").is_empty());
+        assert!(tft_lobbies("nope").is_empty());
+    }
 
     #[test]
     fn box_score_cache_evicts_oldest_over_cap() {
