@@ -1,5 +1,6 @@
 use crate::types::{
-    TftLobby, TftLobbyEntry, TftLobbyRound, TftPlacement, TftStandingRow, TftStandings, TftStreamer,
+    TftBroadcast, TftBroadcastKind, TftLobby, TftLobbyEntry, TftLobbyRound, TftPlacement,
+    TftStandingRow, TftStandings, TftStreamer,
 };
 use csv::ReaderBuilder;
 
@@ -403,9 +404,138 @@ pub fn parse_lobbies(rows: &[Vec<String>], day3: bool) -> Vec<TftLobbyRound> {
     out
 }
 
+/// Build a regional broadcast's links from its Twitch cell (a bare handle like
+/// `/tft`) and YouTube cell (`@handle` or a full URL). Non-handle platform names
+/// (e.g. the Chinese `Douyu`/`bilibili` cells) and `-` placeholders are dropped.
+fn regional_links(twitch_cell: &str, youtube_cell: &str) -> Vec<(String, String)> {
+    let mut v = Vec::new();
+    let tw = twitch_cell.trim();
+    if let Some(h) = tw.strip_prefix('/').filter(|h| !h.is_empty()) {
+        v.push(("twitch".into(), format!("https://twitch.tv/{h}")));
+    } else if tw.starts_with("http")
+        && let Some(pu) = normalize_stream_url(tw)
+    {
+        v.push(pu);
+    }
+    let yt = youtube_cell.trim();
+    if let Some(h) = yt.strip_prefix('@').filter(|h| !h.is_empty()) {
+        v.push(("youtube".into(), format!("https://youtube.com/@{h}")));
+    } else if yt.starts_with("http")
+        && let Some(pu) = normalize_stream_url(yt)
+    {
+        v.push(pu);
+    }
+    v
+}
+
+/// Build one person broadcast (co-streamer / watch party) from a
+/// `(name, language, link)` cell triple, or None if the name or link is missing.
+fn person_broadcast(
+    name: &str,
+    language: &str,
+    link: &str,
+    kind: TftBroadcastKind,
+) -> Option<TftBroadcast> {
+    let name = name.trim();
+    if name.is_empty() || name.eq_ignore_ascii_case("Name") {
+        return None;
+    }
+    let (platform, url) = normalize_stream_url(link)?;
+    Some(TftBroadcast {
+        label: name.to_string(),
+        language: language.trim().to_string(),
+        kind,
+        links: vec![(platform, url)],
+    })
+}
+
+/// Parse the info tab's official-broadcast sections: `REGIONAL BROADCAST` (region
+/// → Twitch/YouTube), `OFFICIAL CO-STREAMERS`, and `OFFICIAL WATCH PARTY` (both
+/// laid out as two `name/language/link` entries side by side per row). The
+/// point-system / tiebreaker / pick'em content sharing the sheet is ignored.
+#[must_use]
+pub fn parse_broadcasts(rows: &[Vec<String>]) -> Vec<TftBroadcast> {
+    let mut out = Vec::new();
+    let mut kind: Option<TftBroadcastKind> = None;
+    for r in rows {
+        let joined = r
+            .iter()
+            .map(|c| c.trim().to_ascii_uppercase())
+            .collect::<Vec<_>>()
+            .join("|");
+        if joined.contains("REGIONAL BROADCAST") {
+            kind = Some(TftBroadcastKind::Regional);
+            continue;
+        }
+        if joined.contains("OFFICIAL CO-STREAMER") {
+            kind = Some(TftBroadcastKind::OfficialCostream);
+            continue;
+        }
+        if joined.contains("OFFICIAL WATCH PARTY") {
+            kind = Some(TftBroadcastKind::WatchParty);
+            continue;
+        }
+        if joined.contains("MAIN LOBBY TALENT")
+            || joined.contains("POINT SYSTEM")
+            || joined.contains("PICK'EM")
+        {
+            kind = None;
+            continue;
+        }
+        let Some(k) = kind else { continue };
+        let cell = |i: usize| r.get(i).map(|s| s.trim()).unwrap_or("");
+        match k {
+            TftBroadcastKind::Regional => {
+                let region = cell(1);
+                if region.is_empty() || region.eq_ignore_ascii_case("Nickname") {
+                    continue;
+                }
+                let links = regional_links(cell(3), cell(4));
+                if !links.is_empty() {
+                    out.push(TftBroadcast {
+                        label: region.to_string(),
+                        language: String::new(),
+                        kind: k,
+                        links,
+                    });
+                }
+            }
+            // Co-streamers / watch party: two (name, language, link) entries per
+            // row, at columns 1/3/4 and 6/8/9.
+            _ => {
+                for (n, l, u) in [(1, 3, 4), (6, 8, 9)] {
+                    if let Some(b) = person_broadcast(cell(n), cell(l), cell(u), k) {
+                        out.push(b);
+                    }
+                }
+            }
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parses_broadcasts() {
+        let rows = read_csv(include_str!("../fixtures/competetft_info.csv"));
+        let b = parse_broadcasts(&rows);
+        let kr = b.iter().find(|x| x.label == "KR").unwrap();
+        assert_eq!(kr.kind, TftBroadcastKind::Regional);
+        assert!(
+            kr.links
+                .iter()
+                .any(|(p, u)| p == "twitch" && u.contains("/tft"))
+        );
+        assert!(b.iter().any(|x| x.kind == TftBroadcastKind::WatchParty));
+        // paired co-streamer columns are both parsed (Toddy is the right entry)
+        assert!(
+            b.iter()
+                .any(|x| x.label == "Toddy" && x.kind == TftBroadcastKind::OfficialCostream)
+        );
+    }
 
     #[test]
     fn parses_lobbies_round1() {
