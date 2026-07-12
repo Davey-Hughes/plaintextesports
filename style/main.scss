@@ -2895,6 +2895,16 @@ a.sw-link {
     opacity: 0.75;
   }
 
+  // Qualification note (CompeteTFT), e.g. "→ Day 3"; green when advancing.
+  .tft-status {
+    text-align: left;
+    font-size: 11px;
+
+    &.q {
+      color: var(--pass);
+    }
+  }
+
   // Eliminated (final-placement) rows sit muted below the divider.
   .tft-row.tft-final > span {
     opacity: 0.5;
@@ -2911,6 +2921,131 @@ a.sw-link {
     letter-spacing: 0.04em;
     text-transform: uppercase;
     opacity: 0.55;
+  }
+}
+
+// CompeteTFT: official broadcast channels (regional + co-streams + watch parties).
+.bcast-grid {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(300px, 100%), 1fr));
+  gap: 0.2rem 1.2rem;
+}
+
+.bcast {
+  display: flex;
+  gap: 0.5rem;
+  align-items: baseline;
+  padding: 0.12rem 0;
+  flex-wrap: wrap;
+
+  .b-reg {
+    color: var(--fg);
+    min-width: 9em;
+  }
+
+  .b-links {
+    color: var(--muted);
+    font-size: 12px;
+  }
+}
+
+// CompeteTFT: per-round lobby breakdown (round selector + lobby cards).
+.lob-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.1rem 0.5rem;
+  margin: 0.2rem 0 0.8rem;
+  align-items: center;
+
+  &.hidden {
+    display: none;
+  }
+}
+
+.lob-lbl {
+  font-size: 11px;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin-right: 0.3rem;
+}
+
+.rnd {
+  background: none;
+  border: 1px solid var(--border);
+  color: var(--muted);
+  font: inherit;
+  font-size: 12px;
+  padding: 0.08rem 0.45rem;
+  cursor: pointer;
+  min-width: 2em;
+
+  &:hover {
+    color: var(--fg);
+    border-color: var(--fg);
+  }
+
+  &.active {
+    color: var(--bg);
+    background: var(--fg);
+    border-color: var(--fg);
+  }
+}
+
+.lob-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(220px, 100%), 1fr));
+  gap: 1rem;
+}
+
+.lob {
+  border: 1px solid var(--border);
+  background: var(--card-bg);
+}
+
+.lob-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 0.5rem;
+  padding: 0.3rem 0.5rem;
+  border-bottom: 1px solid var(--border);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+}
+
+.lob-cast a {
+  font-size: 11px;
+}
+
+.lob-body {
+  display: grid;
+  grid-template-columns: 1.6em 1fr;
+  gap: 0.12rem 0.5rem;
+  padding: 0.4rem 0.5rem;
+  font-size: 12.5px;
+  font-variant-numeric: tabular-nums;
+
+  .p {
+    text-align: right;
+    color: var(--muted);
+
+    &.win {
+      color: var(--win);
+      font-weight: 700;
+    }
+  }
+
+  .n {
+    text-align: left;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 }
 
