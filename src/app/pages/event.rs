@@ -719,6 +719,10 @@ pub(crate) fn EventPage() -> impl IntoView {
                                     let lg = league();
                                     if lg.starts_with("TFT") { lg } else { String::new() }
                                 }) />
+                                <TftLobbies event=Signal::derive(move || {
+                                    let lg = league();
+                                    if lg.starts_with("TFT") { lg } else { String::new() }
+                                }) />
                             </article>
                         }
                             .into_any()
