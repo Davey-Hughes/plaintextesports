@@ -13,6 +13,8 @@ pub mod bracket_build;
 #[cfg(feature = "ssr")]
 pub mod cache;
 #[cfg(feature = "ssr")]
+pub mod competetft;
+#[cfg(feature = "ssr")]
 pub mod config;
 #[cfg(feature = "ssr")]
 pub mod espn;
