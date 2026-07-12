@@ -51,6 +51,17 @@ youtube_api_key = ""
 # (and final placements on TFT event pages once tournaments finish).
 # liquipedia_enabled = true
 
+# First-party CompeteTFT source (Riot competetft.com + the official published
+# tournament sheet). When on, it becomes the PRIMARY TFT source — schedule,
+# standings, prize money, per-player streams, official broadcasts, and per-round
+# lobby breakdowns — and Liquipedia (liquipedia_enabled) only backfills events
+# CompeteTFT doesn't cover. Off by default (scrape-based, opt-in). Discovery is
+# hybrid: it crawls the schedule feed (competetft_autodiscover) plus any pins.
+# competetft_enabled = false
+# competetft_autodiscover = true             # crawl the schedule feed for events
+# competetft_pins = ["116323184504995859"]   # always include these tournament ids
+# competetft_exclude = []                     # never include these ids
+
 # Curated co-streamers (Twitch logins), shown on a match's page when they're live
 # and streaming that match's game. Two kinds of key, merged for each match:
 #   - a game key = the sport slug ("lol" or "cs2") applies to EVERY league of that
