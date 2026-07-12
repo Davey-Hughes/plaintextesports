@@ -86,6 +86,18 @@ static WEC_STANDINGS: Lazy<RwLock<crate::types::MotorStandings>> =
     Lazy::new(|| RwLock::new(crate::types::MotorStandings::default()));
 static MOTOGP_STANDINGS: Lazy<RwLock<crate::types::MotorStandings>> =
     Lazy::new(|| RwLock::new(crate::types::MotorStandings::default()));
+// TFT tournament final placements (Liquipedia prizepool), keyed by full event
+// name (`full_event_name("TFT", series_name)`) so an event page looks up
+// directly. Refreshed by the poller, served from here + result_cache; never
+// fetched per request.
+static TFT_PLACEMENTS: Lazy<RwLock<HashMap<String, Vec<crate::types::TftPlacement>>>> =
+    Lazy::new(|| RwLock::new(HashMap::new()));
+// TFT standings as a chronological list of day/stage panels (each rank/player/
+// per-game/total), same keying + lifecycle as TFT_PLACEMENTS — every stage event
+// of a tournament stores the tournament's full set of day panels, fetched from the
+// same page in the same request. The UI shows them as tabs + a "current" tab.
+static TFT_STANDINGS: Lazy<RwLock<HashMap<String, Vec<crate::types::TftDayPanel>>>> =
+    Lazy::new(|| RwLock::new(HashMap::new()));
 
 /// The WRC, WEC, or MotoGP championship standings (empty until first fetched), by
 /// series league name. Any other name yields empty tables.
@@ -98,6 +110,30 @@ pub fn motor_standings(league: &str) -> crate::types::MotorStandings {
         _ => return crate::types::MotorStandings::default(),
     };
     store.read().unwrap_or_else(PoisonError::into_inner).clone()
+}
+
+/// This event's TFT final placements (empty until its tournament finishes), keyed
+/// by full event name.
+#[must_use]
+pub fn tft_placements(event: &str) -> Vec<crate::types::TftPlacement> {
+    TFT_PLACEMENTS
+        .read()
+        .unwrap_or_else(PoisonError::into_inner)
+        .get(event)
+        .cloned()
+        .unwrap_or_default()
+}
+
+/// This event's TFT standings as day/stage panels (empty until fetched), keyed by
+/// full event name.
+#[must_use]
+pub fn tft_standings(event: &str) -> Vec<crate::types::TftDayPanel> {
+    TFT_STANDINGS
+        .read()
+        .unwrap_or_else(PoisonError::into_inner)
+        .get(event)
+        .cloned()
+        .unwrap_or_default()
 }
 
 /// Snapshot a standings store.
@@ -289,7 +325,7 @@ pub fn team_standings_for_match(
         Sport::Nba => tables_with_team(&read_tables(&NBA_STANDINGS), a_name, b_name),
         Sport::Nfl => tables_with_team(&read_tables(&NFL_STANDINGS), a_name, b_name),
         Sport::Soccer => tables_with_team(&soccer_tables(league), a_name, b_name),
-        Sport::Cs2 | Sport::Lol | Sport::Motorsport => Vec::new(),
+        Sport::Cs2 | Sport::Lol | Sport::Motorsport | Sport::Tft => Vec::new(),
     }
 }
 
@@ -406,9 +442,8 @@ pub async fn live_streams_for(sport: Sport, id: i64) -> Vec<StreamView> {
 
     // Twitch category discovery runs only for a live esports match with the sport
     // enabled — so an otherwise-inert match still triggers a scan when it's on.
-    let discovery_on = matches!(status, MatchStatus::Live)
-        && matches!(sport, Sport::Cs2 | Sport::Lol)
-        && config().discovery_enabled(sport);
+    let discovery_on =
+        matches!(status, MatchStatus::Live) && sport.esports() && config().discovery_enabled(sport);
     if base_logins.is_empty() && tw_seeds.is_empty() && !yt_enabled && !discovery_on && !soop_on {
         return base;
     }
@@ -483,7 +518,7 @@ pub async fn live_streams_for(sport: Sport, id: i64) -> Vec<StreamView> {
     // GQL API, keyed off the match's official Twitch broadcast channel(s).
     if config().twitch_discovery.gql_costreamers
         && matches!(status, MatchStatus::Live)
-        && matches!(sport, Sport::Cs2 | Sport::Lol)
+        && matches!(sport, Sport::Cs2 | Sport::Lol | Sport::Tft)
     {
         let officials: Vec<String> = enriched
             .iter()
@@ -1283,6 +1318,28 @@ fn load_persisted_standings() {
     fill_motor("wec_standings", &WEC_STANDINGS);
     fill_motor("motogp_standings", &MOTOGP_STANDINGS);
     {
+        let mut placements = TFT_PLACEMENTS
+            .write()
+            .unwrap_or_else(PoisonError::into_inner);
+        for (event, rows, _) in db_cache_get_ns::<Vec<crate::types::TftPlacement>>("tft_placements")
+        {
+            if !rows.is_empty() {
+                placements.insert(event, rows);
+            }
+        }
+    }
+    {
+        let mut standings = TFT_STANDINGS
+            .write()
+            .unwrap_or_else(PoisonError::into_inner);
+        for (event, panels, _) in db_cache_get_ns::<Vec<crate::types::TftDayPanel>>("tft_standings")
+        {
+            if !panels.is_empty() {
+                standings.insert(event, panels);
+            }
+        }
+    }
+    {
         let mut brackets = PLAYOFF_BRACKETS
             .write()
             .unwrap_or_else(PoisonError::into_inner);
@@ -1424,6 +1481,21 @@ pub fn spawn_poller() {
         // up to a full idle day off. The persisted daily cap still bounds it, so even
         // a crash loop can't exceed the budget.
         let mut ocb_initial = true;
+        // TFT (Liquipedia): resume the day's budget + last-fetch gate from meta so
+        // a restart doesn't refetch or reset the cap. Mirrors the OCB accounting.
+        let mut liq_day: Option<NaiveDate> = store
+            .as_ref()
+            .and_then(|c| crate::store::get_meta(c, LIQ_META_DAY))
+            .and_then(|s| s.parse::<NaiveDate>().ok());
+        let mut liq_used: u64 = store
+            .as_ref()
+            .and_then(|c| crate::store::get_meta(c, LIQ_META_USED))
+            .and_then(|s| s.parse::<u64>().ok())
+            .unwrap_or(0);
+        let mut liq_at = ocb_load_at(store.as_ref(), LIQ_META_AT);
+        // Per-parent-tournament last-placements-fetch time (in-memory; a restart
+        // just refetches, well under the daily cap given how few tournaments run).
+        let mut liq_placement_at: HashMap<String, DateTime<Utc>> = HashMap::new();
         loop {
             let now = Utc::now();
             let active = {
@@ -1656,18 +1728,87 @@ pub fn spawn_poller() {
                 }
             };
             // The keyless feeds return a reqwest error; lift each to the shared
-            // FetchResult (the first tuple pins the type, so `into` is inferred).
+            // FetchResult (the annotation pins the error type so `into` is inferred).
+            let mut feeds: Vec<(Sport, FetchResult)> = vec![
+                (Sport::Cs2, cs_res),
+                (Sport::Lol, lol_res),
+                (Sport::Mlb, mlb_raw.map_err(Into::into)),
+                (Sport::Nhl, nhl_raw.map_err(Into::into)),
+                (Sport::Nba, nba_raw.map_err(Into::into)),
+                (Sport::Nfl, nfl_raw.map_err(Into::into)),
+                (Sport::Soccer, soccer_res),
+                (Sport::Motorsport, motorsport_res),
+            ];
+
+            // TFT (Liquipedia), opt-in + gated. One page per due cycle on a
+            // proximity cadence (>=30s floor for `action=parse`), capped per UTC
+            // day. On an empty parse (200 but 0 rows) or a fetch error, TFT is
+            // simply omitted from this cycle's feeds — apply_poll then leaves the
+            // cached rows untouched, so a Liquipedia markup change can't wipe the
+            // schedule (it just goes stale until the parser is fixed).
+            if cfg.liquipedia_enabled {
+                if liq_day != Some(now.date_naive()) {
+                    liq_day = Some(now.date_naive());
+                    liq_used = 0;
+                    if let Some(c) = store.as_ref() {
+                        let _ =
+                            crate::store::set_meta(c, LIQ_META_DAY, &now.date_naive().to_string());
+                        let _ = crate::store::set_meta(c, LIQ_META_USED, "0");
+                    }
+                }
+                let tft_rows: Vec<NormalizedMatch> = {
+                    let snap = SNAPSHOT.read().unwrap_or_else(PoisonError::into_inner);
+                    snap.matches
+                        .iter()
+                        .filter(|m| m.sport == Sport::Tft)
+                        .cloned()
+                        .collect()
+                };
+                let live = Duration::seconds(cfg.ocblacktop_live_poll.as_secs().max(30) as i64);
+                let near = Duration::seconds(cfg.ocblacktop_near_poll.as_secs() as i64);
+                let idle = Duration::seconds(cfg.idle_poll.as_secs() as i64);
+                let iv = series_cadence(&tft_rows, now, live, near, idle);
+                const LIQ_DAILY_CAP: u64 = 200;
+                // At most one Liquipedia `action=parse` per cycle (their 1-req/30s
+                // rule): the upcoming-matches page when it's due, else one due
+                // tournament's final placements. Poll cycles are >=60s apart, so
+                // consecutive parses always clear the 30s floor.
+                if liq_at.is_none_or(|t| now - t >= iv) && liq_used < LIQ_DAILY_CAP {
+                    match crate::tft::fetch_tft(&client, now).await {
+                        Ok(rows) if !rows.is_empty() => feeds.push((Sport::Tft, Ok(rows))),
+                        Ok(_) => leptos::logging::log!(
+                            "TFT: parsed 0 sessions (200 OK) — keeping cached rows (possible markup drift)"
+                        ),
+                        Err(e) => leptos::logging::log!("TFT fetch failed: {e}"),
+                    }
+                    liq_used += 1;
+                    liq_at = Some(now);
+                    ocb_save_at(store.as_ref(), LIQ_META_AT, now);
+                    if let Some(c) = store.as_ref() {
+                        let _ = crate::store::set_meta(c, LIQ_META_USED, &liq_used.to_string());
+                    }
+                } else if liq_used < LIQ_DAILY_CAP {
+                    let (billed, past_sessions) = refresh_tft_results(
+                        &client,
+                        &tft_rows,
+                        now,
+                        &mut liq_placement_at,
+                        &mut liq_used,
+                    )
+                    .await;
+                    // Reconstructed finished-day rows join this cycle's feed so the
+                    // schedule keeps past days (they're not on the upcoming page).
+                    if !past_sessions.is_empty() {
+                        feeds.push((Sport::Tft, Ok(past_sessions)));
+                    }
+                    if billed && let Some(c) = store.as_ref() {
+                        let _ = crate::store::set_meta(c, LIQ_META_USED, &liq_used.to_string());
+                    }
+                }
+            }
+
             apply_poll(
-                vec![
-                    (Sport::Cs2, cs_res),
-                    (Sport::Lol, lol_res),
-                    (Sport::Mlb, mlb_raw.map_err(Into::into)),
-                    (Sport::Nhl, nhl_raw.map_err(Into::into)),
-                    (Sport::Nba, nba_raw.map_err(Into::into)),
-                    (Sport::Nfl, nfl_raw.map_err(Into::into)),
-                    (Sport::Soccer, soccer_res),
-                    (Sport::Motorsport, motorsport_res),
-                ],
+                feeds,
                 store.as_mut(),
                 cfg.archive_cutoff(now).timestamp_millis(),
             );
@@ -1959,6 +2100,179 @@ const OCB_META_WEC_AT: &str = "ocb_wec_at";
 const OCB_META_MOTOGP_AT: &str = "ocb_motogp_at";
 const OCB_META_STANDINGS_AT: &str = "ocb_standings_at";
 
+// TFT (Liquipedia) poll state: per-UTC-day request budget + last fetch time.
+// Persisted like the OCB gates so restarts resume the day rather than refetch.
+const LIQ_META_DAY: &str = "liq_budget_day";
+const LIQ_META_USED: &str = "liq_budget_used";
+const LIQ_META_AT: &str = "liq_upcoming_at";
+
+/// Refresh one due tournament's results — final placements AND lobby standings,
+/// both from one `action=parse` (the ≤1-per-cycle Liquipedia call used when the
+/// upcoming-matches fetch didn't run this cycle). Picks the first parent
+/// tournament (derived from the current TFT rows' Liquipedia URLs) whose results
+/// are missing or >12h old, fetches them, and stores each non-empty table under
+/// every stage event of that tournament (in-memory + result_cache). Returns
+/// `(billed, reconstructed_past_sessions)` — the finished-day schedule rows the
+/// caller should upsert. Takes no DB connection: must not hold one across the
+/// await.
+async fn refresh_tft_results(
+    client: &reqwest::Client,
+    tft_rows: &[NormalizedMatch],
+    now: DateTime<Utc>,
+    last_at: &mut HashMap<String, DateTime<Utc>>,
+    used: &mut u64,
+) -> (bool, Vec<NormalizedMatch>) {
+    let mut parents: Vec<String> = tft_rows
+        .iter()
+        .filter_map(|m| m.league_url.as_deref())
+        .map(crate::tft::parent_tournament_url)
+        .filter(|u| u.contains("/tft/"))
+        .collect();
+    parents.sort();
+    parents.dedup();
+    let Some(parent) = parents.into_iter().find(|p| {
+        last_at
+            .get(p)
+            .is_none_or(|t| now - *t >= Duration::hours(12))
+    }) else {
+        return (false, Vec::new());
+    };
+    // Finished-day schedule rows reconstructed from the results panels (the games
+    // that have dropped off the upcoming feed) — returned for the poller to upsert.
+    let mut past_sessions: Vec<NormalizedMatch> = Vec::new();
+    match crate::tft::fetch_tournament_results(client, &parent).await {
+        Ok((placements, tables)) => {
+            // Sessions of this parent tournament currently in the schedule. From
+            // them we derive: the stage events (each with the minute-truncated
+            // times it runs at, to match a standings panel to the right stage), the
+            // minute→stage map (to label a panel), and the series/URL to stamp onto
+            // reconstructed finished-day rows.
+            let parent_sessions: Vec<&NormalizedMatch> = tft_rows
+                .iter()
+                .filter(|m| {
+                    m.league_url
+                        .as_deref()
+                        .map(crate::tft::parent_tournament_url)
+                        .as_deref()
+                        == Some(parent.as_str())
+                })
+                .collect();
+            let mut event_minutes: HashMap<String, std::collections::HashSet<i64>> = HashMap::new();
+            let mut minute_to_stage: HashMap<i64, String> = HashMap::new();
+            for m in &parent_sessions {
+                let min = m.begin_at.timestamp() / 60;
+                event_minutes
+                    .entry(crate::types::full_event_name(&m.league, &m.series_name))
+                    .or_default()
+                    .insert(min);
+                minute_to_stage.insert(
+                    min,
+                    tft_stage_part(&m.team_a.label)
+                        .unwrap_or(m.team_a.label.as_str())
+                        .to_string(),
+                );
+            }
+            // Placements are the tournament's overall result, so they attach to
+            // every stage event. Surface the table once at least one place is
+            // decided — then keep the whole table (undecided places render blank),
+            // so it reads as complete during an ongoing tournament.
+            if crate::tft::any_decided(&placements) {
+                {
+                    let mut sp = TFT_PLACEMENTS
+                        .write()
+                        .unwrap_or_else(PoisonError::into_inner);
+                    for ev in event_minutes.keys() {
+                        sp.insert(ev.clone(), placements.clone());
+                    }
+                }
+                for ev in event_minutes.keys() {
+                    db_cache_put("tft_placements", ev, &placements, now);
+                }
+            }
+            // Standings: build labelled day panels (chronological) and store the
+            // whole set under every stage event, so any stage page and the front
+            // page show all the day tabs (each panel keeps its per-game detail).
+            // Label each panel by the stage of a session running at its game times
+            // ("Day 2", "Grand Finals"), else "Day N" by order — a finished day
+            // whose sessions have already left the upcoming feed.
+            let mut tables = tables;
+            tables.sort_by_key(|t| t.game_times.iter().copied().min().unwrap_or(i64::MAX));
+            let labels: Vec<String> = tables
+                .iter()
+                .enumerate()
+                .map(|(i, t)| {
+                    t.game_times
+                        .iter()
+                        .find_map(|ts| minute_to_stage.get(&(ts / 60)).cloned())
+                        .unwrap_or_else(|| format!("Day {}", i + 1))
+                })
+                .collect();
+            // Reconstruct schedule rows for this tournament's finished-day games
+            // that have already dropped off the upcoming feed, so past days still
+            // show in the schedule. Each game inherits the series/URL of the current
+            // session nearest in time (the same tournament's live/upcoming stage).
+            let current_minutes: std::collections::HashSet<i64> = parent_sessions
+                .iter()
+                .map(|m| m.begin_at.timestamp() / 60)
+                .collect();
+            for (t, label) in tables.iter().zip(&labels) {
+                for (gi, &ts) in t.game_times.iter().enumerate() {
+                    if current_minutes.contains(&(ts / 60)) {
+                        continue;
+                    }
+                    let Some(nearest) = parent_sessions
+                        .iter()
+                        .min_by_key(|m| (m.begin_at.timestamp() - ts).abs())
+                    else {
+                        continue;
+                    };
+                    let ps = crate::tft::ParsedSession {
+                        tournament: nearest.series_name.clone(),
+                        session_label: format!("{label} - Game {}", gi + 1),
+                        begin_at: DateTime::from_timestamp(ts, 0).unwrap_or(now),
+                        tournament_url: nearest.league_url.clone().unwrap_or_default(),
+                        // Past game — finished, no live stream to carry.
+                        streams: Vec::new(),
+                    };
+                    past_sessions.push(crate::tft::session_to_match(&ps, now));
+                }
+            }
+            let day_panels: Vec<crate::types::TftDayPanel> = tables
+                .into_iter()
+                .zip(labels)
+                .map(|(t, label)| crate::types::TftDayPanel {
+                    label,
+                    standings: t.standings,
+                })
+                .collect();
+            {
+                let mut ss = TFT_STANDINGS
+                    .write()
+                    .unwrap_or_else(PoisonError::into_inner);
+                for ev in event_minutes.keys() {
+                    ss.insert(ev.clone(), day_panels.clone());
+                }
+            }
+            for ev in event_minutes.keys() {
+                db_cache_put("tft_standings", ev, &day_panels, now);
+            }
+            if crate::tft::any_decided(&placements) || !day_panels.is_empty() {
+                leptos::logging::log!(
+                    "TFT results: {} placement(s) + {} day-panel(s) + {} reconstructed past game(s) for {} event(s) from {parent}",
+                    placements.len(),
+                    day_panels.len(),
+                    past_sessions.len(),
+                    event_minutes.len()
+                );
+            }
+        }
+        Err(e) => leptos::logging::log!("TFT results fetch failed ({parent}): {e}"),
+    }
+    last_at.insert(parent, now);
+    *used += 1;
+    (true, past_sessions)
+}
+
 /// Load a persisted millisecond timestamp from the meta table.
 fn ocb_load_at(store: Option<&rusqlite::Connection>, key: &str) -> Option<DateTime<Utc>> {
     store
@@ -2071,6 +2385,14 @@ fn apply_poll(
                     .collect()
             };
             let wrc_keep = reconcile_wrc(&mut fresh, &prev_wrc_stages);
+            // TFT is NOT league-scoped replaced: its feed alternates between the
+            // upcoming page and reconstructed finished-day rows, so neither is a
+            // complete enumeration — replacing would prune whichever the other cycle
+            // added. Finished days are meant to persist (kept back to
+            // `archive_months`), so TFT relies on id-keyed upsert + age pruning.
+            // Tradeoff: a session pulled from Liquipedia's upcoming page (never a
+            // reconstruction) lingers until it ages out rather than vanishing at
+            // once. Twins are prevented at parse time (`dedup_twins`).
             if let Err(e) = crate::store::upsert_and_prune(
                 conn,
                 &fresh,
@@ -2096,6 +2418,20 @@ fn apply_poll(
                     .filter(|m| !m.streams.is_empty() || m.mlb_series.is_some())
                     .map(|m| (m.id, (m.streams, m.mlb_series)))
                     .collect();
+                // Carry forward streams for matches this poll didn't refetch: a
+                // sport on a slow cadence (TFT — one Liquipedia call every few
+                // cycles) isn't in every poll's `fresh`, so without this its
+                // in-memory streams would blink out on the intervening cycles.
+                // `fresh` still wins (only fills gaps), so refetched matches update.
+                {
+                    let prev = SNAPSHOT.read().unwrap_or_else(PoisonError::into_inner);
+                    for m in &prev.matches {
+                        if !m.streams.is_empty() {
+                            live.entry(m.id)
+                                .or_insert_with(|| (m.streams.clone(), m.mlb_series));
+                        }
+                    }
+                }
                 for m in &mut all {
                     if let Some((s, series)) = live.remove(&m.id) {
                         if !s.is_empty() {
@@ -2291,8 +2627,9 @@ fn collect_resolution_candidates() -> Vec<Candidate> {
     let mut seen = std::collections::HashSet::new();
     let mut out = Vec::new();
     for m in &snap.matches {
-        // Traditional sports (MLB) aren't on Liquipedia — never resolve them.
-        if m.sport.traditional() {
+        // Only resolve sports with a Liquipedia wiki. Skips traditional sports
+        // (not on Liquipedia) and TFT (its rows already carry their exact page).
+        if !crate::liquipedia::resolvable(m.sport) {
             continue;
         }
         let year = m.begin_at.year();
@@ -2609,7 +2946,9 @@ fn traditional_event_url(sport: Sport, league: &str) -> String {
             "World Cup" => "https://www.fifa.com/en/tournaments/mens/worldcup/canadamexicousa2026",
             _ => "",
         },
-        Sport::Cs2 | Sport::Lol => "",
+        // Esports (incl. TFT) have no traditional official site; TFT rows carry
+        // their exact Liquipedia page as `league_url`, used before this fallback.
+        Sport::Cs2 | Sport::Lol | Sport::Tft => "",
     }
     .to_string()
 }
@@ -2850,7 +3189,11 @@ fn group_by(views: Vec<MatchView>, tz: &Tz, chain: bool) -> Vec<DayGroup> {
                 Some(Sport::Nfl) => 5,
                 Some(Sport::Soccer) => 6,
                 Some(Sport::Motorsport) => 7,
-                None => 8,
+                // TFT is esports; it only co-occurs with CS2/LoL (the esports/
+                // traditional split keeps the two modes apart), so it sorts after
+                // them here without disturbing the traditional order.
+                Some(Sport::Tft) => 8,
+                None => 9,
             });
     }
     days
@@ -2883,89 +3226,164 @@ pub(crate) fn group_chains(views: Vec<MatchView>, tz: &Tz) -> Vec<DayGroup> {
 pub fn collapse_wrc_days(views: Vec<MatchView>, tz: &Tz, snap: &Snapshot) -> Vec<MatchView> {
     use std::collections::{BTreeSet, HashMap, HashSet};
 
-    let is_stage = |m: &MatchView| {
-        m.sport == Sport::Motorsport && m.league == "WRC" && !m.clock_label.is_empty()
-    };
-
-    // Only WRC stage rows get condensed. With none in view — every esports page,
-    // and any traditional page with no WRC stage in window (the common case) —
-    // skip the full O(n) cross-sport snapshot pre-scan and the regroup entirely;
-    // just keep the input time-sorted (the homepage appends out-of-window
-    // motorsport rows, so the sort still matters).
-    if !views.iter().any(is_stage) {
-        let mut views = views;
-        views.sort_by_key(|m| m.begin_at_ms);
-        return views;
-    }
-
-    // Leg ordinal + power-stage flag per (series, local day), taken from the whole
+    // Leg ordinal + power-stage flag per (event, local day), taken from the whole
     // rally in the snapshot — not just the windowed subset — so a single-day view
-    // still numbers its leg from the rally's first day.
-    let mut days_by_series: HashMap<&str, BTreeSet<String>> = HashMap::new();
+    // still numbers its leg from the rally's first day. (Placeholder rows without a
+    // venue tz are skipped; a real WRC stage always has one.)
+    let mut days_by_event: HashMap<String, BTreeSet<String>> = HashMap::new();
     let mut power_days: HashSet<(String, String)> = HashSet::new();
     for m in &snap.matches {
         if m.sport != Sport::Motorsport || m.league != "WRC" || m.venue_tz.is_none() {
             continue;
         }
+        let event = full_event_name(&m.league, &m.series_name);
         let day = m.begin_at.with_timezone(tz).format("%Y-%m-%d").to_string();
         if m.team_a.label.contains("Power Stage") {
-            power_days.insert((m.series_name.clone(), day.clone()));
+            power_days.insert((event.clone(), day.clone()));
         }
-        days_by_series
-            .entry(m.series_name.as_str())
-            .or_default()
-            .insert(day);
+        days_by_event.entry(event).or_default().insert(day);
+    }
+
+    collapse_days(
+        views,
+        tz,
+        |m| m.sport == Sport::Motorsport && m.league == "WRC" && !m.clock_label.is_empty(),
+        |m| full_event_name(&m.league, &m.series_name),
+        |_stages, event, day| {
+            let ordinal = days_by_event
+                .get(event)
+                .and_then(|days| days.iter().position(|d| d == day))
+                .map_or(1, |i| i + 1);
+            if power_days.contains(&(event.to_string(), day.to_string())) {
+                format!("Day {ordinal} · Power Stage")
+            } else {
+                format!("Day {ordinal}")
+            }
+        },
+    )
+}
+
+/// Shared core of the per-day collapse used by WRC and TFT: fold the `is_target`
+/// rows into one representative row per `(event, local-day)` — labelled by
+/// `label_of`, linking to that day on the event page — while every other row
+/// passes straight through. The representative anchors at the day's first row (its
+/// real start time). Output is re-sorted by start time (which also reorders any
+/// out-of-window rows the homepage appended); with no target rows in view it's a
+/// cheap sort-and-return. The `event`-specific ordinal/label scan of the whole
+/// snapshot lives in each caller's `label_of` closure, since the filters differ.
+fn collapse_days(
+    views: Vec<MatchView>,
+    tz: &Tz,
+    is_target: impl Fn(&MatchView) -> bool,
+    key_of: impl Fn(&MatchView) -> String,
+    label_of: impl Fn(&[MatchView], &str, &str) -> String,
+) -> Vec<MatchView> {
+    use std::collections::HashMap;
+
+    // Nothing to condense (every esports page; a traditional page with no such
+    // rows in window — the common case): just keep the input time-sorted.
+    if !views.iter().any(&is_target) {
+        let mut views = views;
+        views.sort_by_key(|m| m.begin_at_ms);
+        return views;
     }
 
     let mut out: Vec<MatchView> = Vec::new();
     let mut groups: HashMap<(String, String), Vec<MatchView>> = HashMap::new();
     for v in views {
-        if is_stage(&v) {
+        if is_target(&v) {
             let day = DateTime::from_timestamp_millis(v.begin_at_ms)
                 .unwrap_or_else(Utc::now)
                 .with_timezone(tz)
                 .format("%Y-%m-%d")
                 .to_string();
-            groups
-                .entry((v.series_name.clone(), day))
-                .or_default()
-                .push(v);
+            groups.entry((key_of(&v), day)).or_default().push(v);
         } else {
             out.push(v);
         }
     }
 
-    for ((series, day), mut stages) in groups {
-        stages.sort_by_key(|m| m.begin_at_ms);
+    for ((event, day), mut sessions) in groups {
+        sessions.sort_by_key(|m| m.begin_at_ms);
         // The group came from a non-empty push, so a first element exists.
-        let mut rep = stages[0].clone();
-        let ordinal = days_by_series
-            .get(series.as_str())
-            .and_then(|days| days.iter().position(|d| *d == day))
-            .map_or(1, |i| i + 1);
-        // Clicking the collapsed leg jumps to that day on the rally's event page,
-        // where its stages are listed individually — the schedule can't show them
-        // itself without undoing the per-day condensing the day grouping relies on.
-        let event = full_event_name(&rep.league, &series);
-        // The event route is sport-scoped (`/event/{slug}/{name}`); WRC is Motorsport.
+        let mut rep = sessions[0].clone();
+        rep.team_a.label = label_of(&sessions, &event, &day);
+        rep.team_a.name = String::new();
+        // Clicking the collapsed day jumps to that day on the event page, where the
+        // day's rows are listed individually. Route is sport-scoped (`/event/{slug}
+        // /{name}`).
         rep.row_href = Some(format!(
             "/event/{}/{}#day-{}",
             rep.sport.slug(),
             pct_encode(&event),
             day
         ));
-        rep.team_a.label = if power_days.contains(&(series, day)) {
-            format!("Day {ordinal} · Power Stage")
-        } else {
-            format!("Day {ordinal}")
-        };
-        rep.team_a.name = String::new();
-        rep.status = day_status(&stages);
+        rep.status = day_status(&sessions);
         out.push(rep);
     }
 
     out.sort_by_key(|m| m.begin_at_ms);
     out
+}
+
+/// The stage/day part of a TFT session label — everything before "- Game N".
+/// `None` for a bare "Game N" (no stage prefix). "Day 2 - Game 1" -> "Day 2";
+/// "Grand Finals - Game 3" -> "Grand Finals".
+fn tft_stage_part(label: &str) -> Option<&str> {
+    let cut = label.split(" - Game").next().unwrap_or(label).trim();
+    (!cut.is_empty() && !cut.starts_with("Game")).then_some(cut)
+}
+
+/// The label for a collapsed TFT day: the shared stage/day prefix across the day's
+/// sessions ("Day 2", "Grand Finals"), else the day's ordinal within the event.
+fn tft_day_label(
+    sessions: &[MatchView],
+    event: &str,
+    day: &str,
+    days_by_event: &std::collections::HashMap<String, std::collections::BTreeSet<String>>,
+) -> String {
+    let parts: Vec<Option<&str>> = sessions
+        .iter()
+        .map(|m| tft_stage_part(&m.team_a.label))
+        .collect();
+    if let Some(Some(p)) = parts.first().copied()
+        && parts.iter().all(|x| *x == Some(p))
+    {
+        return p.to_string();
+    }
+    let ordinal = days_by_event
+        .get(event)
+        .and_then(|days| days.iter().position(|d| d == day))
+        .map_or(1, |i| i + 1);
+    format!("Day {ordinal}")
+}
+
+/// Fold each TFT (event, local-day) group of session rows into one collapsed
+/// schedule row, like [`collapse_wrc_days`] does for rally stages: the home/day/
+/// range views show one "Day 2" / "Grand Finals" row linking to the event page
+/// (which lists every game), instead of a row per game. Non-TFT rows pass through.
+pub fn collapse_tft_days(views: Vec<MatchView>, tz: &Tz, snap: &Snapshot) -> Vec<MatchView> {
+    use std::collections::{BTreeSet, HashMap};
+
+    // Distinct local days per event (from the whole snapshot, not just the window)
+    // for the ordinal fallback label.
+    let mut days_by_event: HashMap<String, BTreeSet<String>> = HashMap::new();
+    for m in &snap.matches {
+        if m.sport != Sport::Tft {
+            continue;
+        }
+        let event = full_event_name(&m.league, &m.series_name);
+        let day = m.begin_at.with_timezone(tz).format("%Y-%m-%d").to_string();
+        days_by_event.entry(event).or_default().insert(day);
+    }
+
+    collapse_days(
+        views,
+        tz,
+        |m| m.sport == Sport::Tft,
+        |m| full_event_name(&m.league, &m.series_name),
+        |sessions, event, day| tft_day_label(sessions, event, day, &days_by_event),
+    )
 }
 
 /// Aggregate status of a rally day from its stages: live if any stage is, finished
@@ -3139,6 +3557,7 @@ fn homepage_rows(
     }
     // Condense each rally's stages into per-day rows and re-sort by start.
     let all = collapse_wrc_days(all, tz, snap);
+    let all = collapse_tft_days(all, tz, snap);
     let meta = FreshMeta {
         fetched_at: snap.fetched_at,
         stale: snap.stale,
@@ -3265,6 +3684,7 @@ pub fn day_view(date: &str, game_filter: &str, tz_name: &str, hour24: bool) -> S
         None,
     );
     let all = collapse_wrc_days(all, &tz, &snap);
+    let all = collapse_tft_days(all, &tz, &snap);
     let (fetched_at, stale, using_fixture) = (snap.fetched_at, snap.stale, snap.using_fixture);
     drop(snap);
 
@@ -3328,6 +3748,7 @@ pub fn range_view(
         None,
     );
     let all = collapse_wrc_days(all, &tz, &snap);
+    let all = collapse_tft_days(all, &tz, &snap);
     let (fetched_at, stale, using_fixture) = (snap.fetched_at, snap.stale, snap.using_fixture);
     drop(snap);
 
@@ -3385,6 +3806,49 @@ pub fn event_view(event: &str, tz_name: &str, hour24: bool) -> ScheduleView {
         date_label: None,
         prev_date: None,
         next_date: None,
+    }
+}
+
+/// Pick the `(sport, id)` of an event's "focus" match for its stream list — the
+/// match whose streams best answer "where do I watch this event right now": a live
+/// session leads (the most recently started first), then the soonest upcoming,
+/// then the most recent finished. Only esports matches of `event` that actually
+/// carry streams are considered; `None` when the event has no such match. Pure
+/// (no globals/IO) so the ranking is unit-testable; `event_streams` feeds it the
+/// live snapshot. `event` is the full edition name (league + series).
+fn focus_stream_match(matches: &[NormalizedMatch], event: &str) -> Option<(Sport, i64)> {
+    matches
+        .iter()
+        .filter(|m| m.sport.esports())
+        .filter(|m| m.status != MatchStatus::Canceled)
+        .filter(|m| !m.streams.is_empty())
+        .filter(|m| event_name_eq(&m.league, &m.series_name, event))
+        .min_by_key(|m| {
+            let ms = m.begin_at.timestamp_millis();
+            // Group live/upcoming/finished, then tie-break by start: live and
+            // finished want the most recent (negate), upcoming the soonest.
+            match m.status {
+                MatchStatus::Live => (0u8, -ms),
+                MatchStatus::Upcoming => (1u8, ms),
+                _ => (2u8, -ms),
+            }
+        })
+        .map(|m| (m.sport, m.id))
+}
+
+/// The streams to surface on an event page: the enriched stream list of the
+/// event's focus match (see [`focus_stream_match`]), so the page shows where to
+/// watch the event right now — live Twitch/YouTube status merged in exactly like
+/// the match page. Empty for non-esports events and events whose matches carry no
+/// streams. `event` is the full edition name.
+pub async fn event_streams(event: &str) -> Vec<StreamView> {
+    let focus = {
+        let snap = SNAPSHOT.read().unwrap_or_else(PoisonError::into_inner);
+        focus_stream_match(&snap.matches, event)
+    };
+    match focus {
+        Some((sport, id)) => live_streams_for(sport, id).await,
+        None => Vec::new(),
     }
 }
 
@@ -4674,6 +5138,7 @@ fn game_needle(sport: Sport) -> &'static str {
     match sport {
         Sport::Cs2 => "counter-strike",
         Sport::Lol => "league of legends",
+        Sport::Tft => "teamfight tactics",
         _ => "",
     }
 }
@@ -4823,6 +5288,22 @@ fn event_day_keywords(
     window: Duration,
 ) -> Vec<String> {
     let mut out = league_keywords(league, aliases);
+    // Single-entity sports (TFT) have no team names to key on and share one league
+    // ("TFT") across every tournament, so add the series/edition's own word tokens
+    // (≥4 chars) — the tournament name ("Space Gods", "Tactician's Crown") is the
+    // only per-event signal a co-streamer's title can carry.
+    if sport.single_entity() {
+        for tok in series_name.split_whitespace() {
+            let tok: String = tok
+                .chars()
+                .filter(|c| c.is_alphanumeric())
+                .collect::<String>()
+                .to_ascii_lowercase();
+            if tok.chars().count() >= 4 && !out.contains(&tok) {
+                out.push(tok);
+            }
+        }
+    }
     let window_min = window.num_minutes();
     for m in matches {
         // Same sport + event (league + edition), within the day window.
@@ -5815,6 +6296,159 @@ mod tests {
                 .clock_label
                 .is_empty()
         );
+    }
+
+    fn tft_session(id: i64, label: &str, series: &str, begin: &str) -> NormalizedMatch {
+        let mut m = NormalizedMatch::team_sport(
+            id,
+            Sport::Tft,
+            "TFT",
+            begin.parse::<DateTime<Utc>>().unwrap(),
+            MatchStatus::Upcoming,
+            NormalizedTeam {
+                label: label.into(),
+                name: label.into(),
+                abbrev: String::new(),
+                score: None,
+            },
+            NormalizedTeam {
+                label: String::new(),
+                name: String::new(),
+                abbrev: String::new(),
+                score: None,
+            },
+        );
+        m.series_name = series.into();
+        m.league_url = Some(format!(
+            "https://liquipedia.net/tft/{}",
+            series.replace(' ', "_")
+        ));
+        m
+    }
+
+    #[test]
+    fn collapse_folds_tft_games_into_per_day_rows() {
+        let swiss = "Space Gods Tacticians Crown - Swiss Stage";
+        let finals = "Space Gods Tacticians Crown - Grand Finals";
+        let vegas = "Vegas Open 2026 - Round 1";
+        let matches = vec![
+            tft_session(1, "Day 2 - Game 1", swiss, "2026-07-11T11:00:00Z"),
+            tft_session(2, "Day 2 - Game 2", swiss, "2026-07-11T11:45:00Z"),
+            tft_session(3, "Day 2 - Game 3", swiss, "2026-07-11T12:30:00Z"),
+            tft_session(4, "Grand Finals - Game 1", finals, "2026-07-12T15:00:00Z"),
+            tft_session(5, "Grand Finals - Game 2", finals, "2026-07-12T15:45:00Z"),
+            // Multiple lobbies at once with no shared stage → ordinal-label fallback.
+            tft_session(6, "Lobby A - Game 1", vegas, "2026-07-13T18:00:00Z"),
+            tft_session(7, "Lobby B - Game 1", vegas, "2026-07-13T18:00:00Z"),
+        ];
+        let tz: Tz = "UTC".parse().unwrap();
+        let now = "2026-07-10T00:00:00Z".parse::<DateTime<Utc>>().unwrap();
+        let snap = Snapshot {
+            matches,
+            fetched_at: now,
+            stale: false,
+            using_fixture: false,
+        };
+        let views: Vec<MatchView> = snap
+            .matches
+            .iter()
+            .map(|m| to_view(m, &tz, now, false))
+            .collect();
+        let out = collapse_tft_days(views, &tz, &snap);
+
+        // 7 games → 3 collapsed day rows: shared-prefix labels for Swiss/Finals,
+        // ordinal fallback for the multi-lobby day.
+        let labels: Vec<&str> = out.iter().map(|m| m.team_a.label.as_str()).collect();
+        assert_eq!(labels, ["Day 2", "Grand Finals", "Day 1"]);
+        // The Swiss day row anchors at its first game and links to that day.
+        let d2 = out.iter().find(|m| m.team_a.label == "Day 2").unwrap();
+        assert_eq!(
+            d2.begin_at_ms,
+            "2026-07-11T11:00:00Z"
+                .parse::<DateTime<Utc>>()
+                .unwrap()
+                .timestamp_millis()
+        );
+        let href = d2.row_href.as_deref().unwrap();
+        assert!(href.starts_with("/event/tft/"), "got {href}");
+        assert!(href.ends_with("#day-2026-07-11"), "got {href}");
+    }
+
+    /// A `tft_session` carrying a stream, with an explicit status — the shape
+    /// `focus_stream_match` ranks over.
+    fn streamed_session(
+        id: i64,
+        series: &str,
+        begin: &str,
+        status: MatchStatus,
+    ) -> NormalizedMatch {
+        let mut m = tft_session(id, "Game", series, begin);
+        m.status = status;
+        m.streams = vec![StreamView {
+            url: "https://twitch.tv/tft".into(),
+            ..Default::default()
+        }];
+        m
+    }
+
+    #[test]
+    fn focus_stream_match_ranks_live_over_upcoming_over_finished() {
+        let series = "Space Gods Tacticians Crown - Swiss Stage";
+        let ev = format!("TFT {series}");
+        let finished_old =
+            streamed_session(1, series, "2026-07-11T11:00:00Z", MatchStatus::Finished);
+        let finished_new =
+            streamed_session(2, series, "2026-07-11T14:00:00Z", MatchStatus::Finished);
+        let upcoming_soon =
+            streamed_session(3, series, "2026-07-12T11:00:00Z", MatchStatus::Upcoming);
+        let upcoming_late =
+            streamed_session(4, series, "2026-07-12T15:00:00Z", MatchStatus::Upcoming);
+        let live = streamed_session(5, series, "2026-07-11T13:00:00Z", MatchStatus::Live);
+
+        // A live session wins outright, whatever else is around it.
+        let all = vec![
+            finished_old.clone(),
+            finished_new.clone(),
+            upcoming_soon.clone(),
+            upcoming_late.clone(),
+            live,
+        ];
+        assert_eq!(focus_stream_match(&all, &ev), Some((Sport::Tft, 5)));
+
+        // No live → the soonest upcoming session.
+        let no_live = vec![finished_new.clone(), upcoming_late, upcoming_soon];
+        assert_eq!(focus_stream_match(&no_live, &ev), Some((Sport::Tft, 3)));
+
+        // Only finished → the most recent one.
+        let done = vec![finished_old, finished_new];
+        assert_eq!(focus_stream_match(&done, &ev), Some((Sport::Tft, 2)));
+    }
+
+    #[test]
+    fn focus_stream_match_skips_streamless_canceled_and_other_events() {
+        let series = "Space Gods Tacticians Crown - Swiss Stage";
+        let ev = format!("TFT {series}");
+        // Live, but no streams parsed yet → skipped in favour of a streamed match.
+        let mut live_no_streams = tft_session(1, "Game", series, "2026-07-11T13:00:00Z");
+        live_no_streams.status = MatchStatus::Live;
+        let upcoming = streamed_session(2, series, "2026-07-12T13:00:00Z", MatchStatus::Upcoming);
+        assert_eq!(
+            focus_stream_match(&[live_no_streams.clone(), upcoming.clone()], &ev),
+            Some((Sport::Tft, 2)),
+        );
+
+        // A canceled session never qualifies, even with streams.
+        let mut canceled =
+            streamed_session(3, series, "2026-07-12T13:00:00Z", MatchStatus::Canceled);
+        canceled.id = 3;
+        assert_eq!(
+            focus_stream_match(&[live_no_streams.clone(), canceled], &ev),
+            None,
+        );
+
+        // Wrong event, and a streamless-only event, both yield nothing.
+        assert_eq!(focus_stream_match(&[upcoming], "TFT Other Event"), None);
+        assert_eq!(focus_stream_match(&[live_no_streams], &ev), None);
     }
 
     fn at(begin: DateTime<Utc>, status: MatchStatus) -> NormalizedMatch {

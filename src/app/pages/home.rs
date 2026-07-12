@@ -209,6 +209,16 @@ pub(crate) fn schedule_is_traditional(s: &ScheduleView) -> bool {
         .any(|m| m.sport.traditional())
 }
 
+/// Whether this schedule is an esports (CS2/LoL/TFT) event — gates the event
+/// page's "where to watch" streams block to the sports that carry stream links.
+pub(crate) fn schedule_is_esports(s: &ScheduleView) -> bool {
+    s.days
+        .iter()
+        .flat_map(|d| &d.leagues)
+        .flat_map(|lg| &lg.matches)
+        .any(|m| m.sport.esports())
+}
+
 #[derive(Params, PartialEq, Clone)]
 pub(crate) struct DayParams {
     date: String,

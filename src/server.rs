@@ -5,7 +5,7 @@
 use crate::types::Sport;
 use crate::types::{
     EventInfo, F1Result, F1Standings, MatchDetail, MatchResults, MotorResult, MotorStandings,
-    ReminderReq, ScheduleView, SiteInfo, StreamView, SubscribeReq,
+    ReminderReq, ScheduleView, SiteInfo, StreamView, SubscribeReq, TftDayPanel, TftPlacement,
 };
 use leptos::prelude::*;
 
@@ -286,6 +286,23 @@ pub async fn get_event_schedule(
     }
 }
 
+/// The streams to show on an event page — the enriched stream list of the event's
+/// focus match (its live session, else next upcoming, else most recent), by full
+/// edition name. Live Twitch/YouTube status is merged in like the match page's
+/// streams. Empty for non-esports events and events without stream data.
+#[server(GetEventStreams, "/api")]
+pub async fn get_event_streams(league: String) -> Result<Vec<StreamView>, ServerFnError> {
+    #[cfg(feature = "ssr")]
+    {
+        Ok(crate::cache::event_streams(&league).await)
+    }
+    #[cfg(not(feature = "ssr"))]
+    {
+        let _ = league;
+        Ok(Vec::new())
+    }
+}
+
 /// The given (starred) match uids that are still upcoming, sorted by start, for
 /// the notifications page. Started/finished matches are dropped server-side.
 #[server(GetNotifications, "/api")]
@@ -405,6 +422,38 @@ pub async fn get_motor_standings(league: String) -> Result<MotorStandings, Serve
     {
         let _ = league;
         Ok(MotorStandings::default())
+    }
+}
+
+/// A TFT tournament's final placements (Liquipedia prizepool), by full event name.
+/// Empty for non-TFT events and tournaments that aren't finished. Served from the
+/// poller cache — never fetched per request.
+#[server(GetTftPlacements, "/api")]
+pub async fn get_tft_placements(event: String) -> Result<Vec<TftPlacement>, ServerFnError> {
+    #[cfg(feature = "ssr")]
+    {
+        Ok(crate::cache::tft_placements(&event))
+    }
+    #[cfg(not(feature = "ssr"))]
+    {
+        let _ = event;
+        Ok(Vec::new())
+    }
+}
+
+/// A TFT tournament's lobby standings (rank · player · per-game points · total),
+/// by full event name. Empty for non-TFT events / before results exist. Served
+/// from the poller cache — never fetched per request.
+#[server(GetTftStandings, "/api")]
+pub async fn get_tft_standings(event: String) -> Result<Vec<TftDayPanel>, ServerFnError> {
+    #[cfg(feature = "ssr")]
+    {
+        Ok(crate::cache::tft_standings(&event))
+    }
+    #[cfg(not(feature = "ssr"))]
+    {
+        let _ = event;
+        Ok(Vec::new())
     }
 }
 

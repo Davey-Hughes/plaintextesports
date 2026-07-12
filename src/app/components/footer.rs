@@ -58,7 +58,9 @@ pub(crate) fn SiteFooter() -> impl IntoView {
                         if traditional.get() {
                             "data via MLB Stats API, NHL, ESPN & Jolpica"
                         } else {
-                            "data via PandaScore"
+                            // Liquipedia (TFT schedule + esports event links) is
+                            // CC-BY-SA 3.0 and requires attribution.
+                            "data via PandaScore & Liquipedia"
                         }
                     }}
                 </span>

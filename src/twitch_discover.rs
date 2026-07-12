@@ -24,7 +24,11 @@ pub struct DiscoveredStream {
 
 /// Built-in sport → Twitch category id (CS2 = the "Counter-Strike" category
 /// `32399`, which absorbed CS:GO's id). Overridable via config.
-const BUILTIN_GAME_IDS: &[(Sport, &str)] = &[(Sport::Lol, "21779"), (Sport::Cs2, "32399")];
+const BUILTIN_GAME_IDS: &[(Sport, &str)] = &[
+    (Sport::Lol, "21779"),
+    (Sport::Cs2, "32399"),
+    (Sport::Tft, "513143"),
+];
 
 /// The Twitch category id for `sport`: a config override wins, else the built-in
 /// table; `None` for a sport with no mapping (never discovered).
@@ -189,6 +193,7 @@ mod tests {
         let empty = HashMap::new();
         assert_eq!(game_id(Sport::Lol, &empty).as_deref(), Some("21779"));
         assert_eq!(game_id(Sport::Cs2, &empty).as_deref(), Some("32399"));
+        assert_eq!(game_id(Sport::Tft, &empty).as_deref(), Some("513143"));
         assert_eq!(game_id(Sport::Mlb, &empty), None);
         let mut ov = HashMap::new();
         ov.insert("lol".to_string(), "999".to_string());

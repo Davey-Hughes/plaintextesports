@@ -60,9 +60,14 @@ fn allowlist(sport: Sport) -> &'static [&'static str] {
         Sport::Lol => LOL_ALLOWLIST,
         Sport::Cs2 => CS_ALLOWLIST,
         // Traditional sports aren't tier-filtered (every sport/session is shown).
-        Sport::Mlb | Sport::Nhl | Sport::Nba | Sport::Nfl | Sport::Soccer | Sport::Motorsport => {
-            &[]
-        }
+        // TFT comes pre-curated from Liquipedia, so it isn't tier-filtered either.
+        Sport::Mlb
+        | Sport::Nhl
+        | Sport::Nba
+        | Sport::Nfl
+        | Sport::Soccer
+        | Sport::Motorsport
+        | Sport::Tft => &[],
     }
 }
 
@@ -70,9 +75,13 @@ fn denylist(sport: Sport) -> &'static [&'static str] {
     match sport {
         Sport::Lol => LOL_DENYLIST,
         Sport::Cs2 => CS_DENYLIST,
-        Sport::Mlb | Sport::Nhl | Sport::Nba | Sport::Nfl | Sport::Soccer | Sport::Motorsport => {
-            &[]
-        }
+        Sport::Mlb
+        | Sport::Nhl
+        | Sport::Nba
+        | Sport::Nfl
+        | Sport::Soccer
+        | Sport::Motorsport
+        | Sport::Tft => &[],
     }
 }
 
