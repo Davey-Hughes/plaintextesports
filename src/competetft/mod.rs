@@ -59,6 +59,105 @@ pub struct CompeteTournamentData {
     pub lobbies: Vec<TftLobbyRound>,
 }
 
+/// Human date-range label for a tier-3 row, e.g. "May 2 – 10" or "May 23 – Jun 7".
+fn range_display(dr: rsc::DateRange) -> String {
+    const MON: [&str; 12] = [
+        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+    ];
+    let (sm, sd) = dr.start;
+    let (em, ed) = dr.end;
+    if sm == em && sd == ed {
+        format!("{} {sd}", MON[(sm - 1) as usize])
+    } else if sm == em {
+        format!("{} {sd} \u{2013} {ed}", MON[(sm - 1) as usize])
+    } else {
+        format!(
+            "{} {sd} \u{2013} {} {ed}",
+            MON[(sm - 1) as usize],
+            MON[(em - 1) as usize]
+        )
+    }
+}
+
+/// Turn a tournament into schedule sessions via the 3-tier date precedence:
+/// (1) broadcast feed (real times), (2) clean per-day map when stage count equals
+/// the range's day span and stage titles are distinct, (3) one tournament-level
+/// row spanning the range. Off-broadcast rows are anchored at 12:00 UTC (nominal;
+/// date-granular). Empty when there's neither a feed nor a date range.
+#[must_use]
+pub fn derive_sessions(
+    t: &rsc::CompeteTournament,
+    events: &[rsc::CompeteEvent],
+    now: DateTime<Utc>,
+) -> Vec<crate::tft::ParsedSession> {
+    let url = tournament_url(&t.id);
+    let mk = |label: String, begin_at: DateTime<Utc>| crate::tft::ParsedSession {
+        tournament: t.name.clone(),
+        session_label: label,
+        begin_at,
+        tournament_url: url.clone(),
+        streams: Vec::new(),
+    };
+
+    // Tier 1: broadcast feed — real per-stage dates + times.
+    let feed: Vec<&rsc::CompeteEvent> = events.iter().filter(|e| e.tournament_id == t.id).collect();
+    if !feed.is_empty() {
+        return feed
+            .iter()
+            .map(|e| {
+                let label = t
+                    .stages
+                    .iter()
+                    .find(|s| s.stage_id == e.stage_id)
+                    .map(|s| s.title.clone())
+                    .unwrap_or_else(|| e.event_type.replace('_', " "));
+                mk(label, e.date)
+            })
+            .collect();
+    }
+
+    // Tiers 2/3 need a date range.
+    let Some(dr) = t.date_range else {
+        return Vec::new();
+    };
+    let year = infer_year(dr.start.0, dr.start.1, &t.status, now);
+    let end_year = if dr.end.0 < dr.start.0 {
+        year + 1
+    } else {
+        year
+    };
+    let (Some(start_d), Some(end_d)) = (
+        chrono::NaiveDate::from_ymd_opt(year, dr.start.0, dr.start.1),
+        chrono::NaiveDate::from_ymd_opt(end_year, dr.end.0, dr.end.1),
+    ) else {
+        return Vec::new();
+    };
+    // Nominal noon UTC keeps the calendar day stable for most viewer timezones.
+    let start = start_d.and_hms_opt(12, 0, 0).unwrap().and_utc();
+    let span = (end_d - start_d).num_days() + 1;
+
+    let distinct = {
+        let mut titles: Vec<&str> = t.stages.iter().map(|s| s.title.as_str()).collect();
+        titles.sort_unstable();
+        let n = titles.len();
+        titles.dedup();
+        titles.len() == n
+    };
+
+    // Tier 2: clean per-day map.
+    if span >= 1 && t.stages.len() as i64 == span && distinct {
+        return t
+            .stages
+            .iter()
+            .enumerate()
+            .map(|(i, s)| mk(s.title.clone(), start + chrono::Duration::days(i as i64)))
+            .collect();
+    }
+
+    // Tier 3: one tournament-level row labeled by the range.
+    vec![mk(range_display(dr), start)]
+}
+
 /// Assemble a tournament's data from its parsed overview, the schedule events,
 /// and its sheet tabs (`(gid, csv_text)`). Pure — no network — so it is unit
 /// tested directly against fixtures. Each tab is routed to its parser by header
@@ -246,6 +345,104 @@ pub async fn refresh_competetft_tournament(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn tourn(
+        id: &str,
+        name: &str,
+        dr: Option<rsc::DateRange>,
+        stages: &[&str],
+    ) -> rsc::CompeteTournament {
+        rsc::CompeteTournament {
+            id: id.into(),
+            name: name.into(),
+            set_label: "Set 18".into(),
+            date_range: dr,
+            status: "COMPLETED".into(),
+            stages: stages
+                .iter()
+                .enumerate()
+                .map(|(i, s)| rsc::CompeteStage {
+                    stage_id: format!("{id}-{i}"),
+                    title: (*s).into(),
+                    sheet_key: String::new(),
+                    gid: None,
+                })
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn derive_sessions_tier2_clean_cup_maps_stages_to_consecutive_days() {
+        let now = "2026-07-13T00:00:00Z".parse::<DateTime<Utc>>().unwrap();
+        let t = tourn(
+            "1",
+            "Stargazer Cup AMER",
+            Some(rsc::DateRange {
+                start: (5, 8),
+                end: (5, 10),
+            }),
+            &["Day 1", "Day 2", "Finals"],
+        );
+        let s = derive_sessions(&t, &[], now);
+        assert_eq!(s.len(), 3);
+        let labels: Vec<&str> = s.iter().map(|x| x.session_label.as_str()).collect();
+        assert_eq!(labels, ["Day 1", "Day 2", "Finals"]);
+        // Consecutive days May 8, 9, 10 (year inferred 2026).
+        let days: Vec<u32> = s.iter().map(|x| x.begin_at.day()).collect();
+        assert_eq!(days, [8, 9, 10]);
+        assert!(
+            s.iter()
+                .all(|x| x.begin_at.month() == 5 && x.begin_at.year() == 2026)
+        );
+    }
+
+    #[test]
+    fn derive_sessions_tier3_falls_back_to_one_row_when_stages_ne_days() {
+        let now = "2026-07-13T00:00:00Z".parse::<DateTime<Utc>>().unwrap();
+        // Trials: 5 stages over a 9-day range → not a clean map.
+        let t = tourn(
+            "2",
+            "Tactician's Trials 1 AMER",
+            Some(rsc::DateRange {
+                start: (5, 2),
+                end: (5, 10),
+            }),
+            &["Day 1", "Day 2", "Day 3", "Day 4", "Finals"],
+        );
+        let s = derive_sessions(&t, &[], now);
+        assert_eq!(s.len(), 1, "one tournament-level row");
+        // en-dash (U+2013), matching range_display.
+        assert_eq!(s[0].session_label, "May 2 \u{2013} 10");
+        assert_eq!((s[0].begin_at.month(), s[0].begin_at.day()), (5, 2));
+    }
+
+    #[test]
+    fn derive_sessions_tier1_uses_broadcast_feed_times() {
+        let now = "2026-07-13T00:00:00Z".parse::<DateTime<Utc>>().unwrap();
+        let t = tourn(
+            "3",
+            "Live Cup",
+            Some(rsc::DateRange {
+                start: (7, 10),
+                end: (7, 12),
+            }),
+            &["Day 1"],
+        );
+        let events = vec![rsc::CompeteEvent {
+            tournament_id: "3".into(),
+            stage_id: "3-0".into(),
+            date: "2026-07-10T18:30:00Z".parse::<DateTime<Utc>>().unwrap(),
+            event_type: "TACTICIANS_CROWN".into(),
+        }];
+        let s = derive_sessions(&t, &events, now);
+        assert_eq!(s.len(), 1);
+        assert_eq!(s[0].session_label, "Day 1");
+        // Real broadcast time preserved (not the noon nominal).
+        assert_eq!(
+            s[0].begin_at,
+            "2026-07-10T18:30:00Z".parse::<DateTime<Utc>>().unwrap()
+        );
+    }
 
     #[test]
     fn infer_year_picks_nearest_occurrence_with_status_bias() {
