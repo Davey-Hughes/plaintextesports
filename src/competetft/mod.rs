@@ -258,4 +258,46 @@ mod tests {
                 .all(|e| e.event_type == "TACTICIANS_CROWN" || e.event_type == "REGIONAL_FINALS")
         );
     }
+
+    /// Full live pipeline: discover → refresh one tournament → assemble. Prints
+    /// the section counts. Ignored by default; run with
+    /// `cargo test --features ssr live_full_refresh -- --ignored --nocapture`.
+    #[test]
+    #[ignore = "hits live competetft + sheets"]
+    fn live_full_refresh() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let client = reqwest::Client::new();
+        let evs = rt.block_on(fetch_schedule(&client));
+        println!("live schedule: {} TFT broadcast event(s)", evs.len());
+        // Prefer a currently-scheduled tournament; fall back to the known
+        // Tactician's Crown id (its overview + sheet stay published after the
+        // event, so the sheet pipeline is still exercisable off-broadcast).
+        let id = evs
+            .iter()
+            .find(|e| e.event_type == "TACTICIANS_CROWN")
+            .or_else(|| evs.first())
+            .map(|e| e.tournament_id.clone())
+            .unwrap_or_else(|| "116323184504995859".to_string());
+        match rt.block_on(refresh_competetft_tournament(&client, &id, &evs)) {
+            Some(d) => {
+                println!(
+                    "tournament={:?} sessions={} standings={} placements={} streamers={} broadcasts={} lobbies={}",
+                    d.tournament,
+                    d.sessions.len(),
+                    d.standings.len(),
+                    d.placements.len(),
+                    d.streamers.len(),
+                    d.broadcasts.len(),
+                    d.lobbies.len(),
+                );
+                // Sessions need the live feed (empty off-broadcast); the sheet
+                // data is the pipeline proof.
+                assert!(
+                    !d.standings.is_empty() || !d.streamers.is_empty(),
+                    "expected sheet-derived standings or streamers"
+                );
+            }
+            None => println!("no data for {id} (its sheet may not be published yet)"),
+        }
+    }
 }
