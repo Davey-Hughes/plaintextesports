@@ -1916,7 +1916,10 @@ pub fn spawn_poller() {
                         .unwrap_or_else(PoisonError::into_inner);
                     rows.into_iter()
                         .filter(|m| {
-                            !covered.contains(&crate::types::full_event_name("TFT", &m.series_name))
+                            !covered.contains(&tft_coverage_key(&crate::types::full_event_name(
+                                "TFT",
+                                &m.series_name,
+                            )))
                         })
                         .collect()
                 };
@@ -2301,6 +2304,21 @@ fn competetft_discovery_ids(
     out
 }
 
+/// Normalize a TFT event name for cross-source precedence matching: drop a
+/// trailing ": subtitle" (the set name Liquipedia appends, e.g. "Tactician's
+/// Crown: Space Gods") and lowercase, so CompeteTFT's "TFT Tactician's Crown"
+/// matches Liquipedia's "TFT Tactician's Crown: Space Gods". Best-effort — it
+/// only aligns names sharing a base before the colon; if the two sources name a
+/// premier event with no common prefix, both still show (a documented edge).
+fn tft_coverage_key(event_name: &str) -> String {
+    event_name
+        .split(':')
+        .next()
+        .unwrap_or(event_name)
+        .trim()
+        .to_ascii_lowercase()
+}
+
 /// Store one CompeteTFT tournament's results into the caches (in-memory +
 /// SQLite), keyed by its full event name, and record the event as
 /// CompeteTFT-owned so the Liquipedia branch won't clobber or duplicate it.
@@ -2311,7 +2329,7 @@ fn apply_competetft(data: &crate::competetft::CompeteTournamentData, now: DateTi
     COMPETETFT_COVERED
         .write()
         .unwrap_or_else(PoisonError::into_inner)
-        .insert(ev.clone());
+        .insert(tft_coverage_key(&ev));
     if !data.placements.is_empty() {
         TFT_PLACEMENTS
             .write()

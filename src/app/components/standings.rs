@@ -270,14 +270,22 @@ fn merge_tft_results(standings: &TftStandings, placements: &[TftPlacement]) -> V
     // the eliminated block regardless of which source populated the rows. Ties
     // like "3-4" sort by their leading number. A no-op for Liquipedia (already
     // ordered); required for CompeteTFT, whose placements start below the cut.
-    out.sort_by_key(|r| {
-        r.pos
-            .split('-')
-            .next()
-            .and_then(|s| s.trim().parse::<u32>().ok())
-            .unwrap_or(u32::MAX)
-    });
+    out.sort_by_key(|r| tft_pos_key(&r.pos));
     out
+}
+
+/// The leading finishing position as a number, for ordering the merged ladder.
+/// Extracts the first run of ASCII digits so a tie range sorts by its top place
+/// regardless of separator ("3-4", "5–8", "5th-8th" → 3, 5, 5); no digits → last.
+/// `sort_by_key` is stable, so equal keys keep their source order (Liquipedia's
+/// already-sorted ladder is unchanged).
+fn tft_pos_key(pos: &str) -> u32 {
+    pos.chars()
+        .skip_while(|c| !c.is_ascii_digit())
+        .take_while(|c| c.is_ascii_digit())
+        .collect::<String>()
+        .parse::<u32>()
+        .unwrap_or(u32::MAX)
 }
 
 /// Shared column widths (monospace `ch`) so every tab lays out identically — the
@@ -662,6 +670,16 @@ pub(crate) fn TraditionalStandings(league: Memo<String>) -> impl IntoView {
 mod tests {
     use super::*;
     use crate::types::TftStandingRow;
+
+    #[test]
+    fn tft_pos_key_extracts_leading_place() {
+        assert_eq!(tft_pos_key("3"), 3);
+        assert_eq!(tft_pos_key("3-4"), 3);
+        assert_eq!(tft_pos_key("5–8"), 5); // en-dash separator
+        assert_eq!(tft_pos_key("5th-8th"), 5);
+        assert_eq!(tft_pos_key(""), u32::MAX);
+        assert_eq!(tft_pos_key("—"), u32::MAX);
+    }
 
     fn stand(rows: &[(&str, &str)]) -> TftStandings {
         TftStandings {
