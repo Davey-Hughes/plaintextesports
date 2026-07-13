@@ -107,6 +107,27 @@ pub fn parse_schedule(html: &str) -> Vec<CompeteEvent> {
     out
 }
 
+/// Parse the `/en-US/schedule` page into the season's tournament ids — every
+/// `Tournament` object the site lists, independent of broadcast windows. Each id
+/// drives discovery (id → overview → published sheet). Order-preserving + deduped.
+#[must_use]
+pub fn parse_tournament_ids(html: &str) -> Vec<String> {
+    let blob = rsc_blob(html);
+    let mut out = Vec::new();
+    for chunk in blob.split("\"__typename\":\"Tournament\"").skip(1) {
+        // The tournament's own `id` is the first field after the typename, so
+        // truncating at the first `}` is enough to capture it — that brace closes
+        // the nested `league` object, and `str_field` finds `id`, which precedes it.
+        let obj = &chunk[..chunk.find('}').unwrap_or(chunk.len())];
+        if let Some(id) = str_field(obj, "id") {
+            if !out.contains(&id) {
+                out.push(id);
+            }
+        }
+    }
+    out
+}
+
 /// One stage tab of a tournament: its stage id (joins to a schedule event), its
 /// display title ("Day 1"/"Finals"), and the published-sheet key + gid it links.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -233,5 +254,31 @@ mod tests {
                 .all(|e| e.event_type == "TACTICIANS_CROWN" || e.event_type == "REGIONAL_FINALS")
         );
         assert!(!evs.is_empty());
+    }
+
+    #[test]
+    fn parse_tournament_ids_lists_the_whole_season() {
+        let html = include_str!("../fixtures/competetft_schedule.html");
+        let ids = parse_tournament_ids(html);
+        // The schedule page embeds the full 20-tournament season.
+        assert_eq!(ids.len(), 20);
+        // Tactician's Crown is in the list.
+        assert!(ids.contains(&"116323184504995859".to_string()));
+        // Ids are unique (dedup held).
+        let mut uniq = ids.clone();
+        uniq.sort();
+        uniq.dedup();
+        assert_eq!(uniq.len(), ids.len());
+    }
+
+    #[test]
+    fn parse_tournament_ids_dedupes_repeats_and_keeps_order() {
+        // A synthetic RSC payload with tournament 111 listed twice, then 222.
+        // Mirrors the `self.__next_f.push([n,"<escaped json>"])` wrapping that
+        // `rsc_blob` decodes. Would fail if the dedup guard were removed
+        // (naive push → ["111", "111", "222"]).
+        let html = r#"<script>self.__next_f.push([1,"[{\"__typename\":\"Tournament\",\"id\":\"111\",\"name\":\"A\",\"league\":{}},{\"__typename\":\"Tournament\",\"id\":\"111\",\"name\":\"A again\",\"league\":{}},{\"__typename\":\"Tournament\",\"id\":\"222\",\"name\":\"B\",\"league\":{}}]"])</script>"#;
+        let ids = parse_tournament_ids(html);
+        assert_eq!(ids, vec!["111".to_string(), "222".to_string()]);
     }
 }
