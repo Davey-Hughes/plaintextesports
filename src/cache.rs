@@ -2323,10 +2323,16 @@ fn tft_coverage_key(event_name: &str) -> String {
 #[cfg(feature = "ssr")]
 fn apply_competetft(data: &crate::competetft::CompeteTournamentData, now: DateTime<Utc>) {
     let ev = crate::types::full_event_name("TFT", &data.tournament);
-    COMPETETFT_COVERED
-        .write()
-        .unwrap_or_else(PoisonError::into_inner)
-        .insert(tft_coverage_key(&ev));
+    // Only suppress Liquipedia for this event when CompeteTFT actually has dated
+    // schedule rows (sessions) for it. Off-broadcast the sheet still yields
+    // standings/streams/etc. below, but with no rows to replace Liquipedia's, so
+    // leaving the event un-covered lets Liquipedia fill the schedule.
+    if !data.sessions.is_empty() {
+        COMPETETFT_COVERED
+            .write()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(tft_coverage_key(&ev));
+    }
     if !data.placements.is_empty() {
         TFT_PLACEMENTS
             .write()
@@ -7267,6 +7273,46 @@ mod tests {
         // cheaply via the date-range path. > 1 week is locked.
         assert_eq!(refresh_interval(0), Some(Duration::minutes(30)));
         assert_eq!(refresh_interval(8), None);
+    }
+
+    #[test]
+    fn competetft_coverage_is_gated_on_sessions() {
+        let name = "Coverage Gating Test Cup";
+        let key = tft_coverage_key(&crate::types::full_event_name("TFT", name));
+        let now = "2026-07-13T00:00:00Z".parse::<DateTime<Utc>>().unwrap();
+
+        let data = |sessions: Vec<crate::tft::ParsedSession>| {
+            crate::competetft::CompeteTournamentData {
+                tournament: name.to_string(),
+                sessions,
+                placements: Vec::new(),
+                standings: Vec::new(),
+                streamers: Vec::new(),
+                broadcasts: Vec::new(),
+                lobbies: Vec::new(),
+            }
+        };
+        let covered = || {
+            COMPETETFT_COVERED
+                .read()
+                .unwrap_or_else(PoisonError::into_inner)
+                .contains(&key)
+        };
+
+        // No dated sessions → do NOT suppress Liquipedia for this event.
+        apply_competetft(&data(Vec::new()), now);
+        assert!(!covered(), "empty sessions must not claim coverage");
+
+        // A dated session → claim coverage (CompeteTFT drives the rows).
+        let session = crate::tft::ParsedSession {
+            tournament: name.to_string(),
+            session_label: "Day 1".to_string(),
+            begin_at: now,
+            tournament_url: String::new(),
+            streams: Vec::new(),
+        };
+        apply_competetft(&data(vec![session]), now);
+        assert!(covered(), "a dated session must claim coverage");
     }
 
     #[test]
