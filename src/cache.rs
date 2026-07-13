@@ -1840,12 +1840,9 @@ pub fn spawn_poller() {
                     series_cadence(&rows, now, live, near, idle)
                 };
                 if ctft_at.is_none_or(|t| now - t >= iv) {
-                    let events = crate::competetft::fetch_schedule(&client).await;
-                    let mut feed_ids: Vec<String> =
-                        events.iter().map(|e| e.tournament_id.clone()).collect();
-                    feed_ids.dedup();
+                    let schedule = crate::competetft::fetch_schedule(&client).await;
                     let ids = competetft_discovery_ids(
-                        &feed_ids,
+                        &schedule.tournaments,
                         &cfg.competetft_pins,
                         &cfg.competetft_exclude,
                         cfg.competetft_autodiscover,
@@ -1854,7 +1851,7 @@ pub fn spawn_poller() {
                         let id = ids[ctft_cursor % ids.len()].clone();
                         ctft_cursor = ctft_cursor.wrapping_add(1);
                         match crate::competetft::refresh_competetft_tournament(
-                            &client, &id, &events,
+                            &client, &id, &schedule.events,
                         )
                         .await
                         {

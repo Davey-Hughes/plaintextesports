@@ -129,13 +129,26 @@ async fn get(client: &reqwest::Client, url: &str) -> Option<String> {
         .ok()
 }
 
-/// Fetch competetft's schedule feed and parse it into TFT broadcast events.
+/// The schedule page split into what discovery needs: every tournament id the
+/// site lists (present year-round) plus the dated broadcast events (live/near
+/// only, the sole source of session times).
+#[derive(Default)]
+pub struct Schedule {
+    pub tournaments: Vec<String>,
+    pub events: Vec<rsc::CompeteEvent>,
+}
+
+/// Fetch competetft's schedule page once and parse it into the season tournament
+/// ids (for discovery) and the dated broadcast events (for session times).
 #[cfg(feature = "ssr")]
-pub async fn fetch_schedule(client: &reqwest::Client) -> Vec<rsc::CompeteEvent> {
-    get(client, &format!("{HOST}/en-US/schedule"))
-        .await
-        .map(|h| rsc::parse_schedule(&h))
-        .unwrap_or_default()
+pub async fn fetch_schedule(client: &reqwest::Client) -> Schedule {
+    match get(client, &format!("{HOST}/en-US/schedule")).await {
+        Some(h) => Schedule {
+            tournaments: rsc::parse_tournament_ids(&h),
+            events: rsc::parse_schedule(&h),
+        },
+        None => Schedule::default(),
+    }
 }
 
 /// Fetch and parse a tournament's overview page (name, Set, stage→sheet map).
@@ -252,9 +265,13 @@ mod tests {
     fn live_smoke() {
         let rt = tokio::runtime::Runtime::new().unwrap();
         let client = reqwest::Client::new();
-        let evs = rt.block_on(fetch_schedule(&client));
+        let sched = rt.block_on(fetch_schedule(&client));
+        // The tournament list is present year-round, independent of broadcasts.
+        assert!(!sched.tournaments.is_empty());
         assert!(
-            evs.iter()
+            sched
+                .events
+                .iter()
                 .all(|e| e.event_type == "TACTICIANS_CROWN" || e.event_type == "REGIONAL_FINALS")
         );
     }
@@ -267,18 +284,24 @@ mod tests {
     fn live_full_refresh() {
         let rt = tokio::runtime::Runtime::new().unwrap();
         let client = reqwest::Client::new();
-        let evs = rt.block_on(fetch_schedule(&client));
-        println!("live schedule: {} TFT broadcast event(s)", evs.len());
-        // Prefer a currently-scheduled tournament; fall back to the known
-        // Tactician's Crown id (its overview + sheet stay published after the
-        // event, so the sheet pipeline is still exercisable off-broadcast).
-        let id = evs
+        let sched = rt.block_on(fetch_schedule(&client));
+        println!(
+            "live schedule: {} tournament(s), {} broadcast event(s)",
+            sched.tournaments.len(),
+            sched.events.len()
+        );
+        // Prefer a currently-broadcasting tournament (dated); else the first
+        // discovered tournament id; else the known Tactician's Crown id (its
+        // overview + sheet stay published, so the sheet pipeline is exercisable
+        // off-broadcast).
+        let id = sched
+            .events
             .iter()
             .find(|e| e.event_type == "TACTICIANS_CROWN")
-            .or_else(|| evs.first())
             .map(|e| e.tournament_id.clone())
+            .or_else(|| sched.tournaments.first().cloned())
             .unwrap_or_else(|| "116323184504995859".to_string());
-        match rt.block_on(refresh_competetft_tournament(&client, &id, &evs)) {
+        match rt.block_on(refresh_competetft_tournament(&client, &id, &sched.events)) {
             Some(d) => {
                 println!(
                     "tournament={:?} sessions={} standings={} placements={} streamers={} broadcasts={} lobbies={}",
