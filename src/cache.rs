@@ -2833,9 +2833,11 @@ fn next_due_refresh_bucket(
         let snap = SNAPSHOT.read().unwrap_or_else(PoisonError::into_inner);
         let mut set = std::collections::HashSet::new();
         for m in &snap.matches {
-            // Past-refresh re-fetches a day from PandaScore; traditional sports
-            // (MLB) come from their own feed and have no PandaScore endpoint.
-            if m.sport.traditional() {
+            // Past-refresh re-fetches a day from PandaScore, so only CS2/LoL
+            // qualify; every other sport (traditional feeds, and TFT via
+            // CompeteTFT) comes from its own source and has no PandaScore endpoint
+            // — routing one here would panic in `game_path`.
+            if !m.sport.pandascore() {
                 continue;
             }
             let day = m.begin_at.date_naive();
@@ -7268,6 +7270,69 @@ mod tests {
         // cheaply via the date-range path. > 1 week is locked.
         assert_eq!(refresh_interval(0), Some(Duration::minutes(30)));
         assert_eq!(refresh_interval(8), None);
+    }
+
+    #[test]
+    fn past_refresh_bucket_only_yields_pandascore_sports() {
+        // Regression: a TFT (CompeteTFT) match in the snapshot must never produce a
+        // past-refresh bucket. `fetch_past_range_all` routes the bucket's sport
+        // through `game_path`, which only knows CS2/LoL and panics on anything else
+        // ("game_path is PandaScore-only ...; got Tft"). The old filter used
+        // `traditional()`, which excluded MLB but let TFT through.
+        let now = "2026-07-13T12:00:00Z".parse::<DateTime<Utc>>().unwrap();
+        let team = |label: &str| NormalizedTeam {
+            label: label.into(),
+            name: label.into(),
+            abbrev: String::new(),
+            score: None,
+        };
+        let mk = |id: i64, sport: Sport| {
+            NormalizedMatch::team_sport(
+                id,
+                sport,
+                "L",
+                now,
+                MatchStatus::Finished,
+                team("A"),
+                team("B"),
+            )
+        };
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute(
+            "CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)",
+            [],
+        )
+        .unwrap();
+        let set_snap = |matches: Vec<NormalizedMatch>| {
+            let mut snap = SNAPSHOT.write().unwrap_or_else(PoisonError::into_inner);
+            snap.matches = matches;
+            snap.fetched_at = now;
+        };
+
+        // TFT-only snapshot → no bucket (previously returned Some(Tft) → panic).
+        set_snap(vec![mk(1, Sport::Tft)]);
+        assert_eq!(next_due_refresh_bucket(&conn, now), None);
+
+        // A traditional sport is skipped too.
+        set_snap(vec![mk(2, Sport::Mlb)]);
+        assert_eq!(next_due_refresh_bucket(&conn, now), None);
+
+        // CS2 is still eligible — guard against over-filtering.
+        set_snap(vec![mk(3, Sport::Cs2)]);
+        assert_eq!(
+            next_due_refresh_bucket(&conn, now),
+            Some((Sport::Cs2, now.date_naive()))
+        );
+
+        // Mixed: only the PandaScore sport survives, deterministically.
+        set_snap(vec![mk(4, Sport::Tft), mk(5, Sport::Cs2)]);
+        assert_eq!(
+            next_due_refresh_bucket(&conn, now),
+            Some((Sport::Cs2, now.date_naive()))
+        );
+
+        // Leave the global snapshot empty for unrelated tests.
+        set_snap(Vec::new());
     }
 
     // ----- Orange Cat Blacktop per-series poll cadence -----------------------

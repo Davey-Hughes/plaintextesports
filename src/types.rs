@@ -123,6 +123,15 @@ impl Sport {
         matches!(self, Self::Cs2 | Self::Lol | Self::Tft)
     }
 
+    /// Whether this title is served by the PandaScore API (CS2/LoL). Every other
+    /// sport — the traditional feeds and TFT (CompeteTFT) — comes from its own
+    /// source and must never be routed to the PandaScore client, whose
+    /// `game_path` only knows these two.
+    #[must_use]
+    pub const fn pandascore(self) -> bool {
+        matches!(self, Self::Cs2 | Self::Lol)
+    }
+
     /// A single-entity sport (a race/session, not two opposing teams) — the row
     /// shows one competitor label rather than "A vs B".
     #[must_use]
