@@ -168,6 +168,7 @@ pub fn assemble(
     t: &rsc::CompeteTournament,
     events: &[rsc::CompeteEvent],
     tabs: &[(Option<String>, String)],
+    now: DateTime<Utc>,
 ) -> CompeteTournamentData {
     use sheet::{
         TabKind, classify_tab, parse_broadcasts, parse_leaderboard, parse_lobbies, parse_streamers,
@@ -206,26 +207,7 @@ pub fn assemble(
     // Day 1 & 2 panel before Finals.
     standings.sort_by_key(|p| p.label == "Finals");
 
-    // One session per broadcast day, joined to its stage title by stage_id.
-    let sessions = events
-        .iter()
-        .filter(|e| e.tournament_id == t.id)
-        .map(|e| {
-            let label = t
-                .stages
-                .iter()
-                .find(|s| s.stage_id == e.stage_id)
-                .map(|s| s.title.clone())
-                .unwrap_or_else(|| e.event_type.replace('_', " "));
-            ParsedSession {
-                tournament: t.name.clone(),
-                session_label: label,
-                begin_at: e.date,
-                tournament_url: tournament_url(&t.id),
-                streams: Vec::new(),
-            }
-        })
-        .collect();
+    let sessions = derive_sessions(t, events, now);
 
     CompeteTournamentData {
         tournament: t.name.clone(),
@@ -329,6 +311,7 @@ pub async fn refresh_competetft_tournament(
     client: &reqwest::Client,
     id: &str,
     events: &[rsc::CompeteEvent],
+    now: DateTime<Utc>,
 ) -> Option<CompeteTournamentData> {
     let t = fetch_tournament(client, id).await?;
     let key = t
@@ -339,7 +322,7 @@ pub async fn refresh_competetft_tournament(
     if tabs.is_empty() {
         return None;
     }
-    Some(assemble(&t, events, &tabs))
+    Some(assemble(&t, events, &tabs, now))
 }
 
 #[cfg(test)]
@@ -486,7 +469,8 @@ mod tests {
                 include_str!("../fixtures/competetft_info.csv").to_string(),
             ),
         ];
-        let d = assemble(&t, &events, &tabs);
+        let now = "2026-07-13T00:00:00Z".parse::<DateTime<Utc>>().unwrap();
+        let d = assemble(&t, &events, &tabs, now);
         assert!(!d.standings.is_empty());
         assert_eq!(d.standings[0].label, "Day 1 & 2");
         assert!(!d.placements.is_empty());
@@ -542,7 +526,13 @@ mod tests {
             .map(|e| e.tournament_id.clone())
             .or_else(|| sched.tournaments.first().cloned())
             .unwrap_or_else(|| "116323184504995859".to_string());
-        match rt.block_on(refresh_competetft_tournament(&client, &id, &sched.events)) {
+        let now = Utc::now();
+        match rt.block_on(refresh_competetft_tournament(
+            &client,
+            &id,
+            &sched.events,
+            now,
+        )) {
             Some(d) => {
                 println!(
                     "tournament={:?} sessions={} standings={} placements={} streamers={} broadcasts={} lobbies={}",

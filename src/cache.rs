@@ -1849,6 +1849,7 @@ pub fn spawn_poller() {
                             &client,
                             &id,
                             &schedule.events,
+                            now,
                         )
                         .await
                         {
