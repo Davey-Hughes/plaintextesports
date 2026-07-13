@@ -55,8 +55,9 @@ youtube_api_key = ""
 # tournament sheet). When on, it becomes the PRIMARY TFT source — schedule,
 # standings, prize money, per-player streams, official broadcasts, and per-round
 # lobby breakdowns — and Liquipedia (liquipedia_enabled) only backfills events
-# CompeteTFT doesn't cover. Off by default (scrape-based, opt-in). Discovery is
-# hybrid: it crawls the site's tournament list (competetft_autodiscover) plus any pins.
+# CompeteTFT doesn't cover. Off by default (scrape-based); uncomment the line below
+# to opt in. Discovery is hybrid: it crawls the site's tournament list
+# (competetft_autodiscover) plus any pins.
 # competetft_enabled = true
 # competetft_autodiscover = true             # crawl the site's tournament list
 # competetft_pins = ["116323184504995859"]   # always include these tournament ids

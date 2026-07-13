@@ -124,61 +124,56 @@ pub fn motor_standings(league: &str) -> crate::types::MotorStandings {
     store.read().unwrap_or_else(PoisonError::into_inner).clone()
 }
 
+/// Look up a TFT enrichment map by event name: exact match first, then a
+/// `tft_coverage_key`-normalized fallback. CompeteTFT stores enrichment under its
+/// own (subtitle-less) event name, so when the visible page is source-name-
+/// divergent — e.g. Liquipedia's "TFT Tactician's Crown: Space Gods" vs
+/// CompeteTFT's "TFT Tactician's Crown" — the exact lookup misses; the normalized
+/// fallback lets the pulled data still surface. The exact key is tried first, so
+/// the fallback only fires on genuine divergence (first normalized match wins).
+fn tft_enrichment_get<T: Clone>(map: &RwLock<HashMap<String, Vec<T>>>, event: &str) -> Vec<T> {
+    let guard = map.read().unwrap_or_else(PoisonError::into_inner);
+    if let Some(v) = guard.get(event) {
+        return v.clone();
+    }
+    let want = tft_coverage_key(event);
+    guard
+        .iter()
+        .find(|(k, _)| tft_coverage_key(k) == want)
+        .map(|(_, v)| v.clone())
+        .unwrap_or_default()
+}
+
 /// This event's TFT final placements (empty until its tournament finishes), keyed
 /// by full event name.
 #[must_use]
 pub fn tft_placements(event: &str) -> Vec<crate::types::TftPlacement> {
-    TFT_PLACEMENTS
-        .read()
-        .unwrap_or_else(PoisonError::into_inner)
-        .get(event)
-        .cloned()
-        .unwrap_or_default()
+    tft_enrichment_get(&TFT_PLACEMENTS, event)
 }
 
 /// This event's TFT standings as day/stage panels (empty until fetched), keyed by
 /// full event name.
 #[must_use]
 pub fn tft_standings(event: &str) -> Vec<crate::types::TftDayPanel> {
-    TFT_STANDINGS
-        .read()
-        .unwrap_or_else(PoisonError::into_inner)
-        .get(event)
-        .cloned()
-        .unwrap_or_default()
+    tft_enrichment_get(&TFT_STANDINGS, event)
 }
 
 /// This event's CompeteTFT per-player stream directory (empty until fetched).
 #[must_use]
 pub fn tft_streamers(event: &str) -> Vec<crate::types::TftStreamer> {
-    TFT_STREAMERS
-        .read()
-        .unwrap_or_else(PoisonError::into_inner)
-        .get(event)
-        .cloned()
-        .unwrap_or_default()
+    tft_enrichment_get(&TFT_STREAMERS, event)
 }
 
 /// This event's CompeteTFT official broadcast channels (empty until fetched).
 #[must_use]
 pub fn tft_broadcasts(event: &str) -> Vec<crate::types::TftBroadcast> {
-    TFT_BROADCASTS
-        .read()
-        .unwrap_or_else(PoisonError::into_inner)
-        .get(event)
-        .cloned()
-        .unwrap_or_default()
+    tft_enrichment_get(&TFT_BROADCASTS, event)
 }
 
 /// This event's CompeteTFT per-round lobby breakdowns (empty until fetched).
 #[must_use]
 pub fn tft_lobbies(event: &str) -> Vec<crate::types::TftLobbyRound> {
-    TFT_LOBBIES
-        .read()
-        .unwrap_or_else(PoisonError::into_inner)
-        .get(event)
-        .cloned()
-        .unwrap_or_default()
+    tft_enrichment_get(&TFT_LOBBIES, event)
 }
 
 /// Snapshot a standings store.
@@ -1904,8 +1899,9 @@ pub fn spawn_poller() {
                 let idle = Duration::seconds(cfg.idle_poll.as_secs() as i64);
                 let iv = series_cadence(&tft_rows, now, live, near, idle);
                 // CompeteTFT is primary: drop any Liquipedia rows for an event
-                // CompeteTFT already owns this run (matched by full event name),
-                // so the schedule never shows the same event from both sources.
+                // CompeteTFT already owns this run (matched by normalized event
+                // name), so this cycle's feed never double-lists it. Liquipedia
+                // rows persisted before coverage flipped age out on their own.
                 // A no-op unless both sources are on and name the event alike.
                 let drop_covered = |rows: Vec<NormalizedMatch>| -> Vec<NormalizedMatch> {
                     let covered = COMPETETFT_COVERED
@@ -6314,6 +6310,28 @@ mod tests {
         assert!(tft_streamers("nope").is_empty());
         assert!(tft_broadcasts("nope").is_empty());
         assert!(tft_lobbies("nope").is_empty());
+    }
+
+    #[test]
+    fn tft_enrichment_resolves_by_normalized_name_fallback() {
+        let want = vec![crate::types::TftStreamer {
+            player: "Mortdog".to_string(),
+            url: "https://twitch.tv/mortdog".to_string(),
+            platform: "twitch".to_string(),
+        }];
+        TFT_STREAMERS
+            .write()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert("TFT Normalized Fallback Cup".to_string(), want.clone());
+        // Exact name still resolves.
+        assert_eq!(tft_streamers("TFT Normalized Fallback Cup").len(), 1);
+        // Source-name divergence (a ": subtitle" the store lacks) resolves via the
+        // normalized fallback — the whole point of the fix.
+        let hit = tft_streamers("TFT Normalized Fallback Cup: Some Set");
+        assert_eq!(hit.len(), 1);
+        assert_eq!(hit[0].player, "Mortdog");
+        // An unrelated event still returns empty (no false-positive normalized match).
+        assert!(tft_streamers("TFT Totally Unrelated Event").is_empty());
     }
 
     #[test]
