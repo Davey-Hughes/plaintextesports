@@ -128,6 +128,85 @@ pub fn parse_tournament_ids(html: &str) -> Vec<String> {
     out
 }
 
+/// A tournament's date span from the overview header (e.g. "Jul 10 – 12"). No
+/// year — the overview text omits it; inferred later from context. Single-day
+/// tournaments have `start == end`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DateRange {
+    pub start: (u32, u32), // (month 1-12, day 1-31)
+    pub end: (u32, u32),
+}
+
+/// Month number (1-12) for a 3+ letter English month abbreviation, else None.
+fn month_num(tok: &str) -> Option<u32> {
+    const M: [&str; 12] = [
+        "jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec",
+    ];
+    let t = tok.get(..3)?;
+    M.iter()
+        .position(|m| t.eq_ignore_ascii_case(m))
+        .map(|i| i as u32 + 1)
+}
+
+/// The leading run of ascii digits in a token as a number (drops trailing punctuation).
+fn leading_num(tok: &str) -> Option<u32> {
+    let digits: String = tok.chars().take_while(char::is_ascii_digit).collect();
+    digits.parse().ok()
+}
+
+/// Strip HTML tags from a fragment, replacing each tag with a space.
+fn strip_tags(s: &str) -> String {
+    let mut out = String::new();
+    let mut in_tag = false;
+    for c in s.chars() {
+        match c {
+            '<' => in_tag = true,
+            '>' => {
+                in_tag = false;
+                out.push(' ');
+            }
+            _ if !in_tag => out.push(c),
+            _ => {}
+        }
+    }
+    out
+}
+
+/// Parse a tournament date range from overview display text: "Jul 10 – 12",
+/// "May 23 – Jun 7", or a single "Jul 10". Tolerates thin/nbsp spaces and en/em
+/// dashes. Anchors on the first `<month> <day>` and reads an optional `- <end>`.
+#[must_use]
+pub fn parse_date_range(text: &str) -> Option<DateRange> {
+    let norm: String = text
+        .chars()
+        .map(|c| match c {
+            '\u{2009}' | '\u{00a0}' | '\u{202f}' => ' ',
+            '\u{2013}' | '\u{2014}' => '-',
+            other => other,
+        })
+        .collect();
+    // Space out dashes so "10-12" tokenizes too.
+    let norm = norm.replace('-', " - ");
+    let toks: Vec<&str> = norm.split_whitespace().collect();
+    let i = (0..toks.len().saturating_sub(1))
+        .find(|&i| month_num(toks[i]).is_some() && leading_num(toks[i + 1]).is_some())?;
+    let smon = month_num(toks[i])?;
+    let sday = leading_num(toks[i + 1])?;
+    let start = (smon, sday);
+    let mut end = start;
+    if toks.get(i + 2) == Some(&"-") {
+        if let (Some(m), Some(d)) = (
+            toks.get(i + 3).and_then(|t| month_num(t)),
+            toks.get(i + 4).and_then(|t| leading_num(t)),
+        ) {
+            end = (m, d);
+        } else if let Some(d) = toks.get(i + 3).and_then(|t| leading_num(t)) {
+            end = (smon, d);
+        }
+    }
+    Some(DateRange { start, end })
+}
+
 /// One stage tab of a tournament: its stage id (joins to a schedule event), its
 /// display title ("Day 1"/"Finals"), and the published-sheet key + gid it links.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -138,12 +217,15 @@ pub struct CompeteStage {
     pub gid: Option<String>,
 }
 
-/// A tournament's overview: name, Set label, and its stage → sheet map.
+/// A tournament's overview: name, Set label, date range + status, and its
+/// stage → sheet map.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CompeteTournament {
     pub id: String,
     pub name: String,
     pub set_label: String,
+    pub date_range: Option<DateRange>,
+    pub status: String,
     pub stages: Vec<CompeteStage>,
 }
 
@@ -176,6 +258,23 @@ pub fn parse_tournament(id: &str, html: &str) -> CompeteTournament {
     let set_label = between(&blob, "\"children\":\"Set ", '"')
         .map(|s| format!("Set {s}"))
         .unwrap_or_default();
+
+    // Status + date range are rendered display text (the header pill + date),
+    // not in the RSC blob. The status sits in the first `tt_uppercase` div; the
+    // date range is the display text right after it (e.g. "… COMPLETED Jul 10 – 12").
+    let status = between(html, "tt_uppercase\">", '<')
+        .unwrap_or_default()
+        .trim()
+        .to_string();
+    let date_range = html
+        .find("tt_uppercase\">")
+        // char-safe: take chars (the date text has multibyte thin-spaces/en-dashes),
+        // never a byte slice that could split a codepoint. The window is generous
+        // (the status badge's SVG icon varies by status); `parse_date_range` anchors
+        // on the first `<month> <day>` after the status, so extra length only adds
+        // safety margin, never an earlier false match.
+        .map(|p| strip_tags(&html[p..].chars().take(2000).collect::<String>()))
+        .and_then(|region| parse_date_range(&region));
 
     let mut stages = Vec::new();
     let anchor = "\"url\":\"https://docs.google.com/spreadsheets";
@@ -211,6 +310,8 @@ pub fn parse_tournament(id: &str, html: &str) -> CompeteTournament {
         id: id.to_string(),
         name,
         set_label,
+        date_range,
+        status,
         stages,
     }
 }
@@ -269,6 +370,61 @@ mod tests {
         uniq.sort();
         uniq.dedup();
         assert_eq!(uniq.len(), ids.len());
+    }
+
+    #[test]
+    fn parse_date_range_handles_same_month_cross_month_and_single() {
+        // Same month, thin-space + en-dash (as the live overview renders it).
+        assert_eq!(
+            parse_date_range("Jul 10\u{2009}\u{2013}\u{2009}12"),
+            Some(DateRange {
+                start: (7, 10),
+                end: (7, 12)
+            })
+        );
+        // Cross-month.
+        assert_eq!(
+            parse_date_range("May 23 - Jun 7"),
+            Some(DateRange {
+                start: (5, 23),
+                end: (6, 7)
+            })
+        );
+        // Cross-month with thin-space + en-dash (the real-world rendered shape).
+        assert_eq!(
+            parse_date_range("May 23\u{2009}\u{2013}\u{2009}Jun 7"),
+            Some(DateRange {
+                start: (5, 23),
+                end: (6, 7)
+            })
+        );
+        // Single day (no dash).
+        assert_eq!(
+            parse_date_range("Jul 10"),
+            Some(DateRange {
+                start: (7, 10),
+                end: (7, 10)
+            })
+        );
+        // Garbage → None.
+        assert_eq!(parse_date_range("no dates here"), None);
+    }
+
+    #[test]
+    fn parse_tournament_reads_date_range_and_status() {
+        let html = include_str!("../fixtures/competetft_tournament.html");
+        let t = parse_tournament("116323184504995859", html);
+        assert_eq!(
+            t.date_range,
+            Some(DateRange {
+                start: (7, 10),
+                end: (7, 12)
+            })
+        );
+        assert!(
+            !t.status.is_empty(),
+            "status should be scraped (fixture: IN PROGRESS)"
+        );
     }
 
     #[test]
