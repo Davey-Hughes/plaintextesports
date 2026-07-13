@@ -1846,7 +1846,9 @@ pub fn spawn_poller() {
                         let id = ids[ctft_cursor % ids.len()].clone();
                         ctft_cursor = ctft_cursor.wrapping_add(1);
                         match crate::competetft::refresh_competetft_tournament(
-                            &client, &id, &schedule.events,
+                            &client,
+                            &id,
+                            &schedule.events,
                         )
                         .await
                         {
@@ -7299,8 +7301,8 @@ mod tests {
         let key = tft_coverage_key(&crate::types::full_event_name("TFT", name));
         let now = "2026-07-13T00:00:00Z".parse::<DateTime<Utc>>().unwrap();
 
-        let data = |sessions: Vec<crate::tft::ParsedSession>| {
-            crate::competetft::CompeteTournamentData {
+        let data =
+            |sessions: Vec<crate::tft::ParsedSession>| crate::competetft::CompeteTournamentData {
                 tournament: name.to_string(),
                 sessions,
                 placements: Vec::new(),
@@ -7308,8 +7310,7 @@ mod tests {
                 streamers: Vec::new(),
                 broadcasts: Vec::new(),
                 lobbies: Vec::new(),
-            }
-        };
+            };
         let covered = || {
             COMPETETFT_COVERED
                 .read()

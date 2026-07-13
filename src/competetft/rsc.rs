@@ -119,10 +119,10 @@ pub fn parse_tournament_ids(html: &str) -> Vec<String> {
         // truncating at the first `}` is enough to capture it — that brace closes
         // the nested `league` object, and `str_field` finds `id`, which precedes it.
         let obj = &chunk[..chunk.find('}').unwrap_or(chunk.len())];
-        if let Some(id) = str_field(obj, "id") {
-            if !out.contains(&id) {
-                out.push(id);
-            }
+        if let Some(id) = str_field(obj, "id")
+            && !out.contains(&id)
+        {
+            out.push(id);
         }
     }
     out
