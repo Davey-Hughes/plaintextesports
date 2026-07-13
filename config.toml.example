@@ -43,13 +43,10 @@ youtube_api_key = ""
 # [soop_costreamers]
 # lol = ["lck", "faker"]
 
-# TFT (Teamfight Tactics) esports schedule + final placements. No commercial
-# esports data API covers TFT, so this parses Liquipedia's public MediaWiki pages
-# (contact User-Agent, gzip, slow polling + aggressive caching per their API
-# terms; CC-BY-SA attribution is shown in the footer). Off by default because it
-# scrapes rendered wiki HTML. Set true to add a "TFT" chip to the esports schedule
-# (and final placements on TFT event pages once tournaments finish).
-# liquipedia_enabled = true
+# TFT legacy source (Liquipedia MediaWiki scrape). Superseded by CompeteTFT
+# below, which is now the authoritative TFT source. Left here disabled; enable
+# only to fall back to Liquipedia if CompeteTFT is unavailable.
+# liquipedia_enabled = false
 
 # First-party CompeteTFT source (Riot competetft.com + the official published
 # tournament sheet). When on, it becomes the PRIMARY TFT source — schedule,
