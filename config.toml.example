@@ -57,7 +57,7 @@ youtube_api_key = ""
 # lobby breakdowns — and Liquipedia (liquipedia_enabled) only backfills events
 # CompeteTFT doesn't cover. Off by default (scrape-based, opt-in). Discovery is
 # hybrid: it crawls the schedule feed (competetft_autodiscover) plus any pins.
-# competetft_enabled = false
+# competetft_enabled = true
 # competetft_autodiscover = true             # crawl the schedule feed for events
 # competetft_pins = ["116323184504995859"]   # always include these tournament ids
 # competetft_exclude = []                     # never include these ids
