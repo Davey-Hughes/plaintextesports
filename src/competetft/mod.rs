@@ -7,6 +7,7 @@ pub mod sheet;
 
 use crate::tft::ParsedSession;
 use crate::types::{TftBroadcast, TftDayPanel, TftLobbyRound, TftPlacement, TftStreamer};
+use chrono::{DateTime, Datelike, Utc};
 
 const HOST: &str = "https://competetft.com";
 
@@ -14,6 +15,36 @@ const HOST: &str = "https://competetft.com";
 /// source link).
 fn tournament_url(id: &str) -> String {
     format!("{HOST}/en-US/tournament/{id}/overview")
+}
+
+/// Infer the calendar year for a month/day that the overview omits: choose the
+/// occurrence nearest to `now` among {year-1, year, year+1}, biased by status —
+/// UPCOMING should not resolve to the past, and a non-upcoming (completed/live)
+/// event should not resolve to the far future.
+#[must_use]
+pub fn infer_year(month: u32, day: u32, status: &str, now: DateTime<Utc>) -> i32 {
+    let upcoming = status.eq_ignore_ascii_case("upcoming");
+    let mut best = now.year();
+    let mut best_score = i64::MAX;
+    for y in [now.year() - 1, now.year(), now.year() + 1] {
+        let Some(d) = chrono::NaiveDate::from_ymd_opt(y, month, day) else {
+            continue;
+        };
+        let dt = d.and_hms_opt(0, 0, 0).unwrap().and_utc();
+        let delta = (dt - now).num_days();
+        let mut score = delta.abs();
+        if upcoming && delta < 0 {
+            score += 400; // an upcoming event in the past is wrong
+        }
+        if !upcoming && delta > 200 {
+            score += 400; // a completed/live event far in the future is wrong
+        }
+        if score < best_score {
+            best_score = score;
+            best = y;
+        }
+    }
+    best
 }
 
 /// Everything one tournament contributes to the caches: schedule sessions plus
@@ -215,6 +246,19 @@ pub async fn refresh_competetft_tournament(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn infer_year_picks_nearest_occurrence_with_status_bias() {
+        let now = "2026-07-13T00:00:00Z".parse::<DateTime<Utc>>().unwrap();
+        // A completed July event is this year.
+        assert_eq!(infer_year(7, 10, "COMPLETED", now), 2026);
+        // A completed January event (already passed) is this year, not next.
+        assert_eq!(infer_year(1, 15, "COMPLETED", now), 2026);
+        // An upcoming January event rolls to next year rather than the past.
+        assert_eq!(infer_year(1, 15, "UPCOMING", now), 2027);
+        // An upcoming December event is this year (still ahead).
+        assert_eq!(infer_year(12, 20, "UPCOMING", now), 2026);
+    }
 
     #[test]
     fn assembles_tournament_from_fixtures() {
