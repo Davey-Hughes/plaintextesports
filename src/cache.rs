@@ -2487,6 +2487,7 @@ async fn refresh_tft_results(
                         tournament_url: nearest.league_url.clone().unwrap_or_default(),
                         // Past game — finished, no live stream to carry.
                         streams: Vec::new(),
+                        status: None,
                     };
                     past_sessions.push(crate::tft::session_to_match(&ps, now));
                 }
@@ -7330,6 +7331,7 @@ mod tests {
             begin_at: now,
             tournament_url: String::new(),
             streams: Vec::new(),
+            status: None,
         };
         apply_competetft(&data(vec![session]), now);
         assert!(covered(), "a dated session must claim coverage");

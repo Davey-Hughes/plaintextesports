@@ -79,6 +79,22 @@ fn range_display(dr: rsc::DateRange) -> String {
     }
 }
 
+/// Map a scraped CompeteTFT status badge to a match status, or `None` (unknown ⇒
+/// fall back to the clock). Used for tier-3 rows whose `begin_at` is a range start.
+fn tft_status_override(status: &str) -> Option<crate::types::MatchStatus> {
+    use crate::types::MatchStatus;
+    let s = status.to_ascii_uppercase();
+    if s.contains("COMPLETE") {
+        Some(MatchStatus::Finished)
+    } else if s.contains("UPCOMING") {
+        Some(MatchStatus::Upcoming)
+    } else if s.contains("LIVE") || s.contains("PROGRESS") || s.contains("ONGOING") {
+        Some(MatchStatus::Live)
+    } else {
+        None
+    }
+}
+
 /// Turn a tournament into schedule sessions via the 3-tier date precedence:
 /// (1) broadcast feed (real times), (2) clean per-day map when stage count equals
 /// the range's day span and stage titles are distinct, (3) one tournament-level
@@ -97,6 +113,7 @@ pub fn derive_sessions(
         begin_at,
         tournament_url: url.clone(),
         streams: Vec::new(),
+        status: None,
     };
 
     // Tier 1: broadcast feed — real per-stage dates + times.
@@ -154,8 +171,12 @@ pub fn derive_sessions(
             .collect();
     }
 
-    // Tier 3: one tournament-level row labeled by the range.
-    vec![mk(range_display(dr), start)]
+    // Tier 3: one tournament-level row labeled by the range. `begin_at` is the
+    // range start, so the clock's fixed live window can't be trusted — carry the
+    // scraped tournament status instead.
+    let mut row = mk(range_display(dr), start);
+    row.status = tft_status_override(&t.status);
+    vec![row]
 }
 
 /// Assemble a tournament's data from its parsed overview, the schedule events,
@@ -397,6 +418,27 @@ mod tests {
         // en-dash (U+2013), matching range_display.
         assert_eq!(s[0].session_label, "May 2 \u{2013} 10");
         assert_eq!((s[0].begin_at.month(), s[0].begin_at.day()), (5, 2));
+    }
+
+    #[test]
+    fn derive_sessions_tier3_status_reflects_scraped_status_not_clock() {
+        use crate::types::MatchStatus;
+        // A LIVE multi-day Trials, "now" several days after the range start — the
+        // clock alone (status_at) would say Finished; the scraped status must win.
+        let now = "2026-05-06T00:00:00Z".parse::<DateTime<Utc>>().unwrap();
+        let mut t = tourn(
+            "9",
+            "Tactician's Trials 1 AMER",
+            Some(rsc::DateRange {
+                start: (5, 2),
+                end: (5, 10),
+            }),
+            &["Day 1", "Day 2", "Day 3", "Day 4", "Finals"],
+        );
+        t.status = "LIVE".into();
+        let s = derive_sessions(&t, &[], now);
+        assert_eq!(s.len(), 1);
+        assert_eq!(s[0].status, Some(MatchStatus::Live));
     }
 
     #[test]

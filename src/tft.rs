@@ -39,6 +39,11 @@ pub struct ParsedSession {
     /// Official broadcast streams parsed from the session's `Special:Stream` links
     /// (Twitch/YouTube), ready to enrich with live viewers like a CS2/LoL match.
     pub streams: Vec<StreamView>,
+    /// Explicit match status override. `None` ⇒ derive from the clock via
+    /// `status_at`. Set for tournament-level (tier-3) rows, whose `begin_at` is the
+    /// range *start* — the clock's fixed live window would wrongly finish a
+    /// still-running multi-day event, so the scraped tournament status is used.
+    pub status: Option<MatchStatus>,
 }
 
 /// A stable 0..1e9 FNV-1a hash of a string.
@@ -92,7 +97,7 @@ pub fn session_to_match(s: &ParsedSession, now: DateTime<Utc>) -> NormalizedMatc
         Sport::Tft,
         "TFT",
         s.begin_at,
-        status_at(s.begin_at, now),
+        s.status.unwrap_or_else(|| status_at(s.begin_at, now)),
         entity,
         empty,
     );
@@ -151,6 +156,7 @@ pub fn parse_upcoming(html: &str) -> Vec<ParsedSession> {
             begin_at,
             tournament_url,
             streams: parse_streams(tag, parser),
+            status: None,
         });
     }
     dedup_twins(out)
@@ -696,6 +702,7 @@ mod tests {
             begin_at: at("2026-07-10T12:30:00Z"),
             tournament_url: "https://liquipedia.net/teamfighttactics/Tactician's_Crown".into(),
             streams: Vec::new(),
+            status: None,
         };
         let m = session_to_match(&s, now);
         assert_eq!(m.sport, Sport::Tft);
@@ -716,6 +723,7 @@ mod tests {
             begin_at: at(begin),
             tournament_url: String::new(),
             streams: Vec::new(),
+            status: None,
         };
         let now = at("2026-07-10T14:00:00Z");
         // Future -> Upcoming.
@@ -814,6 +822,7 @@ mod tests {
             begin_at: when,
             tournament_url: String::new(),
             streams: Vec::new(),
+            status: None,
         };
         // Bare "Game 1" dropped in favor of the prefixed twin at the same time.
         let out = dedup_twins(vec![s("Day 2 - Game 1", t0), s("Game 1", t0)]);
