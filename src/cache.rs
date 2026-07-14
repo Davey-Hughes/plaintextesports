@@ -2640,22 +2640,46 @@ fn apply_poll(
                     .collect()
             };
             let wrc_keep = reconcile_wrc(&mut fresh, &prev_wrc_stages);
-            // TFT is NOT league-scoped replaced: its feed alternates between the
-            // upcoming page and reconstructed finished-day rows, so neither is a
-            // complete enumeration — replacing would prune whichever the other cycle
-            // added. Finished days are meant to persist (kept back to
-            // `archive_months`), so TFT relies on id-keyed upsert + age pruning.
-            // Tradeoff: a session pulled from Liquipedia's upcoming page (never a
-            // reconstruction) lingers until it ages out rather than vanishing at
-            // once. Twins are prevented at parse time (`dedup_twins`).
-            if let Err(e) = crate::store::upsert_and_prune(
+            // TFT is reconciled per tournament (below) now that CompeteTFT is
+            // authoritative: each poll's feed is one tournament's complete session
+            // set, so a superseded row (e.g. a tier-3 range row replaced by tier-1/2
+            // per-day rows once dates arrive) is dropped rather than lingering to the
+            // age cutoff. Skipped for a tournament that brought back nothing this poll.
+            match crate::store::upsert_and_prune(
                 conn,
                 &fresh,
                 now.timestamp_millis(),
                 cutoff_ms,
                 &[("WRC", wrc_keep)],
             ) {
-                leptos::logging::log!("cache db write failed: {e}");
+                Ok(()) => {
+                    // Reconcile TFT per tournament ONLY when the upsert committed
+                    // (else the keep-ids aren't in the DB yet and the DELETE would
+                    // wipe the tournament) AND only when CompeteTFT is the sole,
+                    // complete TFT source. With Liquipedia enabled its feed is partial
+                    // per poll (alternating upcoming / reconstructed), so replacing
+                    // would delete legitimate rows the other cycle added.
+                    if !config().liquipedia_enabled {
+                        let mut tft_keep: std::collections::HashMap<&str, Vec<i64>> =
+                            std::collections::HashMap::new();
+                        for m in &fresh {
+                            if m.sport == Sport::Tft {
+                                tft_keep
+                                    .entry(m.series_name.as_str())
+                                    .or_default()
+                                    .push(m.id);
+                            }
+                        }
+                        for (tournament, keep) in &tft_keep {
+                            if let Err(e) =
+                                crate::store::replace_tft_tournament(conn, tournament, keep)
+                            {
+                                leptos::logging::log!("tft reconcile failed for {tournament}: {e}");
+                            }
+                        }
+                    }
+                }
+                Err(e) => leptos::logging::log!("cache db write failed: {e}"),
             }
         }
         match crate::store::load_all(conn) {
