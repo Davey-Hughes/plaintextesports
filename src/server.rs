@@ -471,7 +471,7 @@ pub async fn get_motor_standings(league: String) -> Result<MotorStandings, Serve
     }
 }
 
-/// A TFT tournament's final placements (Liquipedia prizepool), by full event name.
+/// A TFT tournament's final placements (CompeteTFT sheet), by full event name.
 /// Empty for non-TFT events and tournaments that aren't finished. Served from the
 /// poller cache — never fetched per request.
 #[server(GetTftPlacements, "/api")]

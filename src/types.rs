@@ -48,10 +48,10 @@ pub enum Sport {
     /// series are the sub-league chips, like soccer's competitions.
     Motorsport,
     /// Teamfight Tactics — a Riot auto-battler esport. No commercial data API
-    /// covers it, so its schedule comes from Liquipedia's MediaWiki API (see
-    /// `crate::tft`). Single-entity: a "match" is one broadcast session (a
-    /// tournament day/stage), not two opposing teams. Opt-in behind
-    /// `liquipedia_enabled`.
+    /// covers it, so its schedule comes from Riot's own competetft.com and the
+    /// official published sheet (see `crate::competetft`). Single-entity: a
+    /// "match" is one broadcast session (a tournament day/stage), not two opposing
+    /// teams. Opt-in behind `competetft_enabled`.
     Tft,
 }
 
@@ -665,8 +665,8 @@ pub struct StandingRow {
     pub gb: String,
 }
 
-/// One row of a TFT tournament's final placement table (parsed from Liquipedia's
-/// prizepool table). TFT is a lobby game, so a result is a ranked placement with
+/// One row of a TFT tournament's final placement table (parsed from CompeteTFT's
+/// published sheet). TFT is a lobby game, so a result is a ranked placement with
 /// a prize, not a win/loss record — hence its own type rather than [`StandingRow`].
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TftPlacement {
@@ -678,8 +678,8 @@ pub struct TftPlacement {
     pub prize: String,
 }
 
-/// One player's row in a TFT lobby standings table (from Liquipedia's
-/// battle-royale panel-table): a rank, the player, per-game points, and the total.
+/// One player's row in a TFT lobby standings table (from CompeteTFT's
+/// leaderboard): a rank, the player, per-game points, and the total.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TftStandingRow {
     pub rank: String,
@@ -689,7 +689,7 @@ pub struct TftStandingRow {
     /// Points scored in each game, in order (blank/"-" where not yet played).
     pub games: Vec<String>,
     /// Qualification note from the CompeteTFT leaderboard (e.g. "→ Day 3").
-    /// Empty for the Liquipedia source and eliminated rows.
+    /// Empty for eliminated rows.
     #[serde(default)]
     pub status: String,
     /// Prize as shown (e.g. "$11,000"); empty when none or still active. Set on

@@ -43,18 +43,11 @@ youtube_api_key = ""
 # [soop_costreamers]
 # lol = ["lck", "faker"]
 
-# TFT legacy source (Liquipedia MediaWiki scrape). Superseded by CompeteTFT
-# below, which is now the authoritative TFT source. Left here disabled; enable
-# only to fall back to Liquipedia if CompeteTFT is unavailable.
-# liquipedia_enabled = false
-
 # First-party CompeteTFT source (Riot competetft.com + the official published
-# tournament sheet). When on, it becomes the PRIMARY TFT source — schedule,
-# standings, prize money, per-player streams, official broadcasts, and per-round
-# lobby breakdowns — and Liquipedia (liquipedia_enabled) only backfills events
-# CompeteTFT doesn't cover. Off by default (scrape-based); uncomment the line below
-# to opt in. Discovery is hybrid: it crawls the site's tournament list
-# (competetft_autodiscover) plus any pins.
+# tournament sheet) — the TFT source: schedule, standings, prize money, per-player
+# streams, official broadcasts, and per-round lobby breakdowns. Off by default
+# (scrape-based); uncomment the line below to opt in. Discovery is hybrid: it
+# crawls the site's tournament list (competetft_autodiscover) plus any pins.
 # competetft_enabled = true
 # competetft_autodiscover = true             # crawl the site's tournament list
 # competetft_pins = ["116323184504995859"]   # always include these tournament ids
