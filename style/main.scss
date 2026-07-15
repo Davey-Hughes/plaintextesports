@@ -2961,10 +2961,11 @@ a.sw-link {
 .lob-controls {
   display: flex;
   flex-wrap: wrap;
-  gap: 0.1rem 0.5rem;
-  // Tight between the per-day rows (they read as one control block), with the
-  // breathing room kept below the last one, before the lobby grid.
-  margin: 0.15rem 0;
+  gap: 0.1rem 0.3rem;
+  // Buttons sit close together within a day, so the gaps between the day rows
+  // have to beat them to read as the stronger split — the rows are what group
+  // the buttons. Breathing room stays below the last row, before the lobby grid.
+  margin: 0.4rem 0;
   align-items: center;
 
   &:last-of-type {
