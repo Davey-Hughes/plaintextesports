@@ -1516,11 +1516,25 @@ static HTTP: Lazy<reqwest::Client> = Lazy::new(|| {
         .unwrap_or_default()
 });
 
+/// Whether the result cache should skip opening a database at all.
+///
+/// DEMO serves fixtures, so nothing is worth persisting. An empty `db_path` is
+/// documented as "disables persistence" and the boot connection in
+/// `start_polling` already returns None for it — but `store::open("")` answers
+/// `Ok`, because SQLite treats an empty filename as a request for a private
+/// temporary on-disk database. Without this check the result cache would quietly
+/// do disk I/O, and serve its own writes back within the process, on a config that
+/// asked for neither.
+fn cache_db_disabled(demo: bool, db_path: &str) -> bool {
+    demo || db_path.is_empty()
+}
+
 /// Dedicated connection for the persistent result cache (`store::result_cache`),
 /// used by both the on-demand caches and the poller's standings persistence.
-/// `None` in DEMO mode or under `cargo test` → every `db_cache_*` helper no-ops
-/// and the caches stay memory-only. WAL + busy_timeout (set by `store::open`) let
-/// it coexist with the poller's and push sender's connections.
+/// `None` in DEMO mode, for an empty `db_path`, or under `cargo test` → every
+/// `db_cache_*` helper no-ops and the caches stay memory-only. WAL + busy_timeout
+/// (set by `store::open`) let it coexist with the poller's and push sender's
+/// connections.
 static CACHE_DB: Lazy<Option<Mutex<rusqlite::Connection>>> = Lazy::new(|| {
     // Never bind a real database from the test harness. `config()` reads the
     // developer's actual config.toml wherever the lib is loaded, so without this a
@@ -1531,7 +1545,7 @@ static CACHE_DB: Lazy<Option<Mutex<rusqlite::Connection>>> = Lazy::new(|| {
         return None;
     }
     let cfg = config();
-    if cfg.demo {
+    if cache_db_disabled(cfg.demo, &cfg.db_path) {
         return None;
     }
     crate::store::open(&cfg.db_path).ok().map(Mutex::new)
@@ -6605,6 +6619,21 @@ pub fn synthetic_snapshot(n: usize, now: DateTime<Utc>) -> Snapshot {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cache_db_is_skipped_for_demo_and_for_an_empty_path() {
+        // DEMO serves fixtures, so nothing should be persisted.
+        assert!(cache_db_disabled(true, "data/cache.db"));
+        // `db_path = ""` is documented as "disables persistence" and the boot
+        // connection returns None for it. It must not reach store::open, which
+        // answers Ok for an empty path — SQLite quietly opens a private temp
+        // database, so the result cache would do disk I/O and serve its own reads
+        // back on a config that asked for none.
+        assert!(cache_db_disabled(false, ""));
+        assert!(cache_db_disabled(true, ""));
+        // A real path with no demo flag is the one case that opens a database.
+        assert!(!cache_db_disabled(false, "data/cache.db"));
+    }
 
     #[test]
     fn the_test_harness_never_binds_a_real_cache_db() {
