@@ -383,13 +383,30 @@ fn day_grid_view(s: &TftStandings, l: &TabLayout, show: bool) -> AnyView {
             view! { <span class="tft-h tft-g">{lab}</span> }
         })
         .collect_view();
+    // The eliminated block is contiguous at the bottom (day2/finals rows are
+    // built that way in `split_day_panels`), so one divider (before the first
+    // eliminated row) cleanly splits live from final — mirrors `current_grid_view`.
+    let mut sep_shown = false;
     let rows = s
         .rows
         .iter()
         .map(|r| {
+            // Eliminated: greyed, prize instead of per-game cells, cumulative
+            // total retained. Mirrors the muted treatment `current_grid_view` uses.
+            let elim = r.eliminated;
+            let prize = r.prize.clone();
+            let sep = (elim && !sep_shown)
+                .then(|| view! { <div class="tft-elim-sep">"eliminated"</div> });
+            if elim {
+                sep_shown = true;
+            }
             let games = (0..max_games)
                 .map(|i| {
-                    let v = if show && i < gc {
+                    let v = if !show {
+                        String::new()
+                    } else if elim {
+                        if i == 0 { prize.clone() } else { String::new() }
+                    } else if i < gc {
                         r.games.get(i).cloned().unwrap_or_default()
                     } else {
                         String::new()
@@ -404,7 +421,8 @@ fn day_grid_view(s: &TftStandings, l: &TabLayout, show: bool) -> AnyView {
             };
             let rank = r.rank.clone();
             view! {
-                <div class="tft-row">
+                {sep}
+                <div class="tft-row" class:tft-final=elim>
                     <span class="tft-rank">{rank}</span>
                     <span class="tft-name">{name}</span>
                     {games}
@@ -500,43 +518,27 @@ fn current_grid_view(rows: &[MergedRow], l: &TabLayout, show: bool) -> AnyView {
     .into_any()
 }
 
-/// A TFT event's standings shown as tabs: one per day/stage panel (each with its
-/// per-game detail) plus a synthesized "Current" tab — the latest day's standing
-/// folded together with the final placements (eliminated players + prizes). One
-/// spoiler reveal gates them all; the tab bar and positions stay visible while the
-/// values hide. Defaults to the "Current" tab.
+/// A TFT event's standings shown as tabs: one per day/stage panel, each carrying
+/// the full field for that stage (eliminated players greyed, showing their
+/// prize). One spoiler reveal gates them all; the tab bar and positions stay
+/// visible while the values hide. Defaults to the latest day's tab.
 #[component]
 fn TftResultsTabs(
     panels: Vec<TftDayPanel>,
-    placements: Vec<TftPlacement>,
+    _placements: Vec<TftPlacement>,
     event: String,
 ) -> impl IntoView {
-    let latest = panels
-        .last()
-        .map(|p| p.standings.clone())
-        .unwrap_or_default();
-    let current = merge_tft_results(&latest, &placements);
-    let has_current = !current.is_empty();
-    if panels.is_empty() && !has_current {
+    if panels.is_empty() {
         return ().into_any();
     }
     let (revealed, toggle) = section_reveal(format!("tftres:{event}"));
-    let n_days = panels.len();
-    // Tabs: day panels at 0..n_days, then "Current" at n_days. Start on Current.
-    let mut tabs: Vec<(usize, String)> =
-        panels.iter().map(|p| p.label.clone()).enumerate().collect();
-    if has_current {
-        tabs.push((n_days, "Current".to_string()));
-    }
-    let active = RwSignal::new(if has_current {
-        n_days
-    } else {
-        n_days.saturating_sub(1)
-    });
-    // One shared layout so the total/points column lines up across every tab.
-    let layout = tab_layout(&panels, &current);
+    // Tabs are the day panels; the latest is the default. (The old synthesized
+    // "Current" tab is gone: each panel now carries the full field itself, with
+    // eliminated players greyed and carrying their prize.)
+    let tabs: Vec<(usize, String)> = panels.iter().map(|p| p.label.clone()).enumerate().collect();
+    let active = RwSignal::new(panels.len().saturating_sub(1));
+    let layout = tab_layout(&panels, &[]);
     let panels = StoredValue::new(panels);
-    let current = StoredValue::new(current);
     let tab_bar = tabs
         .into_iter()
         .map(|(i, label)| {
@@ -555,11 +557,7 @@ fn TftResultsTabs(
         let show = revealed.get();
         let idx = active.get();
         let days = panels.get_value();
-        if idx < days.len() {
-            day_grid_view(&days[idx].standings, &layout, show)
-        } else {
-            current_grid_view(&current.get_value(), &layout, show)
-        }
+        day_grid_view(&days[idx.min(days.len() - 1)].standings, &layout, show)
     };
     view! {
         <section class="detail-section" id="tftsec-results">
@@ -628,7 +626,7 @@ pub(crate) fn TftEventResults(event: Signal<String>) -> impl IntoView {
                 if !has_panels && !has_decided {
                     return ().into_any();
                 }
-                view! { <TftResultsTabs panels=ps placements=pl event=ev /> }.into_any()
+                view! { <TftResultsTabs panels=ps _placements=pl event=ev /> }.into_any()
             }}
         </Transition>
     }
