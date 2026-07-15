@@ -573,6 +573,18 @@ pub fn replace_tft_tournament(
     Ok(())
 }
 
+/// Delete TFT rows sourced from Liquipedia, identified by their `liquipedia.net`
+/// source link (CompeteTFT rows link to `competetft.com`). Run at startup when
+/// `liquipedia_enabled` is off: disabling the source only stops new rows, so
+/// without this its already-persisted rows linger to the archive cutoff,
+/// duplicating CompeteTFT's own (differently-named) events. Returns the row count.
+pub fn purge_liquipedia_tft(conn: &Connection) -> rusqlite::Result<usize> {
+    conn.execute(
+        "DELETE FROM matches WHERE sport = 'tft' AND league_url LIKE '%liquipedia.net%'",
+        [],
+    )
+}
+
 /// Load all cached event-link resolutions: `(key, url, checked_at_ms)` where a
 /// `None` url means "resolved, no confident match".
 pub fn load_event_links(conn: &Connection) -> rusqlite::Result<Vec<(String, Option<String>, i64)>> {
@@ -1288,6 +1300,42 @@ mod tests {
         assert_eq!(all.len(), 1);
         assert_eq!(all[0].status, MatchStatus::Finished);
         assert_eq!(all[0].team_a.score, Some(2));
+    }
+
+    #[test]
+    fn purge_liquipedia_tft_removes_only_liquipedia_tft_rows() {
+        let mut conn = open(":memory:").unwrap();
+        let now = Utc::now();
+        let ms = now.timestamp_millis();
+        let cutoff = (now - chrono::Duration::days(30)).timestamp_millis();
+        let row = |id: i64, sport: Sport, url: &str| {
+            let mut m = sample(id, now);
+            m.sport = sport;
+            m.league_url = Some(url.into());
+            m
+        };
+        upsert_and_prune(
+            &mut conn,
+            &[
+                row(1, Sport::Tft, "https://liquipedia.net/tft/Foo"),
+                row(
+                    2,
+                    Sport::Tft,
+                    "https://competetft.com/en-US/tournament/9/overview",
+                ),
+                row(3, Sport::Lol, "https://liquipedia.net/leagueoflegends/Bar"),
+            ],
+            ms,
+            cutoff,
+            &[],
+        )
+        .unwrap();
+        let n = purge_liquipedia_tft(&conn).unwrap();
+        assert_eq!(n, 1, "only the Liquipedia TFT row");
+        let ids: Vec<i64> = load_all(&conn).unwrap().iter().map(|m| m.id).collect();
+        assert!(!ids.contains(&1), "liquipedia TFT row purged");
+        assert!(ids.contains(&2), "competetft TFT row kept");
+        assert!(ids.contains(&3), "liquipedia LoL row kept (not TFT)");
     }
 
     #[test]

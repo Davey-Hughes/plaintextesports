@@ -1453,6 +1453,19 @@ pub fn spawn_poller() {
         }
     };
 
+    // Liquipedia disabled ⇒ purge its orphaned TFT rows. Disabling the source only
+    // stops new rows; without this its already-persisted ones linger to the archive
+    // cutoff, duplicating CompeteTFT's own (differently-named) events.
+    if !cfg.liquipedia_enabled
+        && let Some(conn) = store.as_ref()
+    {
+        match crate::store::purge_liquipedia_tft(conn) {
+            Ok(0) => {}
+            Ok(n) => leptos::logging::log!("purged {n} stale Liquipedia TFT row(s)"),
+            Err(e) => leptos::logging::log!("Liquipedia TFT purge failed: {e}"),
+        }
+    }
+
     // Serve persisted data immediately on boot.
     if let Some(conn) = store.as_ref() {
         if let Ok(stored) = crate::store::load_all(conn)
