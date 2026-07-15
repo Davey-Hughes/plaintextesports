@@ -286,9 +286,30 @@ a {
   }
 }
 
-// Pulse the "scores" toggle to draw the eye when a per-item hide is blocked by it
+// The event-scoped "scores" control (event page title, match page meta line). It
+// can't take its on-state from a pre-paint root attribute like the two above —
+// it's per-event state read from localStorage at hydration — so it's a reactive
+// `.on` class instead. Same filled-label look, so both reveal switches read alike.
+.toggle.page-scores-toggle.on {
+  color: var(--fg);
+}
+
+// Same hover rule as the toggles above: hover moves the outline, not the label, so
+// an on control keeps its bright label.
+@media (hover: hover) {
+  .toggle.page-scores-toggle:hover {
+    color: var(--muted);
+  }
+
+  .toggle.page-scores-toggle.on:hover {
+    color: var(--fg);
+  }
+}
+
+// Pulse a "scores" toggle to draw the eye when a per-item hide is blocked by it
 // being on (so the user turns it off here first). Two quick accent-green glows.
-.toggle.scores-toggle.flash {
+.toggle.scores-toggle.flash,
+.toggle.page-scores-toggle.flash {
   animation: scores-flash 0.7s ease;
 }
 
@@ -942,9 +963,28 @@ a {
   display: flex;
   align-items: baseline;
   gap: 0.5rem;
+  // Carry the title's outer spacing on the row so the heading's own margin can be
+  // symmetric inside it — same reason as `.detail-title-row`. The heading's top
+  // margin is 4x its bottom, so left on the heading it makes the row taller than
+  // the text and pushes the text below the row's centre, which would float the
+  // right-hand toggle above the title. Net spacing around the row is unchanged.
+  margin: 0.8rem 0 0.2rem;
+
+  .detail-title {
+    margin: 0;
+  }
 
   .sub-star {
     font-size: 19px;
+  }
+
+  // The event's reveal switch rides at the far right of the title row, the same
+  // way the per-match one rides its matchup row on the match page. The row is
+  // baseline-aligned for the ★, which would hang this small bordered control low
+  // against the heading — so centre just this item, leaving the ★ on its baseline.
+  .event-scores-toggle {
+    margin-left: auto;
+    align-self: center;
   }
 }
 
@@ -1967,6 +2007,19 @@ a {
   &:hover {
     text-decoration: underline;
   }
+}
+
+// The event's reveal switch rides with the event's name in the meta line (the same
+// relationship it has to the title on the event page), so its scope reads off its
+// placement — the matchup's own button, up in the title row, is the match-scoped
+// one. The meta line is a dense ·-separated run, so shrink it to sit inside that
+// rhythm rather than breaking the line's height.
+.detail-event .meta-scores-toggle {
+  margin: 0 0.4rem 0 0.35rem;
+  padding: 0 0.35rem;
+  font-size: 11px;
+  line-height: 1.5;
+  vertical-align: baseline;
 }
 
 // Venue name + city/country for a traditional-sport match (esports have none).

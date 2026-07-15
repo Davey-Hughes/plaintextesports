@@ -7,25 +7,37 @@ use super::*;
 use crate::types::{BracketMatch, BracketRound, Sport, StandingRow, SwissMatch, SwissRound};
 use std::collections::HashSet;
 
-/// Reveal state for a persisted section key (standings / one bracket round),
-/// OR'd with the global "show scores". Returns `(revealed, toggle, toggle-hidden)`
-/// where the toggle is shared across every page showing this same section.
-pub(crate) fn section_reveal(key: String) -> (Memo<bool>, impl Fn(leptos::ev::MouseEvent) + Copy) {
+/// The shared core behind [`section_reveal`] and [`page_reveal`]: reveal state for
+/// one persisted key in the sections store, plus the toggle that flips it. `page` /
+/// `flash_page` are the event-scoped reveal this key defers to — passed `None` by
+/// [`page_reveal`], since that key *is* the page reveal and would otherwise gate
+/// itself on its own value.
+fn stored_reveal(
+    key: String,
+    end: i64,
+    page: Option<Memo<bool>>,
+    flash_page: Option<RwSignal<u32>>,
+) -> (Memo<bool>, impl Fn(leptos::ev::MouseEvent) + Copy) {
     let global = use_context::<ShowScores>().map(|s| s.0);
     let flash = use_context::<FlashScores>().map(|f| f.0);
     let sections = use_context::<RevealedSections>().map(|s| s.0);
+    // Announce this key so the event switch's OFF clears it too. `page.is_some()` is
+    // exactly the right condition: it means an event switch sits above this key.
+    // `page_reveal` passes `None` (it *is* that switch) so it never registers
+    // itself, and off an event/match page there's no switch and no registry.
+    if page.is_some() {
+        register_page_section(&key);
+    }
     let key = StoredValue::new(key);
     let revealed = Memo::new(move |_| {
         global.is_some_and(|g| g.get())
+            || page.is_some_and(|p| p.get())
             || sections.is_some_and(|s| s.with(|set| set.contains(&key.get_value())))
     });
-    // The end (for pruning) to record with this section's reveal — the page's
-    // RevealEnd (the event's last match / GP weekend / latest race).
-    let end = current_reveal_end();
     #[cfg(not(feature = "hydrate"))]
     let _ = end;
-    // Viewing counts as interaction: refresh this section's record on mount if it's
-    // a stored reveal, so anything you still look at stays revealed.
+    // Viewing counts as interaction: refresh this key's record on mount if it's a
+    // stored reveal, so anything you still look at stays revealed.
     #[cfg(feature = "hydrate")]
     Effect::new(move |_| {
         let k = key.get_value();
@@ -34,9 +46,9 @@ pub(crate) fn section_reveal(key: String) -> (Memo<bool>, impl Fn(leptos::ev::Mo
         }
     });
     let toggle = move |_: leptos::ev::MouseEvent| {
-        // While the global reveal is on, a hide can't take effect — flash the
-        // "scores" button to point there instead of silently doing nothing.
-        if hide_deflected_to_global(global, flash) {
+        // While a broader reveal is on, a hide can't take effect — flash the switch
+        // that's overriding it instead of silently doing nothing.
+        if hide_deflected(global, flash, page, flash_page) {
             return;
         }
         if let Some(s) = sections {
@@ -55,6 +67,55 @@ pub(crate) fn section_reveal(key: String) -> (Memo<bool>, impl Fn(leptos::ev::Mo
             } else {
                 touch_reveals(keys::SECTIONS, &[(k, end)], now_ms());
             }
+        }
+    };
+    (revealed, toggle)
+}
+
+/// Reveal state for a persisted section key (standings / one bracket round), OR'd
+/// with the global "show scores" and the page's event-scoped reveal. Returns
+/// `(revealed, toggle)` where the toggle is shared across every page showing this
+/// same section.
+pub(crate) fn section_reveal(key: String) -> (Memo<bool>, impl Fn(leptos::ev::MouseEvent) + Copy) {
+    let (page, flash_page) = page_scores_ctx();
+    // The end (for pruning) to record with this section's reveal — the page's
+    // RevealEnd (the event's last match / GP weekend / latest race).
+    stored_reveal(key, current_reveal_end(), page, flash_page)
+}
+
+/// Reveal state for a whole event — the switch the event page and every match page
+/// under it share. Same store and pruning as a section reveal, keyed by
+/// [`crate::reveal::page_reveal_key`]; the result is provided as [`PageScores`] so
+/// every reveal under the page ORs it in.
+///
+/// Switching it *off* also clears the localized reveals under it (see
+/// [`clear_page_local_reveals`]), so off means off for the whole page rather than
+/// leaving individually-revealed rows and sections still showing. Switching it *on*
+/// does not touch them: it reveals by context, staying one stored record instead of
+/// one per row — which is also what keeps the event's reveal on its own pages rather
+/// than leaking onto the home schedule.
+pub(crate) fn page_reveal(
+    event_path: &str,
+    end: i64,
+) -> (Memo<bool>, impl Fn(leptos::ev::MouseEvent) + Copy + use<>) {
+    let key = StoredValue::new(crate::reveal::page_reveal_key(event_path));
+    let sections = use_context::<RevealedSections>().map(|s| s.0);
+    let matches = use_context::<RevealedMatches>().map(|m| m.0);
+    let registry = use_context::<PageRevealKeys>();
+    let (revealed, base) = stored_reveal(key.get_value(), end, None, None);
+    // Read the stored record itself, not `revealed` — that memo ORs in the global
+    // toggle, which would read as "on" even when this event's switch is off.
+    let held = move || {
+        sections.is_some_and(|s| s.with_untracked(|set| set.contains(&key.get_value())))
+    };
+    let toggle = move |ev: leptos::ev::MouseEvent| {
+        let before = held();
+        base(ev);
+        // Cascade only when this click actually switched the event's reveal off. A
+        // click deflected by the global toggle flips nothing, and must not take the
+        // localized reveals down with it.
+        if before && !held() && let Some(reg) = registry {
+            clear_page_local_reveals(reg, matches, sections);
         }
     };
     (revealed, toggle)
@@ -635,6 +696,7 @@ pub(crate) fn SwissBracket(
     let global = use_context::<ShowScores>().map(|s| s.0);
     let flash = use_context::<FlashScores>().map(|f| f.0);
     let sections = use_context::<RevealedSections>().map(|s| s.0);
+    let (page, flash_page) = page_scores_ctx();
     let tid = tournament_id;
     // The team whose path is being traced (hovered), keyed by name.
     let hovered = RwSignal::new(String::new());
@@ -705,10 +767,11 @@ pub(crate) fn SwissBracket(
     }
 
     // Effective stages for the whole stage, recomputed when the shared reveal set
-    // or the global toggle changes (same machinery as the playoff bracket).
+    // or either broad reveal (global / this event's) changes (same machinery as the
+    // playoff bracket).
     let grid_sv = StoredValue::new(grid.clone());
     let eff = Memo::new(move |_| {
-        let g = global.is_some_and(|s| s.get());
+        let g = global.is_some_and(|s| s.get()) || page.is_some_and(|p| p.get());
         let set = sections.map(|s| s.get()).unwrap_or_default();
         compute_effective(&grid, &set, g)
     });
@@ -718,10 +781,14 @@ pub(crate) fn SwissBracket(
     let _ = end;
     #[cfg(feature = "hydrate")]
     touch_bracket_on_view(sections, format!("swn:{tid}:"), format!("sws:{tid}:"), end);
+    // This grid's keys are built inline (`swn:{tid}:{r}:{i}`), not via
+    // `section_reveal`, so announce them by prefix for the event switch's OFF.
+    register_page_section_prefix(format!("swn:{tid}:"));
+    register_page_section_prefix(format!("sws:{tid}:"));
     let do_op = move |op: BkOp| {
-        // A hide can't take effect while the global reveal is on — flash the
-        // "scores" button instead of silently doing nothing.
-        if hide_deflected_to_global(global, flash) {
+        // A hide can't take effect while a broader reveal is on — flash the switch
+        // that's overriding it instead of silently doing nothing.
+        if hide_deflected(global, flash, page, flash_page) {
             return;
         }
         if let Some(sec) = sections {
@@ -1023,6 +1090,7 @@ pub(crate) fn Bracket(
     let global = use_context::<ShowScores>().map(|s| s.0);
     let flash = use_context::<FlashScores>().map(|f| f.0);
     let sections = use_context::<RevealedSections>().map(|s| s.0);
+    let (page, flash_page) = page_scores_ctx();
     let tid = tournament_id;
 
     // Position every match from the feeder graph; the render places boxes
@@ -1097,10 +1165,10 @@ pub(crate) fn Bracket(
     let winners_sv = StoredValue::new(winners);
 
     // Effective stages for the whole bracket, recomputed when the shared reveal
-    // set or the global toggle changes.
+    // set or either broad reveal (global / this event's) changes.
     let grid_sv = StoredValue::new(grid.clone());
     let eff = Memo::new(move |_| {
-        let g = global.is_some_and(|s| s.get());
+        let g = global.is_some_and(|s| s.get()) || page.is_some_and(|p| p.get());
         let set = sections.map(|s| s.get()).unwrap_or_default();
         compute_effective(&grid, &set, g)
     });
@@ -1110,11 +1178,15 @@ pub(crate) fn Bracket(
     let _ = end;
     #[cfg(feature = "hydrate")]
     touch_bracket_on_view(sections, format!("bn:{tid}:"), format!("bs:{tid}:"), end);
+    // This bracket's keys are built inline (`bn:{tid}:{r}:{i}`), not via
+    // `section_reveal`, so announce them by prefix for the event switch's OFF.
+    register_page_section_prefix(format!("bn:{tid}:"));
+    register_page_section_prefix(format!("bs:{tid}:"));
     // A single Copy handle for every reveal click (series / round / cascade).
     let do_op = move |op: BkOp| {
-        // A hide can't take effect while the global reveal is on — flash the
-        // "scores" button instead of silently doing nothing.
-        if hide_deflected_to_global(global, flash) {
+        // A hide can't take effect while a broader reveal is on — flash the switch
+        // that's overriding it instead of silently doing nothing.
+        if hide_deflected(global, flash, page, flash_page) {
             return;
         }
         if let Some(sec) = sections {

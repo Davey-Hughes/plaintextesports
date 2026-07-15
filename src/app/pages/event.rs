@@ -405,6 +405,26 @@ pub(crate) fn EventPage() -> impl IntoView {
                             .map(|m| m.sport)
                             .next()
                             .or_else(|| stage_list.first().map(|e| e.sport));
+                        // This event's reveal: one switch for everything on the
+                        // page — schedule rows, standings, brackets, results — and
+                        // shared with the match pages under it, since it's keyed by
+                        // the event's canonical path (the same identity those pages
+                        // link back to via `event_path`). Provided as context so
+                        // every reveal gate below ORs it in; the control itself sits
+                        // next to the title, the noun it scopes. Needs the sport to
+                        // build that path — an event with neither matches nor stages
+                        // to read it from simply has nothing to reveal.
+                        let event_reveal = event_sport.map(|sp| {
+                            // The registry has to exist before `page_reveal`
+                            // captures it; the gates below fill it in as they
+                            // render, ahead of any click on the control.
+                            provide_context(PageRevealKeys::new());
+                            let (revealed, toggle) =
+                                page_reveal(&event_path(sp, &title), reveal_end);
+                            provide_context(PageScores(revealed));
+                            provide_context(FlashPageScores(RwSignal::new(0)));
+                            (revealed, toggle)
+                        });
                         // The event's (short league, series) from any of its groups,
                         // read before windowing. A non-empty series marks a specific
                         // edition (an F1 GP, an esports split) — subscribed to on its
@@ -533,33 +553,51 @@ pub(crate) fn EventPage() -> impl IntoView {
                         let star_sport = event_sport.unwrap_or_default();
                         let trad_single = event_sport
                             .filter(|sp| sp.traditional() && !sp.has_sub_leagues());
-                        let title_head = if !event_has_upcoming(&s) {
-                            view! { <h1 class="detail-title">{title.clone()}</h1> }.into_any()
+                        let star = if !event_has_upcoming(&s) {
+                            None
                         } else if let Some(sp) = trad_single {
-                            view! {
-                                <div class="event-title-head">
+                            Some(
+                                view! {
                                     <SubscribeStar kind="sport" sport=sp value=sp.slug().to_string() />
-                                    <h1 class="detail-title">{title.clone()}</h1>
-                                </div>
-                            }
-                            .into_any()
+                                }
+                                .into_any(),
+                            )
                         } else if event_series.is_empty() {
-                            view! {
-                                <div class="event-title-head">
+                            Some(
+                                view! {
                                     <SubscribeStar kind="league" sport=star_sport value=event_league.clone() />
-                                    <h1 class="detail-title">{title.clone()}</h1>
-                                </div>
-                            }
-                            .into_any()
+                                }
+                                .into_any(),
+                            )
                         } else {
-                            view! {
-                                <div class="event-title-head">
+                            Some(
+                                view! {
                                     <SubscribeStar kind="event" sport=star_sport value=title.clone() />
-                                    <h1 class="detail-title">{title.clone()}</h1>
-                                </div>
-                            }
-                            .into_any()
+                                }
+                                .into_any(),
+                            )
                         };
+                        // The row always wraps, even with no ★ and no reveal control
+                        // — `.event-title-head + .event-link` and `.detail-title +
+                        // .event-link` carry the same rule, so a bare title is
+                        // unaffected by sitting in it.
+                        let title_head = view! {
+                            <div class="event-title-head">
+                                {star}
+                                <h1 class="detail-title">{title.clone()}</h1>
+                                {event_reveal
+                                    .map(|(revealed, toggle)| {
+                                        view! {
+                                            <PageScoresToggle
+                                                revealed=revealed
+                                                toggle=toggle
+                                                class="event-scores-toggle"
+                                            />
+                                        }
+                                    })}
+                            </div>
+                        }
+                        .into_any();
                         // F1 GP pages get their own jump-to nav (schedule + each
                         // session that has results + standings), built from the
                         // results as they load. Empty for non-F1 events.
