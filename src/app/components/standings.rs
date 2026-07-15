@@ -162,8 +162,8 @@ pub(crate) fn MotorStandingsView(standings: MotorStandings, league: String) -> i
 }
 
 /// Whether a participant label is a real competitor (non-blank, not "TBD").
-/// Mirrors the server-only `tft::is_real_participant` — re-inlined because this
-/// component compiles for the client too, where the `tft` module isn't present.
+/// Lives here rather than in the `tft` module because this component compiles for
+/// the client too, where the server-only `tft` module isn't present.
 fn tft_real(name: &str) -> bool {
     let n = name.trim();
     !n.is_empty() && !n.eq_ignore_ascii_case("TBD")
@@ -406,7 +406,7 @@ fn TftResultsTabs(
 
 /// A TFT event's results — the tournament's day/stage standings panels plus its
 /// final placements, shown as tabs ([`TftResultsTabs`]). Self-contained: it owns
-/// the two Liquipedia-poller-cache resources keyed by `event` (the full event
+/// the two TFT-poller-cache resources keyed by `event` (the full event
 /// name; empty → nothing renders), so it drops into both the event page and the
 /// front-page single-event section.
 #[component]

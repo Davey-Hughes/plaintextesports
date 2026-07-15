@@ -550,8 +550,8 @@ pub fn upsert_and_prune(
 /// (e.g. a tier-3 range row replaced by tier-1/2 per-day rows once dates arrive).
 /// Scoped by `sport='tft'` + `series_name` so other tournaments/sports are
 /// untouched. No-op on an empty `keep` (a failed/empty refresh never wipes the
-/// tournament). Safe now that CompeteTFT is authoritative — each poll's feed is a
-/// tournament's complete session set (Liquipedia's partial feed is disabled).
+/// tournament). Safe because CompeteTFT is the only TFT source — each poll's feed
+/// is a tournament's complete session set.
 pub fn replace_tft_tournament(
     conn: &Connection,
     tournament: &str,

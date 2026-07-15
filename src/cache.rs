@@ -86,7 +86,7 @@ static WEC_STANDINGS: Lazy<RwLock<crate::types::MotorStandings>> =
     Lazy::new(|| RwLock::new(crate::types::MotorStandings::default()));
 static MOTOGP_STANDINGS: Lazy<RwLock<crate::types::MotorStandings>> =
     Lazy::new(|| RwLock::new(crate::types::MotorStandings::default()));
-// TFT tournament final placements (Liquipedia prizepool), keyed by full event
+// TFT tournament final placements (CompeteTFT sheet), keyed by full event
 // name (`full_event_name("TFT", series_name)`) so an event page looks up
 // directly. Refreshed by the poller, served from here + result_cache; never
 // fetched per request.
@@ -2636,8 +2636,9 @@ fn apply_poll(
                     .map(|m| (m.id, (m.streams, m.mlb_series)))
                     .collect();
                 // Carry forward streams for matches this poll didn't refetch: a
-                // sport on a slow cadence (TFT — one Liquipedia call every few
-                // cycles) isn't in every poll's `fresh`, so without this its
+                // sport on a slow cadence (TFT — CompeteTFT fully refreshes one
+                // tournament per cycle, round-robin) isn't in every poll's
+                // `fresh`, so without this its
                 // in-memory streams would blink out on the intervening cycles.
                 // `fresh` still wins (only fills gaps), so refetched matches update.
                 {
@@ -3166,7 +3167,7 @@ fn traditional_event_url(sport: Sport, league: &str) -> String {
             _ => "",
         },
         // Esports (incl. TFT) have no traditional official site; TFT rows carry
-        // their exact Liquipedia page as `league_url`, used before this fallback.
+        // their exact CompeteTFT page as `league_url`, used before this fallback.
         Sport::Cs2 | Sport::Lol | Sport::Tft => "",
     }
     .to_string()
@@ -6890,7 +6891,7 @@ mod tests {
         );
         m.series_name = series.into();
         m.league_url = Some(format!(
-            "https://liquipedia.net/tft/{}",
+            "https://competetft.com/tournament/{}",
             series.replace(' ', "_")
         ));
         m

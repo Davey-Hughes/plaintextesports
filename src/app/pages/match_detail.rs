@@ -310,7 +310,7 @@ pub(crate) fn detail_view(d: MatchDetail, results: Resource<MatchResults>) -> im
 
     let muid = m.uid();
     // Esports stream handling (call the live-stream enrichment resource + render
-    // url-derived stream rows) — TFT joins CS2/LoL here: its Liquipedia streams
+    // url-derived stream rows) — TFT joins CS2/LoL here: its CompeteTFT streams
     // enrich with Twitch/YouTube viewers the same way (co-stream discovery stays
     // CS2/LoL-only, gated separately in `live_streams_for`).
     let is_esports = m.sport.esports();

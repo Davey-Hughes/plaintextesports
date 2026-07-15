@@ -60,7 +60,7 @@ fn allowlist(sport: Sport) -> &'static [&'static str] {
         Sport::Lol => LOL_ALLOWLIST,
         Sport::Cs2 => CS_ALLOWLIST,
         // Traditional sports aren't tier-filtered (every sport/session is shown).
-        // TFT comes pre-curated from Liquipedia, so it isn't tier-filtered either.
+        // TFT comes pre-curated from CompeteTFT, so it isn't tier-filtered either.
         Sport::Mlb
         | Sport::Nhl
         | Sport::Nba
