@@ -2962,8 +2962,14 @@ a.sw-link {
   display: flex;
   flex-wrap: wrap;
   gap: 0.1rem 0.5rem;
-  margin: 0.2rem 0 0.8rem;
+  // Tight between the per-day rows (they read as one control block), with the
+  // breathing room kept below the last one, before the lobby grid.
+  margin: 0.15rem 0;
   align-items: center;
+
+  &:last-of-type {
+    margin-bottom: 0.8rem;
+  }
 
   &.hidden {
     display: none;
@@ -2985,10 +2991,14 @@ a.sw-link {
   font: inherit;
   font-size: 12px;
   // Roomier tap target: the round buttons are split into one row per day now, so
-  // a row holds ~6-8 of them instead of all ~21 wrapping together.
-  padding: 0.25rem 0.6rem;
+  // a row holds ~6-8 of them instead of all ~21 wrapping together. Uniform width
+  // regardless of digit count — a row mixes "9" and "13", and ragged boxes read
+  // as misaligned. Padding stays symmetric so the digits centre.
+  padding: 0.25rem 0;
   cursor: pointer;
-  min-width: 2.4em;
+  width: 2.6em;
+  text-align: center;
+  box-sizing: border-box;
 
   &:hover {
     color: var(--fg);

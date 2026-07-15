@@ -650,6 +650,10 @@ pub(crate) fn EventPage() -> impl IntoView {
                                     let lg = league();
                                     if lg.starts_with("TFT") { lg } else { String::new() }
                                 }) />
+                                <TftStreamers event=Signal::derive(move || {
+                                    let lg = league();
+                                    if lg.starts_with("TFT") { lg } else { String::new() }
+                                }) />
                                 <div id="sched" class="spy">
                                     {render_schedule(s, false, push, true, windowed)}
                                 </div>
@@ -713,16 +717,12 @@ pub(crate) fn EventPage() -> impl IntoView {
                                         })
                                 }}
                                 // TFT event sections: standings + final placements,
-                                // then the CompeteTFT-only player streams and lobby
-                                // breakdowns (from the poller cache; nothing for
-                                // non-TFT events / before results exist). The
-                                // official broadcasts render further up, in the
-                                // shared "where to watch" slot above the schedule.
+                                // then the lobby breakdowns (from the poller cache;
+                                // nothing for non-TFT events / before results exist).
+                                // The broadcasts and player streams render further
+                                // up, in the shared "where to watch" slot above the
+                                // schedule.
                                 <TftEventResults event=Signal::derive(move || {
-                                    let lg = league();
-                                    if lg.starts_with("TFT") { lg } else { String::new() }
-                                }) />
-                                <TftStreamers event=Signal::derive(move || {
                                     let lg = league();
                                     if lg.starts_with("TFT") { lg } else { String::new() }
                                 }) />

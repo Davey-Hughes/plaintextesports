@@ -319,6 +319,36 @@ pub async fn get_event_broadcasts(event: String) -> Result<Vec<StreamView>, Serv
     }
 }
 
+/// A TFT event's player co-streamers, live-enriched, live-first and capped — the
+/// page links to the tournament's sheet for the full directory.
+#[server(GetEventStreamers, "/api")]
+pub async fn get_event_streamers(event: String) -> Result<Vec<StreamView>, ServerFnError> {
+    #[cfg(feature = "ssr")]
+    {
+        Ok(crate::cache::event_streamer_streams(&event).await)
+    }
+    #[cfg(not(feature = "ssr"))]
+    {
+        let _ = event;
+        Ok(Vec::new())
+    }
+}
+
+/// A TFT event's published Google Sheet URL (empty when it has none) — the "see
+/// all" link behind the capped stream list.
+#[server(GetTftSheet, "/api")]
+pub async fn get_tft_sheet(event: String) -> Result<String, ServerFnError> {
+    #[cfg(feature = "ssr")]
+    {
+        Ok(crate::cache::tft_sheet(&event))
+    }
+    #[cfg(not(feature = "ssr"))]
+    {
+        let _ = event;
+        Ok(String::new())
+    }
+}
+
 /// The given (starred) match uids that are still upcoming, sorted by start, for
 /// the notifications page. Started/finished matches are dropped server-side.
 #[server(GetNotifications, "/api")]

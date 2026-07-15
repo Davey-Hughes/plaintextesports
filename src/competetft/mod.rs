@@ -84,6 +84,26 @@ pub struct CompeteTournamentData {
     pub streamers: Vec<TftStreamer>,
     pub broadcasts: Vec<TftBroadcast>,
     pub lobbies: Vec<TftLobbyRound>,
+    /// The tournament's published Google Sheet (`pubhtml`), refreshed with the rest
+    /// each poll. Surfaced as the "see all" link behind the capped stream list —
+    /// the sheet carries every co-streamer, we only show a handful.
+    pub sheet_url: String,
+}
+
+/// The published sheet's public URL for a tournament, or empty when it publishes
+/// none. Same `pubhtml` address `fetch_sheet_tabs` reads the tabs from.
+#[must_use]
+pub fn sheet_url(t: &rsc::CompeteTournament) -> String {
+    t.stages
+        .iter()
+        .find(|s| !s.sheet_key.is_empty())
+        .map(|s| {
+            format!(
+                "https://docs.google.com/spreadsheets/d/e/{}/pubhtml",
+                s.sheet_key
+            )
+        })
+        .unwrap_or_default()
 }
 
 /// Human date-range label for a tier-3 row, e.g. "May 2 – 10" or "May 23 – Jun 7".
@@ -415,6 +435,7 @@ pub fn assemble(
         streamers,
         broadcasts,
         lobbies,
+        sheet_url: sheet_url(t),
     }
 }
 

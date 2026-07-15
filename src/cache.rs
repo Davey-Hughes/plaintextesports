@@ -102,6 +102,9 @@ static TFT_STANDINGS: Lazy<RwLock<HashMap<String, Vec<crate::types::TftDayPanel>
 // directory, official broadcast channels, and per-round lobby breakdowns.
 static TFT_STREAMERS: Lazy<RwLock<HashMap<String, Vec<crate::types::TftStreamer>>>> =
     Lazy::new(|| RwLock::new(HashMap::new()));
+/// Event name → its published Google Sheet URL, refreshed with the rest of the
+/// tournament each poll. Backs the "see all" link behind the capped stream list.
+static TFT_SHEET: Lazy<RwLock<HashMap<String, String>>> = Lazy::new(|| RwLock::new(HashMap::new()));
 static TFT_BROADCASTS: Lazy<RwLock<HashMap<String, Vec<crate::types::TftBroadcast>>>> =
     Lazy::new(|| RwLock::new(HashMap::new()));
 static TFT_LOBBIES: Lazy<RwLock<HashMap<String, Vec<crate::types::TftLobbyRound>>>> =
@@ -171,6 +174,21 @@ pub fn tft_standings(event: &str) -> Vec<crate::types::TftDayPanel> {
 #[must_use]
 pub fn tft_streamers(event: &str) -> Vec<crate::types::TftStreamer> {
     tft_enrichment_get(&TFT_STREAMERS, event)
+}
+
+/// This event's published Google Sheet URL (empty until fetched). Same exact-then-
+/// normalized lookup the other enrichment accessors use.
+#[must_use]
+pub fn tft_sheet(event: &str) -> String {
+    let g = TFT_SHEET.read().unwrap_or_else(PoisonError::into_inner);
+    if let Some(v) = g.get(event) {
+        return v.clone();
+    }
+    let want = tft_coverage_key(event);
+    g.iter()
+        .find(|(k, _)| tft_coverage_key(k) == want)
+        .map(|(_, v)| v.clone())
+        .unwrap_or_default()
 }
 
 /// This event's CompeteTFT official broadcast channels (empty until fetched).
@@ -658,6 +676,74 @@ pub async fn live_streams_for(sport: Sport, id: i64) -> Vec<StreamView> {
 /// page or the API calls. Returns the plain links when there's nothing to enrich
 /// (no Twitch config, demo mode, or every channel off-Twitch), so the row always
 /// renders.
+/// A player co-streamer as a `StreamView`, so it renders and enriches like any
+/// other esports co-stream. `None` for a link-less row.
+fn streamer_to_stream(s: &crate::types::TftStreamer) -> Option<StreamView> {
+    let url = s.url.trim();
+    if url.is_empty() {
+        return None;
+    }
+    Some(StreamView {
+        url: url.to_string(),
+        group: "costream".to_string(),
+        ..Default::default()
+    })
+}
+
+/// How many player co-streamers the event page shows. The sheet lists dozens; the
+/// page links to it for the rest. An absolute cap: more live channels than this
+/// still shows only this many.
+const TFT_STREAMER_CAP: usize = 8;
+
+/// This event's player co-streamers as live-enriched streams, live-first and
+/// capped at [`TFT_STREAMER_CAP`]. The full directory lives on the tournament's
+/// published sheet, which the page links to instead of listing everyone.
+pub async fn event_streamer_streams(event: &str) -> Vec<StreamView> {
+    let base: Vec<StreamView> = tft_streamers(event)
+        .iter()
+        .filter_map(streamer_to_stream)
+        .collect();
+    if base.is_empty() {
+        return base;
+    }
+    if config().demo {
+        return base.into_iter().take(TFT_STREAMER_CAP).collect();
+    }
+    // Own cache key: this shares `EVENT_STREAM_STATUS` with the broadcast row.
+    let key = format!("streamers\u{1f}{event}");
+    {
+        let g = EVENT_STREAM_STATUS
+            .read()
+            .unwrap_or_else(PoisonError::into_inner);
+        if let Some(c) = g.get(&key)
+            && c.fetched_at + Duration::seconds(STREAM_STATUS_TTL_SECS) > Utc::now()
+        {
+            return c.streams.clone();
+        }
+    }
+    let logins: Vec<String> = base.iter().filter_map(|s| login_of(&s.url)).collect();
+    let mut out = if logins.is_empty() {
+        base
+    } else {
+        let live = crate::twitch::live_streams(&logins).await;
+        enrich_streams(base, &live, &[], "")
+    };
+    // Live first (then by viewers), so the cap keeps whoever is actually on air.
+    out.sort_by_key(|s| (!s.live, std::cmp::Reverse(s.viewers.unwrap_or(0))));
+    out.truncate(TFT_STREAMER_CAP);
+    EVENT_STREAM_STATUS
+        .write()
+        .unwrap_or_else(PoisonError::into_inner)
+        .insert(
+            key,
+            CachedStreams {
+                streams: out.clone(),
+                fetched_at: Utc::now(),
+            },
+        );
+    out
+}
+
 pub async fn event_broadcast_streams(event: &str) -> Vec<StreamView> {
     use crate::types::TftBroadcastKind;
     let base: Vec<StreamView> = tft_broadcasts(event)
@@ -2500,6 +2586,13 @@ fn apply_competetft(data: &crate::competetft::CompeteTournamentData, now: DateTi
             .write()
             .unwrap_or_else(PoisonError::into_inner)
             .insert(tft_coverage_key(&ev));
+    }
+    if !data.sheet_url.is_empty() {
+        TFT_SHEET
+            .write()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(ev.clone(), data.sheet_url.clone());
+        db_cache_put("tft_sheet", &ev, &data.sheet_url, now);
     }
     if !data.placements.is_empty() {
         TFT_PLACEMENTS
@@ -7505,6 +7598,7 @@ mod tests {
                 streamers: Vec::new(),
                 broadcasts: Vec::new(),
                 lobbies: Vec::new(),
+                sheet_url: String::new(),
             };
         let covered = || {
             COMPETETFT_COVERED
