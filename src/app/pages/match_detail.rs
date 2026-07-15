@@ -255,6 +255,25 @@ pub(crate) fn detail_view(d: MatchDetail, results: Resource<MatchResults>) -> im
     // click (blue), like the schedule rows. Lead = event name; the middle is the
     // clickable when; trail = best-of + status.
     let event_name = full_event_name(&m.league, &m.series_name);
+    // The reveal for the event this match belongs to — the same switch its event
+    // page carries, keyed by the event's canonical path: literally the path the
+    // event link in the meta line below points at, so the key can't drift from the
+    // event it names. Provided as context (before the gates below read it) so every
+    // reveal on this page ORs it in, which is what makes a reveal turned on from the
+    // event page still hold when you click through to one of its matches.
+    //
+    // The end recorded here is only this match's time, not the event's last — see
+    // `reveal::upsert`, which keeps the later end so touching from here can't drag
+    // the event's end backwards.
+    let event_reveal = (!event_name.is_empty()).then(|| {
+        // The registry has to exist before `page_reveal` captures it; the gates
+        // below fill it in as they render, ahead of any click on the control.
+        provide_context(PageRevealKeys::new());
+        let (revealed, toggle) = page_reveal(&event_path(m.sport, &event_name), m.begin_at_ms);
+        provide_context(PageScores(revealed));
+        provide_context(FlashPageScores(RwSignal::new(0)));
+        (revealed, toggle)
+    });
     // Motorsport series have no per-event broadcast data; show the stable
     // per-series service link(s) (F1 TV, Rally.TV, WEC on YouTube, MotoGP
     // VideoPass) — the same links the event page carries. Empty for other sports.
@@ -353,22 +372,30 @@ pub(crate) fn detail_view(d: MatchDetail, results: Resource<MatchResults>) -> im
         })
     };
 
-    // Scores/standings/bracket are spoilers: reveal when the global toggle is on
-    // or this match was individually revealed (persisted, shared with the list).
+    // Scores/standings/bracket are spoilers: reveal when a broad reveal is on (the
+    // global toggle or this event's) or this match was individually revealed
+    // (persisted, shared with the list).
     let global = use_context::<ShowScores>().map(|s| s.0);
     let revealed = use_context::<RevealedMatches>().map(|r| r.0);
+    let (page, _) = page_scores_ctx();
+    // Announce this match so the event switch's OFF clears its reveal too.
+    register_page_match(&muid);
     let reveal = {
         let muid = muid.clone();
         Memo::new(move |_| {
             global.is_some_and(|g| g.get())
+                || page.is_some_and(|p| p.get())
                 || revealed.is_some_and(|r| r.with(|set| set.contains(&muid)))
         })
     };
-    // Per-match reveal button (hidden when the global toggle already shows all).
+    // Per-match reveal button (hidden when a broader reveal already shows all).
     let toggle = reveal_toggler(revealed, muid.clone(), m.begin_at_ms);
-    // Hide the reveal toggle when the global toggle already shows all, or when
-    // the match hasn't been played yet (nothing to reveal).
-    let toggle_hidden = move || global.is_some_and(|g| g.get()) || !played;
+    // Hide the reveal toggle when a broader reveal already shows all — its own
+    // switch is the one to turn off, and the event-scoped control next to the event
+    // name below is where that happens — or when the match hasn't been played yet
+    // (nothing to reveal).
+    let toggle_hidden =
+        move || global.is_some_and(|g| g.get()) || page.is_some_and(|p| p.get()) || !played;
 
     view! {
         <article class="detail">
@@ -434,6 +461,20 @@ pub(crate) fn detail_view(d: MatchDetail, results: Resource<MatchResults>) -> im
                 <span class="detail-meta-line">
                     <span class="detail-event">
                         <A href=event_path(sport, &event_name)>{event_name.clone()}</A>
+                        // Sits with the event's name, not the matchup above: that's
+                        // what tells you it covers the whole event, and why it's
+                        // labelled the same bare "scores" as on the event page while
+                        // the matchup's own button stays "show scores".
+                        {event_reveal
+                            .map(|(revealed, toggle)| {
+                                view! {
+                                    <PageScoresToggle
+                                        revealed=revealed
+                                        toggle=toggle
+                                        class="meta-scores-toggle"
+                                    />
+                                }
+                            })}
                         " · "
                     </span>
                     {if has_venue {
@@ -578,8 +619,15 @@ pub(crate) fn detail_view(d: MatchDetail, results: Resource<MatchResults>) -> im
                         .collect();
                     let global = use_context::<ShowScores>().map(|s| s.0);
                     let revealed = use_context::<RevealedMatches>().map(|r| r.0);
+                    let (page, _) = page_scores_ctx();
+                    // The series' other matches are on this page too, so the event
+                    // switch's OFF clears their reveals with everything else.
+                    for id in &played_ids {
+                        register_page_match(id);
+                    }
                     let record_reveal = Memo::new(move |_| {
                         global.is_some_and(|g| g.get())
+                            || page.is_some_and(|p| p.get())
                             || (!played_ids.is_empty()
                                 && revealed.is_some_and(|r| {
                                     r.with(|set| played_ids.iter().all(|id| set.contains(id)))

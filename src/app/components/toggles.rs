@@ -137,17 +137,16 @@ pub(crate) fn HourToggle() -> impl IntoView {
     }
 }
 
-#[component]
-pub(crate) fn ScoresToggle() -> impl IntoView {
-    let show = use_context::<ShowScores>().expect("show_scores context").0;
-    let flash = use_context::<FlashScores>().map(|f| f.0);
-    // Pulses when a per-item hide is blocked by this toggle being on, to draw the
-    // eye here (the button they need to turn off).
+/// A signal that pulses `true` for the length of the CSS flash animation each time
+/// `nonce` bumps. Shared by the global and event-scoped "scores" controls: both
+/// pulse to draw the eye when a per-item hide is blocked by that control being on
+/// (it's the one that has to come off first).
+fn flash_pulse(nonce: Option<RwSignal<u32>>) -> RwSignal<bool> {
     let flashing = RwSignal::new(false);
     #[cfg(feature = "hydrate")]
-    if let Some(flash) = flash {
+    if let Some(nonce) = nonce {
         Effect::new(move |prev: Option<u32>| {
-            let n = flash.get();
+            let n = nonce.get();
             if prev.is_some_and(|p| p != n) {
                 // Restart the CSS pulse each time: drop the class, re-add next
                 // frame, then clear it once the animation has played.
@@ -162,7 +161,60 @@ pub(crate) fn ScoresToggle() -> impl IntoView {
         });
     }
     #[cfg(not(feature = "hydrate"))]
-    let _ = flash;
+    let _ = nonce;
+    flashing
+}
+
+/// The event-scoped "scores" control — one switch covering everything about one
+/// event, on the event page and every match page under it.
+///
+/// Placement carries the scope: it sits next to the event's *name* (the event
+/// page's title, the match page's event link), the way the per-match button sits
+/// next to the matchup. That's why the label is the bare "scores" and not something
+/// spelling out what it covers, and why it's rendered in both states rather than
+/// appearing only when on.
+///
+/// Unlike [`ScoresToggle`] the on-state can't come from a pre-paint `data-`
+/// attribute (it's per-event state, read from localStorage at hydration), so it's a
+/// reactive class: off at first paint, correct after hydrate. Safe direction —
+/// hidden → shown, never a spoiler flash.
+#[component]
+pub(crate) fn PageScoresToggle<F>(
+    /// Whether this event's reveal is on.
+    revealed: Memo<bool>,
+    /// Flips it — shared by every page under the event.
+    toggle: F,
+    /// Placement modifier (the event page's title row vs. the match page's meta
+    /// line); the shared look comes from `.page-scores-toggle`.
+    #[prop(optional)]
+    class: &'static str,
+) -> impl IntoView
+where
+    F: Fn(leptos::ev::MouseEvent) + 'static,
+{
+    let flashing = flash_pulse(use_context::<FlashPageScores>().map(|f| f.0));
+    view! {
+        <button
+            class=format!("toggle state-toggle page-scores-toggle {class}")
+            class:on=move || revealed.get()
+            class:flash=move || flashing.get()
+            title=move || {
+                if revealed.get() { "Hide this event's scores" } else { "Show this event's scores" }
+            }
+            aria-pressed=move || if revealed.get() { "true" } else { "false" }
+            on:click=toggle
+        >
+            "scores"
+        </button>
+    }
+}
+
+#[component]
+pub(crate) fn ScoresToggle() -> impl IntoView {
+    let show = use_context::<ShowScores>().expect("show_scores context").0;
+    // Pulses when a per-item hide is blocked by this toggle being on, to draw the
+    // eye here (the button they need to turn off).
+    let flashing = flash_pulse(use_context::<FlashScores>().map(|f| f.0));
     let toggle = move |_| {
         let next = !show.get_untracked();
         show.set(next);

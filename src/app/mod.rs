@@ -182,19 +182,130 @@ struct ShowScores(RwSignal<bool>);
 #[derive(Clone, Copy)]
 pub(crate) struct FlashScores(pub(crate) RwSignal<u32>);
 
-/// When the global reveal is on an individual hide can't take effect, so pulse the
-/// "scores" toggle instead and report `true` (the caller skips its own toggle).
-/// Both signals are captured at component setup so this is safe to call from an
-/// event handler.
-pub(crate) fn hide_deflected_to_global(
+/// An event-scoped reveal covering everything on the current page — the event page
+/// and every match page under it share one switch (see [`RevealedSections`], keyed
+/// by [`crate::reveal::page_reveal_key`]). Provided by those pages; every reveal
+/// gate under them ORs it in, which is what scopes it to the event and keeps it
+/// from leaking site-wide.
+#[derive(Clone, Copy)]
+pub(crate) struct PageScores(pub(crate) Memo<bool>);
+
+/// [`FlashScores`] for the page-scoped control — its own nonce so each button
+/// pulses only for its own blocked hides.
+#[derive(Clone, Copy)]
+pub(crate) struct FlashPageScores(pub(crate) RwSignal<u32>);
+
+/// When a broader reveal is on, an individual hide can't take effect — so pulse the
+/// switch that's overriding it and report `true` (the caller skips its own toggle).
+/// The global toggle is checked first: it's the outer gate, so it's the one that has
+/// to come off first. All signals are captured at component setup, so this is safe
+/// to call from an event handler.
+pub(crate) fn hide_deflected(
     global: Option<RwSignal<bool>>,
     flash: Option<RwSignal<u32>>,
+    page: Option<Memo<bool>>,
+    flash_page: Option<RwSignal<u32>>,
 ) -> bool {
-    let on = global.is_some_and(|g| g.get_untracked());
-    if on && let Some(f) = flash {
-        f.update(|n| *n = n.wrapping_add(1));
+    if global.is_some_and(|g| g.get_untracked()) {
+        if let Some(f) = flash {
+            f.update(|n| *n = n.wrapping_add(1));
+        }
+        return true;
     }
-    on
+    if page.is_some_and(|p| p.get_untracked()) {
+        if let Some(f) = flash_page {
+            f.update(|n| *n = n.wrapping_add(1));
+        }
+        return true;
+    }
+    false
+}
+
+/// The page-scoped reveal gate + its flash nonce, as read from context by a reveal
+/// gate. Absent off the event/match pages (⇒ inert).
+pub(crate) fn page_scores_ctx() -> (Option<Memo<bool>>, Option<RwSignal<u32>>) {
+    (
+        use_context::<PageScores>().map(|p| p.0),
+        use_context::<FlashPageScores>().map(|f| f.0),
+    )
+}
+
+/// The localized reveals rendered under the current page: match uids, exact section
+/// keys, and the key prefixes the brackets generate internally
+/// (`bn:<tid>:…`/`bs:`/`swn:`/`sws:`, which don't go through [`playoffs::section_reveal`]).
+///
+/// [`PageScores`] works by context precisely so no page has to know its own
+/// contents. Switching the event's reveal *off* is the one thing that does need to
+/// know, since it clears the localized reveals beneath it — so rather than have each
+/// page enumerate what it renders (brittle: a new section type would be silently
+/// missed), the gates announce themselves here as they set up. Non-reactive
+/// ([`StoredValue`]): it's written during render and only read on a click.
+#[derive(Clone, Copy)]
+pub(crate) struct PageRevealKeys {
+    matches: StoredValue<Vec<String>>,
+    sections: StoredValue<Vec<String>>,
+    prefixes: StoredValue<Vec<String>>,
+}
+
+impl PageRevealKeys {
+    pub(crate) fn new() -> Self {
+        Self {
+            matches: StoredValue::new(Vec::new()),
+            sections: StoredValue::new(Vec::new()),
+            prefixes: StoredValue::new(Vec::new()),
+        }
+    }
+}
+
+/// Announce a match uid rendered under the page. A no-op off an event/match page
+/// (no registry ⇒ nothing to cascade to), so callers don't need to guard.
+pub(crate) fn register_page_match(uid: &str) {
+    if let Some(r) = use_context::<PageRevealKeys>() {
+        r.matches.update_value(|v| v.push(uid.to_string()));
+    }
+}
+
+/// Announce a section key rendered under the page. See [`register_page_match`].
+pub(crate) fn register_page_section(key: &str) {
+    if let Some(r) = use_context::<PageRevealKeys>() {
+        r.sections.update_value(|v| v.push(key.to_string()));
+    }
+}
+
+/// Announce a section-key *prefix* — for a bracket, whose per-round keys are built
+/// inside the grid. See [`register_page_match`].
+pub(crate) fn register_page_section_prefix(prefix: String) {
+    if let Some(r) = use_context::<PageRevealKeys>() {
+        r.prefixes.update_value(|v| v.push(prefix));
+    }
+}
+
+/// Turn off every localized reveal the page announced, in memory and in storage —
+/// the cascade when an event's switch goes off, so "off" means off for the whole
+/// page instead of leaving individually-revealed items showing. Each can be turned
+/// back on individually afterwards. The signals are passed in (captured at setup),
+/// since this runs from a click handler where context isn't available.
+pub(crate) fn clear_page_local_reveals(
+    reg: PageRevealKeys,
+    matches: Option<RwSignal<HashSet<String>>>,
+    sections: Option<RwSignal<HashSet<String>>>,
+) {
+    let uids: HashSet<String> = reg.matches.get_value().into_iter().collect();
+    let keys: HashSet<String> = reg.sections.get_value().into_iter().collect();
+    let prefixes = reg.prefixes.get_value();
+    if let Some(m) = matches {
+        m.update(|set| set.retain(|k| !uids.contains(k)));
+    }
+    if let Some(s) = sections {
+        s.update(|set| {
+            set.retain(|k| !keys.contains(k) && !prefixes.iter().any(|p| k.starts_with(p)));
+        });
+    }
+    #[cfg(feature = "hydrate")]
+    {
+        remove_reveals(keys::REVEALED, &uids, &[]);
+        remove_reveals(keys::SECTIONS, &keys, &prefixes);
+    }
 }
 
 /// Whether to show the venue-local time on every sport's row at once — clicking

@@ -78,12 +78,30 @@ pub fn prune_records(recs: Vec<Record>, now: i64, ttl: i64) -> Vec<Record> {
         .collect()
 }
 
-/// Record (or refresh) a reveal: set its end and stamp `touched = now`. Replaces
-/// the existing entry for `key` in place, else appends — so the store stays one
-/// record per key.
+/// The reveal key for a whole event, from its canonical path (what
+/// [`crate::app::helpers::event_path`] builds — and what a match page already
+/// links to). Keying on the path rather than a bespoke derivation is what lets the
+/// event page and the match pages under it share one record without two
+/// derivations that could drift apart.
+#[must_use]
+pub fn page_reveal_key(event_path: &str) -> String {
+    format!("pg:{event_path}")
+}
+
+/// Record (or refresh) a reveal: keep the later end and stamp `touched = now`.
+/// Replaces the existing entry for `key` in place, else appends — so the store
+/// stays one record per key.
+///
+/// The end is a max, not an overwrite, because one record can be touched from
+/// places that know different ends: an event-scoped reveal gets the event's last
+/// match from the event page, but only that match's own time from a match page
+/// under it. Taking the later keeps the end from regressing (which would expose
+/// the record to early pruning). The cost is that an event rescheduled *earlier*
+/// keeps its stale later end — that only delays pruning, which is the safe way to
+/// be wrong.
 pub fn upsert(recs: &mut Vec<Record>, key: &str, end_ms: i64, now: i64) {
     if let Some(r) = recs.iter_mut().find(|r| r.key == key) {
-        r.end_ms = end_ms;
+        r.end_ms = r.end_ms.max(end_ms);
         r.touched_ms = now;
     } else {
         recs.push(Record {
@@ -97,6 +115,17 @@ pub fn upsert(recs: &mut Vec<Record>, key: &str, end_ms: i64, now: i64) {
 /// Drop a reveal entirely (used when the user hides it).
 pub fn remove(recs: &mut Vec<Record>, key: &str) {
     recs.retain(|r| r.key != key);
+}
+
+/// Drop every reveal whose key is in `keys` or starts with one of `prefixes`.
+///
+/// This is the cascade behind an event's switch going off: it takes the localized
+/// reveals under it with it, so "off" means off for the whole page rather than
+/// leaving individually-revealed items still showing. `prefixes` covers the
+/// brackets, whose per-round keys (`bn:<tid>:…`) are generated inside the grid.
+/// One pass over the store, rather than a read-modify-write per key.
+pub fn remove_many(recs: &mut Vec<Record>, keys: &HashSet<String>, prefixes: &[String]) {
+    recs.retain(|r| !(keys.contains(&r.key) || prefixes.iter().any(|p| r.key.starts_with(p))));
 }
 
 /// The set of keys, for seeding the in-memory reveal context.
@@ -191,6 +220,96 @@ mod tests {
         );
         remove(&mut recs, "k");
         assert!(recs.is_empty());
+    }
+
+    #[test]
+    fn upsert_keeps_the_later_end() {
+        // An event-scoped record is written from two places that know different
+        // ends: the event page knows the event's last match, a match page under it
+        // only knows its own (earlier) match. Touching from the match page must not
+        // drag the end backwards and expose the record to early pruning.
+        let mut recs = Vec::new();
+        upsert(&mut recs, "pg:/event/cs2/Katowice", 100 * DAY, 10 * DAY);
+        upsert(&mut recs, "pg:/event/cs2/Katowice", 20 * DAY, 11 * DAY);
+        assert_eq!(
+            recs[0],
+            Record {
+                key: "pg:/event/cs2/Katowice".into(),
+                // The event's end stands; only the touch advances.
+                end_ms: 100 * DAY,
+                touched_ms: 11 * DAY,
+            }
+        );
+    }
+
+    #[test]
+    fn remove_many_drops_exact_keys_and_prefix_matches_only() {
+        // An event switch going off takes the localized reveals under it with it:
+        // the exact keys its gates announced, plus whole brackets by prefix. What it
+        // must not touch is anything belonging to another event.
+        let mut recs = Vec::new();
+        for k in [
+            "cs2-1",          // a row on the page
+            "cs2-2",          // a row on another page
+            "st:77",          // this event's standings
+            "st:99",          // another event's standings
+            "bn:77:0:0",      // this event's bracket
+            "bs:77:1:2",      // this event's bracket
+            "bn:99:0:0",      // another event's bracket
+            "boxscore:cs2-1", // a section on the page
+        ] {
+            upsert(&mut recs, k, 0, 0);
+        }
+        let keys: HashSet<String> = ["cs2-1", "st:77", "boxscore:cs2-1"]
+            .into_iter()
+            .map(String::from)
+            .collect();
+        let prefixes = vec!["bn:77:".to_string(), "bs:77:".to_string()];
+        remove_many(&mut recs, &keys, &prefixes);
+        let left = keys_vec(&recs);
+        // Everything this page announced is gone…
+        for gone in ["cs2-1", "st:77", "boxscore:cs2-1", "bn:77:0:0", "bs:77:1:2"] {
+            assert!(
+                !left.contains(&gone.to_string()),
+                "{gone} should be cleared"
+            );
+        }
+        // …and nothing else is.
+        for kept in ["cs2-2", "st:99", "bn:99:0:0"] {
+            assert!(left.contains(&kept.to_string()), "{kept} should survive");
+        }
+    }
+
+    #[test]
+    fn remove_many_with_nothing_registered_is_a_no_op() {
+        let mut recs = Vec::new();
+        upsert(&mut recs, "cs2-1", 0, 0);
+        remove_many(&mut recs, &HashSet::new(), &[]);
+        assert_eq!(keys_vec(&recs), vec!["cs2-1".to_string()]);
+    }
+
+    fn keys_vec(recs: &[Record]) -> Vec<String> {
+        recs.iter().map(|r| r.key.clone()).collect()
+    }
+
+    #[test]
+    fn page_key_is_prefixed_and_scoped_per_event() {
+        // The key is the event's canonical path (what `event_path` builds and the
+        // match page already links to), so it can't drift from the event it names.
+        assert_eq!(
+            page_reveal_key("/event/cs2/IEM%20Katowice%202026"),
+            "pg:/event/cs2/IEM%20Katowice%202026"
+        );
+        // Different editions, and the same edition in different sports, don't share
+        // a reveal.
+        assert_ne!(
+            page_reveal_key("/event/cs2/IEM%20Katowice%202026"),
+            page_reveal_key("/event/cs2/BLAST%20Bounty%202026")
+        );
+        assert_ne!(
+            page_reveal_key("/event/cs2/Masters"),
+            page_reveal_key("/event/lol/Masters")
+        );
     }
 
     #[test]
