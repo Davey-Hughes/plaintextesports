@@ -58,9 +58,9 @@ pub(crate) fn SiteFooter() -> impl IntoView {
                         if traditional.get() {
                             "data via MLB Stats API, NHL, ESPN & Jolpica"
                         } else {
-                            // Liquipedia (TFT schedule + esports event links) is
-                            // CC-BY-SA 3.0 and requires attribution. CompeteTFT is
-                            // Riot's first-party TFT competitive data.
+                            // Liquipedia (esports event links) is CC-BY-SA 3.0 and
+                            // requires attribution. CompeteTFT is Riot's
+                            // first-party TFT competitive data.
                             "data via PandaScore, Liquipedia & CompeteTFT"
                         }
                     }}

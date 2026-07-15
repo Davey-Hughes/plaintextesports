@@ -21,7 +21,7 @@ const fn wiki(sport: Sport) -> &'static str {
         Sport::Cs2 => "counterstrike",
         Sport::Lol => "leagueoflegends",
         // Traditional sports aren't resolved against Liquipedia. TFT isn't either:
-        // its sessions already carry their exact Liquipedia page, so the fuzzy
+        // its sessions already carry their exact CompeteTFT page, so the fuzzy
         // full-text resolver would only risk overriding a correct URL.
         Sport::Mlb
         | Sport::Nhl
@@ -35,7 +35,7 @@ const fn wiki(sport: Sport) -> &'static str {
 
 /// Whether events for this sport can be resolved against a Liquipedia wiki (it
 /// has a wiki subdomain). False for traditional sports and for TFT — TFT rows
-/// already carry their exact Liquipedia page, so the fuzzy full-text resolver
+/// already carry their exact CompeteTFT page, so the fuzzy full-text resolver
 /// would only add a wasted request and a failed-resolve log line.
 pub(crate) fn resolvable(sport: Sport) -> bool {
     !wiki(sport).is_empty()
