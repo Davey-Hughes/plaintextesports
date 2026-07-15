@@ -109,6 +109,67 @@ static TFT_BROADCASTS: Lazy<RwLock<HashMap<String, Vec<crate::types::TftBroadcas
     Lazy::new(|| RwLock::new(HashMap::new()));
 static TFT_LOBBIES: Lazy<RwLock<HashMap<String, Vec<crate::types::TftLobbyRound>>>> =
     Lazy::new(|| RwLock::new(HashMap::new()));
+
+/// Declares the TFT enrichment caches once and generates both halves of their
+/// persistence: [`store_tft_caches`] (written each poll) and [`restore_tft_caches`]
+/// (read back at startup).
+///
+/// Each entry is `MAP => "namespace", field: Type` — the in-memory map, the
+/// `result_cache` namespace, and the [`CompeteTournamentData`] field it holds.
+///
+/// These used to be two hand-written blocks per cache, six caches apart, with
+/// nothing tying them together. That's how `tft_sheet` came to be persisted but
+/// never read back: the "all streams" link disappeared on every restart until the
+/// next poll, and nothing failed. A cache declared here gets both halves or
+/// neither, so that divergence can't be written.
+///
+/// [`CompeteTournamentData`]: crate::competetft::CompeteTournamentData
+macro_rules! tft_caches {
+    ($($map:ident => $ns:literal, $field:ident: $ty:ty;)+) => {
+        /// Write one tournament's enrichment to the in-memory caches and the
+        /// `result_cache`. An empty value is skipped rather than stored: a poll that
+        /// returns no lobbies shouldn't erase the ones already shown.
+        fn store_tft_caches(
+            data: &crate::competetft::CompeteTournamentData,
+            ev: &str,
+            now: DateTime<Utc>,
+        ) {
+            $(
+                if !data.$field.is_empty() {
+                    $map.write()
+                        .unwrap_or_else(PoisonError::into_inner)
+                        .insert(ev.to_string(), data.$field.clone());
+                    db_cache_put($ns, ev, &data.$field, now);
+                }
+            )+
+        }
+
+        /// Repopulate the in-memory caches from the `result_cache` at startup, so a
+        /// restart doesn't blank the event pages until the next poll lands.
+        fn restore_tft_caches() {
+            $(
+                {
+                    let mut m = $map.write().unwrap_or_else(PoisonError::into_inner);
+                    for (event, v, _) in db_cache_get_ns::<$ty>($ns) {
+                        if !v.is_empty() {
+                            m.insert(event, v);
+                        }
+                    }
+                }
+            )+
+        }
+    };
+}
+
+tft_caches! {
+    TFT_SHEET => "tft_sheet", sheet_url: String;
+    TFT_PLACEMENTS => "tft_placements", placements: Vec<crate::types::TftPlacement>;
+    TFT_STANDINGS => "tft_standings", standings: Vec<crate::types::TftDayPanel>;
+    TFT_STREAMERS => "tft_streamers", streamers: Vec<crate::types::TftStreamer>;
+    TFT_BROADCASTS => "tft_broadcasts", broadcasts: Vec<crate::types::TftBroadcast>;
+    TFT_LOBBIES => "tft_lobbies", lobbies: Vec<crate::types::TftLobbyRound>;
+}
+
 // Full event names CompeteTFT owns this run — the Liquipedia branch skips these
 // so the two sources never double-write the same event (CompeteTFT is primary).
 static COMPETETFT_COVERED: Lazy<RwLock<std::collections::HashSet<String>>> =
@@ -1562,65 +1623,7 @@ fn load_persisted_standings() {
     fill_motor("wrc_standings", &WRC_STANDINGS);
     fill_motor("wec_standings", &WEC_STANDINGS);
     fill_motor("motogp_standings", &MOTOGP_STANDINGS);
-    {
-        let mut placements = TFT_PLACEMENTS
-            .write()
-            .unwrap_or_else(PoisonError::into_inner);
-        for (event, rows, _) in db_cache_get_ns::<Vec<crate::types::TftPlacement>>("tft_placements")
-        {
-            if !rows.is_empty() {
-                placements.insert(event, rows);
-            }
-        }
-    }
-    {
-        let mut standings = TFT_STANDINGS
-            .write()
-            .unwrap_or_else(PoisonError::into_inner);
-        for (event, panels, _) in db_cache_get_ns::<Vec<crate::types::TftDayPanel>>("tft_standings")
-        {
-            if !panels.is_empty() {
-                standings.insert(event, panels);
-            }
-        }
-    }
-    {
-        let mut m = TFT_STREAMERS
-            .write()
-            .unwrap_or_else(PoisonError::into_inner);
-        for (event, rows, _) in db_cache_get_ns::<Vec<crate::types::TftStreamer>>("tft_streamers") {
-            if !rows.is_empty() {
-                m.insert(event, rows);
-            }
-        }
-    }
-    {
-        let mut m = TFT_BROADCASTS
-            .write()
-            .unwrap_or_else(PoisonError::into_inner);
-        for (event, rows, _) in db_cache_get_ns::<Vec<crate::types::TftBroadcast>>("tft_broadcasts")
-        {
-            if !rows.is_empty() {
-                m.insert(event, rows);
-            }
-        }
-    }
-    {
-        let mut m = TFT_LOBBIES.write().unwrap_or_else(PoisonError::into_inner);
-        for (event, rows, _) in db_cache_get_ns::<Vec<crate::types::TftLobbyRound>>("tft_lobbies") {
-            if !rows.is_empty() {
-                m.insert(event, rows);
-            }
-        }
-    }
-    {
-        let mut m = TFT_SHEET.write().unwrap_or_else(PoisonError::into_inner);
-        for (event, url, _) in db_cache_get_ns::<String>("tft_sheet") {
-            if !url.is_empty() {
-                m.insert(event, url);
-            }
-        }
-    }
+    restore_tft_caches();
     {
         let mut brackets = PLAYOFF_BRACKETS
             .write()
@@ -2628,48 +2631,7 @@ fn apply_competetft(data: &crate::competetft::CompeteTournamentData, now: DateTi
             .unwrap_or_else(PoisonError::into_inner)
             .insert(tft_coverage_key(&ev));
     }
-    if !data.sheet_url.is_empty() {
-        TFT_SHEET
-            .write()
-            .unwrap_or_else(PoisonError::into_inner)
-            .insert(ev.clone(), data.sheet_url.clone());
-        db_cache_put("tft_sheet", &ev, &data.sheet_url, now);
-    }
-    if !data.placements.is_empty() {
-        TFT_PLACEMENTS
-            .write()
-            .unwrap_or_else(PoisonError::into_inner)
-            .insert(ev.clone(), data.placements.clone());
-        db_cache_put("tft_placements", &ev, &data.placements, now);
-    }
-    if !data.standings.is_empty() {
-        TFT_STANDINGS
-            .write()
-            .unwrap_or_else(PoisonError::into_inner)
-            .insert(ev.clone(), data.standings.clone());
-        db_cache_put("tft_standings", &ev, &data.standings, now);
-    }
-    if !data.streamers.is_empty() {
-        TFT_STREAMERS
-            .write()
-            .unwrap_or_else(PoisonError::into_inner)
-            .insert(ev.clone(), data.streamers.clone());
-        db_cache_put("tft_streamers", &ev, &data.streamers, now);
-    }
-    if !data.broadcasts.is_empty() {
-        TFT_BROADCASTS
-            .write()
-            .unwrap_or_else(PoisonError::into_inner)
-            .insert(ev.clone(), data.broadcasts.clone());
-        db_cache_put("tft_broadcasts", &ev, &data.broadcasts, now);
-    }
-    if !data.lobbies.is_empty() {
-        TFT_LOBBIES
-            .write()
-            .unwrap_or_else(PoisonError::into_inner)
-            .insert(ev.clone(), data.lobbies.clone());
-        db_cache_put("tft_lobbies", &ev, &data.lobbies, now);
-    }
+    store_tft_caches(data, &ev, now);
 }
 
 async fn refresh_tft_results(
@@ -6813,6 +6775,116 @@ mod tests {
         let mut v = vec![costream("a", false, 0, "en"), costream("b", true, 1, "en")];
         cap_and_group_streamers(&mut v);
         assert_eq!(v.len(), 2, "under the cap ⇒ nothing dropped");
+    }
+
+    #[test]
+    fn store_tft_caches_populates_every_declared_cache() {
+        // The other half of the `tft_caches!` guarantee: the macro makes store and
+        // restore agree, this pins that every declared cache is actually fed and
+        // reachable through its accessor. Drop an entry from the list and it goes
+        // empty here. (Feeding a cache from the wrong field is a type error — each
+        // one holds a distinct type — so the compiler already covers that half.)
+        let ev = "TFT Store Wiring Cup";
+        let now = "2026-07-13T00:00:00Z".parse::<DateTime<Utc>>().unwrap();
+        let data = crate::competetft::CompeteTournamentData {
+            tournament: "Store Wiring Cup".to_string(),
+            sessions: Vec::new(),
+            sheet_url: "https://docs.google.com/spreadsheets/d/e/WIRED/pubhtml".to_string(),
+            placements: vec![crate::types::TftPlacement {
+                place: "1".to_string(),
+                participant: "Winner".to_string(),
+                prize: "$1".to_string(),
+            }],
+            standings: vec![crate::types::TftDayPanel {
+                label: "Day 1".to_string(),
+                standings: crate::types::TftStandings {
+                    game_count: 1,
+                    rows: Vec::new(),
+                },
+            }],
+            streamers: vec![crate::types::TftStreamer {
+                player: "Streamer".to_string(),
+                url: "https://twitch.tv/streamer".to_string(),
+                platform: "twitch".to_string(),
+            }],
+            broadcasts: vec![crate::types::TftBroadcast {
+                label: "Official English Broadcast".to_string(),
+                language: "en".to_string(),
+                kind: crate::types::TftBroadcastKind::Regional,
+                links: vec![("twitch".to_string(), "https://twitch.tv/tft".to_string())],
+            }],
+            lobbies: vec![crate::types::TftLobbyRound {
+                label: "Day 1 \u{b7} Round 1".to_string(),
+                lobbies: Vec::new(),
+            }],
+        };
+        store_tft_caches(&data, ev, now);
+
+        assert!(tft_sheet(ev).contains("/WIRED/"), "sheet_url -> TFT_SHEET");
+        assert_eq!(
+            tft_placements(ev).first().map(|p| p.participant.as_str()),
+            Some("Winner"),
+            "placements -> TFT_PLACEMENTS"
+        );
+        assert_eq!(
+            tft_standings(ev).first().map(|p| p.label.as_str()),
+            Some("Day 1"),
+            "standings -> TFT_STANDINGS"
+        );
+        assert_eq!(
+            tft_streamers(ev).first().map(|s| s.player.as_str()),
+            Some("Streamer"),
+            "streamers -> TFT_STREAMERS"
+        );
+        assert_eq!(
+            tft_broadcasts(ev).first().map(|b| b.language.as_str()),
+            Some("en"),
+            "broadcasts -> TFT_BROADCASTS"
+        );
+        assert_eq!(tft_lobbies(ev).len(), 1, "lobbies -> TFT_LOBBIES");
+    }
+
+    #[test]
+    fn store_tft_caches_leaves_existing_data_alone_when_a_poll_returns_nothing() {
+        // An empty field is skipped, not stored: an off-broadcast poll that yields
+        // no lobbies must not erase the ones already on the page.
+        let ev = "TFT Empty Poll Cup";
+        let now = "2026-07-13T00:00:00Z".parse::<DateTime<Utc>>().unwrap();
+        let full = crate::competetft::CompeteTournamentData {
+            tournament: "Empty Poll Cup".to_string(),
+            sessions: Vec::new(),
+            sheet_url: "https://docs.google.com/spreadsheets/d/e/KEEP/pubhtml".to_string(),
+            placements: Vec::new(),
+            standings: Vec::new(),
+            streamers: vec![crate::types::TftStreamer {
+                player: "Keep".to_string(),
+                url: "https://twitch.tv/keep".to_string(),
+                platform: "twitch".to_string(),
+            }],
+            broadcasts: Vec::new(),
+            lobbies: Vec::new(),
+        };
+        store_tft_caches(&full, ev, now);
+        let empty = crate::competetft::CompeteTournamentData {
+            tournament: "Empty Poll Cup".to_string(),
+            sessions: Vec::new(),
+            sheet_url: String::new(),
+            placements: Vec::new(),
+            standings: Vec::new(),
+            streamers: Vec::new(),
+            broadcasts: Vec::new(),
+            lobbies: Vec::new(),
+        };
+        store_tft_caches(&empty, ev, now);
+        assert!(
+            tft_sheet(ev).contains("/KEEP/"),
+            "sheet survives an empty poll"
+        );
+        assert_eq!(
+            tft_streamers(ev).len(),
+            1,
+            "streamers survive an empty poll"
+        );
     }
 
     #[test]
