@@ -1897,7 +1897,31 @@ pub fn spawn_poller() {
                         // 2) Round-robin one tournament per cycle: refresh its overview
                         //    (keeping the cache current) and pull its sheet — the
                         //    expensive part — for standings/streams/broadcasts/lobbies.
-                        let cur = ids[ctft_cursor % ids.len()].clone();
+                        //    Ordered most-recent-first (by each cached overview's derived
+                        //    start), because a full sweep takes ~20 cycles and the
+                        //    current/just-finished tournaments are the ones being viewed;
+                        //    it also makes the in-memory cursor's reset-on-restart benign,
+                        //    since index 0 is then the newest rather than the oldest.
+                        let order: Vec<String> = {
+                            let cache = COMPETETFT_OVERVIEWS
+                                .read()
+                                .unwrap_or_else(PoisonError::into_inner);
+                            let mut v: Vec<(Option<DateTime<Utc>>, String)> = ids
+                                .iter()
+                                .map(|id| {
+                                    let start = cache.get(id).and_then(|t| {
+                                        crate::competetft::derive_sessions(t, &schedule.events, now)
+                                            .first()
+                                            .map(|s| s.begin_at)
+                                    });
+                                    (start, id.clone())
+                                })
+                                .collect();
+                            // Newest first; tournaments with no derivable date last.
+                            v.sort_by_key(|a| std::cmp::Reverse(a.0));
+                            v.into_iter().map(|(_, id)| id).collect()
+                        };
+                        let cur = order[ctft_cursor % order.len()].clone();
                         ctft_cursor = ctft_cursor.wrapping_add(1);
                         if let Some(t) = crate::competetft::fetch_tournament(&client, &cur).await {
                             COMPETETFT_OVERVIEWS
