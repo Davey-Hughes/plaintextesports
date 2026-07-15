@@ -169,148 +169,26 @@ fn tft_real(name: &str) -> bool {
     !n.is_empty() && !n.eq_ignore_ascii_case("TBD")
 }
 
-/// One row of the merged TFT results ladder: a tournament position with whoever
-/// holds it, plus the value we have for them — live points for a player still in,
-/// prize money for one who's out.
-#[derive(Clone)]
-struct MergedRow {
-    pos: String,
-    player: String,
-    points: String,
-    prize: String,
-    /// Placement locked in (player eliminated) — muted, below the divider.
-    is_final: bool,
-    /// An open slot with no live-standings player behind it — rendered "—".
-    blank: bool,
-    /// Qualification note carried from the standing row (CompeteTFT), e.g. "→ Day 3".
-    status: String,
-}
-
-/// Fold a stage's live standings and the tournament's final placements into one
-/// ranked ladder. The two are disjoint: standings holds the players still
-/// competing (ranked by points, placement still "TBD"); the *decided* placement
-/// rows are the eliminated players (final place + prize). Since anyone still in
-/// finishes above anyone already out, they stack cleanly — active players fill the
-/// open ("TBD") slots from the top in standings order, eliminated players sit
-/// below with their locked place. Positions come from the placement ladder; with
-/// no placements yet it's simply the standings.
-fn merge_tft_results(standings: &TftStandings, placements: &[TftPlacement]) -> Vec<MergedRow> {
-    // Participants with a decided (eliminated) placement. CompeteTFT's standings
-    // panel lists everyone (including eliminated players), so we key on this to
-    // avoid showing a player both as a live row and a final-placement row.
-    let finalized: std::collections::HashSet<&str> = placements
-        .iter()
-        .filter(|p| tft_real(&p.participant))
-        .map(|p| p.participant.as_str())
-        .collect();
-    let mut active = standings.rows.iter();
-    let mut out = Vec::new();
-    for p in placements {
-        if tft_real(&p.participant) {
-            // A decided (eliminated) place: final, carrying the prize.
-            out.push(MergedRow {
-                pos: p.place.clone(),
-                player: p.participant.clone(),
-                points: String::new(),
-                prize: p.prize.clone(),
-                is_final: true,
-                blank: false,
-                status: String::new(),
-            });
-        } else if let Some(a) = active.next() {
-            // A still-open place, filled by the next live-standings player.
-            out.push(MergedRow {
-                pos: p.place.clone(),
-                player: a.participant.clone(),
-                points: a.total.clone(),
-                prize: String::new(),
-                is_final: false,
-                blank: false,
-                status: a.status.clone(),
-            });
-        } else {
-            // Open place with no standings behind it (e.g. a finals with no live
-            // table) — a blank slot so the ladder still reads as complete.
-            out.push(MergedRow {
-                pos: p.place.clone(),
-                player: String::new(),
-                points: String::new(),
-                prize: String::new(),
-                is_final: false,
-                blank: true,
-                status: String::new(),
-            });
-        }
-    }
-    // Remaining live players (no placement slot, or CompeteTFT's still-qualified
-    // players carrying only a status). Skip anyone already shown as a finalized
-    // placement so they aren't listed twice.
-    for a in active {
-        if finalized.contains(a.participant.as_str()) {
-            continue;
-        }
-        // Use the standing row's own rank (CompeteTFT's still-qualified players
-        // rank above the eliminated block); fall back to append order if absent.
-        let pos = if a.rank.is_empty() {
-            (out.len() + 1).to_string()
-        } else {
-            a.rank.clone()
-        };
-        out.push(MergedRow {
-            pos,
-            player: a.participant.clone(),
-            points: a.total.clone(),
-            prize: String::new(),
-            is_final: false,
-            blank: false,
-            status: a.status.clone(),
-        });
-    }
-    // Order by finishing position so still-in players (low positions) sit above
-    // the eliminated block regardless of which source populated the rows. Ties
-    // like "3-4" sort by their leading number. A no-op for Liquipedia (already
-    // ordered); required for CompeteTFT, whose placements start below the cut.
-    out.sort_by_key(|r| tft_pos_key(&r.pos));
-    out
-}
-
-/// The leading finishing position as a number, for ordering the merged ladder.
-/// Extracts the first run of ASCII digits so a tie range sorts by its top place
-/// regardless of separator ("3-4", "5–8", "5th-8th" → 3, 5, 5); no digits → last.
-/// `sort_by_key` is stable, so equal keys keep their source order (Liquipedia's
-/// already-sorted ladder is unchanged).
-fn tft_pos_key(pos: &str) -> u32 {
-    pos.chars()
-        .skip_while(|c| !c.is_ascii_digit())
-        .take_while(|c| c.is_ascii_digit())
-        .collect::<String>()
-        .parse::<u32>()
-        .unwrap_or(u32::MAX)
-}
-
-/// Shared column widths (monospace `ch`) so every tab lays out identically — the
-/// total/points column lines up across the day tabs and with the current tab, and
-/// switching tabs never shifts a column. `max_games` reserves the widest day's
-/// game columns on every tab (left blank where a day / the current view has none).
+/// Shared column widths (monospace `ch`) so every day tab lays out identically —
+/// the total column lines up across tabs, and switching tabs never shifts a
+/// column. `max_games` reserves the widest day's game columns on every tab (left
+/// blank where a day has fewer games).
 #[derive(Clone, Copy)]
 struct TabLayout {
     rank_w: usize,
     name_w: usize,
     max_games: usize,
     game_w: usize,
-    /// Width of the aligned value column — "Total" on day tabs, "Pts" on current.
+    /// Width of the aligned value column ("Total").
     val_w: usize,
-    prize_w: usize,
-    /// Width of the CompeteTFT qualification-status column (0 when none present).
-    status_w: usize,
 }
 
-/// Compute the shared layout across all day panels and the current-tab rows.
-fn tab_layout(panels: &[TftDayPanel], current: &[MergedRow]) -> TabLayout {
+/// Compute the shared layout across all day panels.
+fn tab_layout(panels: &[TftDayPanel]) -> TabLayout {
     let chars = |s: &str| s.chars().count();
     let mut rank_w = 1;
     let mut name_w = 6; // "Player"
-    let mut val_w = 5; // fits "Total" (and "Pts")
+    let mut val_w = 5; // fits "Total"
     let mut game_w = 2;
     let max_games = panels
         .iter()
@@ -327,15 +205,6 @@ fn tab_layout(panels: &[TftDayPanel], current: &[MergedRow]) -> TabLayout {
             }
         }
     }
-    let mut prize_w = 5; // "Prize"
-    let mut status_w = 0;
-    for r in current {
-        rank_w = rank_w.max(chars(&r.pos));
-        name_w = name_w.max(chars(&r.player));
-        val_w = val_w.max(chars(&r.points));
-        prize_w = prize_w.max(chars(&r.prize));
-        status_w = status_w.max(chars(&r.status));
-    }
     if max_games > 0 {
         game_w = game_w.max(chars(&format!("G{max_games}")));
     }
@@ -345,15 +214,12 @@ fn tab_layout(panels: &[TftDayPanel], current: &[MergedRow]) -> TabLayout {
         max_games,
         game_w,
         val_w,
-        prize_w,
-        status_w,
     }
 }
 
 /// The `grid-template-columns` for a standings grid: rank · name · (the shared
 /// `max_games` game columns, when any) · the trailing value column(s) — "Total"
-/// on a day tab, "Pts" + "Prize" on the current tab. Shared so the two grids stay
-/// column-aligned.
+/// on a day tab. Shared so every day tab stays column-aligned.
 fn grid_cols(l: &TabLayout, trailing: &[usize]) -> String {
     let tail: String = trailing.iter().map(|w| format!(" {w}ch")).collect();
     if l.max_games == 0 {
@@ -385,14 +251,14 @@ fn day_grid_view(s: &TftStandings, l: &TabLayout, show: bool) -> AnyView {
         .collect_view();
     // The eliminated block is contiguous at the bottom (day2/finals rows are
     // built that way in `split_day_panels`), so one divider (before the first
-    // eliminated row) cleanly splits live from final — mirrors `current_grid_view`.
+    // eliminated row) cleanly splits live from final.
     let mut sep_shown = false;
     let rows = s
         .rows
         .iter()
         .map(|r| {
             // Eliminated: greyed, prize instead of per-game cells, cumulative
-            // total retained. Mirrors the muted treatment `current_grid_view` uses.
+            // total retained.
             let elim = r.eliminated;
             let prize = r.prize.clone();
             let sep = (elim && !sep_shown)
@@ -445,79 +311,6 @@ fn day_grid_view(s: &TftStandings, l: &TabLayout, show: bool) -> AnyView {
     .into_any()
 }
 
-/// The merged "current" grid: rank · player · live points · prize — players still
-/// in on top, a muted "eliminated" divider, then the eliminated (dimmed) with their
-/// final place + prize. The `max_games` game columns are reserved (blank) so the
-/// "Pts" column lines up with the day tabs' "Total". Reveal-blanked.
-fn current_grid_view(rows: &[MergedRow], l: &TabLayout, show: bool) -> AnyView {
-    let max_games = l.max_games;
-    let has_status = l.status_w > 0;
-    let trailing: Vec<usize> = if has_status {
-        vec![l.val_w, l.prize_w, l.status_w]
-    } else {
-        vec![l.val_w, l.prize_w]
-    };
-    let grid = grid_cols(l, &trailing);
-    // The eliminated block is contiguous at the bottom, so one divider (before the
-    // first final row) cleanly splits live from final.
-    let mut sep_shown = false;
-    let body = rows
-        .iter()
-        .map(|r| {
-            let sep = (r.is_final && !sep_shown)
-                .then(|| view! { <div class="tft-elim-sep">"eliminated"</div> });
-            if r.is_final {
-                sep_shown = true;
-            }
-            let is_final = r.is_final;
-            let pos = r.pos.clone();
-            let (name, points, prize, status) = if show {
-                let name = if r.blank {
-                    "—".to_string()
-                } else {
-                    r.player.clone()
-                };
-                (name, r.points.clone(), r.prize.clone(), r.status.clone())
-            } else {
-                (String::new(), String::new(), String::new(), String::new())
-            };
-            let is_q = status.starts_with('→');
-            let spacers = (0..max_games)
-                .map(|_| view! { <span class="tft-g"></span> })
-                .collect_view();
-            view! {
-                {sep}
-                <div class="tft-row" class:tft-final=is_final>
-                    <span class="tft-rank">{pos}</span>
-                    <span class="tft-name">{name}</span>
-                    {spacers}
-                    <span class="tft-pts">{points}</span>
-                    <span class="tft-prize">{prize}</span>
-                    {has_status
-                        .then(|| view! { <span class="tft-status" class:q=is_q>{status}</span> })}
-                </div>
-            }
-        })
-        .collect_view();
-    let head_spacers = (0..max_games)
-        .map(|_| view! { <span class="tft-h tft-g"></span> })
-        .collect_view();
-    view! {
-        <div class="tft-standings" style=grid>
-            <div class="tft-row">
-                <span class="tft-h tft-rank">"#"</span>
-                <span class="tft-h tft-name">"Player"</span>
-                {head_spacers}
-                <span class="tft-h tft-pts">"Pts"</span>
-                <span class="tft-h tft-prize">"Prize"</span>
-                {has_status.then(|| view! { <span class="tft-h tft-status"></span> })}
-            </div>
-            {body}
-        </div>
-    }
-    .into_any()
-}
-
 /// A TFT event's standings shown as tabs: one per day/stage panel, each carrying
 /// the full field for that stage (eliminated players greyed, showing their
 /// prize). One spoiler reveal gates them all; the tab bar and positions stay
@@ -537,7 +330,7 @@ fn TftResultsTabs(
     // eliminated players greyed and carrying their prize.)
     let tabs: Vec<(usize, String)> = panels.iter().map(|p| p.label.clone()).enumerate().collect();
     let active = RwSignal::new(panels.len().saturating_sub(1));
-    let layout = tab_layout(&panels, &[]);
+    let layout = tab_layout(&panels);
     let panels = StoredValue::new(panels);
     let tab_bar = tabs
         .into_iter()
@@ -661,97 +454,5 @@ pub(crate) fn TraditionalStandings(league: Memo<String>) -> impl IntoView {
                     .map(|v| view! { <EventStages stages=v /> })
             }}
         </Transition>
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::types::TftStandingRow;
-
-    #[test]
-    fn tft_pos_key_extracts_leading_place() {
-        assert_eq!(tft_pos_key("3"), 3);
-        assert_eq!(tft_pos_key("3-4"), 3);
-        assert_eq!(tft_pos_key("5–8"), 5); // en-dash separator
-        assert_eq!(tft_pos_key("5th-8th"), 5);
-        assert_eq!(tft_pos_key(""), u32::MAX);
-        assert_eq!(tft_pos_key("—"), u32::MAX);
-    }
-
-    fn stand(rows: &[(&str, &str)]) -> TftStandings {
-        TftStandings {
-            game_count: 0,
-            rows: rows
-                .iter()
-                .enumerate()
-                .map(|(i, (name, total))| TftStandingRow {
-                    rank: (i + 1).to_string(),
-                    participant: (*name).to_string(),
-                    total: (*total).to_string(),
-                    games: Vec::new(),
-                    status: String::new(),
-                    prize: String::new(),
-                    eliminated: false,
-                })
-                .collect(),
-        }
-    }
-    fn place(p: &str, name: &str, prize: &str) -> TftPlacement {
-        TftPlacement {
-            place: p.to_string(),
-            participant: name.to_string(),
-            prize: prize.to_string(),
-        }
-    }
-
-    #[test]
-    fn merges_live_standings_over_eliminated_placements() {
-        let standings = stand(&[("Alpha", "40"), ("Beta", "37")]);
-        // Two open (TBD) places on top, one decided (eliminated) below.
-        let placements = vec![
-            place("1", "TBD", "$100"),
-            place("2", "", "$50"),
-            place("3", "Zed", "$25"),
-        ];
-        let rows = merge_tft_results(&standings, &placements);
-        assert_eq!(rows.len(), 3);
-        // Open slots filled by live standings, in standings order — points, no
-        // prize, provisional.
-        assert_eq!(
-            (rows[0].player.as_str(), rows[0].points.as_str()),
-            ("Alpha", "40")
-        );
-        assert!(rows[0].prize.is_empty() && !rows[0].is_final && !rows[0].blank);
-        assert_eq!(rows[1].player, "Beta");
-        // Decided place: final, muted, prize, no live points.
-        assert_eq!(
-            (rows[2].player.as_str(), rows[2].prize.as_str()),
-            ("Zed", "$25")
-        );
-        assert!(rows[2].is_final && rows[2].points.is_empty());
-    }
-
-    #[test]
-    fn merge_without_placements_is_just_standings() {
-        let rows = merge_tft_results(&stand(&[("Solo", "9")]), &[]);
-        assert_eq!(rows.len(), 1);
-        assert_eq!(
-            (rows[0].pos.as_str(), rows[0].player.as_str()),
-            ("1", "Solo")
-        );
-        assert!(!rows[0].is_final);
-    }
-
-    #[test]
-    fn merge_without_standings_blanks_open_slots() {
-        let placements = vec![place("1", "TBD", "$100"), place("2", "Out", "$50")];
-        let rows = merge_tft_results(&TftStandings::default(), &placements);
-        assert_eq!(rows.len(), 2);
-        assert!(
-            rows[0].blank,
-            "an open slot with no live standings is blank"
-        );
-        assert!(rows[1].is_final && rows[1].player == "Out");
     }
 }
