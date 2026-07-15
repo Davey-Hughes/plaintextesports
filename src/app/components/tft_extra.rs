@@ -5,8 +5,8 @@
 
 use crate::app::pages::match_detail::fmt_viewers;
 use crate::app::playoffs::section_reveal;
-use crate::server::{get_event_broadcasts, get_event_streamers, get_tft_lobbies, get_tft_sheet};
-use crate::types::{StreamView, TftLobbyRound};
+use crate::server::{get_event_broadcasts, get_tft_lobbies, get_tft_streamer_section};
+use crate::types::{StreamView, TftLobbyRound, TftStreamerSection};
 use leptos::prelude::*;
 
 /// Split a stream URL into `(site, "/channel")` for the site's stream-link markup.
@@ -61,40 +61,30 @@ fn two_col(streams: Vec<StreamView>, gutter: impl Fn(&StreamView) -> String) -> 
 /// spoiler-gated — links, not results.
 #[component]
 pub(crate) fn TftStreamers(event: Signal<String>) -> impl IntoView {
-    let streamers = Resource::new(
+    let section = Resource::new(
         move || event.get(),
         |ev| async move {
             if ev.is_empty() {
-                Vec::new()
+                TftStreamerSection::default()
             } else {
-                get_event_streamers(ev).await.unwrap_or_default()
-            }
-        },
-    );
-    let sheet = Resource::new(
-        move || event.get(),
-        |ev| async move {
-            if ev.is_empty() {
-                String::new()
-            } else {
-                get_tft_sheet(ev).await.unwrap_or_default()
+                get_tft_streamer_section(ev).await.unwrap_or_default()
             }
         },
     );
     view! {
         <Transition>
             {move || {
-                let list = streamers.get().unwrap_or_default();
+                let TftStreamerSection { streams: list, sheet_url } = section
+                    .get()
+                    .unwrap_or_default();
                 if list.is_empty() {
                     return ().into_any();
                 }
                 // The sheet carries every co-streamer; we show a handful.
-                let more = sheet
-                    .get()
-                    .filter(|u: &String| !u.is_empty())
-                    .map(|u| {
+                let more = (!sheet_url.is_empty())
+                    .then(|| {
                         view! {
-                            <a class="event-link" href=u target="_blank" rel="noreferrer">
+                            <a class="event-link" href=sheet_url target="_blank" rel="noreferrer">
                                 "all streams ↗"
                             </a>
                         }
