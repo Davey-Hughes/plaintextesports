@@ -1,4 +1,5 @@
-# Hydration WASM bundle ceiling (gzip KiB), enforced by wasm_size.sh.
+# Hydration WASM bundle ceiling (gzip KiB), enforced by wasm_size.sh — which now
+# runs in CI (the `wasm` job), so this file can't silently drift again.
 # Raised 888 -> 910 on 2026-07-04: the traditional-sports bracket render,
 # two-across standings, reorganized stream rows, and box-score tables are all
 # genuine new client UI (verified: no server logic leaking into the bundle),
@@ -9,4 +10,18 @@
 # (competetft/) and the cache/poll logic are `#[cfg(feature = "ssr")]`, and
 # standings.rs defines `tft_real` locally rather than pulling in the server-only
 # tft module.
-gzip_kb=945
+# Raised 945 -> 995 on 2026-07-15: catching up to reality, not new growth. The
+# 945 above was measured against the 2026-07-11 (Liquipedia-era) TFT UI; the
+# CompeteTFT switch then added app/components/tft_extra.rs — three more client
+# components (player streams, official broadcasts, per-round lobbies) — plus the
+# TftPlacement/TftDayPanel/TftStreamer/TftBroadcast/TftLobbyRound types, and
+# nobody re-ran the script, so it sat 38 KiB over unnoticed. Measured 983 KiB;
+# set to 995 for the usual ~10 KiB of headroom.
+# Verified no server leak, two ways: cache/competetft/tft are `#[cfg(feature =
+# "ssr")]` in lib.rs, so they cannot be compiled into the hydrate build at all;
+# and a twiggy pass over the pre-wasm-opt artifact attributes app code to
+# types (serde impls), app::pages, app::components, and app::playoffs only —
+# i.e. view code and the wire types it renders. The bundle is dominated by
+# Leptos/tachys monomorphization, which is why each new component costs real
+# KiB: the framework's view types get instantiated afresh per component.
+gzip_kb=995
