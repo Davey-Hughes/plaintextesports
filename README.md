@@ -63,10 +63,28 @@ Edit the allowlist/denylist in [`src/tiering.rs`](src/tiering.rs):
 ## Develop
 
 ```sh
-cargo leptos watch        # http://127.0.0.1:4000
-DEMO=1 cargo leptos watch # force fixture data (ignores token + cache db)
-cargo test --features ssr # tiering + deserialization tests
+LEPTOS_HASH_FILES=false cargo leptos watch # http://127.0.0.1:4000
+DEMO=1 cargo leptos watch --release        # force fixture data (ignores token + cache db)
+cargo test --features ssr                  # tiering + deserialization tests
 ```
+
+`LEPTOS_HASH_FILES=false` is not optional in a watch loop. This project sets
+`hash-files = true` for production cache-busting, but cargo-leptos only hashes
+the site on its *first* build — `add_hashes_to_site` runs in `build_proj`, and
+the incremental rebuild path (`watch::runner`) never calls it. So every edit
+after startup rebuilds the server binary while `hash.txt` and the hashed
+`pkg/*.wasm` stay at build #1: the page serves fresh SSR HTML that points the
+browser at a stale client bundle.
+
+The failure is nastier than it sounds. A structural edit panics hydration
+(`tachys … hydration.rs: unreachable`) and the whole page goes dead — no
+handlers, no reactivity — while a text-only edit just silently runs old client
+code. Both look like bugs in your change.
+
+The env var is read at build time (it overrides the manifest) and is forwarded
+to the server, so both sides agree on unhashed names. Upstream:
+[cargo-leptos#271](https://github.com/leptos-rs/cargo-leptos/issues/271), open
+since 2024, still unfixed as of 0.3.7.
 
 ## Configuration (`config.toml`)
 
@@ -86,7 +104,10 @@ container `-e` flags.
 | `upcoming_days` | `UPCOMING_DAYS` | `30` | Days ahead on the homepage (1–60) |
 | `db_path` | `DB_PATH` | `data/cache.db` | SQLite cache path; empty = memory-only |
 | `resolve_links` | `ENABLE_LIQUIPEDIA` | `true` | Resolve exact event pages via Liquipedia |
-| `liquipedia_enabled` | `LIQUIPEDIA_ENABLED` | `false` | Add TFT (schedule + final placements) via Liquipedia's MediaWiki API |
+| `liquipedia_enabled` | `LIQUIPEDIA_ENABLED` | `false` | Add TFT (schedule + final placements) via Liquipedia's MediaWiki API (fallback for TFT) |
+| `competetft_enabled` | `COMPETETFT_ENABLED` | `false` | Primary TFT source: Riot's competetft.com + official sheet (schedule, standings, prizes, player streams, broadcasts, lobbies) |
+| `competetft_autodiscover` | `COMPETETFT_AUTODISCOVER` | `true` | Auto-discover TFT tournaments from competetft's schedule feed |
+| `competetft_pins` / `competetft_exclude` | _(TOML only)_ | _(none)_ | Tournament ids to always include / never include |
 | `[vapid] public/private/subject` | `VAPID_*` | _(none)_ | Web Push reminder keys; all three enable reminders |
 
 ## Reminders (Web Push)

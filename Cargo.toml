@@ -80,6 +80,9 @@ moka = { version = "0.12.15", features = ["future"], optional = true }
 # HTML parser for the TFT/Liquipedia schedule scrape (server-only; must never
 # reach the wasm bundle). Lean, pure-Rust, minimal deps.
 tl = { version = "0.7.8", optional = true }
+# CSV parser for the CompeteTFT published-sheet exports (server-only; quoted +
+# multi-line cells make a hand-rolled split unsafe). Never reaches wasm.
+csv = { version = "1.3", optional = true }
 
 [features]
 hydrate = [
@@ -111,6 +114,7 @@ ssr = [
   "dep:mimalloc",
   "dep:moka",
   "dep:tl",
+  "dep:csv",
   "leptos/ssr",
   "leptos_meta/ssr",
   "leptos_router/ssr",
@@ -165,6 +169,11 @@ style-file = "style/main.scss"
 # URLs. Lets the CDN cache /pkg/* immutably with no chance of serving a stale
 # JS against a fresh WASM (the wasm-bindgen mismatch we hit). Must also be set at
 # runtime via LEPTOS_HASH_FILES=true so HydrationScripts emits the hashed names.
+#
+# Production only — develop with `LEPTOS_HASH_FILES=false cargo leptos watch`.
+# cargo-leptos hashes the site only on its first build, so under `watch` every
+# later edit serves fresh HTML against build #1's wasm, which kills hydration.
+# See the Develop section in README.md.
 hash-files = true
 site-addr = "127.0.0.1:4000"
 reload-port = 4001

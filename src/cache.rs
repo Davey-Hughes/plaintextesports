@@ -98,6 +98,91 @@ static TFT_PLACEMENTS: Lazy<RwLock<HashMap<String, Vec<crate::types::TftPlacemen
 // same page in the same request. The UI shows them as tabs + a "current" tab.
 static TFT_STANDINGS: Lazy<RwLock<HashMap<String, Vec<crate::types::TftDayPanel>>>> =
     Lazy::new(|| RwLock::new(HashMap::new()));
+// CompeteTFT extras, same keying + lifecycle as TFT_STANDINGS: per-player stream
+// directory, official broadcast channels, and per-round lobby breakdowns.
+static TFT_STREAMERS: Lazy<RwLock<HashMap<String, Vec<crate::types::TftStreamer>>>> =
+    Lazy::new(|| RwLock::new(HashMap::new()));
+/// Event name → its published Google Sheet URL, refreshed with the rest of the
+/// tournament each poll. Backs the "see all" link behind the capped stream list.
+static TFT_SHEET: Lazy<RwLock<HashMap<String, String>>> = Lazy::new(|| RwLock::new(HashMap::new()));
+static TFT_BROADCASTS: Lazy<RwLock<HashMap<String, Vec<crate::types::TftBroadcast>>>> =
+    Lazy::new(|| RwLock::new(HashMap::new()));
+static TFT_LOBBIES: Lazy<RwLock<HashMap<String, Vec<crate::types::TftLobbyRound>>>> =
+    Lazy::new(|| RwLock::new(HashMap::new()));
+
+/// Declares the TFT enrichment caches once and generates both halves of their
+/// persistence: [`store_tft_caches`] (written each poll) and [`restore_tft_caches`]
+/// (read back at startup).
+///
+/// Each entry is `MAP => "namespace", field: Type` — the in-memory map, the
+/// `result_cache` namespace, and the [`CompeteTournamentData`] field it holds.
+///
+/// These used to be two hand-written blocks per cache, six caches apart, with
+/// nothing tying them together. That's how `tft_sheet` came to be persisted but
+/// never read back: the "all streams" link disappeared on every restart until the
+/// next poll, and nothing failed. A cache declared here gets both halves or
+/// neither, so that divergence can't be written.
+///
+/// [`CompeteTournamentData`]: crate::competetft::CompeteTournamentData
+macro_rules! tft_caches {
+    ($($map:ident => $ns:literal, $field:ident: $ty:ty;)+) => {
+        /// Write one tournament's enrichment to the in-memory caches and the
+        /// `result_cache`. An empty value is skipped rather than stored: a poll that
+        /// returns no lobbies shouldn't erase the ones already shown.
+        fn store_tft_caches(
+            data: &crate::competetft::CompeteTournamentData,
+            ev: &str,
+            now: DateTime<Utc>,
+        ) {
+            $(
+                if !data.$field.is_empty() {
+                    $map.write()
+                        .unwrap_or_else(PoisonError::into_inner)
+                        .insert(ev.to_string(), data.$field.clone());
+                    db_cache_put($ns, ev, &data.$field, now);
+                }
+            )+
+        }
+
+        /// Repopulate the in-memory caches from the `result_cache` at startup, so a
+        /// restart doesn't blank the event pages until the next poll lands.
+        fn restore_tft_caches() {
+            $(
+                {
+                    let mut m = $map.write().unwrap_or_else(PoisonError::into_inner);
+                    for (event, v, _) in db_cache_get_ns::<$ty>($ns) {
+                        if !v.is_empty() {
+                            m.insert(event, v);
+                        }
+                    }
+                }
+            )+
+        }
+    };
+}
+
+tft_caches! {
+    TFT_SHEET => "tft_sheet", sheet_url: String;
+    TFT_PLACEMENTS => "tft_placements", placements: Vec<crate::types::TftPlacement>;
+    TFT_STANDINGS => "tft_standings", standings: Vec<crate::types::TftDayPanel>;
+    TFT_STREAMERS => "tft_streamers", streamers: Vec<crate::types::TftStreamer>;
+    TFT_BROADCASTS => "tft_broadcasts", broadcasts: Vec<crate::types::TftBroadcast>;
+    TFT_LOBBIES => "tft_lobbies", lobbies: Vec<crate::types::TftLobbyRound>;
+}
+
+// Full event names CompeteTFT owns this run — the Liquipedia branch skips these
+// so the two sources never double-write the same event (CompeteTFT is primary).
+static COMPETETFT_COVERED: Lazy<RwLock<std::collections::HashSet<String>>> =
+    Lazy::new(|| RwLock::new(std::collections::HashSet::new()));
+/// Cached CompeteTFT tournament overviews (id → parsed overview). The overview
+/// carries the date range + stages the schedule is derived from and changes
+/// rarely, so it's fetched once per tournament on the first poll after boot — the
+/// whole TFT schedule then appears at once instead of trickling in one tournament
+/// per cycle — and refreshed one-per-cycle by the round-robin. Not persisted: a
+/// restart just re-fetches these cheap pages.
+static COMPETETFT_OVERVIEWS: Lazy<
+    RwLock<HashMap<String, crate::competetft::rsc::CompeteTournament>>,
+> = Lazy::new(|| RwLock::new(HashMap::new()));
 
 /// The WRC, WEC, or MotoGP championship standings (empty until first fetched), by
 /// series league name. Any other name yields empty tables.
@@ -112,28 +197,71 @@ pub fn motor_standings(league: &str) -> crate::types::MotorStandings {
     store.read().unwrap_or_else(PoisonError::into_inner).clone()
 }
 
+/// Look up a TFT enrichment map by event name: exact match first, then a
+/// `tft_coverage_key`-normalized fallback. CompeteTFT stores enrichment under its
+/// own (subtitle-less) event name, so when the visible page is source-name-
+/// divergent — e.g. Liquipedia's "TFT Tactician's Crown: Space Gods" vs
+/// CompeteTFT's "TFT Tactician's Crown" — the exact lookup misses; the normalized
+/// fallback lets the pulled data still surface. The exact key is tried first, so
+/// the fallback only fires on genuine divergence (first normalized match wins).
+fn tft_enrichment_get<T: Clone>(map: &RwLock<HashMap<String, Vec<T>>>, event: &str) -> Vec<T> {
+    let guard = map.read().unwrap_or_else(PoisonError::into_inner);
+    if let Some(v) = guard.get(event) {
+        return v.clone();
+    }
+    let want = tft_coverage_key(event);
+    guard
+        .iter()
+        .find(|(k, _)| tft_coverage_key(k) == want)
+        .map(|(_, v)| v.clone())
+        .unwrap_or_default()
+}
+
 /// This event's TFT final placements (empty until its tournament finishes), keyed
 /// by full event name.
 #[must_use]
 pub fn tft_placements(event: &str) -> Vec<crate::types::TftPlacement> {
-    TFT_PLACEMENTS
-        .read()
-        .unwrap_or_else(PoisonError::into_inner)
-        .get(event)
-        .cloned()
-        .unwrap_or_default()
+    tft_enrichment_get(&TFT_PLACEMENTS, event)
 }
 
 /// This event's TFT standings as day/stage panels (empty until fetched), keyed by
 /// full event name.
 #[must_use]
 pub fn tft_standings(event: &str) -> Vec<crate::types::TftDayPanel> {
-    TFT_STANDINGS
-        .read()
-        .unwrap_or_else(PoisonError::into_inner)
-        .get(event)
-        .cloned()
+    tft_enrichment_get(&TFT_STANDINGS, event)
+}
+
+/// This event's CompeteTFT per-player stream directory (empty until fetched).
+#[must_use]
+pub fn tft_streamers(event: &str) -> Vec<crate::types::TftStreamer> {
+    tft_enrichment_get(&TFT_STREAMERS, event)
+}
+
+/// This event's published Google Sheet URL (empty until fetched). Same exact-then-
+/// normalized lookup the other enrichment accessors use.
+#[must_use]
+pub fn tft_sheet(event: &str) -> String {
+    let g = TFT_SHEET.read().unwrap_or_else(PoisonError::into_inner);
+    if let Some(v) = g.get(event) {
+        return v.clone();
+    }
+    let want = tft_coverage_key(event);
+    g.iter()
+        .find(|(k, _)| tft_coverage_key(k) == want)
+        .map(|(_, v)| v.clone())
         .unwrap_or_default()
+}
+
+/// This event's CompeteTFT official broadcast channels (empty until fetched).
+#[must_use]
+pub fn tft_broadcasts(event: &str) -> Vec<crate::types::TftBroadcast> {
+    tft_enrichment_get(&TFT_BROADCASTS, event)
+}
+
+/// This event's CompeteTFT per-round lobby breakdowns (empty until fetched).
+#[must_use]
+pub fn tft_lobbies(event: &str) -> Vec<crate::types::TftLobbyRound> {
+    tft_enrichment_get(&TFT_LOBBIES, event)
 }
 
 /// Snapshot a standings store.
@@ -384,6 +512,13 @@ const SERIES_TTL_MIN: i64 = 2;
 static STREAM_STATUS: Lazy<RwLock<HashMap<(Sport, i64), CachedStreams>>> =
     Lazy::new(|| RwLock::new(HashMap::new()));
 
+/// Event-scoped twin of `STREAM_STATUS`: a TFT event's official broadcasts with
+/// Twitch live status merged in. `live_streams_for` is keyed by match id, which
+/// an event page has no equivalent of, so this keys by event name. Same TTL, so a
+/// page load doesn't re-hit Twitch every time.
+static EVENT_STREAM_STATUS: Lazy<RwLock<HashMap<String, CachedStreams>>> =
+    Lazy::new(|| RwLock::new(HashMap::new()));
+
 struct CachedStreams {
     streams: Vec<StreamView>,
     fetched_at: DateTime<Utc>,
@@ -393,6 +528,29 @@ const STREAM_STATUS_TTL_SECS: i64 = 90;
 /// How close in time (± hours) a same-event match must be scheduled to count as
 /// part of a match's "day slate" for widening co-stream discovery keywords.
 const DISCOVERY_SLATE_WINDOW_HOURS: i64 = 12;
+
+/// An official CompeteTFT broadcast as a `StreamView`, so it flows through the
+/// same live/viewer enrichment and stream rendering as every other esport.
+/// Prefers the Twitch link (the enrichment keys on Twitch logins), else YouTube.
+/// `None` when the channel is on neither — there'd be nothing to link or enrich.
+fn broadcast_to_stream(b: &crate::types::TftBroadcast) -> Option<StreamView> {
+    let pick = |plat: &str| {
+        b.links
+            .iter()
+            .find(|(p, _)| p.eq_ignore_ascii_case(plat))
+            .map(|(_, u)| u.clone())
+    };
+    let url = pick("twitch").or_else(|| pick("youtube"))?;
+    Some(StreamView {
+        url,
+        language: b.language.clone(),
+        official: true,
+        name: b.label.clone(),
+        group: "official".to_string(),
+        curated: true,
+        ..Default::default()
+    })
+}
 
 /// A match's streams with Twitch live status + seeded co-streamers merged in.
 /// Returns the base streams unchanged when there's nothing to enrich (no Twitch
@@ -571,6 +729,154 @@ pub async fn live_streams_for(sport: Sport, id: i64) -> Vec<StreamView> {
             },
         );
     enriched
+}
+
+/// A TFT event's official broadcasts as live-enriched streams, for the row at the
+/// top of the event page. Only `Regional` (official) channels are surfaced — the
+/// sheet also lists dozens of watch parties and co-streams, which aren't worth the
+/// page or the API calls. Returns the plain links when there's nothing to enrich
+/// (no Twitch config, demo mode, or every channel off-Twitch), so the row always
+/// renders.
+/// A player co-streamer as a `StreamView`, so it renders and enriches like any
+/// other esports co-stream. `None` for a link-less row.
+fn streamer_to_stream(s: &crate::types::TftStreamer) -> Option<StreamView> {
+    let url = s.url.trim();
+    if url.is_empty() {
+        return None;
+    }
+    Some(StreamView {
+        url: url.to_string(),
+        group: "costream".to_string(),
+        ..Default::default()
+    })
+}
+
+/// How many player co-streamers the event page shows. The sheet lists dozens; the
+/// page links to it for the rest. An absolute cap: more live channels than this
+/// still shows only this many.
+const TFT_STREAMER_CAP: usize = 8;
+
+/// Fill in each stream's language from `langs` (`login → ISO-639-1`), in place.
+///
+/// The CompeteTFT sheet leaves the REGION column blank for every co-streamer, so
+/// the channel's own declared language is all there is to group them by. A stream
+/// that already carries one keeps it: a source that names its language (PandaScore)
+/// is describing the broadcast, whereas Twitch is describing the channel.
+fn fill_stream_languages(streams: &mut [StreamView], langs: &HashMap<String, String>) {
+    for s in streams.iter_mut() {
+        if s.language.is_empty()
+            && let Some(lang) = login_of(&s.url).and_then(|l| langs.get(&l))
+        {
+            s.language = lang.clone();
+        }
+    }
+}
+
+/// Pick the co-streamers to show and order them, in place.
+///
+/// [`TFT_STREAMER_CAP`] is an absolute cap, not a target: whoever is live claims
+/// the slots first (most-watched first), any left over are filled with the rest,
+/// and more live channels than slots still yields only [`TFT_STREAMER_CAP`].
+/// The survivors are then grouped by language like the other esports stream lists
+/// — grouping runs after the cap, so it reorders who made the cut rather than
+/// deciding it.
+fn cap_and_group_streamers(out: &mut Vec<StreamView>) {
+    out.sort_by_key(|s| (!s.live, std::cmp::Reverse(s.viewers.unwrap_or(0))));
+    out.truncate(TFT_STREAMER_CAP);
+    crate::types::order_streams(out);
+}
+
+/// This event's player co-streamers as live-enriched streams, live-first and
+/// capped at [`TFT_STREAMER_CAP`]. The full directory lives on the tournament's
+/// published sheet, which the page links to instead of listing everyone.
+pub async fn event_streamer_streams(event: &str) -> Vec<StreamView> {
+    let base: Vec<StreamView> = tft_streamers(event)
+        .iter()
+        .filter_map(streamer_to_stream)
+        .collect();
+    if base.is_empty() {
+        return base;
+    }
+    if config().demo {
+        return base.into_iter().take(TFT_STREAMER_CAP).collect();
+    }
+    // Own cache key: this shares `EVENT_STREAM_STATUS` with the broadcast row.
+    let key = format!("streamers\u{1f}{event}");
+    {
+        let g = EVENT_STREAM_STATUS
+            .read()
+            .unwrap_or_else(PoisonError::into_inner);
+        if let Some(c) = g.get(&key)
+            && c.fetched_at + Duration::seconds(STREAM_STATUS_TTL_SECS) > Utc::now()
+        {
+            return c.streams.clone();
+        }
+    }
+    let logins: Vec<String> = base.iter().filter_map(|s| login_of(&s.url)).collect();
+    let mut out = if logins.is_empty() {
+        base
+    } else {
+        let (live, langs) = futures::join!(
+            crate::twitch::live_streams(&logins),
+            crate::twitch::channel_languages(&logins)
+        );
+        let mut out = enrich_streams(base, &live, &[], "");
+        fill_stream_languages(&mut out, &langs);
+        out
+    };
+    cap_and_group_streamers(&mut out);
+    EVENT_STREAM_STATUS
+        .write()
+        .unwrap_or_else(PoisonError::into_inner)
+        .insert(
+            key,
+            CachedStreams {
+                streams: out.clone(),
+                fetched_at: Utc::now(),
+            },
+        );
+    out
+}
+
+pub async fn event_broadcast_streams(event: &str) -> Vec<StreamView> {
+    use crate::types::TftBroadcastKind;
+    let base: Vec<StreamView> = tft_broadcasts(event)
+        .iter()
+        .filter(|b| b.kind == TftBroadcastKind::Regional)
+        .filter_map(broadcast_to_stream)
+        .collect();
+    if base.is_empty() || config().demo {
+        return base;
+    }
+    {
+        let g = EVENT_STREAM_STATUS
+            .read()
+            .unwrap_or_else(PoisonError::into_inner);
+        if let Some(c) = g.get(event)
+            && c.fetched_at + Duration::seconds(STREAM_STATUS_TTL_SECS) > Utc::now()
+        {
+            return c.streams.clone();
+        }
+    }
+    let logins: Vec<String> = base.iter().filter_map(|s| login_of(&s.url)).collect();
+    if logins.is_empty() {
+        return base; // e.g. YouTube-only officials: nothing for Twitch to mark
+    }
+    let live = crate::twitch::live_streams(&logins).await;
+    // Empty seeds + empty needle: mark live/viewers on these channels only, never
+    // append discovered co-streamers.
+    let out = enrich_streams(base, &live, &[], "");
+    EVENT_STREAM_STATUS
+        .write()
+        .unwrap_or_else(PoisonError::into_inner)
+        .insert(
+            event.to_string(),
+            CachedStreams {
+                streams: out.clone(),
+                fetched_at: Utc::now(),
+            },
+        );
+    out
 }
 
 /// On-demand F1 results, keyed by (season, round). Fetched when a GP event page
@@ -1317,28 +1623,7 @@ fn load_persisted_standings() {
     fill_motor("wrc_standings", &WRC_STANDINGS);
     fill_motor("wec_standings", &WEC_STANDINGS);
     fill_motor("motogp_standings", &MOTOGP_STANDINGS);
-    {
-        let mut placements = TFT_PLACEMENTS
-            .write()
-            .unwrap_or_else(PoisonError::into_inner);
-        for (event, rows, _) in db_cache_get_ns::<Vec<crate::types::TftPlacement>>("tft_placements")
-        {
-            if !rows.is_empty() {
-                placements.insert(event, rows);
-            }
-        }
-    }
-    {
-        let mut standings = TFT_STANDINGS
-            .write()
-            .unwrap_or_else(PoisonError::into_inner);
-        for (event, panels, _) in db_cache_get_ns::<Vec<crate::types::TftDayPanel>>("tft_standings")
-        {
-            if !panels.is_empty() {
-                standings.insert(event, panels);
-            }
-        }
-    }
+    restore_tft_caches();
     {
         let mut brackets = PLAYOFF_BRACKETS
             .write()
@@ -1383,6 +1668,19 @@ pub fn spawn_poller() {
             }
         }
     };
+
+    // Liquipedia disabled ⇒ purge its orphaned TFT rows. Disabling the source only
+    // stops new rows; without this its already-persisted ones linger to the archive
+    // cutoff, duplicating CompeteTFT's own (differently-named) events.
+    if !cfg.liquipedia_enabled
+        && let Some(conn) = store.as_ref()
+    {
+        match crate::store::purge_liquipedia_tft(conn) {
+            Ok(0) => {}
+            Ok(n) => leptos::logging::log!("purged {n} stale Liquipedia TFT row(s)"),
+            Err(e) => leptos::logging::log!("Liquipedia TFT purge failed: {e}"),
+        }
+    }
 
     // Serve persisted data immediately on boot.
     if let Some(conn) = store.as_ref() {
@@ -1493,6 +1791,10 @@ pub fn spawn_poller() {
             .and_then(|s| s.parse::<u64>().ok())
             .unwrap_or(0);
         let mut liq_at = ocb_load_at(store.as_ref(), LIQ_META_AT);
+        // CompeteTFT: per-cycle cadence gate + round-robin cursor over the
+        // discovered tournaments (in-memory; a restart just re-refreshes, cheaply).
+        let mut ctft_at: Option<DateTime<Utc>> = None;
+        let mut ctft_cursor: usize = 0;
         // Per-parent-tournament last-placements-fetch time (in-memory; a restart
         // just refetches, well under the daily cap given how few tournaments run).
         let mut liq_placement_at: HashMap<String, DateTime<Utc>> = HashMap::new();
@@ -1740,6 +2042,136 @@ pub fn spawn_poller() {
                 (Sport::Motorsport, motorsport_res),
             ];
 
+            // CompeteTFT (first-party), opt-in + gated. Runs before Liquipedia so
+            // it can claim its events (COMPETETFT_COVERED). The schedule feed is
+            // fetched cheaply each due cycle (discovery + precise per-day times),
+            // then one discovered tournament is fully refreshed (overview + sheet
+            // tabs) per cycle, round-robin. An empty/failed parse keeps cached rows
+            // (apply_poll no-ops on an omitted feed).
+            if cfg.competetft_enabled {
+                let iv = {
+                    let rows: Vec<NormalizedMatch> = {
+                        let snap = SNAPSHOT.read().unwrap_or_else(PoisonError::into_inner);
+                        snap.matches
+                            .iter()
+                            .filter(|m| m.sport == Sport::Tft)
+                            .cloned()
+                            .collect()
+                    };
+                    let live = Duration::seconds(cfg.ocblacktop_live_poll.as_secs().max(30) as i64);
+                    let near = Duration::seconds(cfg.ocblacktop_near_poll.as_secs() as i64);
+                    let idle = Duration::seconds(cfg.idle_poll.as_secs() as i64);
+                    series_cadence(&rows, now, live, near, idle)
+                };
+                if ctft_at.is_none_or(|t| now - t >= iv) {
+                    let schedule = crate::competetft::fetch_schedule(&client).await;
+                    let ids = competetft_discovery_ids(
+                        &schedule.tournaments,
+                        &cfg.competetft_pins,
+                        &cfg.competetft_exclude,
+                        cfg.competetft_autodiscover,
+                    );
+                    if !ids.is_empty() {
+                        // 1) Ensure every discovered tournament has a cached overview.
+                        //    First poll after boot fetches all of them, so the whole TFT
+                        //    schedule appears at once; later polls fetch only newly
+                        //    discovered ones. The overview is one small page; the heavy
+                        //    sheet fetch stays on the round-robin below.
+                        let missing: Vec<String> = {
+                            let cache = COMPETETFT_OVERVIEWS
+                                .read()
+                                .unwrap_or_else(PoisonError::into_inner);
+                            ids.iter()
+                                .filter(|id| !cache.contains_key(*id))
+                                .cloned()
+                                .collect()
+                        };
+                        if !missing.is_empty() {
+                            leptos::logging::log!(
+                                "CompeteTFT: fetching {} tournament overview(s)",
+                                missing.len()
+                            );
+                        }
+                        for id in missing {
+                            if let Some(t) = crate::competetft::fetch_tournament(&client, &id).await
+                            {
+                                COMPETETFT_OVERVIEWS
+                                    .write()
+                                    .unwrap_or_else(PoisonError::into_inner)
+                                    .insert(id, t);
+                            }
+                        }
+                        // 2) Round-robin one tournament per cycle: refresh its overview
+                        //    (keeping the cache current) and pull its sheet — the
+                        //    expensive part — for standings/streams/broadcasts/lobbies.
+                        //    Ordered most-recent-first (by each cached overview's derived
+                        //    start), because a full sweep takes ~20 cycles and the
+                        //    current/just-finished tournaments are the ones being viewed;
+                        //    it also makes the in-memory cursor's reset-on-restart benign,
+                        //    since index 0 is then the newest rather than the oldest.
+                        let order: Vec<String> = {
+                            let cache = COMPETETFT_OVERVIEWS
+                                .read()
+                                .unwrap_or_else(PoisonError::into_inner);
+                            let mut v: Vec<(Option<DateTime<Utc>>, String)> = ids
+                                .iter()
+                                .map(|id| {
+                                    let start = cache.get(id).and_then(|t| {
+                                        crate::competetft::derive_sessions(t, &schedule.events, now)
+                                            .first()
+                                            .map(|s| s.begin_at)
+                                    });
+                                    (start, id.clone())
+                                })
+                                .collect();
+                            // Newest first; tournaments with no derivable date last.
+                            v.sort_by_key(|a| std::cmp::Reverse(a.0));
+                            v.into_iter().map(|(_, id)| id).collect()
+                        };
+                        let cur = order[ctft_cursor % order.len()].clone();
+                        ctft_cursor = ctft_cursor.wrapping_add(1);
+                        if let Some(t) = crate::competetft::fetch_tournament(&client, &cur).await {
+                            COMPETETFT_OVERVIEWS
+                                .write()
+                                .unwrap_or_else(PoisonError::into_inner)
+                                .insert(cur.clone(), t.clone());
+                            match crate::competetft::refresh_from_overview(
+                                &client,
+                                &t,
+                                &schedule.events,
+                                now,
+                            )
+                            .await
+                            {
+                                Some(data) => apply_competetft(&data, now),
+                                None => leptos::logging::log!(
+                                    "CompeteTFT: no sheet data for tournament {cur} this cycle"
+                                ),
+                            }
+                        }
+                        // 3) Derive the whole TFT schedule from every cached overview, so
+                        //    the feed is a complete per-tournament enumeration each cycle
+                        //    (which apply_poll's per-tournament reconciliation relies on).
+                        let rows: Vec<NormalizedMatch> = {
+                            let cache = COMPETETFT_OVERVIEWS
+                                .read()
+                                .unwrap_or_else(PoisonError::into_inner);
+                            ids.iter()
+                                .filter_map(|id| cache.get(id))
+                                .flat_map(|t| {
+                                    crate::competetft::derive_sessions(t, &schedule.events, now)
+                                })
+                                .map(|s| crate::tft::session_to_match(&s, now))
+                                .collect()
+                        };
+                        if !rows.is_empty() {
+                            feeds.push((Sport::Tft, Ok(rows)));
+                        }
+                    }
+                    ctft_at = Some(now);
+                }
+            }
+
             // TFT (Liquipedia), opt-in + gated. One page per due cycle on a
             // proximity cadence (>=30s floor for `action=parse`), capped per UTC
             // day. On an empty parse (200 but 0 rows) or a fetch error, TFT is
@@ -1768,6 +2200,24 @@ pub fn spawn_poller() {
                 let near = Duration::seconds(cfg.ocblacktop_near_poll.as_secs() as i64);
                 let idle = Duration::seconds(cfg.idle_poll.as_secs() as i64);
                 let iv = series_cadence(&tft_rows, now, live, near, idle);
+                // CompeteTFT is primary: drop any Liquipedia rows for an event
+                // CompeteTFT already owns this run (matched by normalized event
+                // name), so this cycle's feed never double-lists it. Liquipedia
+                // rows persisted before coverage flipped age out on their own.
+                // A no-op unless both sources are on and name the event alike.
+                let drop_covered = |rows: Vec<NormalizedMatch>| -> Vec<NormalizedMatch> {
+                    let covered = COMPETETFT_COVERED
+                        .read()
+                        .unwrap_or_else(PoisonError::into_inner);
+                    rows.into_iter()
+                        .filter(|m| {
+                            !covered.contains(&tft_coverage_key(&crate::types::full_event_name(
+                                "TFT",
+                                &m.series_name,
+                            )))
+                        })
+                        .collect()
+                };
                 const LIQ_DAILY_CAP: u64 = 200;
                 // At most one Liquipedia `action=parse` per cycle (their 1-req/30s
                 // rule): the upcoming-matches page when it's due, else one due
@@ -1775,7 +2225,12 @@ pub fn spawn_poller() {
                 // consecutive parses always clear the 30s floor.
                 if liq_at.is_none_or(|t| now - t >= iv) && liq_used < LIQ_DAILY_CAP {
                     match crate::tft::fetch_tft(&client, now).await {
-                        Ok(rows) if !rows.is_empty() => feeds.push((Sport::Tft, Ok(rows))),
+                        Ok(rows) if !rows.is_empty() => {
+                            let rows = drop_covered(rows);
+                            if !rows.is_empty() {
+                                feeds.push((Sport::Tft, Ok(rows)));
+                            }
+                        }
                         Ok(_) => leptos::logging::log!(
                             "TFT: parsed 0 sessions (200 OK) — keeping cached rows (possible markup drift)"
                         ),
@@ -1799,7 +2254,10 @@ pub fn spawn_poller() {
                     // Reconstructed finished-day rows join this cycle's feed so the
                     // schedule keeps past days (they're not on the upcoming page).
                     if !past_sessions.is_empty() {
-                        feeds.push((Sport::Tft, Ok(past_sessions)));
+                        let past = drop_covered(past_sessions);
+                        if !past.is_empty() {
+                            feeds.push((Sport::Tft, Ok(past)));
+                        }
                     }
                     if billed && let Some(c) = store.as_ref() {
                         let _ = crate::store::set_meta(c, LIQ_META_USED, &liq_used.to_string());
@@ -2115,6 +2573,67 @@ const LIQ_META_AT: &str = "liq_upcoming_at";
 /// `(billed, reconstructed_past_sessions)` — the finished-day schedule rows the
 /// caller should upsert. Takes no DB connection: must not hold one across the
 /// await.
+/// The tournament ids CompeteTFT should pull this cycle: the schedule feed's ids
+/// (when `autodiscover` is on) plus configured pins, minus excludes,
+/// order-preserved and de-duplicated.
+fn competetft_discovery_ids(
+    feed_ids: &[String],
+    pins: &[String],
+    exclude: &[String],
+    autodiscover: bool,
+) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let push = |id: &String, out: &mut Vec<String>| {
+        if !exclude.contains(id) && !out.contains(id) {
+            out.push(id.clone());
+        }
+    };
+    if autodiscover {
+        for id in feed_ids {
+            push(id, &mut out);
+        }
+    }
+    for id in pins {
+        push(id, &mut out);
+    }
+    out
+}
+
+/// Normalize a TFT event name for cross-source precedence matching: drop a
+/// trailing ": subtitle" (the set name Liquipedia appends, e.g. "Tactician's
+/// Crown: Space Gods") and lowercase, so CompeteTFT's "TFT Tactician's Crown"
+/// matches Liquipedia's "TFT Tactician's Crown: Space Gods". Best-effort — it
+/// only aligns names sharing a base before the colon; if the two sources name a
+/// premier event with no common prefix, both still show (a documented edge).
+fn tft_coverage_key(event_name: &str) -> String {
+    event_name
+        .split(':')
+        .next()
+        .unwrap_or(event_name)
+        .trim()
+        .to_ascii_lowercase()
+}
+
+/// Store one CompeteTFT tournament's results into the caches (in-memory +
+/// SQLite), keyed by its full event name, and record the event as
+/// CompeteTFT-owned so the Liquipedia branch won't clobber or duplicate it.
+/// Empty sections are skipped, so a partial parse never wipes cached rows.
+#[cfg(feature = "ssr")]
+fn apply_competetft(data: &crate::competetft::CompeteTournamentData, now: DateTime<Utc>) {
+    let ev = crate::types::full_event_name("TFT", &data.tournament);
+    // Only suppress Liquipedia for this event when CompeteTFT actually has dated
+    // schedule rows (sessions) for it. Off-broadcast the sheet still yields
+    // standings/streams/etc. below, but with no rows to replace Liquipedia's, so
+    // leaving the event un-covered lets Liquipedia fill the schedule.
+    if !data.sessions.is_empty() {
+        COMPETETFT_COVERED
+            .write()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(tft_coverage_key(&ev));
+    }
+    store_tft_caches(data, &ev, now);
+}
+
 async fn refresh_tft_results(
     client: &reqwest::Client,
     tft_rows: &[NormalizedMatch],
@@ -2233,6 +2752,7 @@ async fn refresh_tft_results(
                         tournament_url: nearest.league_url.clone().unwrap_or_default(),
                         // Past game — finished, no live stream to carry.
                         streams: Vec::new(),
+                        status: None,
                     };
                     past_sessions.push(crate::tft::session_to_match(&ps, now));
                 }
@@ -2385,22 +2905,46 @@ fn apply_poll(
                     .collect()
             };
             let wrc_keep = reconcile_wrc(&mut fresh, &prev_wrc_stages);
-            // TFT is NOT league-scoped replaced: its feed alternates between the
-            // upcoming page and reconstructed finished-day rows, so neither is a
-            // complete enumeration — replacing would prune whichever the other cycle
-            // added. Finished days are meant to persist (kept back to
-            // `archive_months`), so TFT relies on id-keyed upsert + age pruning.
-            // Tradeoff: a session pulled from Liquipedia's upcoming page (never a
-            // reconstruction) lingers until it ages out rather than vanishing at
-            // once. Twins are prevented at parse time (`dedup_twins`).
-            if let Err(e) = crate::store::upsert_and_prune(
+            // TFT is reconciled per tournament (below) now that CompeteTFT is
+            // authoritative: each poll's feed is one tournament's complete session
+            // set, so a superseded row (e.g. a tier-3 range row replaced by tier-1/2
+            // per-day rows once dates arrive) is dropped rather than lingering to the
+            // age cutoff. Skipped for a tournament that brought back nothing this poll.
+            match crate::store::upsert_and_prune(
                 conn,
                 &fresh,
                 now.timestamp_millis(),
                 cutoff_ms,
                 &[("WRC", wrc_keep)],
             ) {
-                leptos::logging::log!("cache db write failed: {e}");
+                Ok(()) => {
+                    // Reconcile TFT per tournament ONLY when the upsert committed
+                    // (else the keep-ids aren't in the DB yet and the DELETE would
+                    // wipe the tournament) AND only when CompeteTFT is the sole,
+                    // complete TFT source. With Liquipedia enabled its feed is partial
+                    // per poll (alternating upcoming / reconstructed), so replacing
+                    // would delete legitimate rows the other cycle added.
+                    if !config().liquipedia_enabled {
+                        let mut tft_keep: std::collections::HashMap<&str, Vec<i64>> =
+                            std::collections::HashMap::new();
+                        for m in &fresh {
+                            if m.sport == Sport::Tft {
+                                tft_keep
+                                    .entry(m.series_name.as_str())
+                                    .or_default()
+                                    .push(m.id);
+                            }
+                        }
+                        for (tournament, keep) in &tft_keep {
+                            if let Err(e) =
+                                crate::store::replace_tft_tournament(conn, tournament, keep)
+                            {
+                                leptos::logging::log!("tft reconcile failed for {tournament}: {e}");
+                            }
+                        }
+                    }
+                }
+                Err(e) => leptos::logging::log!("cache db write failed: {e}"),
             }
         }
         match crate::store::load_all(conn) {
@@ -2581,9 +3125,11 @@ fn next_due_refresh_bucket(
         let snap = SNAPSHOT.read().unwrap_or_else(PoisonError::into_inner);
         let mut set = std::collections::HashSet::new();
         for m in &snap.matches {
-            // Past-refresh re-fetches a day from PandaScore; traditional sports
-            // (MLB) come from their own feed and have no PandaScore endpoint.
-            if m.sport.traditional() {
+            // Past-refresh re-fetches a day from PandaScore, so only CS2/LoL
+            // qualify; every other sport (traditional feeds, and TFT via
+            // CompeteTFT) comes from its own source and has no PandaScore endpoint
+            // — routing one here would panic in `game_path`.
+            if !m.sport.pandascore() {
                 continue;
             }
             let day = m.begin_at.date_naive();
@@ -6053,6 +6599,361 @@ mod tests {
     use super::*;
 
     #[test]
+    fn tft_extra_accessors_default_empty() {
+        assert!(tft_streamers("nope").is_empty());
+        assert!(tft_broadcasts("nope").is_empty());
+        assert!(tft_lobbies("nope").is_empty());
+    }
+
+    #[test]
+    fn tft_enrichment_resolves_by_normalized_name_fallback() {
+        let want = vec![crate::types::TftStreamer {
+            player: "Mortdog".to_string(),
+            url: "https://twitch.tv/mortdog".to_string(),
+            platform: "twitch".to_string(),
+        }];
+        TFT_STREAMERS
+            .write()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert("TFT Normalized Fallback Cup".to_string(), want.clone());
+        // Exact name still resolves.
+        assert_eq!(tft_streamers("TFT Normalized Fallback Cup").len(), 1);
+        // Source-name divergence (a ": subtitle" the store lacks) resolves via the
+        // normalized fallback — the whole point of the fix.
+        let hit = tft_streamers("TFT Normalized Fallback Cup: Some Set");
+        assert_eq!(hit.len(), 1);
+        assert_eq!(hit[0].player, "Mortdog");
+        // An unrelated event still returns empty (no false-positive normalized match).
+        assert!(tft_streamers("TFT Totally Unrelated Event").is_empty());
+    }
+
+    /// A co-streamer stream, as `streamer_to_stream` builds them.
+    fn costream(login: &str, live: bool, viewers: u64, lang: &str) -> StreamView {
+        StreamView {
+            url: format!("https://twitch.tv/{login}"),
+            language: lang.to_string(),
+            live,
+            viewers: live.then_some(viewers),
+            group: "costream".to_string(),
+            ..Default::default()
+        }
+    }
+
+    fn logins(v: &[StreamView]) -> Vec<String> {
+        v.iter()
+            .map(|s| s.url.rsplit('/').next().unwrap_or("").to_string())
+            .collect()
+    }
+
+    #[test]
+    fn fill_stream_languages_fills_blanks_and_respects_existing() {
+        let mut v = vec![
+            costream("blank", false, 0, ""),
+            costream("already", false, 0, "en"),
+            costream("unknown", false, 0, ""),
+        ];
+        let langs: HashMap<String, String> = [
+            ("blank".to_string(), "fr".to_string()),
+            ("already".to_string(), "de".to_string()),
+        ]
+        .into_iter()
+        .collect();
+        fill_stream_languages(&mut v, &langs);
+        assert_eq!(
+            v[0].language, "fr",
+            "a blank language is filled from Twitch"
+        );
+        assert_eq!(
+            v[1].language, "en",
+            "a source that named its language is not overwritten"
+        );
+        assert_eq!(
+            v[2].language, "",
+            "a channel Twitch has no language for stays blank"
+        );
+    }
+
+    #[test]
+    fn fill_stream_languages_ignores_non_twitch_urls() {
+        let mut v = vec![StreamView {
+            url: "https://www.youtube.com/@someone".to_string(),
+            group: "costream".to_string(),
+            ..Default::default()
+        }];
+        let langs: HashMap<String, String> = [("someone".to_string(), "fr".to_string())]
+            .into_iter()
+            .collect();
+        fill_stream_languages(&mut v, &langs);
+        assert_eq!(v[0].language, "", "a youtube channel is not a twitch login");
+    }
+
+    #[test]
+    fn cap_fills_spare_slots_with_offline_streamers() {
+        // Two live, cap 8 ⇒ the other six slots go to offline channels rather than
+        // the list shrinking to the live ones.
+        let mut v = vec![costream("off1", false, 0, "en")];
+        v.push(costream("live1", true, 10, "en"));
+        for i in 0..8 {
+            v.push(costream(&format!("off{}", i + 2), false, 0, "en"));
+        }
+        v.push(costream("live2", true, 99, "en"));
+        cap_and_group_streamers(&mut v);
+        assert_eq!(v.len(), TFT_STREAMER_CAP, "fills up to the cap");
+        let l = logins(&v);
+        assert!(l.contains(&"live1".to_string()) && l.contains(&"live2".to_string()));
+        assert_eq!(v.iter().filter(|s| !s.live).count(), 6, "rest are offline");
+    }
+
+    #[test]
+    fn cap_is_absolute_when_more_are_live_than_slots() {
+        // 12 live, cap 8 ⇒ 8, keeping the most-watched.
+        let mut v: Vec<StreamView> = (0..12u64)
+            .map(|i| costream(&format!("live{i}"), true, i * 10, "en"))
+            .collect();
+        cap_and_group_streamers(&mut v);
+        assert_eq!(v.len(), TFT_STREAMER_CAP, "overflow respects the cap");
+        assert!(v.iter().all(|s| s.live));
+        let l = logins(&v);
+        assert!(l.contains(&"live11".to_string()), "keeps the most-watched");
+        assert!(!l.contains(&"live0".to_string()), "drops the least-watched");
+    }
+
+    #[test]
+    fn cap_keeps_live_over_offline_regardless_of_language_grouping() {
+        // Grouping runs after the cap: an offline channel never displaces a live one.
+        let mut v = vec![costream("zz_live", true, 5, "fr")];
+        for i in 0..10 {
+            v.push(costream(&format!("aa_off{i}"), false, 0, "en"));
+        }
+        cap_and_group_streamers(&mut v);
+        assert_eq!(v.len(), TFT_STREAMER_CAP);
+        assert!(
+            logins(&v).contains(&"zz_live".to_string()),
+            "the live channel survives the cap"
+        );
+    }
+
+    #[test]
+    fn cap_prefers_a_live_channel_with_no_viewers_over_offline_ones() {
+        // The case the `live` sort key exists for: live-but-quiet ties with offline
+        // on viewer count (both 0), so only the flag separates them. Sorting on
+        // viewers alone would let the offline channels listed first take every slot.
+        let mut v: Vec<StreamView> = (0..8)
+            .map(|i| costream(&format!("off{i}"), false, 0, "en"))
+            .collect();
+        v.push(costream("quiet_live", true, 0, "en"));
+        cap_and_group_streamers(&mut v);
+        assert_eq!(v.len(), TFT_STREAMER_CAP);
+        assert!(
+            logins(&v).contains(&"quiet_live".to_string()),
+            "a live channel with no viewers still makes the cut"
+        );
+    }
+
+    #[test]
+    fn cap_groups_survivors_by_language() {
+        let mut v = vec![
+            costream("a", false, 0, "fr"),
+            costream("b", false, 0, "en"),
+            costream("c", false, 0, "fr"),
+            costream("d", false, 0, "es"),
+        ];
+        cap_and_group_streamers(&mut v);
+        let langs: Vec<&str> = v.iter().map(|s| s.language.as_str()).collect();
+        // Each language contiguous — not interleaved as the input was.
+        let mut seen: Vec<&str> = Vec::new();
+        for l in &langs {
+            if seen.last() != Some(l) {
+                assert!(!seen.contains(l), "language {l} is split across the list");
+                seen.push(l);
+            }
+        }
+    }
+
+    #[test]
+    fn cap_leaves_short_lists_alone() {
+        let mut v = vec![costream("a", false, 0, "en"), costream("b", true, 1, "en")];
+        cap_and_group_streamers(&mut v);
+        assert_eq!(v.len(), 2, "under the cap ⇒ nothing dropped");
+    }
+
+    #[test]
+    fn store_tft_caches_populates_every_declared_cache() {
+        // The other half of the `tft_caches!` guarantee: the macro makes store and
+        // restore agree, this pins that every declared cache is actually fed and
+        // reachable through its accessor. Drop an entry from the list and it goes
+        // empty here. (Feeding a cache from the wrong field is a type error — each
+        // one holds a distinct type — so the compiler already covers that half.)
+        let ev = "TFT Store Wiring Cup";
+        let now = "2026-07-13T00:00:00Z".parse::<DateTime<Utc>>().unwrap();
+        let data = crate::competetft::CompeteTournamentData {
+            tournament: "Store Wiring Cup".to_string(),
+            sessions: Vec::new(),
+            sheet_url: "https://docs.google.com/spreadsheets/d/e/WIRED/pubhtml".to_string(),
+            placements: vec![crate::types::TftPlacement {
+                place: "1".to_string(),
+                participant: "Winner".to_string(),
+                prize: "$1".to_string(),
+            }],
+            standings: vec![crate::types::TftDayPanel {
+                label: "Day 1".to_string(),
+                standings: crate::types::TftStandings {
+                    game_count: 1,
+                    rows: Vec::new(),
+                },
+            }],
+            streamers: vec![crate::types::TftStreamer {
+                player: "Streamer".to_string(),
+                url: "https://twitch.tv/streamer".to_string(),
+                platform: "twitch".to_string(),
+            }],
+            broadcasts: vec![crate::types::TftBroadcast {
+                label: "Official English Broadcast".to_string(),
+                language: "en".to_string(),
+                kind: crate::types::TftBroadcastKind::Regional,
+                links: vec![("twitch".to_string(), "https://twitch.tv/tft".to_string())],
+            }],
+            lobbies: vec![crate::types::TftLobbyRound {
+                label: "Day 1 \u{b7} Round 1".to_string(),
+                lobbies: Vec::new(),
+            }],
+        };
+        store_tft_caches(&data, ev, now);
+
+        assert!(tft_sheet(ev).contains("/WIRED/"), "sheet_url -> TFT_SHEET");
+        assert_eq!(
+            tft_placements(ev).first().map(|p| p.participant.as_str()),
+            Some("Winner"),
+            "placements -> TFT_PLACEMENTS"
+        );
+        assert_eq!(
+            tft_standings(ev).first().map(|p| p.label.as_str()),
+            Some("Day 1"),
+            "standings -> TFT_STANDINGS"
+        );
+        assert_eq!(
+            tft_streamers(ev).first().map(|s| s.player.as_str()),
+            Some("Streamer"),
+            "streamers -> TFT_STREAMERS"
+        );
+        assert_eq!(
+            tft_broadcasts(ev).first().map(|b| b.language.as_str()),
+            Some("en"),
+            "broadcasts -> TFT_BROADCASTS"
+        );
+        assert_eq!(tft_lobbies(ev).len(), 1, "lobbies -> TFT_LOBBIES");
+    }
+
+    #[test]
+    fn store_tft_caches_leaves_existing_data_alone_when_a_poll_returns_nothing() {
+        // An empty field is skipped, not stored: an off-broadcast poll that yields
+        // no lobbies must not erase the ones already on the page.
+        let ev = "TFT Empty Poll Cup";
+        let now = "2026-07-13T00:00:00Z".parse::<DateTime<Utc>>().unwrap();
+        let full = crate::competetft::CompeteTournamentData {
+            tournament: "Empty Poll Cup".to_string(),
+            sessions: Vec::new(),
+            sheet_url: "https://docs.google.com/spreadsheets/d/e/KEEP/pubhtml".to_string(),
+            placements: Vec::new(),
+            standings: Vec::new(),
+            streamers: vec![crate::types::TftStreamer {
+                player: "Keep".to_string(),
+                url: "https://twitch.tv/keep".to_string(),
+                platform: "twitch".to_string(),
+            }],
+            broadcasts: Vec::new(),
+            lobbies: Vec::new(),
+        };
+        store_tft_caches(&full, ev, now);
+        let empty = crate::competetft::CompeteTournamentData {
+            tournament: "Empty Poll Cup".to_string(),
+            sessions: Vec::new(),
+            sheet_url: String::new(),
+            placements: Vec::new(),
+            standings: Vec::new(),
+            streamers: Vec::new(),
+            broadcasts: Vec::new(),
+            lobbies: Vec::new(),
+        };
+        store_tft_caches(&empty, ev, now);
+        assert!(
+            tft_sheet(ev).contains("/KEEP/"),
+            "sheet survives an empty poll"
+        );
+        assert_eq!(
+            tft_streamers(ev).len(),
+            1,
+            "streamers survive an empty poll"
+        );
+    }
+
+    #[test]
+    fn tft_sheet_resolves_exactly_and_by_normalized_name() {
+        // tft_sheet carries its own copy of the exact-then-normalized lookup (it
+        // holds a String, not a Vec), so it needs its own coverage.
+        TFT_SHEET
+            .write()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(
+                "TFT Sheet Lookup Cup".to_string(),
+                "https://docs.google.com/spreadsheets/d/e/KEY/pubhtml".to_string(),
+            );
+        assert!(tft_sheet("TFT Sheet Lookup Cup").contains("/KEY/"));
+        assert!(
+            tft_sheet("TFT Sheet Lookup Cup: Some Set").contains("/KEY/"),
+            "source-name divergence resolves via the normalized fallback"
+        );
+        assert!(tft_sheet("TFT Some Other Event").is_empty());
+    }
+
+    #[test]
+    fn tft_sheet_defaults_empty() {
+        assert!(tft_sheet("nope, never fetched").is_empty());
+    }
+
+    #[test]
+    fn streamer_to_stream_converts_and_drops_linkless() {
+        use crate::types::TftStreamer;
+        let s = streamer_to_stream(&TftStreamer {
+            player: "Dishsoap".into(),
+            url: "https://twitch.tv/dishsoap".into(),
+            platform: "twitch".into(),
+        })
+        .expect("a linked streamer converts");
+        assert_eq!(s.url, "https://twitch.tv/dishsoap");
+        assert_eq!(
+            s.group, "costream",
+            "a player stream is never the broadcast"
+        );
+        assert!(!s.official);
+        assert!(
+            !s.live,
+            "live status is enrichment's job, not the conversion's"
+        );
+
+        // No link ⇒ nothing to show.
+        assert!(
+            streamer_to_stream(&TftStreamer {
+                player: "Nolink".into(),
+                url: "   ".into(),
+                platform: "twitch".into(),
+            })
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn discovery_merges_pins_and_excludes() {
+        let evs = vec!["a".to_string(), "b".to_string()];
+        // autodiscover on: feed ∪ pins ∖ exclude, order-preserved, deduped
+        let got = competetft_discovery_ids(&evs, &["c".into()], &["b".into()], true);
+        assert_eq!(got, vec!["a".to_string(), "c".to_string()]);
+        // autodiscover off: pins only
+        let got = competetft_discovery_ids(&evs, &["c".into()], &[], false);
+        assert_eq!(got, vec!["c".to_string()]);
+    }
+
+    #[test]
     fn box_score_cache_evicts_oldest_over_cap() {
         let mk = |ms: i64| CachedBoxScore {
             bs: crate::types::BoxScore::default(),
@@ -6998,6 +7899,110 @@ mod tests {
         // cheaply via the date-range path. > 1 week is locked.
         assert_eq!(refresh_interval(0), Some(Duration::minutes(30)));
         assert_eq!(refresh_interval(8), None);
+    }
+
+    #[test]
+    fn competetft_coverage_is_gated_on_sessions() {
+        let name = "Coverage Gating Test Cup";
+        let key = tft_coverage_key(&crate::types::full_event_name("TFT", name));
+        let now = "2026-07-13T00:00:00Z".parse::<DateTime<Utc>>().unwrap();
+
+        let data =
+            |sessions: Vec<crate::tft::ParsedSession>| crate::competetft::CompeteTournamentData {
+                tournament: name.to_string(),
+                sessions,
+                placements: Vec::new(),
+                standings: Vec::new(),
+                streamers: Vec::new(),
+                broadcasts: Vec::new(),
+                lobbies: Vec::new(),
+                sheet_url: String::new(),
+            };
+        let covered = || {
+            COMPETETFT_COVERED
+                .read()
+                .unwrap_or_else(PoisonError::into_inner)
+                .contains(&key)
+        };
+
+        // No dated sessions → do NOT suppress Liquipedia for this event.
+        apply_competetft(&data(Vec::new()), now);
+        assert!(!covered(), "empty sessions must not claim coverage");
+
+        // A dated session → claim coverage (CompeteTFT drives the rows).
+        let session = crate::tft::ParsedSession {
+            tournament: name.to_string(),
+            session_label: "Day 1".to_string(),
+            begin_at: now,
+            tournament_url: String::new(),
+            streams: Vec::new(),
+            status: None,
+        };
+        apply_competetft(&data(vec![session]), now);
+        assert!(covered(), "a dated session must claim coverage");
+    }
+
+    #[test]
+    fn past_refresh_bucket_only_yields_pandascore_sports() {
+        // Regression: a TFT (CompeteTFT) match in the snapshot must never produce a
+        // past-refresh bucket. `fetch_past_range_all` routes the bucket's sport
+        // through `game_path`, which only knows CS2/LoL and panics on anything else
+        // ("game_path is PandaScore-only ...; got Tft"). The old filter used
+        // `traditional()`, which excluded MLB but let TFT through.
+        let now = "2026-07-13T12:00:00Z".parse::<DateTime<Utc>>().unwrap();
+        let team = |label: &str| NormalizedTeam {
+            label: label.into(),
+            name: label.into(),
+            abbrev: String::new(),
+            score: None,
+        };
+        let mk = |id: i64, sport: Sport| {
+            NormalizedMatch::team_sport(
+                id,
+                sport,
+                "L",
+                now,
+                MatchStatus::Finished,
+                team("A"),
+                team("B"),
+            )
+        };
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute(
+            "CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)",
+            [],
+        )
+        .unwrap();
+        let set_snap = |matches: Vec<NormalizedMatch>| {
+            let mut snap = SNAPSHOT.write().unwrap_or_else(PoisonError::into_inner);
+            snap.matches = matches;
+            snap.fetched_at = now;
+        };
+
+        // TFT-only snapshot → no bucket (previously returned Some(Tft) → panic).
+        set_snap(vec![mk(1, Sport::Tft)]);
+        assert_eq!(next_due_refresh_bucket(&conn, now), None);
+
+        // A traditional sport is skipped too.
+        set_snap(vec![mk(2, Sport::Mlb)]);
+        assert_eq!(next_due_refresh_bucket(&conn, now), None);
+
+        // CS2 is still eligible — guard against over-filtering.
+        set_snap(vec![mk(3, Sport::Cs2)]);
+        assert_eq!(
+            next_due_refresh_bucket(&conn, now),
+            Some((Sport::Cs2, now.date_naive()))
+        );
+
+        // Mixed: only the PandaScore sport survives, deterministically.
+        set_snap(vec![mk(4, Sport::Tft), mk(5, Sport::Cs2)]);
+        assert_eq!(
+            next_due_refresh_bucket(&conn, now),
+            Some((Sport::Cs2, now.date_naive()))
+        );
+
+        // Leave the global snapshot empty for unrelated tests.
+        set_snap(Vec::new());
     }
 
     // ----- Orange Cat Blacktop per-series poll cadence -----------------------
@@ -8530,5 +9535,40 @@ mod tests {
         );
         // A game/league with no entry → empty.
         assert!(costreamer_seeds(&cs, "IEM", Sport::Cs2).is_empty());
+    }
+
+    #[test]
+    fn broadcast_to_stream_converts_official_and_drops_linkless() {
+        use crate::types::{TftBroadcast, TftBroadcastKind};
+        let b = TftBroadcast {
+            label: "Official English Broadcast".into(),
+            language: "en".into(),
+            kind: TftBroadcastKind::Regional,
+            links: vec![
+                (
+                    "twitch".into(),
+                    "https://www.twitch.tv/teamfighttactics".into(),
+                ),
+                ("youtube".into(), "https://www.youtube.com/@playtft".into()),
+            ],
+        };
+        let s = broadcast_to_stream(&b).expect("a linked broadcast converts");
+        assert_eq!(
+            s.url, "https://www.twitch.tv/teamfighttactics",
+            "prefers twitch"
+        );
+        assert_eq!(s.name, "Official English Broadcast");
+        assert_eq!(s.language, "en");
+        assert!(s.official);
+        assert!(s.curated);
+        assert_eq!(s.group, "official");
+        // A broadcast with no twitch/youtube link has nothing to link or enrich.
+        let linkless = TftBroadcast {
+            label: "Some TV".into(),
+            language: String::new(),
+            kind: TftBroadcastKind::Regional,
+            links: vec![("douyu".into(), "https://douyu.com/x".into())],
+        };
+        assert!(broadcast_to_stream(&linkless).is_none());
     }
 }

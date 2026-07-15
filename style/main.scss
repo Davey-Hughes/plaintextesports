@@ -2863,7 +2863,12 @@ a.sw-link {
   // values, so the columns never reflow when the spoiler is revealed.
   width: max-content;
   align-items: baseline;
-  gap: 0.3rem 1.4rem;
+  // Tight column gap: a full TFT day is 13 game columns, so at 16 columns the
+  // gap dominates the table's width (at 1.4rem it was ~336px of 812px, forcing a
+  // horizontal scroll). 0.6rem fits the widest day comfortably while keeping the
+  // numeric columns legible. All day tabs share one computed grid, so they stay
+  // aligned and resize together.
+  gap: 0.3rem 0.6rem;
   font-size: 13px;
   font-variant-numeric: tabular-nums;
 
@@ -2874,7 +2879,6 @@ a.sw-link {
   .tft-rank,
   .tft-g,
   .tft-total,
-  .tft-pts,
   .tft-prize {
     text-align: right;
   }
@@ -2911,6 +2915,118 @@ a.sw-link {
     letter-spacing: 0.04em;
     text-transform: uppercase;
     opacity: 0.55;
+  }
+}
+
+// CompeteTFT: per-round lobby breakdown (round selector + lobby cards).
+.lob-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.1rem 0.3rem;
+  // Buttons sit close together within a day, so the gaps between the day rows
+  // have to beat them to read as the stronger split — the rows are what group
+  // the buttons. Breathing room stays below the last row, before the lobby grid.
+  margin: 0.4rem 0;
+  align-items: center;
+
+  &:last-of-type {
+    margin-bottom: 0.8rem;
+  }
+
+  // Collapsed keeps the row's space (and so the page's shape) instead of folding
+  // it away — the lobby grid below reserves its height the same way.
+  &.hidden {
+    visibility: hidden;
+  }
+}
+
+.lob-lbl {
+  font-size: 11px;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin-right: 0.3rem;
+}
+
+.rnd {
+  background: none;
+  border: 1px solid var(--border);
+  color: var(--muted);
+  font: inherit;
+  font-size: 12px;
+  // Roomier tap target: the round buttons are split into one row per day now, so
+  // a row holds ~6-8 of them instead of all ~21 wrapping together. Uniform width
+  // regardless of digit count — a row mixes "9" and "13", and ragged boxes read
+  // as misaligned. Padding stays symmetric so the digits centre.
+  padding: 0.25rem 0;
+  cursor: pointer;
+  width: 2.6em;
+  text-align: center;
+  box-sizing: border-box;
+
+  &:hover {
+    color: var(--fg);
+    border-color: var(--fg);
+  }
+
+  &.active {
+    color: var(--bg);
+    background: var(--fg);
+    border-color: var(--fg);
+  }
+}
+
+.lob-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(220px, 100%), 1fr));
+  gap: 1rem;
+}
+
+.lob {
+  border: 1px solid var(--border);
+  background: var(--card-bg);
+}
+
+.lob-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 0.5rem;
+  padding: 0.3rem 0.5rem;
+  border-bottom: 1px solid var(--border);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+}
+
+.lob-cast a {
+  font-size: 11px;
+}
+
+.lob-body {
+  display: grid;
+  grid-template-columns: 1.6em 1fr;
+  gap: 0.12rem 0.5rem;
+  padding: 0.4rem 0.5rem;
+  font-size: 12.5px;
+  font-variant-numeric: tabular-nums;
+
+  .p {
+    text-align: right;
+    color: var(--muted);
+
+    &.win {
+      color: var(--win);
+      font-weight: 700;
+    }
+  }
+
+  .n {
+    text-align: left;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 }
 

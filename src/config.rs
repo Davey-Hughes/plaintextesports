@@ -43,6 +43,15 @@ struct FileConfig {
     /// Enable the TFT schedule feed from Liquipedia's MediaWiki API. Off by
     /// default — it parses rendered HTML from an external wiki, so it's opt-in.
     liquipedia_enabled: Option<bool>,
+    /// Enable the first-party CompeteTFT source (Riot competetft.com + the
+    /// official published sheet). Off by default — scrape-based, opt-in.
+    competetft_enabled: Option<bool>,
+    /// Crawl competetft's schedule feed to auto-discover TFT tournaments.
+    competetft_autodiscover: Option<bool>,
+    /// Tournament ids to always include (in addition to / instead of discovery).
+    competetft_pins: Option<Vec<String>>,
+    /// Tournament ids to never include.
+    competetft_exclude: Option<Vec<String>>,
     /// Twitch category-discovery of unlisted co-streamers.
     twitch_discovery: Option<TwitchDiscoveryFile>,
     /// League name → Twitch title keywords for discovery attribution.
@@ -115,6 +124,14 @@ impl FileConfig {
         put(
             "LIQUIPEDIA_ENABLED",
             self.liquipedia_enabled.map(|b| b.to_string()),
+        );
+        put(
+            "COMPETETFT_ENABLED",
+            self.competetft_enabled.map(|b| b.to_string()),
+        );
+        put(
+            "COMPETETFT_AUTODISCOVER",
+            self.competetft_autodiscover.map(|b| b.to_string()),
         );
         put(
             "OCBLACKTOP_LIVE_POLL_SECS",
@@ -228,6 +245,14 @@ pub struct Config {
     pub soop_costreamers: HashMap<String, Vec<String>>,
     /// Enable the TFT schedule feed from Liquipedia (opt-in; scrape-based).
     pub liquipedia_enabled: bool,
+    /// Enable the first-party CompeteTFT source (opt-in). Primary for TFT when on.
+    pub competetft_enabled: bool,
+    /// Auto-discover tournaments from competetft's schedule feed.
+    pub competetft_autodiscover: bool,
+    /// Tournament ids always included.
+    pub competetft_pins: Vec<String>,
+    /// Tournament ids never included.
+    pub competetft_exclude: Vec<String>,
     /// Twitch category-discovery of unlisted co-streamers. Off when
     /// `enabled_sports` is empty.
     pub twitch_discovery: TwitchDiscovery,
@@ -391,6 +416,12 @@ impl Config {
         if let Some(al) = file.twitch_league_aliases {
             cfg.twitch_league_aliases = al;
         }
+        if let Some(pins) = file.competetft_pins {
+            cfg.competetft_pins = pins;
+        }
+        if let Some(exclude) = file.competetft_exclude {
+            cfg.competetft_exclude = exclude;
+        }
     }
 
     /// True when Twitch discovery is enabled for `sport`.
@@ -506,6 +537,8 @@ impl Config {
         let backfill = flag("ENABLE_BACKFILL", true);
         let soop_enabled = flag("SOOP_ENABLED", false);
         let liquipedia_enabled = flag("LIQUIPEDIA_ENABLED", false);
+        let competetft_enabled = flag("COMPETETFT_ENABLED", false);
+        let competetft_autodiscover = flag("COMPETETFT_AUTODISCOVER", true);
         let rate_limit_floor = secs("RATE_LIMIT_FLOOR", 200, 0);
 
         let db_path = get("DB_PATH").unwrap_or_else(|| "data/cache.db".to_string());
@@ -542,6 +575,10 @@ impl Config {
             soop_enabled,
             soop_costreamers: HashMap::new(),
             liquipedia_enabled,
+            competetft_enabled,
+            competetft_autodiscover,
+            competetft_pins: Vec::new(),
+            competetft_exclude: Vec::new(),
             ocblacktop_live_poll,
             ocblacktop_near_poll,
             ocblacktop_idle_poll,
@@ -584,6 +621,21 @@ mod tests {
             .map(|(k, v)| ((*k).into(), (*v).into()))
             .collect();
         Config::from_vars(move |k| map.get(k).cloned())
+    }
+
+    #[test]
+    fn competetft_defaults_and_flags() {
+        let c = cfg(&[]);
+        assert!(!c.competetft_enabled);
+        assert!(c.competetft_autodiscover);
+        assert!(c.competetft_pins.is_empty());
+        assert!(c.competetft_exclude.is_empty());
+        let c = cfg(&[
+            ("COMPETETFT_ENABLED", "true"),
+            ("COMPETETFT_AUTODISCOVER", "false"),
+        ]);
+        assert!(c.competetft_enabled);
+        assert!(!c.competetft_autodiscover);
     }
 
     #[test]

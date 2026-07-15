@@ -169,102 +169,31 @@ fn tft_real(name: &str) -> bool {
     !n.is_empty() && !n.eq_ignore_ascii_case("TBD")
 }
 
-/// One row of the merged TFT results ladder: a tournament position with whoever
-/// holds it, plus the value we have for them — live points for a player still in,
-/// prize money for one who's out.
-#[derive(Clone)]
-struct MergedRow {
-    pos: String,
-    player: String,
-    points: String,
-    prize: String,
-    /// Placement locked in (player eliminated) — muted, below the divider.
-    is_final: bool,
-    /// An open slot with no live-standings player behind it — rendered "—".
-    blank: bool,
-}
-
-/// Fold a stage's live standings and the tournament's final placements into one
-/// ranked ladder. The two are disjoint: standings holds the players still
-/// competing (ranked by points, placement still "TBD"); the *decided* placement
-/// rows are the eliminated players (final place + prize). Since anyone still in
-/// finishes above anyone already out, they stack cleanly — active players fill the
-/// open ("TBD") slots from the top in standings order, eliminated players sit
-/// below with their locked place. Positions come from the placement ladder; with
-/// no placements yet it's simply the standings.
-fn merge_tft_results(standings: &TftStandings, placements: &[TftPlacement]) -> Vec<MergedRow> {
-    let mut active = standings.rows.iter();
-    let mut out = Vec::new();
-    for p in placements {
-        if tft_real(&p.participant) {
-            // A decided (eliminated) place: final, carrying the prize.
-            out.push(MergedRow {
-                pos: p.place.clone(),
-                player: p.participant.clone(),
-                points: String::new(),
-                prize: p.prize.clone(),
-                is_final: true,
-                blank: false,
-            });
-        } else if let Some(a) = active.next() {
-            // A still-open place, filled by the next live-standings player.
-            out.push(MergedRow {
-                pos: p.place.clone(),
-                player: a.participant.clone(),
-                points: a.total.clone(),
-                prize: String::new(),
-                is_final: false,
-                blank: false,
-            });
-        } else {
-            // Open place with no standings behind it (e.g. a finals with no live
-            // table) — a blank slot so the ladder still reads as complete.
-            out.push(MergedRow {
-                pos: p.place.clone(),
-                player: String::new(),
-                points: String::new(),
-                prize: String::new(),
-                is_final: false,
-                blank: true,
-            });
-        }
-    }
-    // No placement ladder yet (early stage) — show the standings on their own.
-    for a in active {
-        out.push(MergedRow {
-            pos: (out.len() + 1).to_string(),
-            player: a.participant.clone(),
-            points: a.total.clone(),
-            prize: String::new(),
-            is_final: false,
-            blank: false,
-        });
-    }
-    out
-}
-
-/// Shared column widths (monospace `ch`) so every tab lays out identically — the
-/// total/points column lines up across the day tabs and with the current tab, and
-/// switching tabs never shifts a column. `max_games` reserves the widest day's
-/// game columns on every tab (left blank where a day / the current view has none).
+/// Shared column widths (monospace `ch`) so every day tab lays out identically —
+/// the total column lines up across tabs, and switching tabs never shifts a
+/// column. `max_games` reserves the widest day's game columns on every tab (left
+/// blank where a day has fewer games).
 #[derive(Clone, Copy)]
 struct TabLayout {
     rank_w: usize,
     name_w: usize,
     max_games: usize,
     game_w: usize,
-    /// Width of the aligned value column — "Total" on day tabs, "Pts" on current.
+    /// Width of the aligned value column ("Total").
     val_w: usize,
+    /// Width of the trailing prize column, or 0 when no row carries a prize (then
+    /// the column is omitted entirely rather than left as dead space).
     prize_w: usize,
 }
 
-/// Compute the shared layout across all day panels and the current-tab rows.
-fn tab_layout(panels: &[TftDayPanel], current: &[MergedRow]) -> TabLayout {
+/// Compute the shared layout across all day panels.
+fn tab_layout(panels: &[TftDayPanel]) -> TabLayout {
     let chars = |s: &str| s.chars().count();
     let mut rank_w = 1;
     let mut name_w = 6; // "Player"
-    let mut val_w = 5; // fits "Total" (and "Pts")
+    let mut val_w = 5; // fits "Total"
     let mut game_w = 2;
+    let mut prize_w = 0; // stays 0 (column omitted) unless a row carries a prize
     let max_games = panels
         .iter()
         .map(|p| p.standings.game_count)
@@ -275,21 +204,19 @@ fn tab_layout(panels: &[TftDayPanel], current: &[MergedRow]) -> TabLayout {
             rank_w = rank_w.max(chars(&r.rank));
             name_w = name_w.max(chars(&r.participant));
             val_w = val_w.max(chars(&r.total));
+            prize_w = prize_w.max(chars(&r.prize));
             for g in &r.games {
                 game_w = game_w.max(chars(g));
             }
         }
     }
-    let mut prize_w = 5; // "Prize"
-    for r in current {
-        rank_w = rank_w.max(chars(&r.pos));
-        name_w = name_w.max(chars(&r.player));
-        val_w = val_w.max(chars(&r.points));
-        prize_w = prize_w.max(chars(&r.prize));
-    }
     if max_games > 0 {
         game_w = game_w.max(chars(&format!("G{max_games}")));
     }
+    // Breathing room before the right-aligned trailing columns: the game columns
+    // run right up against "Total" otherwise. The table is narrower than its
+    // container, so this spends slack rather than forcing a scroll.
+    val_w += 3;
     TabLayout {
         rank_w,
         name_w: name_w.clamp(6, 22),
@@ -302,8 +229,7 @@ fn tab_layout(panels: &[TftDayPanel], current: &[MergedRow]) -> TabLayout {
 
 /// The `grid-template-columns` for a standings grid: rank · name · (the shared
 /// `max_games` game columns, when any) · the trailing value column(s) — "Total"
-/// on a day tab, "Pts" + "Prize" on the current tab. Shared so the two grids stay
-/// column-aligned.
+/// on a day tab. Shared so every day tab stays column-aligned.
 fn grid_cols(l: &TabLayout, trailing: &[usize]) -> String {
     let tail: String = trailing.iter().map(|w| format!(" {w}ch")).collect();
     if l.max_games == 0 {
@@ -321,7 +247,14 @@ fn grid_cols(l: &TabLayout, trailing: &[usize]) -> String {
 /// total column lines up with the other tabs. Reveal-blanked.
 fn day_grid_view(s: &TftStandings, l: &TabLayout, show: bool) -> AnyView {
     let max_games = l.max_games;
-    let grid = grid_cols(l, &[l.val_w]);
+    // Prize is its own column after "Total" (there's room), rather than borrowing a
+    // game cell. Omitted entirely when no row carries one.
+    let grid = if l.prize_w > 0 {
+        grid_cols(l, &[l.val_w, l.prize_w])
+    } else {
+        grid_cols(l, &[l.val_w])
+    };
+    let has_prize_col = l.prize_w > 0;
     let gc = s.game_count;
     let head_games = (0..max_games)
         .map(|i| {
@@ -333,13 +266,35 @@ fn day_grid_view(s: &TftStandings, l: &TabLayout, show: bool) -> AnyView {
             view! { <span class="tft-h tft-g">{lab}</span> }
         })
         .collect_view();
+    // The eliminated block is contiguous at the bottom (day2/finals rows are
+    // built that way in `split_day_panels`), so one divider (before the first
+    // eliminated row) cleanly splits live from final.
+    let mut sep_shown = false;
+    // Every tab emits exactly one divider so the section's height doesn't jump
+    // when switching tabs: a day with nobody eliminated (Day 1) reserves the same
+    // box with an invisible one. `visibility:hidden` (not an empty div) because the
+    // divider's height comes from its text line, which would otherwise collapse.
+    let has_elim = s.rows.iter().any(|r| r.eliminated);
     let rows = s
         .rows
         .iter()
         .map(|r| {
+            // Eliminated: greyed, prize instead of per-game cells, cumulative
+            // total retained.
+            let elim = r.eliminated;
+            let prize = r.prize.clone();
+            let sep = (elim && !sep_shown)
+                .then(|| view! { <div class="tft-elim-sep">"eliminated"</div> });
+            if elim {
+                sep_shown = true;
+            }
             let games = (0..max_games)
                 .map(|i| {
-                    let v = if show && i < gc {
+                    // An eliminated player played no games this stage, so their game
+                    // cells are blank; their prize sits in the trailing column.
+                    let v = if !show || elim {
+                        String::new()
+                    } else if i < gc {
                         r.games.get(i).cloned().unwrap_or_default()
                     } else {
                         String::new()
@@ -352,13 +307,19 @@ fn day_grid_view(s: &TftStandings, l: &TabLayout, show: bool) -> AnyView {
             } else {
                 (String::new(), String::new())
             };
+            let prize_cell = has_prize_col.then(|| {
+                let p = if show { prize.clone() } else { String::new() };
+                view! { <span class="tft-prize">{p}</span> }
+            });
             let rank = r.rank.clone();
             view! {
-                <div class="tft-row">
+                {sep}
+                <div class="tft-row" class:tft-final=elim>
                     <span class="tft-rank">{rank}</span>
                     <span class="tft-name">{name}</span>
                     {games}
                     <span class="tft-total">{total}</span>
+                    {prize_cell}
                 </div>
             }
         })
@@ -370,113 +331,38 @@ fn day_grid_view(s: &TftStandings, l: &TabLayout, show: bool) -> AnyView {
                 <span class="tft-h tft-name">"Player"</span>
                 {head_games}
                 <span class="tft-h tft-total">"Total"</span>
+                {has_prize_col.then(|| view! { <span class="tft-h tft-prize"></span> })}
             </div>
             {rows}
+            {(!has_elim).then(|| {
+                view! { <div class="tft-elim-sep" style="visibility:hidden">"eliminated"</div> }
+            })}
         </div>
     }
     .into_any()
 }
 
-/// The merged "current" grid: rank · player · live points · prize — players still
-/// in on top, a muted "eliminated" divider, then the eliminated (dimmed) with their
-/// final place + prize. The `max_games` game columns are reserved (blank) so the
-/// "Pts" column lines up with the day tabs' "Total". Reveal-blanked.
-fn current_grid_view(rows: &[MergedRow], l: &TabLayout, show: bool) -> AnyView {
-    let max_games = l.max_games;
-    let grid = grid_cols(l, &[l.val_w, l.prize_w]);
-    // The eliminated block is contiguous at the bottom, so one divider (before the
-    // first final row) cleanly splits live from final.
-    let mut sep_shown = false;
-    let body = rows
-        .iter()
-        .map(|r| {
-            let sep = (r.is_final && !sep_shown)
-                .then(|| view! { <div class="tft-elim-sep">"eliminated"</div> });
-            if r.is_final {
-                sep_shown = true;
-            }
-            let is_final = r.is_final;
-            let pos = r.pos.clone();
-            let (name, points, prize) = if show {
-                let name = if r.blank {
-                    "—".to_string()
-                } else {
-                    r.player.clone()
-                };
-                (name, r.points.clone(), r.prize.clone())
-            } else {
-                (String::new(), String::new(), String::new())
-            };
-            let spacers = (0..max_games)
-                .map(|_| view! { <span class="tft-g"></span> })
-                .collect_view();
-            view! {
-                {sep}
-                <div class="tft-row" class:tft-final=is_final>
-                    <span class="tft-rank">{pos}</span>
-                    <span class="tft-name">{name}</span>
-                    {spacers}
-                    <span class="tft-pts">{points}</span>
-                    <span class="tft-prize">{prize}</span>
-                </div>
-            }
-        })
-        .collect_view();
-    let head_spacers = (0..max_games)
-        .map(|_| view! { <span class="tft-h tft-g"></span> })
-        .collect_view();
-    view! {
-        <div class="tft-standings" style=grid>
-            <div class="tft-row">
-                <span class="tft-h tft-rank">"#"</span>
-                <span class="tft-h tft-name">"Player"</span>
-                {head_spacers}
-                <span class="tft-h tft-pts">"Pts"</span>
-                <span class="tft-h tft-prize">"Prize"</span>
-            </div>
-            {body}
-        </div>
-    }
-    .into_any()
-}
-
-/// A TFT event's standings shown as tabs: one per day/stage panel (each with its
-/// per-game detail) plus a synthesized "Current" tab — the latest day's standing
-/// folded together with the final placements (eliminated players + prizes). One
-/// spoiler reveal gates them all; the tab bar and positions stay visible while the
-/// values hide. Defaults to the "Current" tab.
+/// A TFT event's standings shown as tabs: one per day/stage panel, each carrying
+/// the full field for that stage (eliminated players greyed, showing their
+/// prize). One spoiler reveal gates them all; the tab bar and positions stay
+/// visible while the values hide. Defaults to the latest day's tab.
 #[component]
 fn TftResultsTabs(
     panels: Vec<TftDayPanel>,
-    placements: Vec<TftPlacement>,
+    _placements: Vec<TftPlacement>,
     event: String,
 ) -> impl IntoView {
-    let latest = panels
-        .last()
-        .map(|p| p.standings.clone())
-        .unwrap_or_default();
-    let current = merge_tft_results(&latest, &placements);
-    let has_current = !current.is_empty();
-    if panels.is_empty() && !has_current {
+    if panels.is_empty() {
         return ().into_any();
     }
     let (revealed, toggle) = section_reveal(format!("tftres:{event}"));
-    let n_days = panels.len();
-    // Tabs: day panels at 0..n_days, then "Current" at n_days. Start on Current.
-    let mut tabs: Vec<(usize, String)> =
-        panels.iter().map(|p| p.label.clone()).enumerate().collect();
-    if has_current {
-        tabs.push((n_days, "Current".to_string()));
-    }
-    let active = RwSignal::new(if has_current {
-        n_days
-    } else {
-        n_days.saturating_sub(1)
-    });
-    // One shared layout so the total/points column lines up across every tab.
-    let layout = tab_layout(&panels, &current);
+    // Tabs are the day panels; the latest is the default. (The old synthesized
+    // "Current" tab is gone: each panel now carries the full field itself, with
+    // eliminated players greyed and carrying their prize.)
+    let tabs: Vec<(usize, String)> = panels.iter().map(|p| p.label.clone()).enumerate().collect();
+    let active = RwSignal::new(panels.len().saturating_sub(1));
+    let layout = tab_layout(&panels);
     let panels = StoredValue::new(panels);
-    let current = StoredValue::new(current);
     let tab_bar = tabs
         .into_iter()
         .map(|(i, label)| {
@@ -495,11 +381,7 @@ fn TftResultsTabs(
         let show = revealed.get();
         let idx = active.get();
         let days = panels.get_value();
-        if idx < days.len() {
-            day_grid_view(&days[idx].standings, &layout, show)
-        } else {
-            current_grid_view(&current.get_value(), &layout, show)
-        }
+        day_grid_view(&days[idx.min(days.len() - 1)].standings, &layout, show)
     };
     view! {
         <section class="detail-section" id="tftsec-results">
@@ -568,7 +450,7 @@ pub(crate) fn TftEventResults(event: Signal<String>) -> impl IntoView {
                 if !has_panels && !has_decided {
                     return ().into_any();
                 }
-                view! { <TftResultsTabs panels=ps placements=pl event=ev /> }.into_any()
+                view! { <TftResultsTabs panels=ps _placements=pl event=ev /> }.into_any()
             }}
         </Transition>
     }
@@ -608,79 +490,119 @@ pub(crate) fn TraditionalStandings(league: Memo<String>) -> impl IntoView {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::types::TftStandingRow;
+    use super::{grid_cols, tab_layout, tft_real};
+    use crate::types::{TftDayPanel, TftStandingRow, TftStandings};
 
-    fn stand(rows: &[(&str, &str)]) -> TftStandings {
-        TftStandings {
-            game_count: 0,
-            rows: rows
-                .iter()
-                .enumerate()
-                .map(|(i, (name, total))| TftStandingRow {
-                    rank: (i + 1).to_string(),
-                    participant: (*name).to_string(),
-                    total: (*total).to_string(),
-                    games: Vec::new(),
-                })
-                .collect(),
-        }
-    }
-    fn place(p: &str, name: &str, prize: &str) -> TftPlacement {
-        TftPlacement {
-            place: p.to_string(),
+    fn row(rank: &str, name: &str, total: &str, games: &[&str], prize: &str) -> TftStandingRow {
+        TftStandingRow {
+            rank: rank.to_string(),
             participant: name.to_string(),
+            total: total.to_string(),
+            games: games.iter().map(|g| (*g).to_string()).collect(),
+            status: String::new(),
             prize: prize.to_string(),
+            eliminated: !prize.is_empty(),
+        }
+    }
+
+    fn panel(label: &str, game_count: usize, rows: Vec<TftStandingRow>) -> TftDayPanel {
+        TftDayPanel {
+            label: label.to_string(),
+            standings: TftStandings { game_count, rows },
         }
     }
 
     #[test]
-    fn merges_live_standings_over_eliminated_placements() {
-        let standings = stand(&[("Alpha", "40"), ("Beta", "37")]);
-        // Two open (TBD) places on top, one decided (eliminated) below.
-        let placements = vec![
-            place("1", "TBD", "$100"),
-            place("2", "", "$50"),
-            place("3", "Zed", "$25"),
+    fn tft_real_rejects_blank_and_tbd() {
+        assert!(tft_real("Dishsoap"));
+        assert!(!tft_real(""));
+        assert!(!tft_real("   "));
+        assert!(!tft_real("TBD"));
+        assert!(!tft_real("tbd"));
+    }
+
+    #[test]
+    fn tab_layout_is_shared_across_days_so_tabs_dont_shift() {
+        // Day 2 has more games and a longer name; both days must still get the
+        // widest day's widths, or switching tabs moves the columns.
+        let panels = vec![
+            panel("Day 1", 6, vec![row("1", "abc", "40", &["8"], "")]),
+            panel(
+                "Day 2",
+                13,
+                vec![row("10", "a_very_long_player", "128", &["8"], "")],
+            ),
         ];
-        let rows = merge_tft_results(&standings, &placements);
-        assert_eq!(rows.len(), 3);
-        // Open slots filled by live standings, in standings order — points, no
-        // prize, provisional.
-        assert_eq!(
-            (rows[0].player.as_str(), rows[0].points.as_str()),
-            ("Alpha", "40")
-        );
-        assert!(rows[0].prize.is_empty() && !rows[0].is_final && !rows[0].blank);
-        assert_eq!(rows[1].player, "Beta");
-        // Decided place: final, muted, prize, no live points.
-        assert_eq!(
-            (rows[2].player.as_str(), rows[2].prize.as_str()),
-            ("Zed", "$25")
-        );
-        assert!(rows[2].is_final && rows[2].points.is_empty());
+        let l = tab_layout(&panels);
+        assert_eq!(l.max_games, 13, "widest day's game columns reserved");
+        assert_eq!(l.rank_w, 2, "fits \"10\"");
+        assert_eq!(l.name_w, 18, "fits the longest name");
+        assert_eq!(l.game_w, 3, "fits the \"G13\" header, wider than any score");
     }
 
     #[test]
-    fn merge_without_placements_is_just_standings() {
-        let rows = merge_tft_results(&stand(&[("Solo", "9")]), &[]);
-        assert_eq!(rows.len(), 1);
-        assert_eq!(
-            (rows[0].pos.as_str(), rows[0].player.as_str()),
-            ("1", "Solo")
-        );
-        assert!(!rows[0].is_final);
+    fn tab_layout_pads_total_for_breathing_room() {
+        let panels = vec![panel("Day 1", 1, vec![row("1", "x", "8", &["8"], "")])];
+        // "Total" is 5 wide; the column is padded past it so the game columns
+        // don't run right up against it.
+        assert_eq!(tab_layout(&panels).val_w, 8);
     }
 
     #[test]
-    fn merge_without_standings_blanks_open_slots() {
-        let placements = vec![place("1", "TBD", "$100"), place("2", "Out", "$50")];
-        let rows = merge_tft_results(&TftStandings::default(), &placements);
-        assert_eq!(rows.len(), 2);
-        assert!(
-            rows[0].blank,
-            "an open slot with no live standings is blank"
+    fn tab_layout_omits_prize_column_until_a_row_carries_one() {
+        let none = vec![panel("Day 1", 1, vec![row("1", "x", "8", &["8"], "")])];
+        assert_eq!(tab_layout(&none).prize_w, 0, "no prize ⇒ no column");
+
+        let some = vec![panel(
+            "Finals",
+            1,
+            vec![
+                row("1", "x", "8", &["8"], ""),
+                row("2", "y", "7", &["7"], "$11,000"),
+            ],
+        )];
+        assert_eq!(tab_layout(&some).prize_w, 7, "sized to \"$11,000\"");
+    }
+
+    #[test]
+    fn tab_layout_clamps_name_column() {
+        let short = vec![panel("D", 0, vec![row("1", "ab", "8", &[], "")])];
+        assert_eq!(
+            tab_layout(&short).name_w,
+            6,
+            "never narrower than \"Player\""
         );
-        assert!(rows[1].is_final && rows[1].player == "Out");
+
+        let long = vec![panel("D", 0, vec![row("1", &"x".repeat(40), "8", &[], "")])];
+        assert_eq!(
+            tab_layout(&long).name_w,
+            22,
+            "capped so the grid still fits"
+        );
+    }
+
+    #[test]
+    fn grid_cols_reserves_every_game_column_plus_trailing() {
+        let panels = vec![panel("Day 1", 3, vec![row("1", "x", "8", &["8"], "")])];
+        let l = tab_layout(&panels);
+        assert_eq!(
+            grid_cols(&l, &[l.val_w]),
+            "grid-template-columns:1ch 6ch repeat(3,2ch) 8ch;"
+        );
+        // Prize rides in its own trailing column, after the total.
+        assert_eq!(
+            grid_cols(&l, &[l.val_w, 7]),
+            "grid-template-columns:1ch 6ch repeat(3,2ch) 8ch 7ch;"
+        );
+    }
+
+    #[test]
+    fn grid_cols_drops_the_game_columns_when_there_are_none() {
+        let panels = vec![panel("Placements", 0, vec![row("1", "x", "8", &[], "")])];
+        let l = tab_layout(&panels);
+        assert_eq!(
+            grid_cols(&l, &[l.val_w]),
+            "grid-template-columns:1ch 6ch 8ch;"
+        );
     }
 }
