@@ -569,6 +569,12 @@ a {
   }
 }
 
+// With no first day to host it, the bar stands alone and spans the width; keep
+// its controls on the right, where the inline (.day-head) placement puts them.
+.history-bar:not(.history-bar-later) {
+  justify-content: flex-end;
+}
+
 // Pull the first day up close to the history bar above it.
 .history-bar + .day {
   margin-top: 0.3rem;
