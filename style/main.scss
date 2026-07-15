@@ -2879,7 +2879,6 @@ a.sw-link {
   .tft-rank,
   .tft-g,
   .tft-total,
-  .tft-pts,
   .tft-prize {
     text-align: right;
   }
@@ -2900,16 +2899,6 @@ a.sw-link {
     opacity: 0.75;
   }
 
-  // Qualification note (CompeteTFT), e.g. "→ Day 3"; green when advancing.
-  .tft-status {
-    text-align: left;
-    font-size: 11px;
-
-    &.q {
-      color: var(--pass);
-    }
-  }
-
   // Eliminated (final-placement) rows sit muted below the divider.
   .tft-row.tft-final > span {
     opacity: 0.5;
@@ -2926,34 +2915,6 @@ a.sw-link {
     letter-spacing: 0.04em;
     text-transform: uppercase;
     opacity: 0.55;
-  }
-}
-
-// CompeteTFT: official broadcast channels (regional + co-streams + watch parties).
-.bcast-grid {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(min(300px, 100%), 1fr));
-  gap: 0.2rem 1.2rem;
-}
-
-.bcast {
-  display: flex;
-  gap: 0.5rem;
-  align-items: baseline;
-  padding: 0.12rem 0;
-  flex-wrap: wrap;
-
-  .b-reg {
-    color: var(--fg);
-    min-width: 9em;
-  }
-
-  .b-links {
-    color: var(--muted);
-    font-size: 12px;
   }
 }
 
