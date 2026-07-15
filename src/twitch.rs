@@ -31,8 +31,16 @@ struct AppToken {
 /// Cached client-credentials app token (valid ~57 days; refreshed on expiry/401).
 static TOKEN: Lazy<RwLock<Option<AppToken>>> = Lazy::new(|| RwLock::new(None));
 
-/// `login → (ISO-639-1 language, fetched_at)`, see [`channel_languages`].
-static CHANNEL_LANG: Lazy<RwLock<HashMap<String, (String, DateTime<Utc>)>>> =
+/// A channel's declared language, and when we asked. Blank `lang` means Twitch had
+/// none (or doesn't know the login) — cached all the same, so it isn't re-fetched
+/// every poll.
+struct CachedLang {
+    lang: String,
+    fetched_at: DateTime<Utc>,
+}
+
+/// `login → its declared language`, see [`channel_languages`].
+static CHANNEL_LANG: Lazy<RwLock<HashMap<String, CachedLang>>> =
     Lazy::new(|| RwLock::new(HashMap::new()));
 
 /// How long a channel's declared language is kept. It's a profile setting, not a
@@ -282,9 +290,9 @@ pub async fn channel_languages(logins: &[String]) -> HashMap<String, String> {
         let g = CHANNEL_LANG.read().unwrap_or_else(PoisonError::into_inner);
         for l in uniq {
             match g.get(&l) {
-                Some((lang, at)) if *at > fresh_after => {
-                    if !lang.is_empty() {
-                        out.insert(l, lang.clone());
+                Some(c) if c.fetched_at > fresh_after => {
+                    if !c.lang.is_empty() {
+                        out.insert(l, c.lang.clone());
                     }
                 }
                 _ => misses.push(l),
@@ -325,7 +333,13 @@ pub async fn channel_languages(logins: &[String]) -> HashMap<String, String> {
         let mut g = CHANNEL_LANG.write().unwrap_or_else(PoisonError::into_inner);
         for l in &misses {
             let lang = fetched.get(l).cloned().unwrap_or_default();
-            g.insert(l.clone(), (lang, now));
+            g.insert(
+                l.clone(),
+                CachedLang {
+                    lang,
+                    fetched_at: now,
+                },
+            );
         }
     }
     out.extend(fetched);
@@ -371,10 +385,22 @@ mod tests {
         let now = Utc::now();
         {
             let mut g = CHANNEL_LANG.write().unwrap_or_else(PoisonError::into_inner);
-            g.insert("cached_fr".to_string(), ("fr".to_string(), now));
-            // A login Twitch had no language for is cached as empty, so it isn't
+            g.insert(
+                "cached_fr".to_string(),
+                CachedLang {
+                    lang: "fr".to_string(),
+                    fetched_at: now,
+                },
+            );
+            // A login Twitch had no language for is cached as blank, so it isn't
             // re-fetched every poll — and isn't reported as a language either.
-            g.insert("cached_none".to_string(), (String::new(), now));
+            g.insert(
+                "cached_none".to_string(),
+                CachedLang {
+                    lang: String::new(),
+                    fetched_at: now,
+                },
+            );
         }
         let got = channel_languages(&["CACHED_FR".to_string(), "cached_none".to_string()]).await;
         assert_eq!(got.get("cached_fr").map(String::as_str), Some("fr"));
