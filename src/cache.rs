@@ -443,6 +443,29 @@ const STREAM_STATUS_TTL_SECS: i64 = 90;
 /// part of a match's "day slate" for widening co-stream discovery keywords.
 const DISCOVERY_SLATE_WINDOW_HOURS: i64 = 12;
 
+/// An official CompeteTFT broadcast as a `StreamView`, so it flows through the
+/// same live/viewer enrichment and stream rendering as every other esport.
+/// Prefers the Twitch link (the enrichment keys on Twitch logins), else YouTube.
+/// `None` when the channel is on neither — there'd be nothing to link or enrich.
+fn broadcast_to_stream(b: &crate::types::TftBroadcast) -> Option<StreamView> {
+    let pick = |plat: &str| {
+        b.links
+            .iter()
+            .find(|(p, _)| p.eq_ignore_ascii_case(plat))
+            .map(|(_, u)| u.clone())
+    };
+    let url = pick("twitch").or_else(|| pick("youtube"))?;
+    Some(StreamView {
+        url,
+        language: b.language.clone(),
+        official: true,
+        name: b.label.clone(),
+        group: "official".to_string(),
+        curated: true,
+        ..Default::default()
+    })
+}
+
 /// A match's streams with Twitch live status + seeded co-streamers merged in.
 /// Returns the base streams unchanged when there's nothing to enrich (no Twitch
 /// logins and no seeds) or when Twitch is unconfigured/erroring. The `SNAPSHOT`
@@ -9046,5 +9069,40 @@ mod tests {
         );
         // A game/league with no entry → empty.
         assert!(costreamer_seeds(&cs, "IEM", Sport::Cs2).is_empty());
+    }
+
+    #[test]
+    fn broadcast_to_stream_converts_official_and_drops_linkless() {
+        use crate::types::{TftBroadcast, TftBroadcastKind};
+        let b = TftBroadcast {
+            label: "Official English Broadcast".into(),
+            language: "en".into(),
+            kind: TftBroadcastKind::Regional,
+            links: vec![
+                (
+                    "twitch".into(),
+                    "https://www.twitch.tv/teamfighttactics".into(),
+                ),
+                ("youtube".into(), "https://www.youtube.com/@playtft".into()),
+            ],
+        };
+        let s = broadcast_to_stream(&b).expect("a linked broadcast converts");
+        assert_eq!(
+            s.url, "https://www.twitch.tv/teamfighttactics",
+            "prefers twitch"
+        );
+        assert_eq!(s.name, "Official English Broadcast");
+        assert_eq!(s.language, "en");
+        assert!(s.official);
+        assert!(s.curated);
+        assert_eq!(s.group, "official");
+        // A broadcast with no twitch/youtube link has nothing to link or enrich.
+        let linkless = TftBroadcast {
+            label: "Some TV".into(),
+            language: String::new(),
+            kind: TftBroadcastKind::Regional,
+            links: vec![("douyu".into(), "https://douyu.com/x".into())],
+        };
+        assert!(broadcast_to_stream(&linkless).is_none());
     }
 }
