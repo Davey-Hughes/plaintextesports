@@ -693,6 +693,8 @@ mod tests {
                     total: (*total).to_string(),
                     games: Vec::new(),
                     status: String::new(),
+                    prize: String::new(),
+                    eliminated: false,
                 })
                 .collect(),
         }

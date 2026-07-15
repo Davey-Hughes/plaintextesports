@@ -692,6 +692,15 @@ pub struct TftStandingRow {
     /// Empty for the Liquipedia source and eliminated rows.
     #[serde(default)]
     pub status: String,
+    /// Prize as shown (e.g. "$11,000"); empty when none or still active. Set on
+    /// eliminated rows so a day panel can show what a knocked-out player won.
+    #[serde(default)]
+    pub prize: String,
+    /// Knocked out as of this panel's day — rendered greyed, with `prize` and the
+    /// last cumulative `total` still shown. `#[serde(default)]`: cached JSON
+    /// predates this field.
+    #[serde(default)]
+    pub eliminated: bool,
 }
 
 /// A TFT lobby/stage standings table: the ranked rows plus how many game columns
@@ -799,6 +808,16 @@ mod type_tests {
         )
         .unwrap();
         assert_eq!(row.status, "");
+    }
+
+    #[test]
+    fn tft_standing_row_new_fields_default_when_absent_from_cached_json() {
+        // Cached result_cache JSON predates prize/eliminated; it must still load.
+        let old = r#"{"rank":"1","participant":"AUR Huanmie","total":"75","games":["7","5"],"status":"→ Day 3"}"#;
+        let r: TftStandingRow = serde_json::from_str(old).unwrap();
+        assert_eq!(r.participant, "AUR Huanmie");
+        assert_eq!(r.prize, "");
+        assert!(!r.eliminated);
     }
 }
 

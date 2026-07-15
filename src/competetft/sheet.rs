@@ -179,6 +179,8 @@ pub fn parse_leaderboard(rows: &[Vec<String>], _finals: bool) -> Leaderboard {
             total: get(pts_i),
             games,
             status,
+            prize: prize.clone(),
+            eliminated: false,
         });
         if !prize.is_empty() {
             placements.push(TftPlacement {
