@@ -558,21 +558,64 @@ fn chain_single_event_days(days: Vec<DayGroup>) -> Vec<DayGroup> {
     out
 }
 
+/// The event filter actually applied for a selection: the selected events narrowed
+/// to those on offer for the current games. An empty result ⇒ no event constraint
+/// (i.e. "all"). Shared by [`prepare_days`] and [`any_day_survives`] so they narrow
+/// identically.
+fn effective_leagues(
+    s: &ScheduleView,
+    games_set: &HashSet<String>,
+    leagues_sel: &HashSet<String>,
+    trad: bool,
+) -> HashSet<String> {
+    let (available, _) = chip_state(s, games_set, trad);
+    let available: HashSet<String> = available.into_iter().map(|(l, _)| l).collect();
+    leagues_sel
+        .iter()
+        .filter(|l| available.contains(*l))
+        .cloned()
+        .collect()
+}
+
+/// Whether [`prepare_days`] would return anything — without building it.
+///
+/// The empty-state block only needs the yes/no, and `prepare_days` is the
+/// expensive half of a render: it consumes a whole `ScheduleView` (so the caller
+/// clones one), filters it, chains days, and hashes each one. This reaches the same
+/// answer with a short-circuiting borrow.
+///
+/// Exact by construction rather than by restating the rules: the surviving-group
+/// test is [`group_visible`] — the same predicate `filter_schedule` retains by —
+/// and the event narrowing is [`effective_leagues`], the same one `prepare_days`
+/// applies. `prepare_days` emits exactly one day per day that survives filtering
+/// (`chain_single_event_days` only ever merges days, never drops the last one), so
+/// "a group survives" and "a day is prepared" are the same question.
+fn any_day_survives(
+    s: &ScheduleView,
+    games_set: &HashSet<String>,
+    leagues_sel: &HashSet<String>,
+    trad: bool,
+) -> bool {
+    let leagues_filter = effective_leagues(s, games_set, leagues_sel, trad);
+    // Mirrors filter_schedule's short-circuit: with no constraint on either axis it
+    // returns every day untouched, without dropping league-less ones.
+    if games_set.is_empty() && leagues_filter.is_empty() {
+        return !s.days.is_empty();
+    }
+    s.days.iter().any(|d| {
+        d.leagues
+            .iter()
+            .any(|lg| group_visible(lg, games_set, &leagues_filter))
+    })
+}
+
 fn prepare_days(
     s: ScheduleView,
     games_set: &HashSet<String>,
     leagues_sel: &HashSet<String>,
     trad: bool,
 ) -> Vec<PreparedDay> {
-    let (available, _) = chip_state(&s, games_set, trad);
-    let available: HashSet<String> = available.into_iter().map(|(l, _)| l).collect();
-    // An empty result ⇒ no league constraint (i.e. "all"); otherwise keep only the
-    // selected leagues that are actually on offer for the current games.
-    let leagues_filter: HashSet<String> = leagues_sel
-        .iter()
-        .filter(|l| available.contains(*l))
-        .cloned()
-        .collect();
+    let leagues_filter = effective_leagues(&s, games_set, leagues_sel, trad);
     let mut filtered = filter_schedule(s, games_set, &leagues_filter);
     // Narrowed to a single event? Chain its calendar days into broadcast nights
     // (a late slate that crosses midnight reads as one), like the event page. Only
@@ -815,10 +858,15 @@ pub(crate) fn ScheduleSection(
             // the Transition so loading/refetch behaves as before.
             {move || {
                 let trad = traditional.get();
-                match resource.get() {
+                // The "last updated" label is written to a context signal, which must
+                // happen outside the borrow below: `.with()` holds the resource's read
+                // guard for the closure, and a signal write under it could re-enter.
+                // Carried out rather than set in place.
+                let mut fetched_label: Option<String> = None;
+                let rendered = resource.with(|r| match r {
                     Some(Ok(s)) => {
                         let games_set = games.get();
-                        let (available, mut show_chips) = chip_state(&s, &games_set, trad);
+                        let (available, mut show_chips) = chip_state(s, &games_set, trad);
                         // Keep a chip for every selected league, even one whose
                         // events have left the window, so the filter never vanishes
                         // until you clear it (and the row stays shown while selected).
@@ -828,9 +876,7 @@ pub(crate) fn ScheduleSection(
                             .unwrap_or_default();
                         let chip_list = chips_with_selected(&available, &sel, &sel_sports);
                         show_chips = show_chips || !sel.is_empty();
-                        if let Some(LastUpdated(lu)) = use_context::<LastUpdated>() {
-                            lu.set(Some(s.fetched_label.clone()));
-                        }
+                        fetched_label = Some(s.fetched_label.clone());
                         let nav = show_nav.then(|| {
                             let prev = s.prev_date.clone().unwrap_or_default();
                             let next = s.next_date.clone().unwrap_or_default();
@@ -876,7 +922,13 @@ pub(crate) fn ScheduleSection(
                         view! { <p class="error">"Failed to load schedule."</p> }.into_any()
                     }
                     None => ().into_any(),
+                });
+                if let (Some(l), Some(LastUpdated(lu))) =
+                    (fetched_label, use_context::<LastUpdated>())
+                {
+                    lu.set(Some(l));
                 }
+                rendered
             }}
             // The day list: a keyed <For> so a filter toggle / 60s refresh diffs
             // (re-rendering only the days whose content key changed) instead of
@@ -898,9 +950,16 @@ pub(crate) fn ScheduleSection(
             // Empty-state message + the homepage's earlier/later reveal controls.
             {move || {
                 let trad = traditional.get();
-                match resource.get() {
-                    Some(Ok(s)) => {
-                        let empty = prepare_days(s, &games.get(), &leagues.get(), trad).is_empty();
+                // Borrowed, and asking only for the yes/no: this used to clone the
+                // whole view and run the entire `prepare_days` pipeline that the
+                // <For> above had just run, purely to call `.is_empty()` on it.
+                let empty = resource
+                    .with(|r| match r {
+                        Some(Ok(s)) => Some(!any_day_survives(s, &games.get(), &leagues.get(), trad)),
+                        _ => None,
+                    });
+                match empty {
+                    Some(empty) => {
                         // The homepage (no nav) reveals earlier/later days; the
                         // single-day view uses prev/next nav instead.
                         let show_earlier = !show_nav;
@@ -986,11 +1045,15 @@ pub(crate) fn chip_key(lg: &crate::types::LeagueGroup) -> &str {
 /// every SSR render and again on every hydrate/refresh. Measuring only the first
 /// half is how a regression in this half stays invisible.
 ///
-/// Models the body's three reads of the schedule resource faithfully, including
-/// their clones — every `resource.get()` deep-clones the view:
-///   1. the chip row (`chip_state` over a borrowed copy),
-///   2. the day list (`prepare_days`, which consumes a copy),
-///   3. the empty-state check (`prepare_days` again, for `.is_empty()`).
+/// Models the body's three reads of the schedule resource faithfully, clones
+/// included — this must track what the component actually does, or the number it
+/// reports is fiction:
+///   1. the chip row — `chip_state` over a borrow (`.with()`),
+///   2. the day list — `prepare_days`, which consumes a clone (`.get()`),
+///   3. the empty-state check — `any_day_survives` over a borrow (`.with()`).
+///
+/// Only (2) clones. It's the one read that genuinely needs to own the view:
+/// `filter_schedule` retains in place and hands it back.
 ///
 /// [`cache::homepage_render`]: crate::cache::homepage_render
 #[doc(hidden)]
@@ -1000,10 +1063,9 @@ pub fn schedule_render_work(
     leagues_sel: &HashSet<String>,
     trad: bool,
 ) -> usize {
-    let chip_src = s.clone();
-    let (available, show) = chip_state(&chip_src, games_set, trad);
+    let (available, show) = chip_state(s, games_set, trad);
     let days = prepare_days(s.clone(), games_set, leagues_sel, trad);
-    let empty = prepare_days(s.clone(), games_set, leagues_sel, trad).is_empty();
+    let empty = !any_day_survives(s, games_set, leagues_sel, trad);
     std::hint::black_box((&available, show, empty));
     days.len()
 }
@@ -1034,6 +1096,26 @@ pub(crate) fn leagues_for_games(s: &ScheduleView, games: &HashSet<String>) -> Ve
 
 /// Keep only groups matching the selected games AND events (empty set = no
 /// constraint on that axis); drop days left empty.
+/// Whether one league group passes the selected games AND events (empty set = no
+/// constraint on that axis).
+///
+/// The single definition of "shown": [`filter_schedule`] retains by it and
+/// [`any_day_survives`] tests by it, so the cheap emptiness check can't drift from
+/// the filtering it predicts.
+fn group_visible(
+    lg: &crate::types::LeagueGroup,
+    games: &HashSet<String>,
+    leagues: &HashSet<String>,
+) -> bool {
+    let game_ok = games.is_empty()
+        || lg
+            .matches
+            .first()
+            .is_some_and(|m| games.contains(m.sport.slug()));
+    let league_ok = leagues.is_empty() || leagues.contains(chip_key(lg));
+    game_ok && league_ok
+}
+
 pub(crate) fn filter_schedule(
     mut s: ScheduleView,
     games: &HashSet<String>,
@@ -1043,15 +1125,7 @@ pub(crate) fn filter_schedule(
         return s;
     }
     for day in &mut s.days {
-        day.leagues.retain(|lg| {
-            let game_ok = games.is_empty()
-                || lg
-                    .matches
-                    .first()
-                    .is_some_and(|m| games.contains(m.sport.slug()));
-            let league_ok = leagues.is_empty() || leagues.contains(chip_key(lg));
-            game_ok && league_ok
-        });
+        day.leagues.retain(|lg| group_visible(lg, games, leagues));
     }
     s.days.retain(|d| !d.leagues.is_empty());
     s
@@ -1951,6 +2025,99 @@ mod tests {
     use super::*;
     use crate::types::{LeagueGroup, TeamView};
     use std::collections::{HashMap, HashSet};
+
+    /// A league group of `n` upcoming matches for one sport/league/series.
+    fn group(sport: Sport, league: &str, series: &str, n: usize) -> LeagueGroup {
+        let mut lg = LeagueGroup {
+            league: league.into(),
+            series_name: series.into(),
+            event_url: String::new(),
+            bo: Some("Bo3".into()),
+            matches: Vec::new(),
+        };
+        for i in 0..n {
+            let mut m = dv(i as i64, "Friday, July 3");
+            m.sport = sport;
+            m.league = league.into();
+            m.series_name = series.into();
+            lg.matches.push(m);
+        }
+        lg
+    }
+
+    /// A two-day, three-league view spanning two sports (one of them TFT, whose
+    /// chip key is its tournament rather than its league).
+    fn mixed_view() -> ScheduleView {
+        ScheduleView {
+            days: vec![
+                DayGroup {
+                    day_key: "2026-07-03".into(),
+                    day_label: "Friday, July 3".into(),
+                    leagues: vec![
+                        group(Sport::Lol, "MSI", "2026", 2),
+                        group(Sport::Tft, "TFT", "Space Gods Cup - Swiss Stage", 3),
+                    ],
+                },
+                DayGroup {
+                    day_key: "2026-07-04".into(),
+                    day_label: "Saturday, July 4".into(),
+                    leagues: vec![group(Sport::Cs2, "IEM", "Cologne", 1)],
+                },
+            ],
+            today_key: "2026-07-03".into(),
+            fetched_at_ms: 0,
+            fetched_label: String::new(),
+            stale: false,
+            using_fixture: false,
+            demo_forced: false,
+            date_label: None,
+            prev_date: None,
+            next_date: None,
+        }
+    }
+
+    fn set(items: &[&str]) -> HashSet<String> {
+        items.iter().map(|s| (*s).to_string()).collect()
+    }
+
+    #[test]
+    fn any_day_survives_agrees_with_prepare_days() {
+        // The empty-state check asks "would `prepare_days` return anything?" and
+        // must answer without building it — that pipeline clones the whole view.
+        // A cheap shortcut is only worth having if it's exact: drift here shows an
+        // empty-state notice on a filter that has results, or hides one that
+        // doesn't. So pin the two together across the filter matrix.
+        let s = mixed_view();
+        let cases: Vec<(HashSet<String>, HashSet<String>)> = vec![
+            // No constraint on either axis (filter_schedule short-circuits).
+            (set(&[]), set(&[])),
+            // Game axis only: a hit, and a miss.
+            (set(&["lol"]), set(&[])),
+            (set(&["nfl"]), set(&[])),
+            // Event axis only. "Space Gods Cup" exercises the TFT chip key, which
+            // is the tournament, not the league.
+            (set(&[]), set(&["MSI"])),
+            (set(&[]), set(&["Space Gods Cup"])),
+            (set(&[]), set(&["Nonexistent"])),
+            // Both axes agreeing, and both axes contradicting each other.
+            (set(&["lol"]), set(&["MSI"])),
+            (set(&["cs2"]), set(&["MSI"])),
+            (set(&["lol", "cs2"]), set(&["MSI", "IEM"])),
+        ];
+        for (games, leagues) in cases {
+            let want = !prepare_days(s.clone(), &games, &leagues, false).is_empty();
+            let got = any_day_survives(&s, &games, &leagues, false);
+            assert_eq!(got, want, "games={games:?} leagues={leagues:?}");
+        }
+    }
+
+    #[test]
+    fn any_day_survives_says_no_for_an_empty_schedule() {
+        let mut s = mixed_view();
+        s.days.clear();
+        assert!(!any_day_survives(&s, &set(&[]), &set(&[]), false));
+        assert!(prepare_days(s, &set(&[]), &set(&[]), false).is_empty());
+    }
 
     #[test]
     fn empty_notice_only_claims_a_window_when_one_exists() {
