@@ -904,13 +904,9 @@ pub(crate) fn ScheduleSection(
                                 .then(|| {
                                     view! {
                                         <p class="empty">
-                                            {move || {
-                                                if traditional.get() {
-                                                    "No matches in this window."
-                                                } else {
-                                                    "No tier-1 matches in this window."
-                                                }
-                                            }}
+                                            // Home/day: not a detail page, and always
+                                            // windowed (a forward horizon, or one day).
+                                            {move || empty_notice(false, true, traditional.get())}
                                         </p>
                                     }
                                 })}
@@ -1185,6 +1181,27 @@ pub(crate) fn UpNextBar(day: DayGroup) -> impl IntoView {
     }
 }
 
+/// The notice shown when a schedule renders no matches.
+///
+/// Only claims a window when one exists. The home/day views are always windowed,
+/// and a detail page (event or team) is windowed only when `schedule_needs_window`
+/// caps its horizon — traditional team sports play often enough to need it, while
+/// an esports/F1 page shows its whole history. Saying "in this window" on an
+/// unwindowed page names a filter that isn't running and implies the earlier/later
+/// controls would help, when the real cause is that nothing matched the page at
+/// all. "tier-1" is an esports framing, so it's reserved for where the tier filter
+/// actually runs (the traditional leagues already imply their scope, and detail
+/// pages aren't tier-filtered).
+fn empty_notice(event_mode: bool, windowed: bool, traditional: bool) -> &'static str {
+    if event_mode && !windowed {
+        "No matches to show."
+    } else if event_mode || traditional {
+        "No matches in this window."
+    } else {
+        "No tier-1 matches in this window."
+    }
+}
+
 pub(crate) fn render_schedule(
     s: ScheduleView,
     show_nav: bool,
@@ -1305,19 +1322,15 @@ pub(crate) fn render_schedule(
         {day_sections}
         {empty
             .then(|| {
-                // "tier-1" is an esports framing; the traditional leagues already
-                // imply their scope. An empty *event* page is a traditional
-                // off-season one (its schedule has no matches to infer the mode
-                // from), and on the homepage the sport toggle says which it is.
                 let traditional = use_context::<SportMode>().map(|m| m.0);
                 view! {
                     <p class="empty">
                         {move || {
-                            if event_mode || traditional.is_some_and(|t| t.get()) {
-                                "No matches in this window."
-                            } else {
-                                "No tier-1 matches in this window."
-                            }
+                            empty_notice(
+                                event_mode,
+                                windowed,
+                                traditional.is_some_and(|t| t.get()),
+                            )
                         }}
                     </p>
                 }
@@ -1898,6 +1911,35 @@ mod tests {
     use super::*;
     use crate::types::{LeagueGroup, TeamView};
     use std::collections::{HashMap, HashSet};
+
+    #[test]
+    fn empty_notice_only_claims_a_window_when_one_exists() {
+        // Detail pages (event + team) only have a date window when their schedule
+        // is windowed — `schedule_needs_window` caps the horizon for traditional
+        // team sports. An esports/F1 page shows its whole history, and a page whose
+        // name matched nothing has no days at all, so "in this window" would point
+        // at a filter that isn't running and imply the earlier/later controls apply.
+        assert_eq!(empty_notice(true, false, false), "No matches to show.");
+        assert_eq!(empty_notice(true, false, true), "No matches to show.");
+
+        // Windowed detail page: the window is real and did the excluding.
+        assert_eq!(
+            empty_notice(true, true, false),
+            "No matches in this window."
+        );
+        assert_eq!(empty_notice(true, true, true), "No matches in this window.");
+
+        // Home/day view: always windowed. "tier-1" is an esports framing, so it
+        // only appears where the tier filter actually runs.
+        assert_eq!(
+            empty_notice(false, true, true),
+            "No matches in this window."
+        );
+        assert_eq!(
+            empty_notice(false, true, false),
+            "No tier-1 matches in this window."
+        );
+    }
 
     fn dv(ms: i64, date_label: &str) -> MatchView {
         MatchView {
