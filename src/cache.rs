@@ -195,6 +195,24 @@ static COMPETETFT_OVERVIEWS: Lazy<
 /// stay a polite guest on competetft.com.
 const COMPETETFT_FETCH_CONCURRENCY: usize = 4;
 
+/// The TFT rows [`spawn_competetft_poller`] has produced and the main poller
+/// hasn't applied yet — the hand-off between the two tasks.
+///
+/// CompeteTFT is fetched on its own task so its latency is its own. It used to run
+/// inline in the main poll loop, ahead of `apply_poll`, which meant a slow
+/// competetft.com or Google Sheets delayed the snapshot for CS2, LoL, MLB, NHL,
+/// NBA, NFL, Soccer and Motorsport too — sports that have nothing to do with it.
+///
+/// Rows are handed over rather than applied directly because `apply_poll` needs
+/// the poller's `rusqlite::Connection`, which is `!Sync` and deliberately never
+/// held across an await. One writer keeps that invariant; this slot just parks the
+/// latest complete enumeration until the main loop picks it up.
+///
+/// `take()`n each cycle: when TFT has nothing new the feed is simply absent, and
+/// `apply_poll` no-ops on an absent feed — which is exactly the "keep the cached
+/// rows" behaviour the inline version got from skipping the push.
+static TFT_PENDING: Lazy<Mutex<Option<Vec<NormalizedMatch>>>> = Lazy::new(|| Mutex::new(None));
+
 /// The WRC, WEC, or MotoGP championship standings (empty until first fetched), by
 /// series league name. Any other name yields empty tables.
 #[must_use]
@@ -1671,6 +1689,203 @@ fn load_persisted_standings(tft_retain_days: i64, now: DateTime<Utc>) {
 /// Start the background poller. Loads any persisted matches first (so a restart
 /// serves data immediately), then either polls PandaScore or, with no token,
 /// falls back to demo data.
+/// One CompeteTFT poll: discover the season's tournaments, make sure each has a
+/// cached overview, fully refresh one of them (overview + sheet tabs) round-robin,
+/// and return the whole derived schedule.
+///
+/// The schedule feed is cheap (discovery + precise per-day times) and fetched every
+/// cycle; the sheet is the expensive part, so only the cursor's tournament gets one.
+/// Returns empty on a failed or empty parse — the caller then publishes nothing,
+/// which leaves the cached rows alone.
+#[cfg(feature = "ssr")]
+async fn competetft_cycle(
+    cfg: &'static Config,
+    client: &reqwest::Client,
+    now: DateTime<Utc>,
+    ctft_cursor: &mut usize,
+) -> Vec<NormalizedMatch> {
+    let schedule = crate::competetft::fetch_schedule(client).await;
+    let ids = competetft_discovery_ids(
+        &schedule.tournaments,
+        &cfg.competetft_pins,
+        &cfg.competetft_exclude,
+        cfg.competetft_autodiscover,
+    );
+    if ids.is_empty() {
+        return Vec::new();
+    }
+    // 1) Ensure every discovered tournament has a cached overview. First poll after
+    //    boot fetches all of them, so the whole TFT schedule appears at once; later
+    //    polls fetch only newly discovered ones. The overview is one small page; the
+    //    heavy sheet fetch stays on the round-robin below.
+    let missing: Vec<String> = {
+        let cache = COMPETETFT_OVERVIEWS
+            .read()
+            .unwrap_or_else(PoisonError::into_inner);
+        ids.iter()
+            .filter(|id| !cache.contains_key(*id))
+            .cloned()
+            .collect()
+    };
+    if !missing.is_empty() {
+        leptos::logging::log!(
+            "CompeteTFT: fetching {} tournament overview(s)",
+            missing.len()
+        );
+    }
+    // Fetched together, a few at a time: serially this was ~20 round-trips on the
+    // first poll after boot. Bounded rather than a bare join_all — it's ~20 requests
+    // at someone else's origin.
+    let fetched: Vec<(String, crate::competetft::rsc::CompeteTournament)> =
+        futures::stream::iter(missing.into_iter().map(|id| async move {
+            crate::competetft::fetch_tournament(client, &id)
+                .await
+                .map(|t| (id, t))
+        }))
+        .buffer_unordered(COMPETETFT_FETCH_CONCURRENCY)
+        .filter_map(|r| async move { r })
+        .collect()
+        .await;
+    let fetched_now: std::collections::HashSet<String> =
+        fetched.iter().map(|(id, _)| id.clone()).collect();
+    if !fetched.is_empty() {
+        COMPETETFT_OVERVIEWS
+            .write()
+            .unwrap_or_else(PoisonError::into_inner)
+            .extend(fetched);
+    }
+    // 2) Round-robin one tournament per cycle: refresh its overview (keeping the
+    //    cache current) and pull its sheet — the expensive part — for
+    //    standings/streams/broadcasts/lobbies. Ordered most-recent-first (by each
+    //    cached overview's derived start), because a full sweep takes ~20 cycles and
+    //    the current/just-finished tournaments are the ones being viewed; it also
+    //    makes the in-memory cursor's reset-on-restart benign, since index 0 is then
+    //    the newest rather than the oldest.
+    //    Sessions are derived once here and reused by step 3 below — the ordering
+    //    needs each tournament's first session and the feed needs all of them, which
+    //    used to mean building every session of every tournament twice per cycle.
+    let mut derived: HashMap<String, Vec<crate::tft::ParsedSession>> = {
+        let cache = COMPETETFT_OVERVIEWS
+            .read()
+            .unwrap_or_else(PoisonError::into_inner);
+        ids.iter()
+            .filter_map(|id| {
+                let t = cache.get(id)?;
+                let sessions = crate::competetft::derive_sessions(t, &schedule.events, now);
+                Some((id.clone(), sessions))
+            })
+            .collect()
+    };
+    let order: Vec<String> = {
+        let mut v: Vec<(Option<DateTime<Utc>>, String)> = ids
+            .iter()
+            .map(|id| {
+                let start = derived.get(id).and_then(|s| s.first().map(|s| s.begin_at));
+                (start, id.clone())
+            })
+            .collect();
+        // Newest first; tournaments with no derivable date last.
+        v.sort_by_key(|a| std::cmp::Reverse(a.0));
+        v.into_iter().map(|(_, id)| id).collect()
+    };
+    let cur = order[*ctft_cursor % order.len()].clone();
+    *ctft_cursor = ctft_cursor.wrapping_add(1);
+    let cur_overview = if fetched_now.contains(&cur) {
+        // Step 1 fetched this one seconds ago — on the first poll after boot every id
+        // is missing, so the cursor's pick is usually among them and refetching is a
+        // wasted round-trip. Its `derived` entry is current for the same reason.
+        COMPETETFT_OVERVIEWS
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(&cur)
+            .cloned()
+    } else if let Some(t) = crate::competetft::fetch_tournament(client, &cur).await {
+        COMPETETFT_OVERVIEWS
+            .write()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(cur.clone(), t.clone());
+        // This overview just changed, so its sessions are the one entry the derive
+        // above can have stale; the rest still reflect the cache step 3 reads.
+        derived.insert(
+            cur.clone(),
+            crate::competetft::derive_sessions(&t, &schedule.events, now),
+        );
+        Some(t)
+    } else {
+        None
+    };
+    if let Some(t) = cur_overview {
+        match crate::competetft::refresh_from_overview(client, &t, &schedule.events, now).await {
+            Some(data) => apply_competetft(&data, now),
+            None => {
+                leptos::logging::log!("CompeteTFT: no sheet data for tournament {cur} this cycle");
+            }
+        }
+    }
+    // 3) Build the whole TFT schedule from the sessions derived above, so the feed is
+    //    a complete per-tournament enumeration each cycle — which apply_poll's
+    //    per-tournament reconciliation relies on.
+    ids.iter()
+        .filter_map(|id| derived.get(id))
+        .flatten()
+        .map(|s| crate::tft::session_to_match(s, now))
+        .collect()
+}
+
+/// Poll CompeteTFT — the only TFT source, opt-in and gated — on its own task.
+///
+/// Its own task because its latency should be its own. Fetching the schedule feed,
+/// the tournament overviews, and one tournament's sheet (pubhtml + a CSV per tab)
+/// is a chain of round-trips at two third-party origins, each with a 15s timeout;
+/// run inline ahead of `apply_poll`, a bad day at competetft.com or Google Sheets
+/// became a stalled snapshot for every other sport. Now the worst it can do is
+/// leave TFT's own rows stale, which is what `apply_poll` already handles.
+///
+/// Each cycle publishes the complete per-tournament enumeration to [`TFT_PENDING`]
+/// for the main poller to apply; the enrichment caches (standings, lobbies, …) are
+/// written directly, since those go through `CACHE_DB`'s own connection rather
+/// than the poller's.
+///
+/// The cadence is TFT's own: [`series_cadence`] over the rows the cycle just
+/// derived, tightening to the live tier while a session is on air.
+#[cfg(feature = "ssr")]
+fn spawn_competetft_poller(cfg: &'static Config, client: reqwest::Client) {
+    tokio::spawn(async move {
+        // Round-robin cursor over the discovered tournaments: one gets its (heavy)
+        // sheet refreshed per cycle. In-memory, so a restart resets it to 0 — benign
+        // because `order` is newest-first, and the newest is what's being viewed.
+        let mut ctft_cursor: usize = 0;
+        loop {
+            let now = Utc::now();
+            let rows = competetft_cycle(cfg, &client, now, &mut ctft_cursor).await;
+
+            let live = Duration::seconds(cfg.ocblacktop_live_poll.as_secs().max(30) as i64);
+            let near = Duration::seconds(cfg.ocblacktop_near_poll.as_secs() as i64);
+            let idle = Duration::seconds(cfg.idle_poll.as_secs() as i64);
+            // Cadence off the rows this cycle just derived, not off the snapshot:
+            // the snapshot won't carry them until the main poller applies them, a
+            // cycle later, so pacing on it would mean deriving a live session and
+            // then sleeping the idle interval anyway. Falls back to the snapshot
+            // when a cycle came back empty (a failed fetch), where the last-known
+            // rows are the best guide left. Both fold over the guard/slice — no
+            // rows copied just to be read once.
+            let iv = if rows.is_empty() {
+                let snap = SNAPSHOT.read().unwrap_or_else(PoisonError::into_inner);
+                let tft = snap.matches.iter().filter(|m| m.sport == Sport::Tft);
+                series_cadence(tft, now, live, near, idle)
+            } else {
+                series_cadence(rows.iter(), now, live, near, idle)
+            };
+            if !rows.is_empty() {
+                *TFT_PENDING.lock().unwrap_or_else(PoisonError::into_inner) = Some(rows);
+            }
+
+            let secs = iv.num_seconds().max(30) as u64;
+            tokio::time::sleep(std::time::Duration::from_secs(secs)).await;
+        }
+    });
+}
+
 pub fn spawn_poller() {
     let cfg = config();
 
@@ -1810,10 +2025,12 @@ pub fn spawn_poller() {
         // up to a full idle day off. The persisted daily cap still bounds it, so even
         // a crash loop can't exceed the budget.
         let mut ocb_initial = true;
-        // CompeteTFT: per-cycle cadence gate + round-robin cursor over the
-        // discovered tournaments (in-memory; a restart just re-refreshes, cheaply).
-        let mut ctft_at: Option<DateTime<Utc>> = None;
-        let mut ctft_cursor: usize = 0;
+        // CompeteTFT polls on its own task, at its own cadence, and hands its rows
+        // over via TFT_PENDING — so this loop keeps no state for it and never awaits
+        // it. See `spawn_competetft_poller`.
+        if cfg.competetft_enabled {
+            spawn_competetft_poller(cfg, client.clone());
+        }
         loop {
             let now = Utc::now();
             let active = {
@@ -2063,185 +2280,16 @@ pub fn spawn_poller() {
                 (Sport::Motorsport, motorsport_res),
             ];
 
-            // CompeteTFT (first-party), opt-in + gated — the only TFT source. The
-            // schedule feed is
-            // fetched cheaply each due cycle (discovery + precise per-day times),
-            // then one discovered tournament is fully refreshed (overview + sheet
-            // tabs) per cycle, round-robin. An empty/failed parse keeps cached rows
-            // (apply_poll no-ops on an omitted feed).
-            if cfg.competetft_enabled {
-                let iv = {
-                    let rows: Vec<NormalizedMatch> = {
-                        let snap = SNAPSHOT.read().unwrap_or_else(PoisonError::into_inner);
-                        snap.matches
-                            .iter()
-                            .filter(|m| m.sport == Sport::Tft)
-                            .cloned()
-                            .collect()
-                    };
-                    let live = Duration::seconds(cfg.ocblacktop_live_poll.as_secs().max(30) as i64);
-                    let near = Duration::seconds(cfg.ocblacktop_near_poll.as_secs() as i64);
-                    let idle = Duration::seconds(cfg.idle_poll.as_secs() as i64);
-                    series_cadence(&rows, now, live, near, idle)
-                };
-                if ctft_at.is_none_or(|t| now - t >= iv) {
-                    let schedule = crate::competetft::fetch_schedule(&client).await;
-                    let ids = competetft_discovery_ids(
-                        &schedule.tournaments,
-                        &cfg.competetft_pins,
-                        &cfg.competetft_exclude,
-                        cfg.competetft_autodiscover,
-                    );
-                    if !ids.is_empty() {
-                        // 1) Ensure every discovered tournament has a cached overview.
-                        //    First poll after boot fetches all of them, so the whole TFT
-                        //    schedule appears at once; later polls fetch only newly
-                        //    discovered ones. The overview is one small page; the heavy
-                        //    sheet fetch stays on the round-robin below.
-                        let missing: Vec<String> = {
-                            let cache = COMPETETFT_OVERVIEWS
-                                .read()
-                                .unwrap_or_else(PoisonError::into_inner);
-                            ids.iter()
-                                .filter(|id| !cache.contains_key(*id))
-                                .cloned()
-                                .collect()
-                        };
-                        if !missing.is_empty() {
-                            leptos::logging::log!(
-                                "CompeteTFT: fetching {} tournament overview(s)",
-                                missing.len()
-                            );
-                        }
-                        // Fetched together, a few at a time. Serially this was ~20
-                        // round-trips on the first poll after boot — and this block
-                        // sits ahead of `apply_poll`, so every *other* sport's first
-                        // snapshot waited behind them. Bounded rather than a bare
-                        // join_all: it's ~20 requests at someone else's origin.
-                        let fetched: Vec<(String, crate::competetft::rsc::CompeteTournament)> =
-                            futures::stream::iter(missing.into_iter().map(|id| {
-                                let client = &client;
-                                async move {
-                                    crate::competetft::fetch_tournament(client, &id)
-                                        .await
-                                        .map(|t| (id, t))
-                                }
-                            }))
-                            .buffer_unordered(COMPETETFT_FETCH_CONCURRENCY)
-                            .filter_map(|r| async move { r })
-                            .collect()
-                            .await;
-                        let fetched_now: std::collections::HashSet<String> =
-                            fetched.iter().map(|(id, _)| id.clone()).collect();
-                        if !fetched.is_empty() {
-                            let mut cache = COMPETETFT_OVERVIEWS
-                                .write()
-                                .unwrap_or_else(PoisonError::into_inner);
-                            cache.extend(fetched);
-                        }
-                        // 2) Round-robin one tournament per cycle: refresh its overview
-                        //    (keeping the cache current) and pull its sheet — the
-                        //    expensive part — for standings/streams/broadcasts/lobbies.
-                        //    Ordered most-recent-first (by each cached overview's derived
-                        //    start), because a full sweep takes ~20 cycles and the
-                        //    current/just-finished tournaments are the ones being viewed;
-                        //    it also makes the in-memory cursor's reset-on-restart benign,
-                        //    since index 0 is then the newest rather than the oldest.
-                        //    Sessions are derived once here and reused by step 3
-                        //    below — the ordering needs each tournament's first
-                        //    session and the feed needs all of them, which used to
-                        //    mean building every session of every tournament twice
-                        //    per cycle.
-                        let mut derived: HashMap<String, Vec<crate::tft::ParsedSession>> = {
-                            let cache = COMPETETFT_OVERVIEWS
-                                .read()
-                                .unwrap_or_else(PoisonError::into_inner);
-                            ids.iter()
-                                .filter_map(|id| {
-                                    let t = cache.get(id)?;
-                                    let sessions = crate::competetft::derive_sessions(
-                                        t,
-                                        &schedule.events,
-                                        now,
-                                    );
-                                    Some((id.clone(), sessions))
-                                })
-                                .collect()
-                        };
-                        let order: Vec<String> = {
-                            let mut v: Vec<(Option<DateTime<Utc>>, String)> = ids
-                                .iter()
-                                .map(|id| {
-                                    let start =
-                                        derived.get(id).and_then(|s| s.first().map(|s| s.begin_at));
-                                    (start, id.clone())
-                                })
-                                .collect();
-                            // Newest first; tournaments with no derivable date last.
-                            v.sort_by_key(|a| std::cmp::Reverse(a.0));
-                            v.into_iter().map(|(_, id)| id).collect()
-                        };
-                        let cur = order[ctft_cursor % order.len()].clone();
-                        ctft_cursor = ctft_cursor.wrapping_add(1);
-                        let cur_overview = if fetched_now.contains(&cur) {
-                            // Step 1 fetched this one seconds ago — on the first poll
-                            // after boot every id is missing, so the cursor's pick is
-                            // usually among them and refetching is a wasted round-trip.
-                            // Its `derived` entry is current for the same reason.
-                            COMPETETFT_OVERVIEWS
-                                .read()
-                                .unwrap_or_else(PoisonError::into_inner)
-                                .get(&cur)
-                                .cloned()
-                        } else if let Some(t) =
-                            crate::competetft::fetch_tournament(&client, &cur).await
-                        {
-                            COMPETETFT_OVERVIEWS
-                                .write()
-                                .unwrap_or_else(PoisonError::into_inner)
-                                .insert(cur.clone(), t.clone());
-                            // This overview just changed, so its sessions are the one
-                            // entry the derive above can have stale; the rest still
-                            // reflect the cache step 3 reads.
-                            derived.insert(
-                                cur.clone(),
-                                crate::competetft::derive_sessions(&t, &schedule.events, now),
-                            );
-                            Some(t)
-                        } else {
-                            None
-                        };
-                        if let Some(t) = cur_overview {
-                            match crate::competetft::refresh_from_overview(
-                                &client,
-                                &t,
-                                &schedule.events,
-                                now,
-                            )
-                            .await
-                            {
-                                Some(data) => apply_competetft(&data, now),
-                                None => leptos::logging::log!(
-                                    "CompeteTFT: no sheet data for tournament {cur} this cycle"
-                                ),
-                            }
-                        }
-                        // 3) Build the whole TFT schedule from the sessions derived
-                        //    above, so the feed is a complete per-tournament
-                        //    enumeration each cycle (which apply_poll's
-                        //    per-tournament reconciliation relies on).
-                        let rows: Vec<NormalizedMatch> = ids
-                            .iter()
-                            .filter_map(|id| derived.get(id))
-                            .flatten()
-                            .map(|s| crate::tft::session_to_match(s, now))
-                            .collect();
-                        if !rows.is_empty() {
-                            feeds.push((Sport::Tft, Ok(rows)));
-                        }
-                    }
-                    ctft_at = Some(now);
-                }
+            // CompeteTFT runs on its own task (see `spawn_competetft_poller`);
+            // pick up whatever it has finished without ever waiting on it, so a
+            // slow competetft.com can't hold up everyone else's snapshot.
+            if let Some(rows) = TFT_PENDING
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .take()
+                && !rows.is_empty()
+            {
+                feeds.push((Sport::Tft, Ok(rows)));
             }
 
             apply_poll(
@@ -2472,8 +2520,11 @@ const OCB_STANDINGS_SETTLE: Duration = Duration::hours(48);
 /// `idle` tier (off-season / between rounds). Pure, so it's unit-tested; the
 /// poller feeds it the persisted snapshot rows for one series, so it reads right
 /// across a restart (the in-memory calendar caches are empty until a refetch).
-fn series_cadence(
-    matches: &[NormalizedMatch],
+/// Takes anything that yields matches, not a slice, so a caller holding the
+/// snapshot can fold over it in place — this reads nothing but `status` and
+/// `begin_at`, and copying every row out just to hand over a slice is waste.
+fn series_cadence<'a>(
+    matches: impl IntoIterator<Item = &'a NormalizedMatch>,
     now: DateTime<Utc>,
     live: Duration,
     near: Duration,
