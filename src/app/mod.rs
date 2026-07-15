@@ -37,6 +37,10 @@ pub(crate) mod storage;
 #[cfg(feature = "hydrate")]
 pub(crate) use storage::*;
 pub(crate) mod components;
+/// Re-exported so `examples/alloc_profile` and the benches can reach the schedule
+/// component's per-render work; `components` itself stays crate-private.
+#[doc(hidden)]
+pub use components::schedule::schedule_render_work;
 pub(crate) use components::*;
 pub(crate) mod pages;
 pub(crate) use pages::*;

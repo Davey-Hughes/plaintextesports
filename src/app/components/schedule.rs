@@ -977,6 +977,37 @@ pub(crate) fn chip_key(lg: &crate::types::LeagueGroup) -> &str {
     }
 }
 
+/// The work this component does with a loaded `ScheduleView` on every render, as
+/// one callable unit — for `examples/alloc_profile` and the benches.
+///
+/// Exposed for the same reason [`cache::homepage_render`] is: it's a measured unit
+/// of per-request work. It's the *other half* of the request. `homepage_render`
+/// builds the `ScheduleView`; this is what the component then does with it, on
+/// every SSR render and again on every hydrate/refresh. Measuring only the first
+/// half is how a regression in this half stays invisible.
+///
+/// Models the body's three reads of the schedule resource faithfully, including
+/// their clones — every `resource.get()` deep-clones the view:
+///   1. the chip row (`chip_state` over a borrowed copy),
+///   2. the day list (`prepare_days`, which consumes a copy),
+///   3. the empty-state check (`prepare_days` again, for `.is_empty()`).
+///
+/// [`cache::homepage_render`]: crate::cache::homepage_render
+#[doc(hidden)]
+pub fn schedule_render_work(
+    s: &ScheduleView,
+    games_set: &HashSet<String>,
+    leagues_sel: &HashSet<String>,
+    trad: bool,
+) -> usize {
+    let chip_src = s.clone();
+    let (available, show) = chip_state(&chip_src, games_set, trad);
+    let days = prepare_days(s.clone(), games_set, leagues_sel, trad);
+    let empty = prepare_days(s.clone(), games_set, leagues_sel, trad).is_empty();
+    std::hint::black_box((&available, show, empty));
+    days.len()
+}
+
 /// Distinct competition chips among groups whose sport passes the filter (empty
 /// set = all games), in first-appearance order. Drives the event chip list, so the
 /// chips reflect the selected games. Keyed by [`chip_key`] (per-event for TFT).
