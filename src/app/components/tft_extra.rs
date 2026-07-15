@@ -114,17 +114,46 @@ pub(crate) fn TftStreamers(event: Signal<String>) -> impl IntoView {
     }
 }
 
-/// The gutter label for an official broadcast. CompeteTFT leaves the sheet's
-/// `language` column blank on its regional channels and puts the region in the
-/// label instead ("KR", "FR", "APAC Vietnam", "Official English Broadcast"), so
-/// that's what we prefix with — trimmed of the boilerplate that makes the English
-/// one long.
+/// The gutter label for an official broadcast, as a short code.
+///
+/// CompeteTFT leaves the sheet's `language` column blank on its regional channels
+/// and puts the region in the label instead — but inconsistently: some are already
+/// codes ("KR", "BR", "FR"), others are prose ("APAC Vietnam", "Official English
+/// Broadcast"). Left alone they'd set the gutter's width by the longest one and
+/// wouldn't line up with the player streams' ISO codes beside them, so the prose
+/// forms are mapped down to their two-letter equivalent.
+///
+/// A region we have no code for keeps its (trimmed) name: a wrong code is worse
+/// than a long label, and this list only covers what the sheet has actually used.
 fn region_of(label: &str) -> String {
-    label
+    let name = label
         .trim()
         .trim_start_matches("Official ")
         .trim_end_matches(" Broadcast")
-        .to_string()
+        .trim_start_matches("APAC ")
+        .trim();
+    // Already a code (the sheet's own "KR"/"BR"/"FR").
+    if name.len() <= 3 && name.chars().all(|c| c.is_ascii_alphabetic()) {
+        return name.to_ascii_uppercase();
+    }
+    let code = match name.to_ascii_lowercase().as_str() {
+        "english" => "EN",
+        "vietnam" | "vietnamese" => "VN",
+        "taiwan" => "TW",
+        "korea" | "korean" => "KR",
+        "brazil" | "brazilian" | "portuguese" => "BR",
+        "france" | "french" => "FR",
+        "spain" | "spanish" => "ES",
+        "japan" | "japanese" => "JP",
+        "china" | "chinese" | "mandarin" => "CN",
+        "germany" | "german" => "DE",
+        "turkey" | "turkish" => "TR",
+        "russia" | "russian" => "RU",
+        "thailand" | "thai" => "TH",
+        "poland" | "polish" => "PL",
+        _ => return name.to_string(),
+    };
+    code.to_string()
 }
 
 /// The lowercase platform for a stream URL, matching the sheet's own platform
@@ -173,6 +202,30 @@ pub(crate) fn TftBroadcasts(event: Signal<String>) -> impl IntoView {
                     .into_any()
             }}
         </Transition>
+    }
+}
+
+/// An invisible stand-in for one lobby box: the same structure with placeholder
+/// content, so it occupies exactly the space a real one would. Used to hold the
+/// grid's height constant — both across rounds with fewer lobbies and while the
+/// section is collapsed. Carries no real content, so a collapsed section keeps its
+/// space without putting the results it's hiding into the DOM.
+fn lob_spacer(seats: usize) -> impl IntoView {
+    let rows = (0..seats)
+        .map(|_| {
+            view! {
+                <span class="p">"0"</span>
+                <span class="n">"—"</span>
+            }
+        })
+        .collect_view();
+    view! {
+        <div class="lob" style="visibility:hidden" aria-hidden="true">
+            <div class="lob-head">
+                <span>"—"</span>
+            </div>
+            <div class="lob-body">{rows}</div>
+        </div>
     }
 }
 
@@ -262,11 +315,7 @@ fn TftLobbiesInner(rounds: Vec<TftLobbyRound>, event: String) -> impl IntoView {
         .collect_view();
     let rounds = StoredValue::new(rounds);
     let body = move || {
-        if !revealed.get() {
-            return ().into_any();
-        }
         let all = rounds.get_value();
-        let idx = sel.get().min(all.len().saturating_sub(1));
         // Rounds differ in lobby count (a 5-lobby Swiss round wraps to two grid
         // rows, an 8-player final is one), which shifts everything below when you
         // switch rounds. Pad every round out to the widest with invisible boxes so
@@ -279,27 +328,17 @@ fn TftLobbiesInner(rounds: Vec<TftLobbyRound>, event: String) -> impl IntoView {
             .map(|l| l.players.len())
             .max()
             .unwrap_or(8);
+        if !revealed.get() {
+            // Collapsed: hold the full grid's space rather than folding the page up
+            // under the toggle, so hiding and showing don't move everything below.
+            return (0..max_lobbies)
+                .map(|_| lob_spacer(seats))
+                .collect_view()
+                .into_any();
+        }
+        let idx = sel.get().min(all.len().saturating_sub(1));
         let pad = max_lobbies.saturating_sub(all[idx].lobbies.len());
-        let spacers = (0..pad)
-            .map(|_| {
-                let seats = (0..seats)
-                    .map(|_| {
-                        view! {
-                            <span class="p">"0"</span>
-                            <span class="n">"—"</span>
-                        }
-                    })
-                    .collect_view();
-                view! {
-                    <div class="lob" style="visibility:hidden" aria-hidden="true">
-                        <div class="lob-head">
-                            <span>"—"</span>
-                        </div>
-                        <div class="lob-body">{seats}</div>
-                    </div>
-                }
-            })
-            .collect_view();
+        let spacers = (0..pad).map(|_| lob_spacer(seats)).collect_view();
         let boxes = all[idx]
             .lobbies
             .iter()
@@ -367,5 +406,32 @@ fn TftLobbiesInner(rounds: Vec<TftLobbyRound>, event: String) -> impl IntoView {
             {day_rows}
             <div class="lob-grid">{body}</div>
         </section>
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::region_of;
+
+    #[test]
+    fn region_of_shortens_prose_labels() {
+        assert_eq!(region_of("Official English Broadcast"), "EN");
+        assert_eq!(region_of("APAC Vietnam"), "VN");
+        assert_eq!(region_of("APAC Taiwan"), "TW");
+    }
+
+    #[test]
+    fn region_of_keeps_codes_the_sheet_already_uses() {
+        for c in ["KR", "BR", "FR"] {
+            assert_eq!(region_of(c), c);
+        }
+        assert_eq!(region_of(" fr "), "FR");
+    }
+
+    #[test]
+    fn region_of_keeps_unmapped_regions_readable() {
+        // Better a long label than a confidently wrong code.
+        assert_eq!(region_of("APAC Philippines"), "Philippines");
+        assert_eq!(region_of("Latin America"), "Latin America");
     }
 }

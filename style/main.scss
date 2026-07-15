@@ -2972,8 +2972,10 @@ a.sw-link {
     margin-bottom: 0.8rem;
   }
 
+  // Collapsed keeps the row's space (and so the page's shape) instead of folding
+  // it away — the lobby grid below reserves its height the same way.
   &.hidden {
-    display: none;
+    visibility: hidden;
   }
 }
 
