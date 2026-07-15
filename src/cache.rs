@@ -170,10 +170,6 @@ tft_caches! {
     TFT_LOBBIES => "tft_lobbies", lobbies: Vec<crate::types::TftLobbyRound>;
 }
 
-// Full event names CompeteTFT owns this run — the Liquipedia branch skips these
-// so the two sources never double-write the same event (CompeteTFT is primary).
-static COMPETETFT_COVERED: Lazy<RwLock<std::collections::HashSet<String>>> =
-    Lazy::new(|| RwLock::new(std::collections::HashSet::new()));
 /// Cached CompeteTFT tournament overviews (id → parsed overview). The overview
 /// carries the date range + stages the schedule is derived from and changes
 /// rarely, so it's fetched once per tournament on the first poll after boot — the
@@ -197,23 +193,14 @@ pub fn motor_standings(league: &str) -> crate::types::MotorStandings {
     store.read().unwrap_or_else(PoisonError::into_inner).clone()
 }
 
-/// Look up a TFT enrichment map by event name: exact match first, then a
-/// `tft_coverage_key`-normalized fallback. CompeteTFT stores enrichment under its
-/// own (subtitle-less) event name, so when the visible page is source-name-
-/// divergent — e.g. Liquipedia's "TFT Tactician's Crown: Space Gods" vs
-/// CompeteTFT's "TFT Tactician's Crown" — the exact lookup misses; the normalized
-/// fallback lets the pulled data still surface. The exact key is tried first, so
-/// the fallback only fires on genuine divergence (first normalized match wins).
+/// Look up a TFT enrichment map by event name. CompeteTFT is the only TFT source
+/// and stores enrichment under the same `tournament_event_name` its schedule rows
+/// carry, so an exact match is the only case.
 fn tft_enrichment_get<T: Clone>(map: &RwLock<HashMap<String, Vec<T>>>, event: &str) -> Vec<T> {
-    let guard = map.read().unwrap_or_else(PoisonError::into_inner);
-    if let Some(v) = guard.get(event) {
-        return v.clone();
-    }
-    let want = tft_coverage_key(event);
-    guard
-        .iter()
-        .find(|(k, _)| tft_coverage_key(k) == want)
-        .map(|(_, v)| v.clone())
+    map.read()
+        .unwrap_or_else(PoisonError::into_inner)
+        .get(event)
+        .cloned()
         .unwrap_or_default()
 }
 
@@ -237,18 +224,15 @@ pub fn tft_streamers(event: &str) -> Vec<crate::types::TftStreamer> {
     tft_enrichment_get(&TFT_STREAMERS, event)
 }
 
-/// This event's published Google Sheet URL (empty until fetched). Same exact-then-
-/// normalized lookup the other enrichment accessors use.
+/// This event's published Google Sheet URL (empty until fetched). Same exact
+/// lookup the other enrichment accessors use.
 #[must_use]
 pub fn tft_sheet(event: &str) -> String {
-    let g = TFT_SHEET.read().unwrap_or_else(PoisonError::into_inner);
-    if let Some(v) = g.get(event) {
-        return v.clone();
-    }
-    let want = tft_coverage_key(event);
-    g.iter()
-        .find(|(k, _)| tft_coverage_key(k) == want)
-        .map(|(_, v)| v.clone())
+    TFT_SHEET
+        .read()
+        .unwrap_or_else(PoisonError::into_inner)
+        .get(event)
+        .cloned()
         .unwrap_or_default()
 }
 
@@ -2027,8 +2011,8 @@ pub fn spawn_poller() {
                 (Sport::Motorsport, motorsport_res),
             ];
 
-            // CompeteTFT (first-party), opt-in + gated. Runs before Liquipedia so
-            // it can claim its events (COMPETETFT_COVERED). The schedule feed is
+            // CompeteTFT (first-party), opt-in + gated — the only TFT source. The
+            // schedule feed is
             // fetched cheaply each due cycle (discovery + precise per-day times),
             // then one discovered tournament is fully refreshed (overview + sheet
             // tabs) per cycle, round-robin. An empty/failed parse keeps cached rows
@@ -2476,38 +2460,12 @@ fn competetft_discovery_ids(
     out
 }
 
-/// Normalize a TFT event name for cross-source precedence matching: drop a
-/// trailing ": subtitle" (the set name Liquipedia appends, e.g. "Tactician's
-/// Crown: Space Gods") and lowercase, so CompeteTFT's "TFT Tactician's Crown"
-/// matches Liquipedia's "TFT Tactician's Crown: Space Gods". Best-effort — it
-/// only aligns names sharing a base before the colon; if the two sources name a
-/// premier event with no common prefix, both still show (a documented edge).
-fn tft_coverage_key(event_name: &str) -> String {
-    event_name
-        .split(':')
-        .next()
-        .unwrap_or(event_name)
-        .trim()
-        .to_ascii_lowercase()
-}
-
 /// Store one CompeteTFT tournament's results into the caches (in-memory +
-/// SQLite), keyed by its full event name, and record the event as
-/// CompeteTFT-owned so the Liquipedia branch won't clobber or duplicate it.
-/// Empty sections are skipped, so a partial parse never wipes cached rows.
+/// SQLite), keyed by its full event name. Empty sections are skipped, so a
+/// partial parse never wipes cached rows.
 #[cfg(feature = "ssr")]
 fn apply_competetft(data: &crate::competetft::CompeteTournamentData, now: DateTime<Utc>) {
     let ev = crate::types::full_event_name("TFT", &data.tournament);
-    // Only suppress Liquipedia for this event when CompeteTFT actually has dated
-    // schedule rows (sessions) for it. Off-broadcast the sheet still yields
-    // standings/streams/etc. below, but with no rows to replace Liquipedia's, so
-    // leaving the event un-covered lets Liquipedia fill the schedule.
-    if !data.sessions.is_empty() {
-        COMPETETFT_COVERED
-            .write()
-            .unwrap_or_else(PoisonError::into_inner)
-            .insert(tft_coverage_key(&ev));
-    }
     store_tft_caches(data, &ev, now);
 }
 
@@ -6324,7 +6282,7 @@ mod tests {
     }
 
     #[test]
-    fn tft_enrichment_resolves_by_normalized_name_fallback() {
+    fn tft_enrichment_resolves_by_exact_event_name() {
         let want = vec![crate::types::TftStreamer {
             player: "Mortdog".to_string(),
             url: "https://twitch.tv/mortdog".to_string(),
@@ -6333,15 +6291,14 @@ mod tests {
         TFT_STREAMERS
             .write()
             .unwrap_or_else(PoisonError::into_inner)
-            .insert("TFT Normalized Fallback Cup".to_string(), want.clone());
-        // Exact name still resolves.
-        assert_eq!(tft_streamers("TFT Normalized Fallback Cup").len(), 1);
-        // Source-name divergence (a ": subtitle" the store lacks) resolves via the
-        // normalized fallback — the whole point of the fix.
-        let hit = tft_streamers("TFT Normalized Fallback Cup: Some Set");
+            .insert("TFT Exact Lookup Cup".to_string(), want.clone());
+        let hit = tft_streamers("TFT Exact Lookup Cup");
         assert_eq!(hit.len(), 1);
         assert_eq!(hit[0].player, "Mortdog");
-        // An unrelated event still returns empty (no false-positive normalized match).
+        // Lookup is exact-only. CompeteTFT is the sole TFT source and keys both its
+        // schedule rows and its enrichment off the same `tournament_event_name`, so
+        // a near-miss is a real miss rather than a name-divergence to paper over.
+        assert!(tft_streamers("TFT Exact Lookup Cup: Some Set").is_empty());
         assert!(tft_streamers("TFT Totally Unrelated Event").is_empty());
     }
 
@@ -6606,9 +6563,9 @@ mod tests {
     }
 
     #[test]
-    fn tft_sheet_resolves_exactly_and_by_normalized_name() {
-        // tft_sheet carries its own copy of the exact-then-normalized lookup (it
-        // holds a String, not a Vec), so it needs its own coverage.
+    fn tft_sheet_resolves_by_exact_event_name() {
+        // tft_sheet carries its own copy of the lookup (it holds a String, not a
+        // Vec), so it needs its own coverage.
         TFT_SHEET
             .write()
             .unwrap_or_else(PoisonError::into_inner)
@@ -6617,10 +6574,7 @@ mod tests {
                 "https://docs.google.com/spreadsheets/d/e/KEY/pubhtml".to_string(),
             );
         assert!(tft_sheet("TFT Sheet Lookup Cup").contains("/KEY/"));
-        assert!(
-            tft_sheet("TFT Sheet Lookup Cup: Some Set").contains("/KEY/"),
-            "source-name divergence resolves via the normalized fallback"
-        );
+        assert!(tft_sheet("TFT Sheet Lookup Cup: Some Set").is_empty());
         assert!(tft_sheet("TFT Some Other Event").is_empty());
     }
 
@@ -7617,47 +7571,6 @@ mod tests {
         // cheaply via the date-range path. > 1 week is locked.
         assert_eq!(refresh_interval(0), Some(Duration::minutes(30)));
         assert_eq!(refresh_interval(8), None);
-    }
-
-    #[test]
-    fn competetft_coverage_is_gated_on_sessions() {
-        let name = "Coverage Gating Test Cup";
-        let key = tft_coverage_key(&crate::types::full_event_name("TFT", name));
-        let now = "2026-07-13T00:00:00Z".parse::<DateTime<Utc>>().unwrap();
-
-        let data =
-            |sessions: Vec<crate::tft::ParsedSession>| crate::competetft::CompeteTournamentData {
-                tournament: name.to_string(),
-                sessions,
-                placements: Vec::new(),
-                standings: Vec::new(),
-                streamers: Vec::new(),
-                broadcasts: Vec::new(),
-                lobbies: Vec::new(),
-                sheet_url: String::new(),
-            };
-        let covered = || {
-            COMPETETFT_COVERED
-                .read()
-                .unwrap_or_else(PoisonError::into_inner)
-                .contains(&key)
-        };
-
-        // No dated sessions → do NOT suppress Liquipedia for this event.
-        apply_competetft(&data(Vec::new()), now);
-        assert!(!covered(), "empty sessions must not claim coverage");
-
-        // A dated session → claim coverage (CompeteTFT drives the rows).
-        let session = crate::tft::ParsedSession {
-            tournament: name.to_string(),
-            session_label: "Day 1".to_string(),
-            begin_at: now,
-            tournament_url: String::new(),
-            streams: Vec::new(),
-            status: None,
-        };
-        apply_competetft(&data(vec![session]), now);
-        assert!(covered(), "a dated session must claim coverage");
     }
 
     #[test]
