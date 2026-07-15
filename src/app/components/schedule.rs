@@ -1689,12 +1689,13 @@ pub(crate) fn reveal_toggler(
     let _ = end_ms;
     let global = use_context::<ShowScores>().map(|s| s.0);
     let flash = use_context::<FlashScores>().map(|f| f.0);
+    let (page, flash_page) = page_scores_ctx();
     move |ev: leptos::ev::MouseEvent| {
         ev.prevent_default();
         ev.stop_propagation();
-        // A hide can't take effect while the global reveal is on — flash the
-        // "scores" button instead.
-        if hide_deflected_to_global(global, flash) {
+        // A hide can't take effect while a broader reveal is on — flash the switch
+        // that's overriding it instead.
+        if hide_deflected(global, flash, page, flash_page) {
             return;
         }
         if let Some(r) = revealed {
@@ -1773,10 +1774,15 @@ pub(crate) fn row_reveal(
 ) -> (Memo<bool>, impl Fn(leptos::ev::MouseEvent) + Clone + use<>) {
     let global = use_context::<ShowScores>().map(|s| s.0);
     let revealed = use_context::<RevealedMatches>().map(|r| r.0);
+    let (page, _) = page_scores_ctx();
+    // Announce this row so the event switch's OFF clears its reveal too (no-op on
+    // the home schedule, which has no event switch above it).
+    register_page_match(muid);
     let reveal = {
         let muid = muid.to_string();
         Memo::new(move |_| {
             global.is_some_and(|g| g.get())
+                || page.is_some_and(|p| p.get())
                 || revealed.is_some_and(|r| r.with(|set| set.contains(&muid)))
         })
     };

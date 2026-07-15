@@ -289,6 +289,28 @@ pub(crate) fn remove_reveal(storage_key: &str, key: &str) {
     let _ = storage.set_item(storage_key, &crate::reveal::serialize_records(&recs));
 }
 
+/// Drop many reveals at once — the cascade when an event's switch goes off and
+/// clears the localized reveals under it. A single read-modify-write: doing it via
+/// [`remove_reveal`] per key would re-parse and re-serialize the whole store once
+/// per row on a 100-match event page.
+#[cfg(feature = "hydrate")]
+pub(crate) fn remove_reveals(storage_key: &str, keys: &HashSet<String>, prefixes: &[String]) {
+    if keys.is_empty() && prefixes.is_empty() {
+        return;
+    }
+    let Some(storage) = web_sys::window().and_then(|w| w.local_storage().ok().flatten()) else {
+        return;
+    };
+    let raw = storage
+        .get_item(storage_key)
+        .ok()
+        .flatten()
+        .unwrap_or_default();
+    let mut recs = crate::reveal::parse_records(&raw, now_ms());
+    crate::reveal::remove_many(&mut recs, keys, prefixes);
+    let _ = storage.set_item(storage_key, &crate::reveal::serialize_records(&recs));
+}
+
 /// Persist a set of strings under `key` (newline-separated).
 #[cfg(feature = "hydrate")]
 pub(crate) fn save_str_set(key: &str, set: &HashSet<String>) {
