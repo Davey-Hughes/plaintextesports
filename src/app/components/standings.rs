@@ -213,6 +213,10 @@ fn tab_layout(panels: &[TftDayPanel]) -> TabLayout {
     if max_games > 0 {
         game_w = game_w.max(chars(&format!("G{max_games}")));
     }
+    // Breathing room before the right-aligned trailing columns: the game columns
+    // run right up against "Total" otherwise. The table is narrower than its
+    // container, so this spends slack rather than forcing a scroll.
+    val_w += 3;
     TabLayout {
         rank_w,
         name_w: name_w.clamp(6, 22),

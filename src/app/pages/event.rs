@@ -641,6 +641,15 @@ pub(crate) fn EventPage() -> impl IntoView {
                                         .filter(|list| !list.is_empty())
                                         .map(|list| view! { <StreamsList streams=list /> })
                                 }}
+                                // TFT's equivalent: the tournament's official
+                                // broadcast channels. CompeteTFT carries them per
+                                // event rather than per match, so they come from
+                                // their own resource — but they belong in the same
+                                // "where to watch" slot, above the schedule.
+                                <TftBroadcasts event=Signal::derive(move || {
+                                    let lg = league();
+                                    if lg.starts_with("TFT") { lg } else { String::new() }
+                                }) />
                                 <div id="sched" class="spy">
                                     {render_schedule(s, false, push, true, windowed)}
                                 </div>
@@ -703,15 +712,12 @@ pub(crate) fn EventPage() -> impl IntoView {
                                             view! { <MotorStandingsView standings=standings league=lg /> }
                                         })
                                 }}
-                                // TFT event sections: the official broadcast row up
-                                // top, then standings + final placements, then the
-                                // CompeteTFT-only player streams (from the poller
-                                // cache; nothing for non-TFT events / before results
-                                // exist).
-                                <TftBroadcasts event=Signal::derive(move || {
-                                    let lg = league();
-                                    if lg.starts_with("TFT") { lg } else { String::new() }
-                                }) />
+                                // TFT event sections: standings + final placements,
+                                // then the CompeteTFT-only player streams and lobby
+                                // breakdowns (from the poller cache; nothing for
+                                // non-TFT events / before results exist). The
+                                // official broadcasts render further up, in the
+                                // shared "where to watch" slot above the schedule.
                                 <TftEventResults event=Signal::derive(move || {
                                     let lg = league();
                                     if lg.starts_with("TFT") { lg } else { String::new() }

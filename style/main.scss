@@ -2984,9 +2984,11 @@ a.sw-link {
   color: var(--muted);
   font: inherit;
   font-size: 12px;
-  padding: 0.08rem 0.45rem;
+  // Roomier tap target: the round buttons are split into one row per day now, so
+  // a row holds ~6-8 of them instead of all ~21 wrapping together.
+  padding: 0.25rem 0.6rem;
   cursor: pointer;
-  min-width: 2em;
+  min-width: 2.4em;
 
   &:hover {
     color: var(--fg);

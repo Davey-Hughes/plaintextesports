@@ -186,21 +186,54 @@ pub(crate) fn TftLobbies(event: Signal<String>) -> impl IntoView {
 fn TftLobbiesInner(rounds: Vec<TftLobbyRound>, event: String) -> impl IntoView {
     let (revealed, toggle) = section_reveal(format!("tftlob:{event}"));
     let sel = RwSignal::new(0usize);
-    // Round buttons show just the round number ("Day 1 · Round 3" -> "3").
-    let round_btns = rounds
-        .iter()
-        .map(|r| r.label.clone())
-        .enumerate()
-        .map(|(i, label)| {
-            let num = label.rsplit(' ').next().unwrap_or("").to_string();
+    // One row of round buttons per day: a full event is ~21 rounds, which wrap into
+    // an unreadable block on a single line. Grouping by the label's day ("Day 1 ·
+    // Round 3") also gives each row few enough buttons to size them up.
+    let mut by_day: Vec<(String, Vec<(usize, String)>)> = Vec::new();
+    for (i, r) in rounds.iter().enumerate() {
+        let (day, num) = match r.label.split_once('·') {
+            Some((d, rest)) => (
+                d.trim().to_string(),
+                rest.trim().rsplit(' ').next().unwrap_or("").to_string(),
+            ),
+            // No day in the label: one unlabelled row holding every round.
+            None => (
+                String::new(),
+                r.label.rsplit(' ').next().unwrap_or("").to_string(),
+            ),
+        };
+        match by_day.last_mut() {
+            Some((d, v)) if *d == day => v.push((i, num)),
+            _ => by_day.push((day, vec![(i, num)])),
+        }
+    }
+    let day_rows = by_day
+        .into_iter()
+        .map(|(day, items)| {
+            let btns = items
+                .into_iter()
+                .map(|(i, num)| {
+                    view! {
+                        <button
+                            class="rnd"
+                            class:active=move || sel.get() == i
+                            on:click=move |_| sel.set(i)
+                        >
+                            {num}
+                        </button>
+                    }
+                })
+                .collect_view();
+            let lbl = if day.is_empty() {
+                "Round".to_string()
+            } else {
+                day
+            };
             view! {
-                <button
-                    class="rnd"
-                    class:active=move || sel.get() == i
-                    on:click=move |_| sel.set(i)
-                >
-                    {num}
-                </button>
+                <div class="lob-controls" class:hidden=move || !revealed.get()>
+                    <span class="lob-lbl">{lbl}</span>
+                    {btns}
+                </div>
             }
         })
         .collect_view();
@@ -216,8 +249,14 @@ fn TftLobbiesInner(rounds: Vec<TftLobbyRound>, event: String) -> impl IntoView {
             .iter()
             .map(|l| {
                 let caster = l.caster_url.clone();
-                let players = l
-                    .players
+                // The sheet lists a lobby's players in seating order; show them by
+                // result instead. `placement` is the TFT points score (8 = 1st), so
+                // descending puts the winner on top. An unknown/blank score sorts last.
+                let mut ranked = l.players.clone();
+                ranked.sort_by_key(|p| {
+                    std::cmp::Reverse(p.placement.trim().parse::<u32>().unwrap_or(0))
+                });
+                let players = ranked
                     .iter()
                     .map(|p| {
                         let win = p.placement == "8";
@@ -265,10 +304,7 @@ fn TftLobbiesInner(rounds: Vec<TftLobbyRound>, event: String) -> impl IntoView {
                     }}
                 </span>
             </button>
-            <div class="lob-controls" class:hidden=move || !revealed.get()>
-                <span class="lob-lbl">"Round"</span>
-                {round_btns}
-            </div>
+            {day_rows}
             <div class="lob-grid">{body}</div>
         </section>
     }
