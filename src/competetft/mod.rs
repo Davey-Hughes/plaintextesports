@@ -47,6 +47,33 @@ pub fn infer_year(month: u32, day: u32, status: &str, now: DateTime<Utc>) -> i32
     best
 }
 
+/// The tournament's event name, year-qualified. CompeteTFT names tournaments bare
+/// ("Tactician's Crown") and every set has one, so without the year they collide
+/// across seasons in event URLs, session ids, and enrichment keys. Reads like the
+/// other esports events ("Mid-Season Invitational 2026"). The year comes from the
+/// scraped date range (inferred), else the tournament's first broadcast event;
+/// with neither, the bare name is used.
+#[must_use]
+pub fn tournament_event_name(
+    t: &rsc::CompeteTournament,
+    events: &[rsc::CompeteEvent],
+    now: DateTime<Utc>,
+) -> String {
+    let year = t
+        .date_range
+        .map(|dr| infer_year(dr.start.0, dr.start.1, &t.status, now))
+        .or_else(|| {
+            events
+                .iter()
+                .find(|e| e.tournament_id == t.id)
+                .map(|e| e.date.year())
+        });
+    match year {
+        Some(y) => format!("{} {y}", t.name),
+        None => t.name.clone(),
+    }
+}
+
 /// Everything one tournament contributes to the caches: schedule sessions plus
 /// the standings/placements/streamers/broadcasts/lobbies keyed under its event.
 pub struct CompeteTournamentData {
@@ -106,9 +133,10 @@ pub fn derive_sessions(
     events: &[rsc::CompeteEvent],
     now: DateTime<Utc>,
 ) -> Vec<crate::tft::ParsedSession> {
+    let name = tournament_event_name(t, events, now);
     let url = tournament_url(&t.id);
     let mk = |label: String, begin_at: DateTime<Utc>| crate::tft::ParsedSession {
-        tournament: t.name.clone(),
+        tournament: name.clone(),
         session_label: label,
         begin_at,
         tournament_url: url.clone(),
@@ -231,7 +259,7 @@ pub fn assemble(
     let sessions = derive_sessions(t, events, now);
 
     CompeteTournamentData {
-        tournament: t.name.clone(),
+        tournament: tournament_event_name(t, events, now),
         sessions,
         placements,
         standings,
@@ -497,6 +525,43 @@ mod tests {
     }
 
     #[test]
+    fn tournament_event_name_appends_the_inferred_year() {
+        let now = "2026-07-13T00:00:00Z".parse::<DateTime<Utc>>().unwrap();
+        let t = tourn(
+            "1",
+            "Tactician's Crown",
+            Some(rsc::DateRange {
+                start: (7, 10),
+                end: (7, 12),
+            }),
+            &["Day 1", "Day 2", "Finals"],
+        );
+        assert_eq!(
+            tournament_event_name(&t, &[], now),
+            "Tactician's Crown 2026"
+        );
+    }
+
+    #[test]
+    fn derive_sessions_year_qualifies_the_tournament_name() {
+        // Sessions must carry the year-qualified name so event URLs and session ids
+        // don't collide with the next set's identically-named tournament.
+        let now = "2026-07-13T00:00:00Z".parse::<DateTime<Utc>>().unwrap();
+        let t = tourn(
+            "1",
+            "Tactician's Crown",
+            Some(rsc::DateRange {
+                start: (7, 10),
+                end: (7, 12),
+            }),
+            &["Day 1", "Day 2", "Finals"],
+        );
+        let s = derive_sessions(&t, &[], now);
+        assert!(!s.is_empty());
+        assert!(s.iter().all(|x| x.tournament == "Tactician's Crown 2026"));
+    }
+
+    #[test]
     fn assembles_tournament_from_fixtures() {
         let t = rsc::parse_tournament(
             "116323184504995859",
@@ -536,7 +601,7 @@ mod tests {
         // three broadcast days, with feed-sourced labels
         assert_eq!(d.sessions.len(), 3);
         assert!(d.sessions.iter().any(|s| s.session_label.contains("Day 2")));
-        assert_eq!(d.tournament, "Tactician's Crown");
+        assert_eq!(d.tournament, "Tactician's Crown 2026");
     }
 
     /// Live smoke test. Ignored by default; run with
