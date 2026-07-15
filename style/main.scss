@@ -2863,7 +2863,12 @@ a.sw-link {
   // values, so the columns never reflow when the spoiler is revealed.
   width: max-content;
   align-items: baseline;
-  gap: 0.3rem 1.4rem;
+  // Tight column gap: a full TFT day is 13 game columns, so at 16 columns the
+  // gap dominates the table's width (at 1.4rem it was ~336px of 812px, forcing a
+  // horizontal scroll). 0.6rem fits the widest day comfortably while keeping the
+  // numeric columns legible. All day tabs share one computed grid, so they stay
+  // aligned and resize together.
+  gap: 0.3rem 0.6rem;
   font-size: 13px;
   font-variant-numeric: tabular-nums;
 
