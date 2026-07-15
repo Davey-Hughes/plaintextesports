@@ -324,6 +324,28 @@ pub async fn fetch_sheet_tabs(
     out
 }
 
+/// Fetch + assemble a tournament's sheet data from an already-parsed overview.
+/// The sheet (pubhtml + a CSV per tab) is the expensive part; the overview is
+/// fetched and cached separately by the poller. Returns None if the tournament
+/// publishes no sheet or every tab fails, so the caller keeps cached rows.
+#[cfg(feature = "ssr")]
+pub async fn refresh_from_overview(
+    client: &reqwest::Client,
+    t: &rsc::CompeteTournament,
+    events: &[rsc::CompeteEvent],
+    now: DateTime<Utc>,
+) -> Option<CompeteTournamentData> {
+    let key = t
+        .stages
+        .iter()
+        .find_map(|s| (!s.sheet_key.is_empty()).then(|| s.sheet_key.clone()))?;
+    let tabs = fetch_sheet_tabs(client, &key).await;
+    if tabs.is_empty() {
+        return None;
+    }
+    Some(assemble(t, events, &tabs, now))
+}
+
 /// Fetch and assemble one tournament end to end (overview → sheet tabs →
 /// assemble). Returns None if the overview or every sheet tab fails to load, so
 /// the caller keeps any cached rows untouched.
@@ -335,15 +357,7 @@ pub async fn refresh_competetft_tournament(
     now: DateTime<Utc>,
 ) -> Option<CompeteTournamentData> {
     let t = fetch_tournament(client, id).await?;
-    let key = t
-        .stages
-        .iter()
-        .find_map(|s| (!s.sheet_key.is_empty()).then(|| s.sheet_key.clone()))?;
-    let tabs = fetch_sheet_tabs(client, &key).await;
-    if tabs.is_empty() {
-        return None;
-    }
-    Some(assemble(&t, events, &tabs, now))
+    refresh_from_overview(client, &t, events, now).await
 }
 
 #[cfg(test)]

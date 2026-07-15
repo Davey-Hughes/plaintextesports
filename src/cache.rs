@@ -110,6 +110,15 @@ static TFT_LOBBIES: Lazy<RwLock<HashMap<String, Vec<crate::types::TftLobbyRound>
 // so the two sources never double-write the same event (CompeteTFT is primary).
 static COMPETETFT_COVERED: Lazy<RwLock<std::collections::HashSet<String>>> =
     Lazy::new(|| RwLock::new(std::collections::HashSet::new()));
+/// Cached CompeteTFT tournament overviews (id → parsed overview). The overview
+/// carries the date range + stages the schedule is derived from and changes
+/// rarely, so it's fetched once per tournament on the first poll after boot — the
+/// whole TFT schedule then appears at once instead of trickling in one tournament
+/// per cycle — and refreshed one-per-cycle by the round-robin. Not persisted: a
+/// restart just re-fetches these cheap pages.
+static COMPETETFT_OVERVIEWS: Lazy<
+    RwLock<HashMap<String, crate::competetft::rsc::CompeteTournament>>,
+> = Lazy::new(|| RwLock::new(HashMap::new()));
 
 /// The WRC, WEC, or MotoGP championship standings (empty until first fetched), by
 /// series league name. Any other name yields empty tables.
@@ -1856,30 +1865,76 @@ pub fn spawn_poller() {
                         cfg.competetft_autodiscover,
                     );
                     if !ids.is_empty() {
-                        let id = ids[ctft_cursor % ids.len()].clone();
-                        ctft_cursor = ctft_cursor.wrapping_add(1);
-                        match crate::competetft::refresh_competetft_tournament(
-                            &client,
-                            &id,
-                            &schedule.events,
-                            now,
-                        )
-                        .await
-                        {
-                            Some(data) => {
-                                let rows: Vec<NormalizedMatch> = data
-                                    .sessions
-                                    .iter()
-                                    .map(|s| crate::tft::session_to_match(s, now))
-                                    .collect();
-                                apply_competetft(&data, now);
-                                if !rows.is_empty() {
-                                    feeds.push((Sport::Tft, Ok(rows)));
-                                }
+                        // 1) Ensure every discovered tournament has a cached overview.
+                        //    First poll after boot fetches all of them, so the whole TFT
+                        //    schedule appears at once; later polls fetch only newly
+                        //    discovered ones. The overview is one small page; the heavy
+                        //    sheet fetch stays on the round-robin below.
+                        let missing: Vec<String> = {
+                            let cache = COMPETETFT_OVERVIEWS
+                                .read()
+                                .unwrap_or_else(PoisonError::into_inner);
+                            ids.iter()
+                                .filter(|id| !cache.contains_key(*id))
+                                .cloned()
+                                .collect()
+                        };
+                        if !missing.is_empty() {
+                            leptos::logging::log!(
+                                "CompeteTFT: fetching {} tournament overview(s)",
+                                missing.len()
+                            );
+                        }
+                        for id in missing {
+                            if let Some(t) = crate::competetft::fetch_tournament(&client, &id).await
+                            {
+                                COMPETETFT_OVERVIEWS
+                                    .write()
+                                    .unwrap_or_else(PoisonError::into_inner)
+                                    .insert(id, t);
                             }
-                            None => leptos::logging::log!(
-                                "CompeteTFT: no data for tournament {id} this cycle — keeping cached rows"
-                            ),
+                        }
+                        // 2) Round-robin one tournament per cycle: refresh its overview
+                        //    (keeping the cache current) and pull its sheet — the
+                        //    expensive part — for standings/streams/broadcasts/lobbies.
+                        let cur = ids[ctft_cursor % ids.len()].clone();
+                        ctft_cursor = ctft_cursor.wrapping_add(1);
+                        if let Some(t) = crate::competetft::fetch_tournament(&client, &cur).await {
+                            COMPETETFT_OVERVIEWS
+                                .write()
+                                .unwrap_or_else(PoisonError::into_inner)
+                                .insert(cur.clone(), t.clone());
+                            match crate::competetft::refresh_from_overview(
+                                &client,
+                                &t,
+                                &schedule.events,
+                                now,
+                            )
+                            .await
+                            {
+                                Some(data) => apply_competetft(&data, now),
+                                None => leptos::logging::log!(
+                                    "CompeteTFT: no sheet data for tournament {cur} this cycle"
+                                ),
+                            }
+                        }
+                        // 3) Derive the whole TFT schedule from every cached overview, so
+                        //    the feed is a complete per-tournament enumeration each cycle
+                        //    (which apply_poll's per-tournament reconciliation relies on).
+                        let rows: Vec<NormalizedMatch> = {
+                            let cache = COMPETETFT_OVERVIEWS
+                                .read()
+                                .unwrap_or_else(PoisonError::into_inner);
+                            ids.iter()
+                                .filter_map(|id| cache.get(id))
+                                .flat_map(|t| {
+                                    crate::competetft::derive_sessions(t, &schedule.events, now)
+                                })
+                                .map(|s| crate::tft::session_to_match(&s, now))
+                                .collect()
+                        };
+                        if !rows.is_empty() {
+                            feeds.push((Sport::Tft, Ok(rows)));
                         }
                     }
                     ctft_at = Some(now);
