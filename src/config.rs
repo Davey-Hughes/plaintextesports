@@ -40,9 +40,6 @@ struct FileConfig {
     soop_enabled: Option<bool>,
     /// Curated SOOP co-streamers per game (sport slug) or league — broadcaster ids.
     soop_costreamers: Option<HashMap<String, Vec<String>>>,
-    /// Enable the TFT schedule feed from Liquipedia's MediaWiki API. Off by
-    /// default — it parses rendered HTML from an external wiki, so it's opt-in.
-    liquipedia_enabled: Option<bool>,
     /// Enable the first-party CompeteTFT source (Riot competetft.com + the
     /// official published sheet). Off by default — scrape-based, opt-in.
     competetft_enabled: Option<bool>,
@@ -121,10 +118,6 @@ impl FileConfig {
         put("TWITCH_CLIENT_SECRET", self.twitch_client_secret.clone());
         put("YOUTUBE_API_KEY", self.youtube_api_key.clone());
         put("SOOP_ENABLED", self.soop_enabled.map(|b| b.to_string()));
-        put(
-            "LIQUIPEDIA_ENABLED",
-            self.liquipedia_enabled.map(|b| b.to_string()),
-        );
         put(
             "COMPETETFT_ENABLED",
             self.competetft_enabled.map(|b| b.to_string()),
@@ -243,8 +236,6 @@ pub struct Config {
     /// Curated SOOP co-streamers per game (sport slug) or league — broadcaster
     /// ids, surfaced when live (not game-filtered). Empty when unset.
     pub soop_costreamers: HashMap<String, Vec<String>>,
-    /// Enable the TFT schedule feed from Liquipedia (opt-in; scrape-based).
-    pub liquipedia_enabled: bool,
     /// Enable the first-party CompeteTFT source (opt-in). Primary for TFT when on.
     pub competetft_enabled: bool,
     /// Auto-discover tournaments from competetft's schedule feed.
@@ -536,7 +527,6 @@ impl Config {
         let past_refresh = flag("ENABLE_PAST_REFRESH", true);
         let backfill = flag("ENABLE_BACKFILL", true);
         let soop_enabled = flag("SOOP_ENABLED", false);
-        let liquipedia_enabled = flag("LIQUIPEDIA_ENABLED", false);
         let competetft_enabled = flag("COMPETETFT_ENABLED", false);
         let competetft_autodiscover = flag("COMPETETFT_AUTODISCOVER", true);
         let rate_limit_floor = secs("RATE_LIMIT_FLOOR", 200, 0);
@@ -574,7 +564,6 @@ impl Config {
             youtube_costreamers: HashMap::new(),
             soop_enabled,
             soop_costreamers: HashMap::new(),
-            liquipedia_enabled,
             competetft_enabled,
             competetft_autodiscover,
             competetft_pins: Vec::new(),
@@ -661,13 +650,6 @@ mod tests {
         assert_eq!(c.db_path, "data/cache.db");
         assert!(c.resolve_links);
         assert!(!c.demo);
-        assert!(!c.liquipedia_enabled);
-    }
-
-    #[test]
-    fn liquipedia_flag_defaults_off_and_parses() {
-        assert!(!cfg(&[]).liquipedia_enabled);
-        assert!(cfg(&[("LIQUIPEDIA_ENABLED", "true")]).liquipedia_enabled);
     }
 
     #[test]

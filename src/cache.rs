@@ -1653,12 +1653,11 @@ pub fn spawn_poller() {
         }
     };
 
-    // Liquipedia disabled ⇒ purge its orphaned TFT rows. Disabling the source only
-    // stops new rows; without this its already-persisted ones linger to the archive
-    // cutoff, duplicating CompeteTFT's own (differently-named) events.
-    if !cfg.liquipedia_enabled
-        && let Some(conn) = store.as_ref()
-    {
+    // Purge any TFT rows left by the retired Liquipedia source. Runs every boot: an
+    // indexed DELETE that matches nothing on a clean DB, and the only thing that
+    // clears rows persisted before the source was removed — they'd otherwise linger
+    // to the archive cutoff, duplicating CompeteTFT's (differently-named) events.
+    if let Some(conn) = store.as_ref() {
         match crate::store::purge_liquipedia_tft(conn) {
             Ok(0) => {}
             Ok(n) => leptos::logging::log!("purged {n} stale Liquipedia TFT row(s)"),
@@ -2594,29 +2593,27 @@ fn apply_poll(
                 &[("WRC", wrc_keep)],
             ) {
                 Ok(()) => {
-                    // Reconcile TFT per tournament ONLY when the upsert committed
-                    // (else the keep-ids aren't in the DB yet and the DELETE would
-                    // wipe the tournament) AND only when CompeteTFT is the sole,
-                    // complete TFT source. With Liquipedia enabled its feed is partial
-                    // per poll (alternating upcoming / reconstructed), so replacing
-                    // would delete legitimate rows the other cycle added.
-                    if !config().liquipedia_enabled {
-                        let mut tft_keep: std::collections::HashMap<&str, Vec<i64>> =
-                            std::collections::HashMap::new();
-                        for m in &fresh {
-                            if m.sport == Sport::Tft {
-                                tft_keep
-                                    .entry(m.series_name.as_str())
-                                    .or_default()
-                                    .push(m.id);
-                            }
+                    // Reconcile TFT per tournament, but ONLY once the upsert has
+                    // committed — else the keep-ids aren't in the DB yet and the
+                    // DELETE would wipe the tournament. Unconditional otherwise:
+                    // CompeteTFT is the sole TFT source and enumerates a tournament
+                    // completely each cycle, so rows it no longer lists are genuinely
+                    // gone rather than merely absent from this cycle's half of a
+                    // partial feed.
+                    let mut tft_keep: std::collections::HashMap<&str, Vec<i64>> =
+                        std::collections::HashMap::new();
+                    for m in &fresh {
+                        if m.sport == Sport::Tft {
+                            tft_keep
+                                .entry(m.series_name.as_str())
+                                .or_default()
+                                .push(m.id);
                         }
-                        for (tournament, keep) in &tft_keep {
-                            if let Err(e) =
-                                crate::store::replace_tft_tournament(conn, tournament, keep)
-                            {
-                                leptos::logging::log!("tft reconcile failed for {tournament}: {e}");
-                            }
+                    }
+                    for (tournament, keep) in &tft_keep {
+                        if let Err(e) = crate::store::replace_tft_tournament(conn, tournament, keep)
+                        {
+                            leptos::logging::log!("tft reconcile failed for {tournament}: {e}");
                         }
                     }
                 }

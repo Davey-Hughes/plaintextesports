@@ -574,10 +574,11 @@ pub fn replace_tft_tournament(
 }
 
 /// Delete TFT rows sourced from Liquipedia, identified by their `liquipedia.net`
-/// source link (CompeteTFT rows link to `competetft.com`). Run at startup when
-/// `liquipedia_enabled` is off: disabling the source only stops new rows, so
-/// without this its already-persisted rows linger to the archive cutoff,
-/// duplicating CompeteTFT's own (differently-named) events. Returns the row count.
+/// source link (CompeteTFT rows link to `competetft.com`). The Liquipedia TFT
+/// source is gone, but rows it persisted linger to the archive cutoff and
+/// duplicate CompeteTFT's own (differently-named) events, so they're cleared at
+/// startup. Scoped to TFT: `liquipedia.net` URLs on CS2/LoL rows are resolved
+/// event links and must survive. Returns the row count.
 pub fn purge_liquipedia_tft(conn: &Connection) -> rusqlite::Result<usize> {
     conn.execute(
         "DELETE FROM matches WHERE sport = 'tft' AND league_url LIKE '%liquipedia.net%'",
