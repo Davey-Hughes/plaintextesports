@@ -249,14 +249,14 @@ mod tests {
         // must not touch is anything belonging to another event.
         let mut recs = Vec::new();
         for k in [
-            "cs2-1",             // a row on the page
-            "cs2-2",             // a row on another page
-            "st:77",             // this event's standings
-            "st:99",             // another event's standings
-            "bn:77:0:0",         // this event's bracket
-            "bs:77:1:2",         // this event's bracket
-            "bn:99:0:0",         // another event's bracket
-            "boxscore:cs2-1",    // a section on the page
+            "cs2-1",          // a row on the page
+            "cs2-2",          // a row on another page
+            "st:77",          // this event's standings
+            "st:99",          // another event's standings
+            "bn:77:0:0",      // this event's bracket
+            "bs:77:1:2",      // this event's bracket
+            "bn:99:0:0",      // another event's bracket
+            "boxscore:cs2-1", // a section on the page
         ] {
             upsert(&mut recs, k, 0, 0);
         }
@@ -269,7 +269,10 @@ mod tests {
         let left = keys_vec(&recs);
         // Everything this page announced is gone…
         for gone in ["cs2-1", "st:77", "boxscore:cs2-1", "bn:77:0:0", "bs:77:1:2"] {
-            assert!(!left.contains(&gone.to_string()), "{gone} should be cleared");
+            assert!(
+                !left.contains(&gone.to_string()),
+                "{gone} should be cleared"
+            );
         }
         // …and nothing else is.
         for kept in ["cs2-2", "st:99", "bn:99:0:0"] {

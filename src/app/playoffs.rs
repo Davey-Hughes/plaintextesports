@@ -105,16 +105,18 @@ pub(crate) fn page_reveal(
     let (revealed, base) = stored_reveal(key.get_value(), end, None, None);
     // Read the stored record itself, not `revealed` — that memo ORs in the global
     // toggle, which would read as "on" even when this event's switch is off.
-    let held = move || {
-        sections.is_some_and(|s| s.with_untracked(|set| set.contains(&key.get_value())))
-    };
+    let held =
+        move || sections.is_some_and(|s| s.with_untracked(|set| set.contains(&key.get_value())));
     let toggle = move |ev: leptos::ev::MouseEvent| {
         let before = held();
         base(ev);
         // Cascade only when this click actually switched the event's reveal off. A
         // click deflected by the global toggle flips nothing, and must not take the
         // localized reveals down with it.
-        if before && !held() && let Some(reg) = registry {
+        if before
+            && !held()
+            && let Some(reg) = registry
+        {
             clear_page_local_reveals(reg, matches, sections);
         }
     };
