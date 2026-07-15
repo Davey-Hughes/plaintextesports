@@ -205,26 +205,47 @@ pub(crate) fn TftBroadcasts(event: Signal<String>) -> impl IntoView {
     }
 }
 
-/// An invisible stand-in for one lobby box: the same structure with placeholder
-/// content, so it occupies exactly the space a real one would. Used to hold the
-/// grid's height constant — both across rounds with fewer lobbies and while the
-/// section is collapsed. Carries no real content, so a collapsed section keeps its
-/// space without putting the results it's hiding into the DOM.
-fn lob_spacer(seats: usize) -> impl IntoView {
-    let rows = (0..seats)
+/// The placeholder score/name rows a withheld lobby box is filled with: real
+/// enough to size the box, empty of anything worth hiding.
+fn lob_blank_rows(seats: usize) -> impl IntoView {
+    (0..seats)
         .map(|_| {
             view! {
                 <span class="p">"0"</span>
                 <span class="n">"—"</span>
             }
         })
-        .collect_view();
+        .collect_view()
+}
+
+/// An invisible stand-in for a lobby box that doesn't exist this round: same
+/// structure, nothing shown. Pads short rounds out to the widest one so the grid's
+/// height doesn't change as you switch rounds.
+fn lob_spacer(seats: usize) -> impl IntoView {
     view! {
         <div class="lob" style="visibility:hidden" aria-hidden="true">
             <div class="lob-head">
                 <span>"—"</span>
             </div>
-            <div class="lob-body">{rows}</div>
+            <div class="lob-body">{lob_blank_rows(seats)}</div>
+        </div>
+    }
+}
+
+/// A lobby box with its results withheld: the frame and its "Lobby N" head stay
+/// put, only the score/name rows are blanked. Used while the section is collapsed,
+/// so the boxes still read as boxes and the page keeps its shape. The rows are
+/// placeholders rather than the real ones hidden by CSS, so a collapsed section
+/// keeps the placements it's hiding out of the DOM entirely.
+fn lob_withheld(seats: usize, label: &str) -> impl IntoView {
+    view! {
+        <div class="lob">
+            <div class="lob-head">
+                <span>{label.to_string()}</span>
+            </div>
+            <div class="lob-body" style="visibility:hidden">
+                {lob_blank_rows(seats)}
+            </div>
         </div>
     }
 }
@@ -328,17 +349,24 @@ fn TftLobbiesInner(rounds: Vec<TftLobbyRound>, event: String) -> impl IntoView {
             .map(|l| l.players.len())
             .max()
             .unwrap_or(8);
-        if !revealed.get() {
-            // Collapsed: hold the full grid's space rather than folding the page up
-            // under the toggle, so hiding and showing don't move everything below.
-            return (0..max_lobbies)
-                .map(|_| lob_spacer(seats))
-                .collect_view()
-                .into_any();
-        }
         let idx = sel.get().min(all.len().saturating_sub(1));
         let pad = max_lobbies.saturating_sub(all[idx].lobbies.len());
         let spacers = (0..pad).map(|_| lob_spacer(seats)).collect_view();
+        if !revealed.get() {
+            // Collapsed: keep this round's boxes, blank their rows. Same layout as
+            // revealed — down to the padding — so the toggle only changes what's in
+            // the boxes, never where anything sits.
+            let withheld = all[idx]
+                .lobbies
+                .iter()
+                .map(|l| lob_withheld(l.players.len(), &l.label))
+                .collect_view();
+            return view! {
+                {withheld}
+                {spacers}
+            }
+            .into_any();
+        }
         let boxes = all[idx]
             .lobbies
             .iter()
