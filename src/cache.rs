@@ -1518,10 +1518,18 @@ static HTTP: Lazy<reqwest::Client> = Lazy::new(|| {
 
 /// Dedicated connection for the persistent result cache (`store::result_cache`),
 /// used by both the on-demand caches and the poller's standings persistence.
-/// `None` in DEMO mode → every `db_cache_*` helper no-ops and the caches stay
-/// memory-only (today's behaviour). WAL + busy_timeout (set by `store::open`) let
+/// `None` in DEMO mode or under `cargo test` → every `db_cache_*` helper no-ops
+/// and the caches stay memory-only. WAL + busy_timeout (set by `store::open`) let
 /// it coexist with the poller's and push sender's connections.
 static CACHE_DB: Lazy<Option<Mutex<rusqlite::Connection>>> = Lazy::new(|| {
+    // Never bind a real database from the test harness. `config()` reads the
+    // developer's actual config.toml wherever the lib is loaded, so without this a
+    // test calling `db_cache_put` writes fixture rows into their live cache — and
+    // a `db_cache_get` reads whatever is sitting in it, making results depend on
+    // local state rather than the test's own setup.
+    if cfg!(test) {
+        return None;
+    }
     let cfg = config();
     if cfg.demo {
         return None;
@@ -6597,6 +6605,21 @@ pub fn synthetic_snapshot(n: usize, now: DateTime<Utc>) -> Snapshot {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_test_harness_never_binds_a_real_cache_db() {
+        // CACHE_DB resolves `config().db_path`, and `config()` reads the real
+        // config.toml wherever the lib is loaded — including under `cargo test`.
+        // That made the suite non-hermetic in both directions: `db_cache_put` in a
+        // test persisted fixture rows into the developer's live data/cache.db
+        // (stamped with the test's frozen `now`), and a `db_cache_get` could hit
+        // whatever happened to be cached locally, so a test could pass on a dev
+        // box and fail in CI (or vice versa) purely on local DB state.
+        assert!(
+            CACHE_DB.is_none(),
+            "tests must run memory-only; CACHE_DB opened a real database"
+        );
+    }
 
     #[test]
     fn tft_extra_accessors_default_empty() {
