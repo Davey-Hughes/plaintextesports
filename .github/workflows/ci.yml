@@ -35,6 +35,35 @@ jobs:
       - name: Test
         run: cargo test --features ssr
 
+  # The hydration bundle ships to every visitor, so its size is budgeted in
+  # scripts/perf/wasm-budget.txt. The budget and the script that checks it both
+  # existed already — but nothing ran the script, so the bundle drifted 38 KiB
+  # past the ceiling across three PRs without anyone noticing. This job is the
+  # part that was missing. It does NOT gate the image build below: an oversized
+  # bundle is a deliberate-decision problem, not a broken build, and shouldn't
+  # block a deploy.
+  wasm:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install Rust toolchain
+        run: rustup show
+      - uses: Swatinem/rust-cache@v2
+        with:
+          # Its own cache key: this job compiles the wasm32 target under the
+          # wasm-release profile, which the `rust` job above never builds.
+          key: wasm
+      # Same installer the Dockerfile uses, so CI and the image agree on version.
+      - name: Install cargo-leptos
+        run: curl --proto '=https' --tlsv1.3 -LsSf https://github.com/leptos-rs/cargo-leptos/releases/latest/download/cargo-leptos-installer.sh | sh
+      # Only a release build emits the hashed assets wasm_size.sh measures.
+      - name: Build
+        run: cargo leptos build --release
+      # Exits 2 when over budget, failing the job. Raising the ceiling is a
+      # deliberate act: edit wasm-budget.txt and say why, as its history does.
+      - name: Bundle size vs budget
+        run: scripts/perf/wasm_size.sh
+
   # Build + publish the container image to ghcr.io — but ONLY after the rust checks pass
   # (a red build never ships an image), and never on a pull request. Tags: latest (default
   # branch), branch name, short SHA, and full semver on a v* tag. The image is built by the
