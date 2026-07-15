@@ -433,6 +433,13 @@ const SERIES_TTL_MIN: i64 = 2;
 static STREAM_STATUS: Lazy<RwLock<HashMap<(Sport, i64), CachedStreams>>> =
     Lazy::new(|| RwLock::new(HashMap::new()));
 
+/// Event-scoped twin of `STREAM_STATUS`: a TFT event's official broadcasts with
+/// Twitch live status merged in. `live_streams_for` is keyed by match id, which
+/// an event page has no equivalent of, so this keys by event name. Same TTL, so a
+/// page load doesn't re-hit Twitch every time.
+static EVENT_STREAM_STATUS: Lazy<RwLock<HashMap<String, CachedStreams>>> =
+    Lazy::new(|| RwLock::new(HashMap::new()));
+
 struct CachedStreams {
     streams: Vec<StreamView>,
     fetched_at: DateTime<Utc>,
@@ -643,6 +650,53 @@ pub async fn live_streams_for(sport: Sport, id: i64) -> Vec<StreamView> {
             },
         );
     enriched
+}
+
+/// A TFT event's official broadcasts as live-enriched streams, for the row at the
+/// top of the event page. Only `Regional` (official) channels are surfaced — the
+/// sheet also lists dozens of watch parties and co-streams, which aren't worth the
+/// page or the API calls. Returns the plain links when there's nothing to enrich
+/// (no Twitch config, demo mode, or every channel off-Twitch), so the row always
+/// renders.
+pub async fn event_broadcast_streams(event: &str) -> Vec<StreamView> {
+    use crate::types::TftBroadcastKind;
+    let base: Vec<StreamView> = tft_broadcasts(event)
+        .iter()
+        .filter(|b| b.kind == TftBroadcastKind::Regional)
+        .filter_map(broadcast_to_stream)
+        .collect();
+    if base.is_empty() || config().demo {
+        return base;
+    }
+    {
+        let g = EVENT_STREAM_STATUS
+            .read()
+            .unwrap_or_else(PoisonError::into_inner);
+        if let Some(c) = g.get(event)
+            && c.fetched_at + Duration::seconds(STREAM_STATUS_TTL_SECS) > Utc::now()
+        {
+            return c.streams.clone();
+        }
+    }
+    let logins: Vec<String> = base.iter().filter_map(|s| login_of(&s.url)).collect();
+    if logins.is_empty() {
+        return base; // e.g. YouTube-only officials: nothing for Twitch to mark
+    }
+    let live = crate::twitch::live_streams(&logins).await;
+    // Empty seeds + empty needle: mark live/viewers on these channels only, never
+    // append discovered co-streamers.
+    let out = enrich_streams(base, &live, &[], "");
+    EVENT_STREAM_STATUS
+        .write()
+        .unwrap_or_else(PoisonError::into_inner)
+        .insert(
+            event.to_string(),
+            CachedStreams {
+                streams: out.clone(),
+                fetched_at: Utc::now(),
+            },
+        );
+    out
 }
 
 /// On-demand F1 results, keyed by (season, round). Fetched when a GP event page

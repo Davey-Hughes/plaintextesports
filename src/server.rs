@@ -304,6 +304,21 @@ pub async fn get_event_streams(league: String) -> Result<Vec<StreamView>, Server
     }
 }
 
+/// A TFT event's official broadcasts, live-enriched — the stream row at the top
+/// of the event page.
+#[server(GetEventBroadcasts, "/api")]
+pub async fn get_event_broadcasts(event: String) -> Result<Vec<StreamView>, ServerFnError> {
+    #[cfg(feature = "ssr")]
+    {
+        Ok(crate::cache::event_broadcast_streams(&event).await)
+    }
+    #[cfg(not(feature = "ssr"))]
+    {
+        let _ = event;
+        Ok(Vec::new())
+    }
+}
+
 /// The given (starred) match uids that are still upcoming, sorted by start, for
 /// the notifications page. Started/finished matches are dropped server-side.
 #[server(GetNotifications, "/api")]
