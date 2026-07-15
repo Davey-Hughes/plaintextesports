@@ -675,7 +675,7 @@ pub(crate) fn stream_tags(s: &StreamView) -> String {
 }
 
 /// Humanize a viewer count: `375` → "375", `12400` → "12.4k".
-fn fmt_viewers(n: u64) -> String {
+pub(crate) fn fmt_viewers(n: u64) -> String {
     if n >= 1000 {
         format!("{:.1}k", n as f64 / 1000.0)
     } else {

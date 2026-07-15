@@ -546,6 +546,45 @@ pub fn upsert_and_prune(
     tx.commit()
 }
 
+/// Drop a TFT tournament's rows that aren't in `keep` — its superseded sessions
+/// (e.g. a tier-3 range row replaced by tier-1/2 per-day rows once dates arrive).
+/// Scoped by `sport='tft'` + `series_name` so other tournaments/sports are
+/// untouched. No-op on an empty `keep` (a failed/empty refresh never wipes the
+/// tournament). Safe now that CompeteTFT is authoritative — each poll's feed is a
+/// tournament's complete session set (Liquipedia's partial feed is disabled).
+pub fn replace_tft_tournament(
+    conn: &Connection,
+    tournament: &str,
+    keep: &[i64],
+) -> rusqlite::Result<()> {
+    if keep.is_empty() {
+        return Ok(());
+    }
+    let holes = std::iter::repeat_n("?", keep.len())
+        .collect::<Vec<_>>()
+        .join(",");
+    let sql = format!(
+        "DELETE FROM matches WHERE sport = 'tft' AND series_name = ?1 AND id NOT IN ({holes})"
+    );
+    let mut vals: Vec<rusqlite::types::Value> = Vec::with_capacity(keep.len() + 1);
+    vals.push(rusqlite::types::Value::Text(tournament.to_string()));
+    vals.extend(keep.iter().map(|&id| rusqlite::types::Value::Integer(id)));
+    conn.execute(&sql, rusqlite::params_from_iter(vals))?;
+    Ok(())
+}
+
+/// Delete TFT rows sourced from Liquipedia, identified by their `liquipedia.net`
+/// source link (CompeteTFT rows link to `competetft.com`). Run at startup when
+/// `liquipedia_enabled` is off: disabling the source only stops new rows, so
+/// without this its already-persisted rows linger to the archive cutoff,
+/// duplicating CompeteTFT's own (differently-named) events. Returns the row count.
+pub fn purge_liquipedia_tft(conn: &Connection) -> rusqlite::Result<usize> {
+    conn.execute(
+        "DELETE FROM matches WHERE sport = 'tft' AND league_url LIKE '%liquipedia.net%'",
+        [],
+    )
+}
+
 /// Load all cached event-link resolutions: `(key, url, checked_at_ms)` where a
 /// `None` url means "resolved, no confident match".
 pub fn load_event_links(conn: &Connection) -> rusqlite::Result<Vec<(String, Option<String>, i64)>> {
@@ -1261,6 +1300,82 @@ mod tests {
         assert_eq!(all.len(), 1);
         assert_eq!(all[0].status, MatchStatus::Finished);
         assert_eq!(all[0].team_a.score, Some(2));
+    }
+
+    #[test]
+    fn purge_liquipedia_tft_removes_only_liquipedia_tft_rows() {
+        let mut conn = open(":memory:").unwrap();
+        let now = Utc::now();
+        let ms = now.timestamp_millis();
+        let cutoff = (now - chrono::Duration::days(30)).timestamp_millis();
+        let row = |id: i64, sport: Sport, url: &str| {
+            let mut m = sample(id, now);
+            m.sport = sport;
+            m.league_url = Some(url.into());
+            m
+        };
+        upsert_and_prune(
+            &mut conn,
+            &[
+                row(1, Sport::Tft, "https://liquipedia.net/tft/Foo"),
+                row(
+                    2,
+                    Sport::Tft,
+                    "https://competetft.com/en-US/tournament/9/overview",
+                ),
+                row(3, Sport::Lol, "https://liquipedia.net/leagueoflegends/Bar"),
+            ],
+            ms,
+            cutoff,
+            &[],
+        )
+        .unwrap();
+        let n = purge_liquipedia_tft(&conn).unwrap();
+        assert_eq!(n, 1, "only the Liquipedia TFT row");
+        let ids: Vec<i64> = load_all(&conn).unwrap().iter().map(|m| m.id).collect();
+        assert!(!ids.contains(&1), "liquipedia TFT row purged");
+        assert!(ids.contains(&2), "competetft TFT row kept");
+        assert!(ids.contains(&3), "liquipedia LoL row kept (not TFT)");
+    }
+
+    #[test]
+    fn replace_tft_tournament_drops_superseded_rows_only() {
+        // Reuse the existing `sample(id, begin_at)` helper (builds a LoL match),
+        // overriding it into a TFT tournament row.
+        let mut conn = open(":memory:").unwrap();
+        let now = Utc::now();
+        let ms = now.timestamp_millis();
+        let cutoff = (now - chrono::Duration::days(30)).timestamp_millis();
+        let tft = |id: i64, tourn: &str| {
+            let mut m = sample(id, now);
+            m.sport = Sport::Tft;
+            m.league = "TFT".into();
+            m.series_name = tourn.into();
+            m
+        };
+        // A non-TFT match that happens to share series_name "X" must NOT be touched.
+        let mut other = sample(20, now);
+        other.series_name = "X".into(); // same series_name, different sport (LoL)
+        // A tier-3 ghost (id 1) + two current per-day rows (2,3) for tournament X,
+        // plus an unrelated tournament Y (id 9) that must be untouched.
+        upsert_and_prune(
+            &mut conn,
+            &[tft(1, "X"), tft(2, "X"), tft(3, "X"), tft(9, "Y"), other],
+            ms,
+            cutoff,
+            &[],
+        )
+        .unwrap();
+        // Keep only the current rows for X.
+        replace_tft_tournament(&conn, "X", &[2, 3]).unwrap();
+        let ids: Vec<i64> = load_all(&conn).unwrap().iter().map(|m| m.id).collect();
+        assert!(!ids.contains(&1), "tier-3 ghost dropped");
+        assert!(ids.contains(&2) && ids.contains(&3), "current rows kept");
+        assert!(ids.contains(&9), "other tournament untouched");
+        assert!(
+            ids.contains(&20),
+            "non-TFT row with same series_name untouched"
+        );
     }
 
     #[test]

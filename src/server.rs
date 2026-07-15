@@ -5,7 +5,8 @@
 use crate::types::Sport;
 use crate::types::{
     EventInfo, F1Result, F1Standings, MatchDetail, MatchResults, MotorResult, MotorStandings,
-    ReminderReq, ScheduleView, SiteInfo, StreamView, SubscribeReq, TftDayPanel, TftPlacement,
+    ReminderReq, ScheduleView, SiteInfo, StreamView, SubscribeReq, TftDayPanel, TftLobbyRound,
+    TftPlacement,
 };
 use leptos::prelude::*;
 
@@ -303,6 +304,51 @@ pub async fn get_event_streams(league: String) -> Result<Vec<StreamView>, Server
     }
 }
 
+/// A TFT event's official broadcasts, live-enriched — the stream row at the top
+/// of the event page.
+#[server(GetEventBroadcasts, "/api")]
+pub async fn get_event_broadcasts(event: String) -> Result<Vec<StreamView>, ServerFnError> {
+    #[cfg(feature = "ssr")]
+    {
+        Ok(crate::cache::event_broadcast_streams(&event).await)
+    }
+    #[cfg(not(feature = "ssr"))]
+    {
+        let _ = event;
+        Ok(Vec::new())
+    }
+}
+
+/// A TFT event's player co-streamers, live-enriched, live-first and capped — the
+/// page links to the tournament's sheet for the full directory.
+#[server(GetEventStreamers, "/api")]
+pub async fn get_event_streamers(event: String) -> Result<Vec<StreamView>, ServerFnError> {
+    #[cfg(feature = "ssr")]
+    {
+        Ok(crate::cache::event_streamer_streams(&event).await)
+    }
+    #[cfg(not(feature = "ssr"))]
+    {
+        let _ = event;
+        Ok(Vec::new())
+    }
+}
+
+/// A TFT event's published Google Sheet URL (empty when it has none) — the "see
+/// all" link behind the capped stream list.
+#[server(GetTftSheet, "/api")]
+pub async fn get_tft_sheet(event: String) -> Result<String, ServerFnError> {
+    #[cfg(feature = "ssr")]
+    {
+        Ok(crate::cache::tft_sheet(&event))
+    }
+    #[cfg(not(feature = "ssr"))]
+    {
+        let _ = event;
+        Ok(String::new())
+    }
+}
+
 /// The given (starred) match uids that are still upcoming, sorted by start, for
 /// the notifications page. Started/finished matches are dropped server-side.
 #[server(GetNotifications, "/api")]
@@ -449,6 +495,21 @@ pub async fn get_tft_standings(event: String) -> Result<Vec<TftDayPanel>, Server
     #[cfg(feature = "ssr")]
     {
         Ok(crate::cache::tft_standings(&event))
+    }
+    #[cfg(not(feature = "ssr"))]
+    {
+        let _ = event;
+        Ok(Vec::new())
+    }
+}
+
+/// This TFT event's per-round lobby breakdowns, by full event name. Served from
+/// the poller cache.
+#[server(GetTftLobbies, "/api")]
+pub async fn get_tft_lobbies(event: String) -> Result<Vec<TftLobbyRound>, ServerFnError> {
+    #[cfg(feature = "ssr")]
+    {
+        Ok(crate::cache::tft_lobbies(&event))
     }
     #[cfg(not(feature = "ssr"))]
     {
