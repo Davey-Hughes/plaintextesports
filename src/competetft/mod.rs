@@ -181,8 +181,11 @@ pub fn split_day_panels(
     use crate::types::{TftDayPanel, TftStandings};
 
     let counts = day_round_counts(lobbies);
-    let Some(&(_, n1)) = counts.first() else {
-        return panels; // no lobby data ⇒ no split
+    // The first entry must actually BE day 1 (counts is ascending by day): if a
+    // sheet only labelled later days, its round count would silently bound a
+    // "Day 1" split that never existed — a guess, which this must never make.
+    let Some(&(1, n1)) = counts.first() else {
+        return panels; // no day-1 lobby data ⇒ no split
     };
     let Some(combined) = panels.iter().find(|p| p.label == "Day 1 & 2").cloned() else {
         return panels;
