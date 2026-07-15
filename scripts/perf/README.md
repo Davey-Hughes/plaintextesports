@@ -36,9 +36,25 @@ cargo run --release --example alloc_profile --features ssr        # n=1500
 cargo run --release --example alloc_profile --features ssr 3000   # custom size
 ```
 
-Prints total allocations / bytes / peak bytes for one homepage render and writes
+Prints allocations / bytes / peak bytes for one homepage request and writes
 `dhat-heap.json` (load it at https://nnethercote.github.io/dh_view/dh_view.html).
 Use this to verify clone-reduction work — the number should drop.
+
+It reports the request's **two halves separately**, because they regress
+independently:
+
+- **build** — `cache::homepage_render`: snapshot → `ScheduleView`, plus the JSON
+  serialization that ships it.
+- **render** — `app::schedule_render_work`: what the schedule component then does
+  with that view, on every SSR render and again on every hydrate. This models the
+  component body's three reads of the schedule resource, clones included (each
+  `resource.get()` deep-clones the view): the chip row, the day list, and the
+  empty-state check.
+
+Only *build* used to be measured, and it's the smaller half by allocation count —
+at n=1500 it's ~6.4k allocs against the component's ~11.6k. A change in the
+component layer (say, `chip_key` allocating once per league group) moves the
+render number and leaves build untouched, so profile the half you're changing.
 
 ## WASM bundle size
 
