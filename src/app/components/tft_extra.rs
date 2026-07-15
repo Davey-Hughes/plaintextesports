@@ -102,7 +102,9 @@ pub(crate) fn TftStreamers(event: Signal<String>) -> impl IntoView {
                 view! {
                     <section class="detail-section">
                         <h2 class="section-title">"Player streams"</h2>
-                        <ul class="streams-grid">{two_col(list, |_| String::new())}</ul>
+                        <ul class="streams-grid">
+                            {two_col(list, |s| s.language.to_uppercase())}
+                        </ul>
                         {more}
                     </section>
                 }

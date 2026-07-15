@@ -725,12 +725,29 @@ pub async fn event_streamer_streams(event: &str) -> Vec<StreamView> {
     let mut out = if logins.is_empty() {
         base
     } else {
-        let live = crate::twitch::live_streams(&logins).await;
-        enrich_streams(base, &live, &[], "")
+        let (live, langs) = futures::join!(
+            crate::twitch::live_streams(&logins),
+            crate::twitch::channel_languages(&logins)
+        );
+        let mut out = enrich_streams(base, &live, &[], "");
+        // The sheet has no language for its co-streamers (its REGION column is
+        // blank for every one), so the channel's own declared language is all we
+        // have to group them by.
+        for s in &mut out {
+            if s.language.is_empty()
+                && let Some(lang) = login_of(&s.url).and_then(|l| langs.get(&l))
+            {
+                s.language = lang.clone();
+            }
+        }
+        out
     };
     // Live first (then by viewers), so the cap keeps whoever is actually on air.
     out.sort_by_key(|s| (!s.live, std::cmp::Reverse(s.viewers.unwrap_or(0))));
     out.truncate(TFT_STREAMER_CAP);
+    // Then group the survivors by language, as the esports stream lists do. Applied
+    // after the cap so it reorders who made the cut, rather than deciding it.
+    crate::types::order_streams(&mut out);
     EVENT_STREAM_STATUS
         .write()
         .unwrap_or_else(PoisonError::into_inner)
@@ -1577,6 +1594,14 @@ fn load_persisted_standings() {
         for (event, rows, _) in db_cache_get_ns::<Vec<crate::types::TftLobbyRound>>("tft_lobbies") {
             if !rows.is_empty() {
                 m.insert(event, rows);
+            }
+        }
+    }
+    {
+        let mut m = TFT_SHEET.write().unwrap_or_else(PoisonError::into_inner);
+        for (event, url, _) in db_cache_get_ns::<String>("tft_sheet") {
+            if !url.is_empty() {
+                m.insert(event, url);
             }
         }
     }
