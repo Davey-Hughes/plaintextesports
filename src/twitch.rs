@@ -363,6 +363,33 @@ mod tests {
         assert!(parse_user_ids("nope").is_empty());
     }
 
+    #[tokio::test]
+    async fn channel_languages_serves_cached_entries_without_a_request() {
+        // Every login cached and fresh ⇒ returns before touching config or the
+        // network, which is what keeps a 90s stream refresh off Helix. This test
+        // makes no request; if the short-circuit regresses it would try to.
+        let now = Utc::now();
+        {
+            let mut g = CHANNEL_LANG.write().unwrap_or_else(PoisonError::into_inner);
+            g.insert("cached_fr".to_string(), ("fr".to_string(), now));
+            // A login Twitch had no language for is cached as empty, so it isn't
+            // re-fetched every poll — and isn't reported as a language either.
+            g.insert("cached_none".to_string(), (String::new(), now));
+        }
+        let got = channel_languages(&["CACHED_FR".to_string(), "cached_none".to_string()]).await;
+        assert_eq!(got.get("cached_fr").map(String::as_str), Some("fr"));
+        assert_eq!(
+            got.get("cached_none"),
+            None,
+            "a blank language is not a language"
+        );
+    }
+
+    #[tokio::test]
+    async fn channel_languages_is_empty_for_no_logins() {
+        assert!(channel_languages(&[]).await.is_empty());
+    }
+
     #[test]
     fn login_of_extracts_channel() {
         assert_eq!(

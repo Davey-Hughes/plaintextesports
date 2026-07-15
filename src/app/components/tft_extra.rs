@@ -439,7 +439,28 @@ fn TftLobbiesInner(rounds: Vec<TftLobbyRound>, event: String) -> impl IntoView {
 
 #[cfg(test)]
 mod tests {
-    use super::region_of;
+    use super::{platform_of, region_of, stream_parts};
+
+    #[test]
+    fn platform_of_names_the_site() {
+        assert_eq!(platform_of("https://www.twitch.tv/frodan"), "twitch");
+        assert_eq!(platform_of("https://youtube.com/@playtft"), "youtube");
+        assert_eq!(platform_of("https://youtu.be/abc"), "youtube");
+        assert_eq!(platform_of("https://www.tiktok.com/@bogiatft"), "other");
+    }
+
+    #[test]
+    fn stream_parts_splits_into_site_and_channel() {
+        assert_eq!(
+            stream_parts("https://www.twitch.tv/teamfighttactics", "twitch"),
+            ("twitch".to_string(), "/teamfighttactics".to_string())
+        );
+        // A trailing slash is the sheet's habit, not a channel named "".
+        assert_eq!(
+            stream_parts("https://www.twitch.tv/send/", "twitch"),
+            ("twitch".to_string(), "/send".to_string())
+        );
+    }
 
     #[test]
     fn region_of_shortens_prose_labels() {

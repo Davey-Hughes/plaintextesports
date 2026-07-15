@@ -487,3 +487,122 @@ pub(crate) fn TraditionalStandings(league: Memo<String>) -> impl IntoView {
         </Transition>
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{grid_cols, tab_layout, tft_real};
+    use crate::types::{TftDayPanel, TftStandingRow, TftStandings};
+
+    fn row(rank: &str, name: &str, total: &str, games: &[&str], prize: &str) -> TftStandingRow {
+        TftStandingRow {
+            rank: rank.to_string(),
+            participant: name.to_string(),
+            total: total.to_string(),
+            games: games.iter().map(|g| (*g).to_string()).collect(),
+            status: String::new(),
+            prize: prize.to_string(),
+            eliminated: !prize.is_empty(),
+        }
+    }
+
+    fn panel(label: &str, game_count: usize, rows: Vec<TftStandingRow>) -> TftDayPanel {
+        TftDayPanel {
+            label: label.to_string(),
+            standings: TftStandings { game_count, rows },
+        }
+    }
+
+    #[test]
+    fn tft_real_rejects_blank_and_tbd() {
+        assert!(tft_real("Dishsoap"));
+        assert!(!tft_real(""));
+        assert!(!tft_real("   "));
+        assert!(!tft_real("TBD"));
+        assert!(!tft_real("tbd"));
+    }
+
+    #[test]
+    fn tab_layout_is_shared_across_days_so_tabs_dont_shift() {
+        // Day 2 has more games and a longer name; both days must still get the
+        // widest day's widths, or switching tabs moves the columns.
+        let panels = vec![
+            panel("Day 1", 6, vec![row("1", "abc", "40", &["8"], "")]),
+            panel(
+                "Day 2",
+                13,
+                vec![row("10", "a_very_long_player", "128", &["8"], "")],
+            ),
+        ];
+        let l = tab_layout(&panels);
+        assert_eq!(l.max_games, 13, "widest day's game columns reserved");
+        assert_eq!(l.rank_w, 2, "fits \"10\"");
+        assert_eq!(l.name_w, 18, "fits the longest name");
+        assert_eq!(l.game_w, 3, "fits the \"G13\" header, wider than any score");
+    }
+
+    #[test]
+    fn tab_layout_pads_total_for_breathing_room() {
+        let panels = vec![panel("Day 1", 1, vec![row("1", "x", "8", &["8"], "")])];
+        // "Total" is 5 wide; the column is padded past it so the game columns
+        // don't run right up against it.
+        assert_eq!(tab_layout(&panels).val_w, 8);
+    }
+
+    #[test]
+    fn tab_layout_omits_prize_column_until_a_row_carries_one() {
+        let none = vec![panel("Day 1", 1, vec![row("1", "x", "8", &["8"], "")])];
+        assert_eq!(tab_layout(&none).prize_w, 0, "no prize ⇒ no column");
+
+        let some = vec![panel(
+            "Finals",
+            1,
+            vec![
+                row("1", "x", "8", &["8"], ""),
+                row("2", "y", "7", &["7"], "$11,000"),
+            ],
+        )];
+        assert_eq!(tab_layout(&some).prize_w, 7, "sized to \"$11,000\"");
+    }
+
+    #[test]
+    fn tab_layout_clamps_name_column() {
+        let short = vec![panel("D", 0, vec![row("1", "ab", "8", &[], "")])];
+        assert_eq!(
+            tab_layout(&short).name_w,
+            6,
+            "never narrower than \"Player\""
+        );
+
+        let long = vec![panel("D", 0, vec![row("1", &"x".repeat(40), "8", &[], "")])];
+        assert_eq!(
+            tab_layout(&long).name_w,
+            22,
+            "capped so the grid still fits"
+        );
+    }
+
+    #[test]
+    fn grid_cols_reserves_every_game_column_plus_trailing() {
+        let panels = vec![panel("Day 1", 3, vec![row("1", "x", "8", &["8"], "")])];
+        let l = tab_layout(&panels);
+        assert_eq!(
+            grid_cols(&l, &[l.val_w]),
+            "grid-template-columns:1ch 6ch repeat(3,2ch) 8ch;"
+        );
+        // Prize rides in its own trailing column, after the total.
+        assert_eq!(
+            grid_cols(&l, &[l.val_w, 7]),
+            "grid-template-columns:1ch 6ch repeat(3,2ch) 8ch 7ch;"
+        );
+    }
+
+    #[test]
+    fn grid_cols_drops_the_game_columns_when_there_are_none() {
+        let panels = vec![panel("Placements", 0, vec![row("1", "x", "8", &[], "")])];
+        let l = tab_layout(&panels);
+        assert_eq!(
+            grid_cols(&l, &[l.val_w]),
+            "grid-template-columns:1ch 6ch 8ch;"
+        );
+    }
+}

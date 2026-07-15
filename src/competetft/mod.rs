@@ -842,6 +842,40 @@ mod tests {
         );
     }
 
+    /// A tournament whose stages carry the given sheet keys.
+    fn tourn_with_sheets(keys: &[&str]) -> rsc::CompeteTournament {
+        let mut t = tourn("t1", "Tactician's Crown", None, &["Day 1", "Day 2"]);
+        for (s, k) in t.stages.iter_mut().zip(keys) {
+            s.sheet_key = (*k).to_string();
+        }
+        t
+    }
+
+    #[test]
+    fn sheet_url_builds_the_published_pubhtml_address() {
+        let t = tourn_with_sheets(&["2PACX-1vABC", "2PACX-1vABC"]);
+        assert_eq!(
+            sheet_url(&t),
+            "https://docs.google.com/spreadsheets/d/e/2PACX-1vABC/pubhtml"
+        );
+    }
+
+    #[test]
+    fn sheet_url_skips_stages_that_publish_none() {
+        // Stage 1 has no sheet; the tournament's sheet is still stage 2's.
+        let t = tourn_with_sheets(&["", "2PACX-1vXYZ"]);
+        assert_eq!(
+            sheet_url(&t),
+            "https://docs.google.com/spreadsheets/d/e/2PACX-1vXYZ/pubhtml"
+        );
+    }
+
+    #[test]
+    fn sheet_url_is_empty_when_nothing_is_published() {
+        assert!(sheet_url(&tourn_with_sheets(&["", ""])).is_empty());
+        assert!(sheet_url(&tourn("t", "n", None, &[])).is_empty());
+    }
+
     #[test]
     fn infer_year_picks_nearest_occurrence_with_status_bias() {
         let now = "2026-07-13T00:00:00Z".parse::<DateTime<Utc>>().unwrap();

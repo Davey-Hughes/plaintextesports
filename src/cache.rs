@@ -695,6 +695,36 @@ fn streamer_to_stream(s: &crate::types::TftStreamer) -> Option<StreamView> {
 /// still shows only this many.
 const TFT_STREAMER_CAP: usize = 8;
 
+/// Fill in each stream's language from `langs` (`login → ISO-639-1`), in place.
+///
+/// The CompeteTFT sheet leaves the REGION column blank for every co-streamer, so
+/// the channel's own declared language is all there is to group them by. A stream
+/// that already carries one keeps it: a source that names its language (PandaScore)
+/// is describing the broadcast, whereas Twitch is describing the channel.
+fn fill_stream_languages(streams: &mut [StreamView], langs: &HashMap<String, String>) {
+    for s in streams.iter_mut() {
+        if s.language.is_empty()
+            && let Some(lang) = login_of(&s.url).and_then(|l| langs.get(&l))
+        {
+            s.language = lang.clone();
+        }
+    }
+}
+
+/// Pick the co-streamers to show and order them, in place.
+///
+/// [`TFT_STREAMER_CAP`] is an absolute cap, not a target: whoever is live claims
+/// the slots first (most-watched first), any left over are filled with the rest,
+/// and more live channels than slots still yields only [`TFT_STREAMER_CAP`].
+/// The survivors are then grouped by language like the other esports stream lists
+/// — grouping runs after the cap, so it reorders who made the cut rather than
+/// deciding it.
+fn cap_and_group_streamers(out: &mut Vec<StreamView>) {
+    out.sort_by_key(|s| (!s.live, std::cmp::Reverse(s.viewers.unwrap_or(0))));
+    out.truncate(TFT_STREAMER_CAP);
+    crate::types::order_streams(out);
+}
+
 /// This event's player co-streamers as live-enriched streams, live-first and
 /// capped at [`TFT_STREAMER_CAP`]. The full directory lives on the tournament's
 /// published sheet, which the page links to instead of listing everyone.
@@ -730,24 +760,10 @@ pub async fn event_streamer_streams(event: &str) -> Vec<StreamView> {
             crate::twitch::channel_languages(&logins)
         );
         let mut out = enrich_streams(base, &live, &[], "");
-        // The sheet has no language for its co-streamers (its REGION column is
-        // blank for every one), so the channel's own declared language is all we
-        // have to group them by.
-        for s in &mut out {
-            if s.language.is_empty()
-                && let Some(lang) = login_of(&s.url).and_then(|l| langs.get(&l))
-            {
-                s.language = lang.clone();
-            }
-        }
+        fill_stream_languages(&mut out, &langs);
         out
     };
-    // Live first (then by viewers), so the cap keeps whoever is actually on air.
-    out.sort_by_key(|s| (!s.live, std::cmp::Reverse(s.viewers.unwrap_or(0))));
-    out.truncate(TFT_STREAMER_CAP);
-    // Then group the survivors by language, as the esports stream lists do. Applied
-    // after the cap so it reorders who made the cut, rather than deciding it.
-    crate::types::order_streams(&mut out);
+    cap_and_group_streamers(&mut out);
     EVENT_STREAM_STATUS
         .write()
         .unwrap_or_else(PoisonError::into_inner)
@@ -6647,6 +6663,211 @@ mod tests {
         assert_eq!(hit[0].player, "Mortdog");
         // An unrelated event still returns empty (no false-positive normalized match).
         assert!(tft_streamers("TFT Totally Unrelated Event").is_empty());
+    }
+
+    /// A co-streamer stream, as `streamer_to_stream` builds them.
+    fn costream(login: &str, live: bool, viewers: u64, lang: &str) -> StreamView {
+        StreamView {
+            url: format!("https://twitch.tv/{login}"),
+            language: lang.to_string(),
+            live,
+            viewers: live.then_some(viewers),
+            group: "costream".to_string(),
+            ..Default::default()
+        }
+    }
+
+    fn logins(v: &[StreamView]) -> Vec<String> {
+        v.iter()
+            .map(|s| s.url.rsplit('/').next().unwrap_or("").to_string())
+            .collect()
+    }
+
+    #[test]
+    fn fill_stream_languages_fills_blanks_and_respects_existing() {
+        let mut v = vec![
+            costream("blank", false, 0, ""),
+            costream("already", false, 0, "en"),
+            costream("unknown", false, 0, ""),
+        ];
+        let langs: HashMap<String, String> = [
+            ("blank".to_string(), "fr".to_string()),
+            ("already".to_string(), "de".to_string()),
+        ]
+        .into_iter()
+        .collect();
+        fill_stream_languages(&mut v, &langs);
+        assert_eq!(
+            v[0].language, "fr",
+            "a blank language is filled from Twitch"
+        );
+        assert_eq!(
+            v[1].language, "en",
+            "a source that named its language is not overwritten"
+        );
+        assert_eq!(
+            v[2].language, "",
+            "a channel Twitch has no language for stays blank"
+        );
+    }
+
+    #[test]
+    fn fill_stream_languages_ignores_non_twitch_urls() {
+        let mut v = vec![StreamView {
+            url: "https://www.youtube.com/@someone".to_string(),
+            group: "costream".to_string(),
+            ..Default::default()
+        }];
+        let langs: HashMap<String, String> = [("someone".to_string(), "fr".to_string())]
+            .into_iter()
+            .collect();
+        fill_stream_languages(&mut v, &langs);
+        assert_eq!(v[0].language, "", "a youtube channel is not a twitch login");
+    }
+
+    #[test]
+    fn cap_fills_spare_slots_with_offline_streamers() {
+        // Two live, cap 8 ⇒ the other six slots go to offline channels rather than
+        // the list shrinking to the live ones.
+        let mut v = vec![costream("off1", false, 0, "en")];
+        v.push(costream("live1", true, 10, "en"));
+        for i in 0..8 {
+            v.push(costream(&format!("off{}", i + 2), false, 0, "en"));
+        }
+        v.push(costream("live2", true, 99, "en"));
+        cap_and_group_streamers(&mut v);
+        assert_eq!(v.len(), TFT_STREAMER_CAP, "fills up to the cap");
+        let l = logins(&v);
+        assert!(l.contains(&"live1".to_string()) && l.contains(&"live2".to_string()));
+        assert_eq!(v.iter().filter(|s| !s.live).count(), 6, "rest are offline");
+    }
+
+    #[test]
+    fn cap_is_absolute_when_more_are_live_than_slots() {
+        // 12 live, cap 8 ⇒ 8, keeping the most-watched.
+        let mut v: Vec<StreamView> = (0..12u64)
+            .map(|i| costream(&format!("live{i}"), true, i * 10, "en"))
+            .collect();
+        cap_and_group_streamers(&mut v);
+        assert_eq!(v.len(), TFT_STREAMER_CAP, "overflow respects the cap");
+        assert!(v.iter().all(|s| s.live));
+        let l = logins(&v);
+        assert!(l.contains(&"live11".to_string()), "keeps the most-watched");
+        assert!(!l.contains(&"live0".to_string()), "drops the least-watched");
+    }
+
+    #[test]
+    fn cap_keeps_live_over_offline_regardless_of_language_grouping() {
+        // Grouping runs after the cap: an offline channel never displaces a live one.
+        let mut v = vec![costream("zz_live", true, 5, "fr")];
+        for i in 0..10 {
+            v.push(costream(&format!("aa_off{i}"), false, 0, "en"));
+        }
+        cap_and_group_streamers(&mut v);
+        assert_eq!(v.len(), TFT_STREAMER_CAP);
+        assert!(
+            logins(&v).contains(&"zz_live".to_string()),
+            "the live channel survives the cap"
+        );
+    }
+
+    #[test]
+    fn cap_prefers_a_live_channel_with_no_viewers_over_offline_ones() {
+        // The case the `live` sort key exists for: live-but-quiet ties with offline
+        // on viewer count (both 0), so only the flag separates them. Sorting on
+        // viewers alone would let the offline channels listed first take every slot.
+        let mut v: Vec<StreamView> = (0..8)
+            .map(|i| costream(&format!("off{i}"), false, 0, "en"))
+            .collect();
+        v.push(costream("quiet_live", true, 0, "en"));
+        cap_and_group_streamers(&mut v);
+        assert_eq!(v.len(), TFT_STREAMER_CAP);
+        assert!(
+            logins(&v).contains(&"quiet_live".to_string()),
+            "a live channel with no viewers still makes the cut"
+        );
+    }
+
+    #[test]
+    fn cap_groups_survivors_by_language() {
+        let mut v = vec![
+            costream("a", false, 0, "fr"),
+            costream("b", false, 0, "en"),
+            costream("c", false, 0, "fr"),
+            costream("d", false, 0, "es"),
+        ];
+        cap_and_group_streamers(&mut v);
+        let langs: Vec<&str> = v.iter().map(|s| s.language.as_str()).collect();
+        // Each language contiguous — not interleaved as the input was.
+        let mut seen: Vec<&str> = Vec::new();
+        for l in &langs {
+            if seen.last() != Some(l) {
+                assert!(!seen.contains(l), "language {l} is split across the list");
+                seen.push(l);
+            }
+        }
+    }
+
+    #[test]
+    fn cap_leaves_short_lists_alone() {
+        let mut v = vec![costream("a", false, 0, "en"), costream("b", true, 1, "en")];
+        cap_and_group_streamers(&mut v);
+        assert_eq!(v.len(), 2, "under the cap ⇒ nothing dropped");
+    }
+
+    #[test]
+    fn tft_sheet_resolves_exactly_and_by_normalized_name() {
+        // tft_sheet carries its own copy of the exact-then-normalized lookup (it
+        // holds a String, not a Vec), so it needs its own coverage.
+        TFT_SHEET
+            .write()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(
+                "TFT Sheet Lookup Cup".to_string(),
+                "https://docs.google.com/spreadsheets/d/e/KEY/pubhtml".to_string(),
+            );
+        assert!(tft_sheet("TFT Sheet Lookup Cup").contains("/KEY/"));
+        assert!(
+            tft_sheet("TFT Sheet Lookup Cup: Some Set").contains("/KEY/"),
+            "source-name divergence resolves via the normalized fallback"
+        );
+        assert!(tft_sheet("TFT Some Other Event").is_empty());
+    }
+
+    #[test]
+    fn tft_sheet_defaults_empty() {
+        assert!(tft_sheet("nope, never fetched").is_empty());
+    }
+
+    #[test]
+    fn streamer_to_stream_converts_and_drops_linkless() {
+        use crate::types::TftStreamer;
+        let s = streamer_to_stream(&TftStreamer {
+            player: "Dishsoap".into(),
+            url: "https://twitch.tv/dishsoap".into(),
+            platform: "twitch".into(),
+        })
+        .expect("a linked streamer converts");
+        assert_eq!(s.url, "https://twitch.tv/dishsoap");
+        assert_eq!(
+            s.group, "costream",
+            "a player stream is never the broadcast"
+        );
+        assert!(!s.official);
+        assert!(
+            !s.live,
+            "live status is enrichment's job, not the conversion's"
+        );
+
+        // No link ⇒ nothing to show.
+        assert!(
+            streamer_to_stream(&TftStreamer {
+                player: "Nolink".into(),
+                url: "   ".into(),
+                platform: "twitch".into(),
+            })
+            .is_none()
+        );
     }
 
     #[test]
