@@ -122,6 +122,34 @@ fn tft_status_override(status: &str) -> Option<crate::types::MatchStatus> {
     }
 }
 
+/// Per-day round counts from the lobby breakdown's labels ("Day 1 · Round 3"),
+/// ascending by day — e.g. `[(1, 6), (2, 7), (3, 8)]`. This is the only place the
+/// sheet says which rounds belong to which day, so it's what lets the combined
+/// "Day 1 & 2" leaderboard be split. Empty when no label parses (⇒ don't split).
+#[must_use]
+pub fn day_round_counts(lobbies: &[crate::types::TftLobbyRound]) -> Vec<(u32, usize)> {
+    let mut counts: std::collections::BTreeMap<u32, usize> = std::collections::BTreeMap::new();
+    for l in lobbies {
+        // "Day 1 · Round 3" → day 1. Take the token after "Day ", before the
+        // separator; anything else is not a per-day round label.
+        let Some(rest) = l.label.strip_prefix("Day ") else {
+            continue;
+        };
+        let Some(day) = rest
+            .split_whitespace()
+            .next()
+            .and_then(|d| d.parse::<u32>().ok())
+        else {
+            continue;
+        };
+        if !rest.contains("Round") {
+            continue;
+        }
+        *counts.entry(day).or_insert(0) += 1;
+    }
+    counts.into_iter().collect()
+}
+
 /// Turn a tournament into schedule sessions via the 3-tier date precedence:
 /// (1) broadcast feed (real times), (2) clean per-day map when stage count equals
 /// the range's day span and stage titles are distinct, (3) one tournament-level
@@ -391,6 +419,31 @@ pub async fn refresh_competetft_tournament(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn lobby(label: &str) -> crate::types::TftLobbyRound {
+        crate::types::TftLobbyRound {
+            label: label.into(),
+            lobbies: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn day_round_counts_maps_lobby_labels_to_per_day_counts() {
+        // Mirrors the real Tactician's Crown data: Day 1 rounds 1-6, Day 2 rounds
+        // 7-13, Day 3 rounds 1-8 (the finals renumber from 1).
+        let mut ls: Vec<crate::types::TftLobbyRound> = (1..=6)
+            .map(|r| lobby(&format!("Day 1 · Round {r}")))
+            .collect();
+        ls.extend((7..=13).map(|r| lobby(&format!("Day 2 · Round {r}"))));
+        ls.extend((1..=8).map(|r| lobby(&format!("Day 3 · Round {r}"))));
+        assert_eq!(day_round_counts(&ls), vec![(1, 6), (2, 7), (3, 8)]);
+    }
+
+    #[test]
+    fn day_round_counts_is_empty_without_parseable_labels() {
+        assert!(day_round_counts(&[]).is_empty());
+        assert!(day_round_counts(&[lobby("Lobby A"), lobby("nonsense")]).is_empty());
+    }
 
     fn tourn(
         id: &str,
