@@ -3,9 +3,10 @@
 //! resource keyed by the full event name (empty → nothing renders), so they drop
 //! into the event page next to [`super::standings::TftEventResults`].
 
+use crate::app::pages::match_detail::StreamsList;
 use crate::app::playoffs::section_reveal;
-use crate::server::{get_tft_broadcasts, get_tft_lobbies, get_tft_streamers};
-use crate::types::{TftBroadcast, TftLobbyRound, TftStreamer};
+use crate::server::{get_event_broadcasts, get_tft_lobbies, get_tft_streamers};
+use crate::types::{TftLobbyRound, TftStreamer};
 use leptos::prelude::*;
 
 /// Split a stream URL into `(site, "/channel")` for the site's stream-link markup.
@@ -74,65 +75,26 @@ pub(crate) fn TftStreamers(event: Signal<String>) -> impl IntoView {
     }
 }
 
-/// The event's official broadcast channels (regional + co-streams + watch parties).
-/// Not spoiler-gated.
+/// The event's official broadcast channels as a compact stream row — the same
+/// treatment the other esports get on a match page (live badge + viewers when
+/// on air). Empty (nothing rendered) until the poller has fetched the event.
 #[component]
 pub(crate) fn TftBroadcasts(event: Signal<String>) -> impl IntoView {
-    let broadcasts = Resource::new(
+    let streams = Resource::new(
         move || event.get(),
         |ev| async move {
             if ev.is_empty() {
                 Vec::new()
             } else {
-                get_tft_broadcasts(ev).await.unwrap_or_default()
+                get_event_broadcasts(ev).await.unwrap_or_default()
             }
         },
     );
     view! {
         <Transition>
             {move || {
-                let list = broadcasts.get().unwrap_or_default();
-                if list.is_empty() {
-                    return ().into_any();
-                }
-                view! {
-                    <section class="detail-section">
-                        <h2 class="section-title">"Official broadcasts"</h2>
-                        <ul class="bcast-grid">
-                            {list
-                                .into_iter()
-                                .map(|b: TftBroadcast| {
-                                    let label = if b.language.is_empty() {
-                                        b.label.clone()
-                                    } else {
-                                        format!("{} · {}", b.label, b.language)
-                                    };
-                                    view! {
-                                        <li class="bcast">
-                                            <span class="b-reg">{label}</span>
-                                            <span class="b-links">
-                                                {b
-                                                    .links
-                                                    .into_iter()
-                                                    .enumerate()
-                                                    .map(|(i, (p, u))| {
-                                                        view! {
-                                                            {(i > 0).then_some(" · ")}
-                                                            <a href=u target="_blank" rel="noreferrer">
-                                                                {p}
-                                                            </a>
-                                                        }
-                                                    })
-                                                    .collect_view()}
-                                            </span>
-                                        </li>
-                                    }
-                                })
-                                .collect_view()}
-                        </ul>
-                    </section>
-                }
-                    .into_any()
+                let list = streams.get().unwrap_or_default();
+                view! { <StreamsList streams=list /> }
             }}
         </Transition>
     }
