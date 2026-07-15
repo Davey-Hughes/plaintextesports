@@ -3,10 +3,10 @@
 //! resource keyed by the full event name (empty → nothing renders), so they drop
 //! into the event page next to [`super::standings::TftEventResults`].
 
-use crate::app::pages::match_detail::StreamsList;
+use crate::app::pages::match_detail::fmt_viewers;
 use crate::app::playoffs::section_reveal;
 use crate::server::{get_event_broadcasts, get_tft_lobbies, get_tft_streamers};
-use crate::types::{TftLobbyRound, TftStreamer};
+use crate::types::{StreamView, TftLobbyRound, TftStreamer};
 use leptos::prelude::*;
 
 /// Split a stream URL into `(site, "/channel")` for the site's stream-link markup.
@@ -75,9 +75,24 @@ pub(crate) fn TftStreamers(event: Signal<String>) -> impl IntoView {
     }
 }
 
-/// The event's official broadcast channels as a compact stream row — the same
-/// treatment the other esports get on a match page (live badge + viewers when
-/// on air). Empty (nothing rendered) until the poller has fetched the event.
+/// The lowercase platform for a stream URL, matching the sheet's own platform
+/// strings so a broadcast link reads exactly like a player-stream link
+/// ("twitch/teamfighttactics").
+fn platform_of(url: &str) -> &'static str {
+    let u = url.to_ascii_lowercase();
+    if u.contains("twitch") {
+        "twitch"
+    } else if u.contains("youtube") || u.contains("youtu.be") {
+        "youtube"
+    } else {
+        "other"
+    }
+}
+
+/// The event's official broadcast channels, rendered like the player-stream links
+/// (`twitch/teamfighttactics`) rather than the sheet's prose labels, plus a live
+/// badge + viewer count while a channel is on air. Empty (nothing rendered) until
+/// the poller has fetched the event.
 #[component]
 pub(crate) fn TftBroadcasts(event: Signal<String>) -> impl IntoView {
     let streams = Resource::new(
@@ -94,7 +109,45 @@ pub(crate) fn TftBroadcasts(event: Signal<String>) -> impl IntoView {
         <Transition>
             {move || {
                 let list = streams.get().unwrap_or_default();
-                view! { <StreamsList streams=list /> }
+                if list.is_empty() {
+                    return ().into_any();
+                }
+                view! {
+                    <section class="detail-section">
+                        <h2 class="section-title">"Broadcasts"</h2>
+                        <ul class="streams-grid">
+                            {list
+                                .into_iter()
+                                .map(|s: StreamView| {
+                                    let (site, chan) = stream_parts(&s.url, platform_of(&s.url));
+                                    let (live, viewers) = (s.live, s.viewers);
+                                    view! {
+                                        <li class="stream">
+                                            <span class="stream-lang"></span>
+                                            <a
+                                                class="stream-name"
+                                                href=s.url
+                                                target="_blank"
+                                                rel="noreferrer"
+                                            >
+                                                <span class="stream-site">{site}</span>
+                                                <span class="stream-chan">{chan}</span>
+                                            </a>
+                                            {live
+                                                .then(|| {
+                                                    let v = viewers
+                                                        .map(|n| format!(" {}", fmt_viewers(n)))
+                                                        .unwrap_or_default();
+                                                    view! { <span class="stream-live">"●"{v}</span> }
+                                                })}
+                                        </li>
+                                    }
+                                })
+                                .collect_view()}
+                        </ul>
+                    </section>
+                }
+                    .into_any()
             }}
         </Transition>
     }

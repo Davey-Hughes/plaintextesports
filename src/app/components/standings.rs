@@ -181,6 +181,9 @@ struct TabLayout {
     game_w: usize,
     /// Width of the aligned value column ("Total").
     val_w: usize,
+    /// Width of the trailing prize column, or 0 when no row carries a prize (then
+    /// the column is omitted entirely rather than left as dead space).
+    prize_w: usize,
 }
 
 /// Compute the shared layout across all day panels.
@@ -190,6 +193,7 @@ fn tab_layout(panels: &[TftDayPanel]) -> TabLayout {
     let mut name_w = 6; // "Player"
     let mut val_w = 5; // fits "Total"
     let mut game_w = 2;
+    let mut prize_w = 0; // stays 0 (column omitted) unless a row carries a prize
     let max_games = panels
         .iter()
         .map(|p| p.standings.game_count)
@@ -200,6 +204,7 @@ fn tab_layout(panels: &[TftDayPanel]) -> TabLayout {
             rank_w = rank_w.max(chars(&r.rank));
             name_w = name_w.max(chars(&r.participant));
             val_w = val_w.max(chars(&r.total));
+            prize_w = prize_w.max(chars(&r.prize));
             for g in &r.games {
                 game_w = game_w.max(chars(g));
             }
@@ -214,6 +219,7 @@ fn tab_layout(panels: &[TftDayPanel]) -> TabLayout {
         max_games,
         game_w,
         val_w,
+        prize_w,
     }
 }
 
@@ -237,7 +243,14 @@ fn grid_cols(l: &TabLayout, trailing: &[usize]) -> String {
 /// total column lines up with the other tabs. Reveal-blanked.
 fn day_grid_view(s: &TftStandings, l: &TabLayout, show: bool) -> AnyView {
     let max_games = l.max_games;
-    let grid = grid_cols(l, &[l.val_w]);
+    // Prize is its own column after "Total" (there's room), rather than borrowing a
+    // game cell. Omitted entirely when no row carries one.
+    let grid = if l.prize_w > 0 {
+        grid_cols(l, &[l.val_w, l.prize_w])
+    } else {
+        grid_cols(l, &[l.val_w])
+    };
+    let has_prize_col = l.prize_w > 0;
     let gc = s.game_count;
     let head_games = (0..max_games)
         .map(|i| {
@@ -253,6 +266,11 @@ fn day_grid_view(s: &TftStandings, l: &TabLayout, show: bool) -> AnyView {
     // built that way in `split_day_panels`), so one divider (before the first
     // eliminated row) cleanly splits live from final.
     let mut sep_shown = false;
+    // Every tab emits exactly one divider so the section's height doesn't jump
+    // when switching tabs: a day with nobody eliminated (Day 1) reserves the same
+    // box with an invisible one. `visibility:hidden` (not an empty div) because the
+    // divider's height comes from its text line, which would otherwise collapse.
+    let has_elim = s.rows.iter().any(|r| r.eliminated);
     let rows = s
         .rows
         .iter()
@@ -268,10 +286,10 @@ fn day_grid_view(s: &TftStandings, l: &TabLayout, show: bool) -> AnyView {
             }
             let games = (0..max_games)
                 .map(|i| {
-                    let v = if !show {
+                    // An eliminated player played no games this stage, so their game
+                    // cells are blank; their prize sits in the trailing column.
+                    let v = if !show || elim {
                         String::new()
-                    } else if elim {
-                        if i == 0 { prize.clone() } else { String::new() }
                     } else if i < gc {
                         r.games.get(i).cloned().unwrap_or_default()
                     } else {
@@ -285,6 +303,10 @@ fn day_grid_view(s: &TftStandings, l: &TabLayout, show: bool) -> AnyView {
             } else {
                 (String::new(), String::new())
             };
+            let prize_cell = has_prize_col.then(|| {
+                let p = if show { prize.clone() } else { String::new() };
+                view! { <span class="tft-prize">{p}</span> }
+            });
             let rank = r.rank.clone();
             view! {
                 {sep}
@@ -293,6 +315,7 @@ fn day_grid_view(s: &TftStandings, l: &TabLayout, show: bool) -> AnyView {
                     <span class="tft-name">{name}</span>
                     {games}
                     <span class="tft-total">{total}</span>
+                    {prize_cell}
                 </div>
             }
         })
@@ -304,8 +327,12 @@ fn day_grid_view(s: &TftStandings, l: &TabLayout, show: bool) -> AnyView {
                 <span class="tft-h tft-name">"Player"</span>
                 {head_games}
                 <span class="tft-h tft-total">"Total"</span>
+                {has_prize_col.then(|| view! { <span class="tft-h tft-prize"></span> })}
             </div>
             {rows}
+            {(!has_elim).then(|| {
+                view! { <div class="tft-elim-sep" style="visibility:hidden">"eliminated"</div> }
+            })}
         </div>
     }
     .into_any()
