@@ -474,10 +474,15 @@ pub struct Schedule {
 #[cfg(feature = "ssr")]
 pub async fn fetch_schedule(client: &reqwest::Client) -> Schedule {
     match get(client, &format!("{HOST}/en-US/schedule")).await {
-        Some(h) => Schedule {
-            tournaments: rsc::parse_tournament_ids(&h),
-            events: rsc::parse_schedule(&h),
-        },
+        // Both parses want the same RSC blob out of the same ~250 KB page, so
+        // decode it once rather than once each.
+        Some(h) => {
+            let blob = rsc::rsc_blob(&h);
+            Schedule {
+                tournaments: rsc::parse_tournament_ids_blob(&blob),
+                events: rsc::parse_schedule_blob(&blob),
+            }
+        }
         None => Schedule::default(),
     }
 }
@@ -510,16 +515,20 @@ pub async fn fetch_sheet_tabs(
             gids.push(g);
         }
     }
-    let mut out = Vec::new();
-    for g in gids {
+    // The tabs are independent of each other (only the pubhtml above had to come
+    // first, to supply the gids), so fetch them together rather than paying one
+    // round-trip per tab. `join_all` preserves input order, which `assemble` relies
+    // on: it assigns last-wins per tab kind.
+    futures::future::join_all(gids.into_iter().map(|g| {
         let url = format!(
             "https://docs.google.com/spreadsheets/d/e/{key}/pub?gid={g}&single=true&output=csv"
         );
-        if let Some(csv) = get(client, &url).await {
-            out.push((Some(g), csv));
-        }
-    }
-    out
+        async move { get(client, &url).await.map(|csv| (Some(g), csv)) }
+    }))
+    .await
+    .into_iter()
+    .flatten()
+    .collect()
 }
 
 /// Fetch + assemble a tournament's sheet data from an already-parsed overview.

@@ -17,6 +17,7 @@ use crate::types::{
 };
 use chrono::{DateTime, Datelike, Duration, NaiveDate, TimeZone, Timelike, Utc};
 use chrono_tz::Tz;
+use futures::StreamExt;
 use once_cell::sync::Lazy;
 use std::collections::HashMap;
 use std::sync::{Mutex, PoisonError, RwLock};
@@ -126,6 +127,10 @@ static TFT_LOBBIES: Lazy<RwLock<HashMap<String, Vec<crate::types::TftLobbyRound>
 /// [`CompeteTournamentData`]: crate::competetft::CompeteTournamentData
 macro_rules! tft_caches {
     ($($map:ident => $ns:literal, $field:ident: $ty:ty;)+) => {
+        /// Every namespace declared below, for the poller's prune sweep. Generated
+        /// here so a newly declared cache is pruned without a second edit.
+        const TFT_CACHE_NAMESPACES: &[&str] = &[$($ns),+];
+
         /// Write one tournament's enrichment to the in-memory caches and the
         /// `result_cache`. An empty value is skipped rather than stored: a poll that
         /// returns no lobbies shouldn't erase the ones already shown.
@@ -146,12 +151,17 @@ macro_rules! tft_caches {
 
         /// Repopulate the in-memory caches from the `result_cache` at startup, so a
         /// restart doesn't blank the event pages until the next poll lands.
-        fn restore_tft_caches() {
+        ///
+        /// Rows outside the `retain_days` window are skipped rather than loaded:
+        /// they're already condemned by the prune sweep, and loading a tournament
+        /// from three seasons ago into memory to serve a page nobody opens is the
+        /// cost this window exists to avoid.
+        fn restore_tft_caches(retain_days: i64, now: DateTime<Utc>) {
             $(
                 {
                     let mut m = $map.write().unwrap_or_else(PoisonError::into_inner);
-                    for (event, v, _) in db_cache_get_ns::<$ty>($ns) {
-                        if !v.is_empty() {
+                    for (event, v, fetched) in db_cache_get_ns::<$ty>($ns) {
+                        if !v.is_empty() && within_retention(fetched, retain_days, now) {
                             m.insert(event, v);
                         }
                     }
@@ -179,6 +189,11 @@ tft_caches! {
 static COMPETETFT_OVERVIEWS: Lazy<
     RwLock<HashMap<String, crate::competetft::rsc::CompeteTournament>>,
 > = Lazy::new(|| RwLock::new(HashMap::new()));
+
+/// How many tournament overviews to fetch at once on the first poll after boot.
+/// Enough to collapse a ~20-request serial chain into a few rounds, low enough to
+/// stay a polite guest on competetft.com.
+const COMPETETFT_FETCH_CONCURRENCY: usize = 4;
 
 /// The WRC, WEC, or MotoGP championship standings (empty until first fetched), by
 /// series league name. Any other name yields empty tables.
@@ -1578,6 +1593,14 @@ fn db_cache_prune(ns: &str, retain_days: i64, now: DateTime<Utc>) {
     }
 }
 
+/// Whether a `result_cache` row last fetched at `fetched` still falls inside a
+/// `retain_days` window. `retain_days <= 0` disables the window and keeps
+/// everything — the same no-op [`db_cache_prune`] applies, so a row this answers
+/// `true` for is exactly a row the prune sweep leaves alone.
+fn within_retention(fetched: DateTime<Utc>, retain_days: i64, now: DateTime<Utc>) -> bool {
+    retain_days <= 0 || fetched >= now - Duration::days(retain_days)
+}
+
 /// Every row of a namespace, decoded (for Pattern B startup load).
 fn db_cache_get_ns<T: serde::de::DeserializeOwned>(ns: &str) -> Vec<(String, T, DateTime<Utc>)> {
     let Some(db) = CACHE_DB.as_ref() else {
@@ -1597,7 +1620,10 @@ fn db_cache_get_ns<T: serde::de::DeserializeOwned>(ns: &str) -> Vec<(String, T, 
 
 /// Populate the poller-refreshed standings caches from the persisted result_cache
 /// on boot, so a restart serves the last-known standings before the first poll.
-fn load_persisted_standings() {
+/// `tft_retain_days`/`now` bound which TFT enrichment rows are worth loading (see
+/// [`restore_tft_caches`]); the standings caches are single-row and unbounded by
+/// nature, so they aren't windowed.
+fn load_persisted_standings(tft_retain_days: i64, now: DateTime<Utc>) {
     let fill_vec = |ns: &str, store: &RwLock<Vec<EventInfo>>| {
         if let Some((tables, _)) = db_cache_get::<Vec<EventInfo>>(ns, "")
             && !tables.is_empty()
@@ -1629,7 +1655,7 @@ fn load_persisted_standings() {
     fill_motor("wrc_standings", &WRC_STANDINGS);
     fill_motor("wec_standings", &WEC_STANDINGS);
     fill_motor("motogp_standings", &MOTOGP_STANDINGS);
-    restore_tft_caches();
+    restore_tft_caches(tft_retain_days, now);
     {
         let mut brackets = PLAYOFF_BRACKETS
             .write()
@@ -1715,7 +1741,7 @@ pub fn spawn_poller() {
     }
     // Load persisted standings so a restart serves the last-known tables
     // before the first poll completes (uses CACHE_DB, not the boot conn).
-    load_persisted_standings();
+    load_persisted_standings(cfg.tft_retention_days, Utc::now());
 
     let Some(token) = cfg.token.clone() else {
         leptos::logging::log!("PANDASCORE_TOKEN not set — serving demo fixture data");
@@ -1802,11 +1828,16 @@ pub fn spawn_poller() {
             if deep {
                 last_deep = Some(now);
             }
-            // Once a day, prune box scores not viewed within the retention window.
+            // Once a day, prune the id/name-keyed namespaces that would otherwise
+            // grow without limit: box scores not viewed within their window, and
+            // TFT enrichment for tournaments not refreshed within theirs.
             let today = now.date_naive();
             if last_prune_day != Some(today) {
                 last_prune_day = Some(today);
                 db_cache_prune("box_score", cfg.box_score_retention_days, now);
+                for ns in TFT_CACHE_NAMESPACES {
+                    db_cache_prune(ns, cfg.tft_retention_days, now);
+                }
             }
             let window_end = now + Duration::days(cfg.upcoming_days);
 
@@ -2082,14 +2113,31 @@ pub fn spawn_poller() {
                                 missing.len()
                             );
                         }
-                        for id in missing {
-                            if let Some(t) = crate::competetft::fetch_tournament(&client, &id).await
-                            {
-                                COMPETETFT_OVERVIEWS
-                                    .write()
-                                    .unwrap_or_else(PoisonError::into_inner)
-                                    .insert(id, t);
-                            }
+                        // Fetched together, a few at a time. Serially this was ~20
+                        // round-trips on the first poll after boot — and this block
+                        // sits ahead of `apply_poll`, so every *other* sport's first
+                        // snapshot waited behind them. Bounded rather than a bare
+                        // join_all: it's ~20 requests at someone else's origin.
+                        let fetched: Vec<(String, crate::competetft::rsc::CompeteTournament)> =
+                            futures::stream::iter(missing.into_iter().map(|id| {
+                                let client = &client;
+                                async move {
+                                    crate::competetft::fetch_tournament(client, &id)
+                                        .await
+                                        .map(|t| (id, t))
+                                }
+                            }))
+                            .buffer_unordered(COMPETETFT_FETCH_CONCURRENCY)
+                            .filter_map(|r| async move { r })
+                            .collect()
+                            .await;
+                        let fetched_now: std::collections::HashSet<String> =
+                            fetched.iter().map(|(id, _)| id.clone()).collect();
+                        if !fetched.is_empty() {
+                            let mut cache = COMPETETFT_OVERVIEWS
+                                .write()
+                                .unwrap_or_else(PoisonError::into_inner);
+                            cache.extend(fetched);
                         }
                         // 2) Round-robin one tournament per cycle: refresh its overview
                         //    (keeping the cache current) and pull its sheet — the
@@ -2099,18 +2147,33 @@ pub fn spawn_poller() {
                         //    current/just-finished tournaments are the ones being viewed;
                         //    it also makes the in-memory cursor's reset-on-restart benign,
                         //    since index 0 is then the newest rather than the oldest.
-                        let order: Vec<String> = {
+                        //    Sessions are derived once here and reused by step 3
+                        //    below — the ordering needs each tournament's first
+                        //    session and the feed needs all of them, which used to
+                        //    mean building every session of every tournament twice
+                        //    per cycle.
+                        let mut derived: HashMap<String, Vec<crate::tft::ParsedSession>> = {
                             let cache = COMPETETFT_OVERVIEWS
                                 .read()
                                 .unwrap_or_else(PoisonError::into_inner);
+                            ids.iter()
+                                .filter_map(|id| {
+                                    let t = cache.get(id)?;
+                                    let sessions = crate::competetft::derive_sessions(
+                                        t,
+                                        &schedule.events,
+                                        now,
+                                    );
+                                    Some((id.clone(), sessions))
+                                })
+                                .collect()
+                        };
+                        let order: Vec<String> = {
                             let mut v: Vec<(Option<DateTime<Utc>>, String)> = ids
                                 .iter()
                                 .map(|id| {
-                                    let start = cache.get(id).and_then(|t| {
-                                        crate::competetft::derive_sessions(t, &schedule.events, now)
-                                            .first()
-                                            .map(|s| s.begin_at)
-                                    });
+                                    let start =
+                                        derived.get(id).and_then(|s| s.first().map(|s| s.begin_at));
                                     (start, id.clone())
                                 })
                                 .collect();
@@ -2120,11 +2183,35 @@ pub fn spawn_poller() {
                         };
                         let cur = order[ctft_cursor % order.len()].clone();
                         ctft_cursor = ctft_cursor.wrapping_add(1);
-                        if let Some(t) = crate::competetft::fetch_tournament(&client, &cur).await {
+                        let cur_overview = if fetched_now.contains(&cur) {
+                            // Step 1 fetched this one seconds ago — on the first poll
+                            // after boot every id is missing, so the cursor's pick is
+                            // usually among them and refetching is a wasted round-trip.
+                            // Its `derived` entry is current for the same reason.
+                            COMPETETFT_OVERVIEWS
+                                .read()
+                                .unwrap_or_else(PoisonError::into_inner)
+                                .get(&cur)
+                                .cloned()
+                        } else if let Some(t) =
+                            crate::competetft::fetch_tournament(&client, &cur).await
+                        {
                             COMPETETFT_OVERVIEWS
                                 .write()
                                 .unwrap_or_else(PoisonError::into_inner)
                                 .insert(cur.clone(), t.clone());
+                            // This overview just changed, so its sessions are the one
+                            // entry the derive above can have stale; the rest still
+                            // reflect the cache step 3 reads.
+                            derived.insert(
+                                cur.clone(),
+                                crate::competetft::derive_sessions(&t, &schedule.events, now),
+                            );
+                            Some(t)
+                        } else {
+                            None
+                        };
+                        if let Some(t) = cur_overview {
                             match crate::competetft::refresh_from_overview(
                                 &client,
                                 &t,
@@ -2139,21 +2226,16 @@ pub fn spawn_poller() {
                                 ),
                             }
                         }
-                        // 3) Derive the whole TFT schedule from every cached overview, so
-                        //    the feed is a complete per-tournament enumeration each cycle
-                        //    (which apply_poll's per-tournament reconciliation relies on).
-                        let rows: Vec<NormalizedMatch> = {
-                            let cache = COMPETETFT_OVERVIEWS
-                                .read()
-                                .unwrap_or_else(PoisonError::into_inner);
-                            ids.iter()
-                                .filter_map(|id| cache.get(id))
-                                .flat_map(|t| {
-                                    crate::competetft::derive_sessions(t, &schedule.events, now)
-                                })
-                                .map(|s| crate::tft::session_to_match(&s, now))
-                                .collect()
-                        };
+                        // 3) Build the whole TFT schedule from the sessions derived
+                        //    above, so the feed is a complete per-tournament
+                        //    enumeration each cycle (which apply_poll's
+                        //    per-tournament reconciliation relies on).
+                        let rows: Vec<NormalizedMatch> = ids
+                            .iter()
+                            .filter_map(|id| derived.get(id))
+                            .flatten()
+                            .map(|s| crate::tft::session_to_match(s, now))
+                            .collect();
                         if !rows.is_empty() {
                             feeds.push((Sport::Tft, Ok(rows)));
                         }
@@ -6500,6 +6582,54 @@ mod tests {
         let mut v = vec![costream("a", false, 0, "en"), costream("b", true, 1, "en")];
         cap_and_group_streamers(&mut v);
         assert_eq!(v.len(), 2, "under the cap ⇒ nothing dropped");
+    }
+
+    #[test]
+    fn tft_cache_namespaces_covers_every_declared_cache() {
+        // The third half of the `tft_caches!` guarantee. store/restore agree because
+        // the macro writes both; the prune sweep and the boot-restore window read
+        // this list, so it must enumerate the same caches. Declare a seventh cache
+        // without adding it here and it would persist forever, unpruned — exactly
+        // the drift the macro exists to prevent.
+        assert_eq!(
+            TFT_CACHE_NAMESPACES,
+            [
+                "tft_sheet",
+                "tft_placements",
+                "tft_standings",
+                "tft_streamers",
+                "tft_broadcasts",
+                "tft_lobbies",
+            ]
+        );
+    }
+
+    #[test]
+    fn retention_window_keeps_fresh_rows_and_drops_stale_ones() {
+        let now = "2026-07-13T00:00:00Z".parse::<DateTime<Utc>>().unwrap();
+        let days_ago = |n: i64| now - Duration::days(n);
+        assert!(
+            within_retention(days_ago(1), 540, now),
+            "yesterday is fresh"
+        );
+        assert!(
+            within_retention(days_ago(539), 540, now),
+            "just inside the window"
+        );
+        assert!(
+            !within_retention(days_ago(541), 540, now),
+            "just outside the window"
+        );
+        // 0 disables the window and keeps everything, matching db_cache_prune's
+        // `retain_days <= 0` no-op — the two must agree, or boot would load rows the
+        // prune sweep deletes (or vice versa).
+        assert!(within_retention(days_ago(5000), 0, now), "0 disables");
+        assert!(
+            within_retention(days_ago(5000), -1, now),
+            "negative disables"
+        );
+        // A row stamped in the future (clock skew) is not stale.
+        assert!(within_retention(now + Duration::days(1), 540, now));
     }
 
     #[test]

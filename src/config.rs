@@ -76,6 +76,9 @@ struct FileConfig {
     /// Days to keep a persisted box score after its last fetch before pruning it
     /// from result_cache (default 360; 0 disables pruning).
     box_score_retention_days: Option<i64>,
+    /// Days to keep persisted TFT enrichment after its last refresh before pruning
+    /// it from result_cache (default 540; 0 disables pruning).
+    tft_retention_days: Option<i64>,
     past_refresh: Option<bool>,
     backfill: Option<bool>,
     rate_limit_floor: Option<u64>,
@@ -165,6 +168,10 @@ impl FileConfig {
         put(
             "BOX_SCORE_RETENTION_DAYS",
             self.box_score_retention_days.map(|n| n.to_string()),
+        );
+        put(
+            "TFT_RETENTION_DAYS",
+            self.tft_retention_days.map(|n| n.to_string()),
         );
         put(
             "ENABLE_PAST_REFRESH",
@@ -282,6 +289,9 @@ pub struct Config {
     /// Days to keep a persisted box score after its last fetch before it's pruned
     /// from result_cache (0 disables pruning).
     pub box_score_retention_days: i64,
+    /// Days to keep persisted TFT enrichment (standings, lobbies, streamers, …)
+    /// after its last refresh before it's pruned from result_cache (0 disables).
+    pub tft_retention_days: i64,
     /// Periodically re-fetch recent past days to catch late score corrections.
     pub past_refresh: bool,
     /// Slowly backfill older past matches up to `archive_months` on a fresh DB.
@@ -518,6 +528,15 @@ impl Config {
             .filter(|&n| (0..=3650).contains(&n))
             .unwrap_or(540);
 
+        // Days to keep persisted TFT enrichment after its last refresh. Same shape
+        // and default as the box-score knob above: result_cache's tft_* namespaces
+        // are event-name-keyed, so without this they grow one row per namespace per
+        // tournament ever polled, and every one of them is read back at boot.
+        let tft_retention_days = get("TFT_RETENTION_DAYS")
+            .and_then(|s| s.parse().ok())
+            .filter(|&n| (0..=3650).contains(&n))
+            .unwrap_or(540);
+
         // Both default on; disabled with the usual falsey values.
         let flag = |key: &str, default: bool| -> bool {
             get(key)
@@ -580,6 +599,7 @@ impl Config {
             reminder_lead_ms,
             archive_months,
             box_score_retention_days,
+            tft_retention_days,
             past_refresh,
             backfill,
             rate_limit_floor,
@@ -644,6 +664,7 @@ mod tests {
         assert_eq!(c.reminder_lead_ms, 15 * 60_000);
         assert_eq!(c.archive_months, 1);
         assert_eq!(c.box_score_retention_days, 540);
+        assert_eq!(c.tft_retention_days, 540);
         assert!(c.past_refresh);
         assert!(c.backfill);
         assert_eq!(c.rate_limit_floor, 200);
@@ -669,6 +690,14 @@ mod tests {
         );
         assert_eq!(
             cfg(&[("BOX_SCORE_RETENTION_DAYS", "99999")]).box_score_retention_days,
+            540
+        );
+        // TFT enrichment retention: same shape and default as the box-score knob,
+        // since it bounds the same class of data (per-event history, keyed by name).
+        assert_eq!(cfg(&[("TFT_RETENTION_DAYS", "90")]).tft_retention_days, 90);
+        assert_eq!(cfg(&[("TFT_RETENTION_DAYS", "0")]).tft_retention_days, 0);
+        assert_eq!(
+            cfg(&[("TFT_RETENTION_DAYS", "99999")]).tft_retention_days,
             540
         );
         assert!(!cfg(&[("ENABLE_PAST_REFRESH", "false")]).past_refresh);

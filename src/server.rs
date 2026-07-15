@@ -6,7 +6,7 @@ use crate::types::Sport;
 use crate::types::{
     EventInfo, F1Result, F1Standings, MatchDetail, MatchResults, MotorResult, MotorStandings,
     ReminderReq, ScheduleView, SiteInfo, StreamView, SubscribeReq, TftDayPanel, TftLobbyRound,
-    TftPlacement,
+    TftPlacement, TftStreamerSection,
 };
 use leptos::prelude::*;
 
@@ -319,33 +319,23 @@ pub async fn get_event_broadcasts(event: String) -> Result<Vec<StreamView>, Serv
     }
 }
 
-/// A TFT event's player co-streamers, live-enriched, live-first and capped — the
-/// page links to the tournament's sheet for the full directory.
-#[server(GetEventStreamers, "/api")]
-pub async fn get_event_streamers(event: String) -> Result<Vec<StreamView>, ServerFnError> {
+/// A TFT event's player co-streamers, live-enriched, live-first and capped, plus
+/// the tournament sheet URL the section links to for the full directory. Both in
+/// one response: the section needs them together, and the URL is a poller-cache
+/// map read that isn't worth a request of its own.
+#[server(GetTftStreamerSection, "/api")]
+pub async fn get_tft_streamer_section(event: String) -> Result<TftStreamerSection, ServerFnError> {
     #[cfg(feature = "ssr")]
     {
-        Ok(crate::cache::event_streamer_streams(&event).await)
+        Ok(TftStreamerSection {
+            streams: crate::cache::event_streamer_streams(&event).await,
+            sheet_url: crate::cache::tft_sheet(&event),
+        })
     }
     #[cfg(not(feature = "ssr"))]
     {
         let _ = event;
-        Ok(Vec::new())
-    }
-}
-
-/// A TFT event's published Google Sheet URL (empty when it has none) — the "see
-/// all" link behind the capped stream list.
-#[server(GetTftSheet, "/api")]
-pub async fn get_tft_sheet(event: String) -> Result<String, ServerFnError> {
-    #[cfg(feature = "ssr")]
-    {
-        Ok(crate::cache::tft_sheet(&event))
-    }
-    #[cfg(not(feature = "ssr"))]
-    {
-        let _ = event;
-        Ok(String::new())
+        Ok(TftStreamerSection::default())
     }
 }
 
