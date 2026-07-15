@@ -71,7 +71,15 @@ fn str_field(obj: &str, key: &str) -> Option<String> {
 /// and are ignored; so are non-`tft` sports.
 #[must_use]
 pub fn parse_schedule(html: &str) -> Vec<CompeteEvent> {
-    let blob = rsc_blob(html);
+    parse_schedule_blob(&rsc_blob(html))
+}
+
+/// [`parse_schedule`] over an already-decoded RSC blob. The schedule page is the
+/// largest document this module handles (~250 KB), and its blob is wanted twice —
+/// once here and once by [`parse_tournament_ids_blob`] — so callers with both in
+/// mind decode once and pass it in.
+#[must_use]
+pub fn parse_schedule_blob(blob: &str) -> Vec<CompeteEvent> {
     let mut out = Vec::new();
     for chunk in blob
         .split("\"__typename\":\"CompeteEventScheduleItem\"")
@@ -112,7 +120,13 @@ pub fn parse_schedule(html: &str) -> Vec<CompeteEvent> {
 /// drives discovery (id → overview → published sheet). Order-preserving + deduped.
 #[must_use]
 pub fn parse_tournament_ids(html: &str) -> Vec<String> {
-    let blob = rsc_blob(html);
+    parse_tournament_ids_blob(&rsc_blob(html))
+}
+
+/// [`parse_tournament_ids`] over an already-decoded RSC blob. See
+/// [`parse_schedule_blob`] for why this split exists.
+#[must_use]
+pub fn parse_tournament_ids_blob(blob: &str) -> Vec<String> {
     let mut out = Vec::new();
     for chunk in blob.split("\"__typename\":\"Tournament\"").skip(1) {
         // The tournament's own `id` is the first field after the typename, so

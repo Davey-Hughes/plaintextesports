@@ -142,6 +142,14 @@ archive_months = 1
 # simply re-fetched on the next view. Viewing a game refreshes its timer.
 box_score_retention_days = 540
 
+# Days to keep persisted TFT enrichment (standings, lobbies, streamers, official
+# broadcasts, final placements) after its tournament was last refreshed, before
+# pruning it from the on-disk cache (0-3650; 0 disables pruning). Cached per
+# tournament, so this bounds the same slow disk growth box scores have — and it
+# also keeps boot from loading years of finished tournaments into memory. An
+# evicted tournament re-populates if the poller refreshes it again.
+tft_retention_days = 540
+
 # Periodically re-fetch recent past days for late score corrections (sparse:
 # ~6h for yesterday, slowing to never past a week). Disable to save quota.
 # PandaScore (CS2/LoL) only — the traditional sports come from separate keyless

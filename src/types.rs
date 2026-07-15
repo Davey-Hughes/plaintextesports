@@ -728,6 +728,16 @@ pub struct TftDayPanel {
     pub standings: TftStandings,
 }
 
+/// A TFT event's co-streamer section: the live-enriched, capped stream list plus
+/// the tournament's published sheet URL (empty when it has none) that the section
+/// links to for the full directory. One payload because the section always renders
+/// the two together, and the URL alone was costing its own request.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TftStreamerSection {
+    pub streams: Vec<StreamView>,
+    pub sheet_url: String,
+}
+
 /// One competitor's personal stream (CompeteTFT co-streamer directory).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TftStreamer {

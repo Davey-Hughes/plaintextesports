@@ -694,58 +694,64 @@ pub(crate) fn ScheduleSection(
     Effect::new(move |_| {
         let ev = if traditional.get() {
             String::new()
-        } else if let Some(Ok(s)) = resource.get() {
-            let g = games.get();
-            let l = leagues.get();
-            // Per stage in view: (tournament, latest session ms, has it begun).
-            let mut stages: HashMap<String, (String, i64, bool)> = HashMap::new();
-            for day in &s.days {
-                for lg in &day.leagues {
-                    let Some(sport) = lg.matches.first().map(|m| m.sport) else {
-                        continue;
-                    };
-                    if sport != Sport::Tft {
-                        continue;
-                    }
-                    // Respect the active game/league filters (the same axes the
-                    // schedule itself is filtered by) so this tracks what's shown.
-                    if !g.is_empty() && !g.contains(sport.slug()) {
-                        continue;
-                    }
-                    if !l.is_empty() && !l.contains(&chip_key(lg)) {
-                        continue;
-                    }
-                    let tournament = chip_key(lg);
-                    let ev_name = full_event_name(&lg.league, &lg.series_name);
-                    for m in &lg.matches {
-                        let begun = !matches!(m.status, MatchStatus::Upcoming);
-                        let e = stages.entry(ev_name.clone()).or_insert((
-                            tournament.clone(),
-                            m.begin_at_ms,
-                            begun,
-                        ));
-                        e.1 = e.1.max(m.begin_at_ms);
-                        e.2 = e.2 || begun;
+        } else {
+            // `.with()` borrows the view in place; `.get()` here deep-cloned the
+            // whole ScheduleView — the single largest allocation on the page — every
+            // hydrate and every 60s autorefresh, to produce one event name. `None`
+            // (still loading) means no single event yet, same as the Err arm.
+            resource.with(|r| {
+                let Some(Ok(s)) = r else {
+                    return String::new();
+                };
+                let g = games.get();
+                let l = leagues.get();
+                // Per stage in view: (tournament, latest session ms, has it begun).
+                let mut stages: HashMap<String, (String, i64, bool)> = HashMap::new();
+                for day in &s.days {
+                    for lg in &day.leagues {
+                        let Some(sport) = lg.matches.first().map(|m| m.sport) else {
+                            continue;
+                        };
+                        if sport != Sport::Tft {
+                            continue;
+                        }
+                        // Respect the active game/league filters (the same axes the
+                        // schedule itself is filtered by) so this tracks what's shown.
+                        if !g.is_empty() && !g.contains(sport.slug()) {
+                            continue;
+                        }
+                        if !l.is_empty() && !l.contains(chip_key(lg)) {
+                            continue;
+                        }
+                        // Loop-invariant: one entry per league-group, not per
+                        // match. `lg.matches` is non-empty — the `first()` above
+                        // would have skipped the group otherwise — so seeding the
+                        // session time with MIN is always overwritten below.
+                        let e = stages
+                            .entry(full_event_name(&lg.league, &lg.series_name))
+                            .or_insert_with(|| (chip_key(lg).to_string(), i64::MIN, false));
+                        for m in &lg.matches {
+                            e.1 = e.1.max(m.begin_at_ms);
+                            e.2 = e.2 || !matches!(m.status, MatchStatus::Upcoming);
+                        }
                     }
                 }
-            }
-            let tournaments: std::collections::HashSet<&str> =
-                stages.values().map(|(t, _, _)| t.as_str()).collect();
-            if tournaments.len() == 1 {
-                // The current stage: the started stage with the latest session, or
-                // (before anything's begun) the earliest upcoming one.
-                stages
-                    .iter()
-                    .filter(|(_, (_, _, begun))| *begun)
-                    .max_by_key(|(_, (_, t, _))| *t)
-                    .or_else(|| stages.iter().min_by_key(|(_, (_, t, _))| *t))
-                    .map(|(ev_name, _)| ev_name.clone())
-                    .unwrap_or_default()
-            } else {
-                String::new()
-            }
-        } else {
-            String::new()
+                let tournaments: std::collections::HashSet<&str> =
+                    stages.values().map(|(t, _, _)| t.as_str()).collect();
+                if tournaments.len() == 1 {
+                    // The current stage: the started stage with the latest session,
+                    // or (before anything's begun) the earliest upcoming one.
+                    stages
+                        .iter()
+                        .filter(|(_, (_, _, begun))| *begun)
+                        .max_by_key(|(_, (_, t, _))| *t)
+                        .or_else(|| stages.iter().min_by_key(|(_, (_, t, _))| *t))
+                        .map(|(ev_name, _)| ev_name.clone())
+                        .unwrap_or_default()
+                } else {
+                    String::new()
+                }
+            })
         };
         if single_tft_event.get_untracked() != ev {
             single_tft_event.set(ev);
@@ -958,14 +964,16 @@ pub(crate) fn ScheduleSection(
 /// tournament (one chip for the whole event, not one per stage). The TFT series is
 /// "<Tournament> - <Stage>" (e.g. "Space Gods Tactician's Crown - Swiss Stage"), so
 /// key on the part before the first " - ". Non-TFT groups are unaffected.
-pub(crate) fn chip_key(lg: &crate::types::LeagueGroup) -> String {
+/// Borrows from `lg` rather than allocating: this runs for every league group on
+/// every render (three times over, via the chip row and both `prepare_days`
+/// passes), and most callers only compare the result.
+pub(crate) fn chip_key(lg: &crate::types::LeagueGroup) -> &str {
     if lg.league == "TFT" {
         lg.series_name
             .split_once(" - ")
-            .map(|(tournament, _)| tournament.to_string())
-            .unwrap_or_else(|| lg.series_name.clone())
+            .map_or(lg.series_name.as_str(), |(tournament, _)| tournament)
     } else {
-        lg.league.clone()
+        &lg.league
     }
 }
 
@@ -981,8 +989,9 @@ pub(crate) fn leagues_for_games(s: &ScheduleView, games: &HashSet<String>) -> Ve
             };
             let key = chip_key(lg);
             let game_ok = games.is_empty() || games.contains(sport.slug());
-            if game_ok && !out.iter().any(|(l, _)| l == &key) {
-                out.push((key, sport));
+            // Allocate only on push — once per distinct chip, not once per group.
+            if game_ok && !out.iter().any(|(l, _)| l == key) {
+                out.push((key.to_string(), sport));
             }
         }
     }
@@ -1009,7 +1018,7 @@ pub(crate) fn filter_schedule(
                     .matches
                     .first()
                     .is_some_and(|m| games.contains(m.sport.slug()));
-            let league_ok = leagues.is_empty() || leagues.contains(&chip_key(lg));
+            let league_ok = leagues.is_empty() || leagues.contains(chip_key(lg));
             game_ok && league_ok
         });
     }

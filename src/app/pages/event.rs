@@ -235,10 +235,14 @@ pub(crate) fn EventPage() -> impl IntoView {
     // fetched on demand once the schedule reveals which (season, round) it is.
     let f1_results = Resource::new(
         move || {
-            schedule
-                .get()
-                .and_then(Result::ok)
-                .and_then(|s| f1_season_round(&s))
+            // `.with()` throughout this block, not `.get()`: these source closures
+            // re-run on every schedule change (each autorefresh), and `.get()` deep-
+            // cloned the entire ScheduleView — the page's largest allocation, five
+            // times over — only to read a field or two back out of it.
+            schedule.with(|r| {
+                let Some(Ok(s)) = r else { return None };
+                f1_season_round(s)
+            })
         },
         |sr| async move {
             match sr {
@@ -251,10 +255,10 @@ pub(crate) fn EventPage() -> impl IntoView {
     // results), shown below them on an F1 event page.
     let f1_standings = Resource::new(
         move || {
-            schedule
-                .get()
-                .and_then(Result::ok)
-                .and_then(|s| f1_season_round(&s))
+            schedule.with(|r| {
+                let Some(Ok(s)) = r else { return None };
+                f1_season_round(s)
+            })
         },
         |sr| async move {
             match sr {
@@ -267,11 +271,12 @@ pub(crate) fn EventPage() -> impl IntoView {
     // (from the ocblacktop poller cache); empty for F1 / non-motorsport events.
     let motor_standings = Resource::new(
         move || {
-            schedule
-                .get()
-                .and_then(Result::ok)
-                .map(|s| motor_series(&s))
-                .unwrap_or_default()
+            schedule.with(|r| {
+                let Some(Ok(s)) = r else {
+                    return String::new();
+                };
+                motor_series(s)
+            })
         },
         |lg| async move {
             if lg.is_empty() {
@@ -286,12 +291,16 @@ pub(crate) fn EventPage() -> impl IntoView {
     // for an actual motorsport series (empty edition string → F1 / non-motor).
     let motor_results = Resource::new(
         move || {
-            schedule
-                .get()
-                .and_then(Result::ok)
-                .filter(|s| !motor_series(s).is_empty())
-                .map(|_| league())
-                .unwrap_or_default()
+            schedule.with(|r| {
+                let Some(Ok(s)) = r else {
+                    return String::new();
+                };
+                if motor_series(s).is_empty() {
+                    String::new()
+                } else {
+                    league()
+                }
+            })
         },
         |ev| async move {
             if ev.is_empty() {
@@ -308,12 +317,16 @@ pub(crate) fn EventPage() -> impl IntoView {
     // is empty (→ no fetch) for non-esports events.
     let streams = Resource::new(
         move || {
-            schedule
-                .get()
-                .and_then(Result::ok)
-                .filter(schedule_is_esports)
-                .map(|_| league())
-                .unwrap_or_default()
+            schedule.with(|r| {
+                let Some(Ok(s)) = r else {
+                    return String::new();
+                };
+                if schedule_is_esports(s) {
+                    league()
+                } else {
+                    String::new()
+                }
+            })
         },
         |lg| async move {
             if lg.is_empty() {
