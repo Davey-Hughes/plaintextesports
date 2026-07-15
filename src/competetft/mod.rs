@@ -150,6 +150,120 @@ pub fn day_round_counts(lobbies: &[crate::types::TftLobbyRound]) -> Vec<(u32, us
     counts.into_iter().collect()
 }
 
+/// Sum a row's game scores, treating blank/"-" as 0.
+fn games_total(games: &[String]) -> i64 {
+    games
+        .iter()
+        .filter_map(|g| g.trim().parse::<i64>().ok())
+        .sum()
+}
+
+/// A participant's prize from the placement ladder, or empty.
+fn prize_of(placements: &[crate::types::TftPlacement], who: &str) -> String {
+    placements
+        .iter()
+        .find(|p| p.participant == who)
+        .map(|p| p.prize.clone())
+        .unwrap_or_default()
+}
+
+/// Rework the CompeteTFT leaderboard panels for display: split the sheet's
+/// combined "Day 1 & 2" panel into per-day panels using the lobby round→day map,
+/// and expand "Finals" to the whole field with eliminated players carrying their
+/// placement prize and last cumulative score. Returns `panels` untouched when
+/// there's no lobby data to split on (never guesses a boundary).
+#[must_use]
+pub fn split_day_panels(
+    panels: Vec<crate::types::TftDayPanel>,
+    lobbies: &[crate::types::TftLobbyRound],
+    placements: &[crate::types::TftPlacement],
+) -> Vec<crate::types::TftDayPanel> {
+    use crate::types::{TftDayPanel, TftStandings};
+
+    let counts = day_round_counts(lobbies);
+    let Some(&(_, n1)) = counts.first() else {
+        return panels; // no lobby data ⇒ no split
+    };
+    let Some(combined) = panels.iter().find(|p| p.label == "Day 1 & 2").cloned() else {
+        return panels;
+    };
+    if n1 == 0 || n1 >= combined.standings.game_count {
+        return panels; // boundary doesn't apply to this panel
+    }
+
+    // Day 1: re-total and re-rank on the Day-1 rounds only.
+    let mut d1_rows: Vec<crate::types::TftStandingRow> = combined
+        .standings
+        .rows
+        .iter()
+        .map(|r| {
+            let games: Vec<String> = r.games.iter().take(n1).cloned().collect();
+            let mut row = r.clone();
+            row.total = games_total(&games).to_string();
+            row.games = games;
+            row.status = String::new();
+            row.prize = String::new();
+            row.eliminated = false;
+            row
+        })
+        .collect();
+    d1_rows.sort_by_key(|r| std::cmp::Reverse(r.total.parse::<i64>().unwrap_or(0)));
+    for (i, r) in d1_rows.iter_mut().enumerate() {
+        r.rank = (i + 1).to_string();
+    }
+    let day1 = TftDayPanel {
+        label: "Day 1".to_string(),
+        standings: TftStandings {
+            game_count: n1,
+            rows: d1_rows,
+        },
+    };
+
+    // Day 2: the cumulative panel, relabeled; non-advancers greyed with prize.
+    let mut day2 = combined.clone();
+    day2.label = "Day 2".to_string();
+    for r in &mut day2.standings.rows {
+        if r.status.trim().is_empty() {
+            r.eliminated = true;
+            r.prize = prize_of(placements, &r.participant);
+        }
+    }
+
+    // Finals: the finalists, then everyone else greyed with prize + last total.
+    let finals = panels.iter().find(|p| p.label == "Finals").cloned();
+    let finals = finals.map(|mut f| {
+        let in_finals: std::collections::HashSet<String> = f
+            .standings
+            .rows
+            .iter()
+            .map(|r| r.participant.clone())
+            .collect();
+        let mut extra: Vec<crate::types::TftStandingRow> = combined
+            .standings
+            .rows
+            .iter()
+            .filter(|r| !in_finals.contains(&r.participant))
+            .map(|r| {
+                let mut row = r.clone();
+                row.games = Vec::new(); // no finals games for a knocked-out player
+                row.status = String::new();
+                row.eliminated = true;
+                row.prize = prize_of(placements, &r.participant);
+                row // `total` stays: the last cumulative score
+            })
+            .collect();
+        extra.sort_by_key(|r| std::cmp::Reverse(r.total.parse::<i64>().unwrap_or(0)));
+        f.standings.rows.append(&mut extra);
+        f
+    });
+
+    let mut out = vec![day1, day2];
+    if let Some(f) = finals {
+        out.push(f);
+    }
+    out
+}
+
 /// Turn a tournament into schedule sessions via the 3-tier date precedence:
 /// (1) broadcast feed (real times), (2) clean per-day map when stage count equals
 /// the range's day span and stage titles are distinct, (3) one tournament-level
@@ -283,6 +397,10 @@ pub fn assemble(
     }
     // Day 1 & 2 panel before Finals.
     standings.sort_by_key(|p| p.label == "Finals");
+
+    // Rework for display: per-day panels + a full-field Finals (see
+    // `split_day_panels`). Falls back to the sheet's own panels without lobbies.
+    let standings = split_day_panels(standings, &lobbies, &placements);
 
     let sessions = derive_sessions(t, events, now);
 
@@ -425,6 +543,142 @@ mod tests {
             label: label.into(),
             lobbies: Vec::new(),
         }
+    }
+
+    fn row(
+        rank: &str,
+        who: &str,
+        total: &str,
+        games: &[&str],
+        status: &str,
+    ) -> crate::types::TftStandingRow {
+        crate::types::TftStandingRow {
+            rank: rank.into(),
+            participant: who.into(),
+            total: total.into(),
+            games: games.iter().map(|g| (*g).to_string()).collect(),
+            status: status.into(),
+            prize: String::new(),
+            eliminated: false,
+        }
+    }
+    fn panel(
+        label: &str,
+        game_count: usize,
+        rows: Vec<crate::types::TftStandingRow>,
+    ) -> crate::types::TftDayPanel {
+        crate::types::TftDayPanel {
+            label: label.into(),
+            standings: crate::types::TftStandings { game_count, rows },
+        }
+    }
+    fn place(p: &str, who: &str, prize: &str) -> crate::types::TftPlacement {
+        crate::types::TftPlacement {
+            place: p.into(),
+            participant: who.into(),
+            prize: prize.into(),
+        }
+    }
+    fn day12_lobbies() -> Vec<crate::types::TftLobbyRound> {
+        let mut ls: Vec<crate::types::TftLobbyRound> = (1..=2)
+            .map(|r| crate::types::TftLobbyRound {
+                label: format!("Day 1 · Round {r}"),
+                lobbies: Vec::new(),
+            })
+            .collect();
+        ls.extend((3..=4).map(|r| crate::types::TftLobbyRound {
+            label: format!("Day 2 · Round {r}"),
+            lobbies: Vec::new(),
+        }));
+        ls
+    }
+
+    #[test]
+    fn split_day_panels_splits_day1_by_lobby_rounds_and_retotals() {
+        // 4 games; lobbies say Day 1 = first 2 rounds. "B" wins Day 1 alone (9)
+        // even though "A" leads cumulatively (12) — so Day 1 must re-rank.
+        let combined = panel(
+            "Day 1 & 2",
+            4,
+            vec![
+                row("1", "A", "12", &["3", "3", "3", "3"], "→ Day 3"),
+                row("2", "B", "10", &["5", "4", "1", ""], ""),
+            ],
+        );
+        let out = split_day_panels(vec![combined], &day12_lobbies(), &[place("2", "B", "$100")]);
+        let d1 = out
+            .iter()
+            .find(|p| p.label == "Day 1")
+            .expect("Day 1 panel");
+        assert_eq!(d1.standings.game_count, 2);
+        // Re-ranked by Day-1-only points: B (9) ahead of A (6).
+        let order: Vec<&str> = d1
+            .standings
+            .rows
+            .iter()
+            .map(|r| r.participant.as_str())
+            .collect();
+        assert_eq!(order, ["B", "A"]);
+        assert_eq!(d1.standings.rows[0].total, "9");
+        assert_eq!(d1.standings.rows[0].games, vec!["5", "4"]);
+        // Day 2 keeps the cumulative panel, relabeled.
+        let d2 = out
+            .iter()
+            .find(|p| p.label == "Day 2")
+            .expect("Day 2 panel");
+        assert_eq!(d2.standings.rows[0].total, "12");
+        // B didn't advance → greyed with prize on Day 2.
+        let b = d2
+            .standings
+            .rows
+            .iter()
+            .find(|r| r.participant == "B")
+            .unwrap();
+        assert!(b.eliminated);
+        assert_eq!(b.prize, "$100");
+    }
+
+    #[test]
+    fn split_day_panels_keeps_combined_panel_without_lobby_data() {
+        let combined = panel(
+            "Day 1 & 2",
+            4,
+            vec![row("1", "A", "12", &["3", "3", "3", "3"], "")],
+        );
+        let out = split_day_panels(vec![combined.clone()], &[], &[]);
+        assert_eq!(out, vec![combined], "no lobby data ⇒ no split, unchanged");
+    }
+
+    #[test]
+    fn split_day_panels_expands_finals_to_the_full_field() {
+        let combined = panel(
+            "Day 1 & 2",
+            4,
+            vec![
+                row("1", "A", "12", &["3", "3", "3", "3"], "→ Day 3"),
+                row("2", "B", "10", &["5", "4", "1", ""], ""),
+            ],
+        );
+        let finals = panel("Finals", 2, vec![row("1", "A", "9", &["4", "5"], "")]);
+        let out = split_day_panels(
+            vec![combined, finals],
+            &day12_lobbies(),
+            &[place("1", "A", "$500"), place("2", "B", "$100")],
+        );
+        let f = out
+            .iter()
+            .find(|p| p.label == "Finals")
+            .expect("Finals panel");
+        // Full field: the finalist first, then the eliminated player greyed.
+        assert_eq!(f.standings.rows.len(), 2);
+        assert_eq!(f.standings.rows[0].participant, "A");
+        assert!(!f.standings.rows[0].eliminated);
+        let b = &f.standings.rows[1];
+        assert_eq!(b.participant, "B");
+        assert!(b.eliminated);
+        assert_eq!(b.prize, "$100");
+        // Last cumulative score carried over from the combined panel.
+        assert_eq!(b.total, "10");
     }
 
     #[test]
@@ -646,7 +900,9 @@ mod tests {
         let now = "2026-07-13T00:00:00Z".parse::<DateTime<Utc>>().unwrap();
         let d = assemble(&t, &events, &tabs, now);
         assert!(!d.standings.is_empty());
-        assert_eq!(d.standings[0].label, "Day 1 & 2");
+        // The fixture carries lobby data, so the combined panel splits: Day 1
+        // (re-totaled/re-ranked) sorts first, ahead of Day 2 and Finals.
+        assert_eq!(d.standings[0].label, "Day 1");
         assert!(!d.placements.is_empty());
         assert!(d.streamers.len() >= 15);
         assert!(!d.lobbies.is_empty());
