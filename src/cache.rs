@@ -4378,17 +4378,23 @@ fn reminder_seed(m: &NormalizedMatch, lead_ms: i64, tz: &Tz, hour24: bool) -> Re
         notify_at_ms: m.begin_at.timestamp_millis() - lead_ms,
         tz: tz.name().to_string(),
         hour24,
-        // The American team sports read "away at home"; soccer (neutral-venue
-        // World Cup games) and esports read "vs".
-        title: format!(
-            "{} {} {}",
-            m.team_a.label,
-            match m.sport {
-                Sport::Mlb | Sport::Nhl | Sport::Nba | Sport::Nfl => "at",
-                _ => "vs",
-            },
-            m.team_b.label
-        ),
+        title: if m.team_b.label.is_empty() {
+            // Single-entity events (an F1 session, a rally stage) have no
+            // opponent — the one label stands alone, with no dangling "vs".
+            m.team_a.label.clone()
+        } else {
+            // The American team sports read "away at home"; soccer (neutral-venue
+            // World Cup games) and esports read "vs".
+            format!(
+                "{} {} {}",
+                m.team_a.label,
+                match m.sport {
+                    Sport::Mlb | Sport::Nhl | Sport::Nba | Sport::Nfl => "at",
+                    _ => "vs",
+                },
+                m.team_b.label
+            )
+        },
         // Tag the time with the viewer's zone abbreviation so it's unambiguous
         // (and obviously the viewer's local time, not the server's), in their
         // chosen 12h/24h format.
@@ -8157,6 +8163,31 @@ mod tests {
         // The fire time is the same UTC instant regardless of display tz/format.
         assert_eq!(ny.notify_at_ms, la.notify_at_ms);
         assert_eq!(ny.notify_at_ms, m.begin_at.timestamp_millis() - lead);
+    }
+
+    #[test]
+    fn reminder_seed_title_omits_the_separator_for_single_entity_events() {
+        // An F1 practice session is single-entity: team_a is the session, team_b
+        // is empty. The title must be just the session name — not "Practice 1 vs"
+        // with a dangling separator and no opponent.
+        let mut m = at(
+            "2026-06-25T02:00:00Z".parse::<DateTime<Utc>>().unwrap(),
+            MatchStatus::Upcoming,
+        );
+        m.sport = Sport::Motorsport;
+        m.league = "F1".into();
+        m.team_a.label = "Practice 1".into();
+        m.team_b.label = String::new();
+        let seed = reminder_seed(&m, 15 * 60_000, &chrono_tz::Etc::UTC, false);
+        assert_eq!(seed.title, "Practice 1");
+
+        // A normal two-sided match still reads "A vs B".
+        let two = at(
+            "2026-06-25T02:00:00Z".parse::<DateTime<Utc>>().unwrap(),
+            MatchStatus::Upcoming,
+        );
+        let seed = reminder_seed(&two, 15 * 60_000, &chrono_tz::Etc::UTC, false);
+        assert_eq!(seed.title, "A vs B");
     }
 
     #[test]
