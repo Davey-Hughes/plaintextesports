@@ -272,6 +272,9 @@ fn normalize(sport: Sport, raw: &RawMatch) -> Option<NormalizedMatch> {
         },
         stream_url,
         tournament_id: raw.tournament.as_ref().and_then(|t| t.id),
+        league_slug: raw.league.as_ref().and_then(|l| l.slug.clone()),
+        series_slug: raw.series.as_ref().and_then(|s| s.slug.clone()),
+        tournament_slug: raw.tournament.as_ref().and_then(|t| t.slug.clone()),
         // PandaScore exposes no reliable venue (name/timezone) for esports matches.
         venue_tz: None,
         venue_name: String::new(),

@@ -33,6 +33,12 @@ pub struct NormalizedMatch {
     pub stream_url: Option<String>,
     /// PandaScore tournament id (used to fetch standings/brackets). Persisted.
     pub tournament_id: Option<i64>,
+    /// PandaScore league/series/tournament slugs, kept so the read-time tier
+    /// filter can re-run the full allow/deny/tier decision against the current
+    /// config. `None` for non-PandaScore sports (never tier-filtered). Persisted.
+    pub league_slug: Option<String>,
+    pub series_slug: Option<String>,
+    pub tournament_slug: Option<String>,
     /// IANA timezone of the venue, when the source provides it (MLB stadiums).
     /// Lets the UI show the local time at the event; `None` for esports (no
     /// venue tz). Persisted.
@@ -107,6 +113,9 @@ impl NormalizedMatch {
             team_b,
             stream_url: None,
             tournament_id: None,
+            league_slug: None,
+            series_slug: None,
+            tournament_slug: None,
             venue_tz: None,
             venue_name: String::new(),
             venue_location: String::new(),
