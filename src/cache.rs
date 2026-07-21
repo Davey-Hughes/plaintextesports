@@ -9,6 +9,7 @@
 use crate::config::{Config, config};
 use crate::feed::{FetchResult, NormalizedMatch, NormalizedTeam};
 use crate::pandascore::fetch_game;
+use crate::tiering::{TierInput, is_tier_one};
 use crate::twitch::{LiveInfo, login_of};
 use crate::types::{
     BracketMatch, BracketRound, DayGroup, EventInfo, LeagueGroup, MatchStatus, MatchView,
@@ -1930,19 +1931,22 @@ pub fn spawn_poller() {
 
     // Serve persisted data immediately on boot.
     if let Some(conn) = store.as_ref() {
-        if let Ok(stored) = crate::store::load_all(conn)
-            && !stored.is_empty()
-        {
-            let fetched = crate::store::load_fetched_at(conn)
-                .and_then(DateTime::from_timestamp_millis)
-                .unwrap_or_else(Utc::now);
-            let mut snap = SNAPSHOT.write().unwrap_or_else(PoisonError::into_inner);
-            let n = stored.len();
-            snap.matches = stored;
-            snap.fetched_at = fetched;
-            snap.stale = true; // refreshed by the first live poll
-            snap.using_fixture = false;
-            leptos::logging::log!("loaded {n} matches from cache db");
+        if let Ok(mut stored) = crate::store::load_all(conn) {
+            // Re-filter against the current tier config so a since-narrowed config
+            // (or a new allow/deny entry) is honored on already-stored rows.
+            retain_configured_tiers(&mut stored, cfg);
+            if !stored.is_empty() {
+                let fetched = crate::store::load_fetched_at(conn)
+                    .and_then(DateTime::from_timestamp_millis)
+                    .unwrap_or_else(Utc::now);
+                let mut snap = SNAPSHOT.write().unwrap_or_else(PoisonError::into_inner);
+                let n = stored.len();
+                snap.matches = stored;
+                snap.fetched_at = fetched;
+                snap.stale = true; // refreshed by the first live poll
+                snap.using_fixture = false;
+                leptos::logging::log!("loaded {n} matches from cache db");
+            }
         }
         // Load cached event-page links.
         if let Ok(rows) = crate::store::load_event_links(conn) {
@@ -2685,6 +2689,28 @@ fn reconcile_wrc(
     keep
 }
 
+/// Drop PandaScore matches that the current `[tiers]`/`[tier_allow]`/`[tier_deny]`
+/// config no longer admits, by re-running the full tier decision over each row's
+/// persisted slugs. So narrowing tiers, adding a denylist entry, or removing an
+/// allowlist entry all take effect on already-stored rows at read time.
+/// Non-PandaScore sports (traditional + TFT) are never tier-filtered. Only the
+/// in-memory snapshot is filtered — the DB is left intact, so re-widening the
+/// config reshows rows on the next load with no re-fetch.
+fn retain_configured_tiers(matches: &mut Vec<NormalizedMatch>, cfg: &Config) {
+    matches.retain(|m| {
+        if !m.sport.pandascore() {
+            return true;
+        }
+        let input = TierInput {
+            league_slug: m.league_slug.as_deref(),
+            series_slug: m.series_slug.as_deref(),
+            tournament_slug: m.tournament_slug.as_deref(),
+            tier: Some(m.tier.as_str()),
+        };
+        is_tier_one(m.sport, &input, &cfg.tier_policy(m.sport))
+    });
+}
+
 /// Persist freshly polled matches (if a store is present) and refresh the
 /// in-memory snapshot. Synchronous — no `.await` while touching the DB.
 fn apply_poll(
@@ -2778,6 +2804,9 @@ fn apply_poll(
         match crate::store::load_all(conn) {
             Ok(mut all) => {
                 all.sort_by_key(|m| m.begin_at);
+                // Re-filter against the current tier config (catches rows stored
+                // under a wider prior config, and new allow/deny entries).
+                retain_configured_tiers(&mut all, config());
                 // Streams/broadcasts and the MLB series ref aren't persisted to the
                 // DB, so the reload drops them; re-attach them from this poll's fresh
                 // fetch (keyed by match id) so the detail page still has them. (The
@@ -9469,5 +9498,52 @@ mod tests {
             links: vec![("douyu".into(), "https://douyu.com/x".into())],
         };
         assert!(broadcast_to_stream(&linkless).is_none());
+    }
+
+    #[test]
+    fn retain_configured_tiers_applies_tiers_and_overrides() {
+        fn m(id: i64, sport: Sport, tier: &str, slug: &str) -> NormalizedMatch {
+            let team = |l: &str| NormalizedTeam {
+                label: l.into(),
+                name: l.into(),
+                abbrev: String::new(),
+                score: None,
+            };
+            let mut m = NormalizedMatch::team_sport(
+                id,
+                sport,
+                "L",
+                "2026-07-01T00:00:00Z".parse::<DateTime<Utc>>().unwrap(),
+                MatchStatus::Upcoming,
+                team("A"),
+                team("B"),
+            );
+            m.tier = tier.to_string();
+            m.league_slug = Some(slug.to_string());
+            m
+        }
+
+        // lol narrowed to S-only, with a config allow + a config deny on cs2.
+        let mut cfg = Config::from_vars(|_| None);
+        cfg.tiers.insert("lol".to_string(), vec!["s".to_string()]);
+        cfg.tier_allow.insert(
+            "lol".to_string(),
+            vec!["league-of-legends-special".to_string()],
+        );
+        cfg.tier_deny
+            .insert("cs2".to_string(), vec!["boring".to_string()]);
+
+        let mut matches = vec![
+            m(1, Sport::Lol, "S", "league-of-legends-lck"), // kept (S ∈ [s])
+            m(2, Sport::Lol, "A", "league-of-legends-lck"), // dropped (A ∉ [s])
+            m(3, Sport::Lol, "B", "league-of-legends-special"), // kept (config allow)
+            m(4, Sport::Cs2, "A", "cs-go-boring-league"),   // dropped (config deny)
+            m(5, Sport::Cs2, "S", "cs-go-iem-katowice"),    // kept (S ∈ [s,a])
+            m(6, Sport::Mlb, "S", ""),                      // kept (non-PandaScore)
+        ];
+        retain_configured_tiers(&mut matches, &cfg);
+
+        let ids: Vec<i64> = matches.iter().map(|m| m.id).collect();
+        assert_eq!(ids, vec![1, 3, 5, 6]);
     }
 }
