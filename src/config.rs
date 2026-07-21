@@ -1,7 +1,7 @@
 //! Runtime configuration, loaded from `config.toml` with env-var overrides
 //! (server-only).
 
-use crate::types::SiteLink;
+use crate::types::{SiteLink, Sport};
 use chrono::{DateTime, Months, Utc};
 use chrono_tz::Tz;
 use once_cell::sync::Lazy;
@@ -49,6 +49,13 @@ struct FileConfig {
     competetft_pins: Option<Vec<String>>,
     /// Tournament ids to never include.
     competetft_exclude: Option<Vec<String>>,
+    /// PandaScore tiers to show per esports title (slug → tier letters). Only
+    /// lol/cs2 have tiers; other keys are ignored. Missing ⇒ ["s","a"].
+    tiers: Option<HashMap<String, Vec<String>>>,
+    /// Extra force-include slugs per title, merged with the built-in allowlist.
+    tier_allow: Option<HashMap<String, Vec<String>>>,
+    /// Extra force-exclude slugs per title, merged with the built-in denylist.
+    tier_deny: Option<HashMap<String, Vec<String>>>,
     /// Twitch category-discovery of unlisted co-streamers.
     twitch_discovery: Option<TwitchDiscoveryFile>,
     /// League name → Twitch title keywords for discovery attribution.
@@ -257,6 +264,15 @@ pub struct Config {
     /// League name → Twitch title keywords for attributing discovered streams
     /// (e.g. "Mid-Season Invitational" → ["MSI"]). Empty when unconfigured.
     pub twitch_league_aliases: HashMap<String, Vec<String>>,
+    /// PandaScore tiers to show per title (slug → lowercased letters). Seeded with
+    /// ["s","a"] for lol/cs2; overridden by `[tiers]`. Read by ingest + display.
+    pub tiers: HashMap<String, Vec<String>>,
+    /// Extra force-include slugs per title (lowercased), merged with the built-in
+    /// allowlist. Empty unless `[tier_allow]` sets it.
+    pub tier_allow: HashMap<String, Vec<String>>,
+    /// Extra force-exclude slugs per title (lowercased), merged with the built-in
+    /// denylist. Empty unless `[tier_deny]` sets it.
+    pub tier_deny: HashMap<String, Vec<String>>,
     /// Calendar poll interval for a series with a session live or starting within
     /// the hour (fast tier; only the in-window series uses it).
     pub ocblacktop_live_poll: Duration,
@@ -338,6 +354,31 @@ impl Config {
         now.checked_sub_months(Months::new(self.archive_months as u32))
             .unwrap_or(now)
     }
+}
+
+/// Fallback tier set for a slug with no `[tiers]` entry, and the seed for
+/// lol/cs2: PandaScore's S and A tiers, matching the pre-config default.
+static DEFAULT_TIERS: Lazy<Vec<String>> = Lazy::new(|| vec!["s".to_string(), "a".to_string()]);
+
+/// Empty override list — the default for a sport with no `[tier_allow]` /
+/// `[tier_deny]` entry (the built-in tiering consts still apply).
+const EMPTY_SLUGS: &[String] = &[];
+
+/// Lowercase a `slug → values` config table (keys and values), keeping only
+/// entries whose key is a PandaScore title (lol/cs2). Used for `[tiers]`,
+/// `[tier_allow]`, and `[tier_deny]` — the only sports that are tier-filtered.
+fn lower_slug_map(m: HashMap<String, Vec<String>>) -> HashMap<String, Vec<String>> {
+    m.into_iter()
+        .filter_map(|(slug, list)| {
+            let key = slug.to_ascii_lowercase();
+            Sport::from_filter(&key)
+                .is_some_and(Sport::pandascore)
+                .then(|| {
+                    let vals = list.iter().map(|s| s.trim().to_ascii_lowercase()).collect();
+                    (key, vals)
+                })
+        })
+        .collect()
 }
 
 /// The process-wide config, loaded once (reads `config.toml` on first access).
@@ -423,6 +464,18 @@ impl Config {
         if let Some(exclude) = file.competetft_exclude {
             cfg.competetft_exclude = exclude;
         }
+        if let Some(tiers) = file.tiers {
+            // Per-key override so a title absent from the file keeps its seed.
+            for (slug, list) in lower_slug_map(tiers) {
+                cfg.tiers.insert(slug, list);
+            }
+        }
+        if let Some(allow) = file.tier_allow {
+            cfg.tier_allow = lower_slug_map(allow);
+        }
+        if let Some(deny) = file.tier_deny {
+            cfg.tier_deny = lower_slug_map(deny);
+        }
     }
 
     /// True when Twitch discovery is enabled for `sport`.
@@ -432,6 +485,32 @@ impl Config {
             .enabled_sports
             .iter()
             .any(|s| s == sport.slug())
+    }
+
+    /// Configured PandaScore tiers to show for `sport` (lowercased). Defaults to
+    /// ["s","a"] for a title with no `[tiers]` entry. Only meaningful for
+    /// PandaScore titles; never consulted for other sports.
+    #[must_use]
+    pub fn tiers_for(&self, sport: Sport) -> &[String] {
+        self.tiers
+            .get(sport.slug())
+            .map_or(DEFAULT_TIERS.as_slice(), Vec::as_slice)
+    }
+
+    /// Extra force-include slugs for `sport` (merged with the built-in allowlist).
+    #[must_use]
+    pub fn allow_for(&self, sport: Sport) -> &[String] {
+        self.tier_allow
+            .get(sport.slug())
+            .map_or(EMPTY_SLUGS, Vec::as_slice)
+    }
+
+    /// Extra force-exclude slugs for `sport` (merged with the built-in denylist).
+    #[must_use]
+    pub fn deny_for(&self, sport: Sport) -> &[String] {
+        self.tier_deny
+            .get(sport.slug())
+            .map_or(EMPTY_SLUGS, Vec::as_slice)
     }
 
     /// Test helper: build a config from a parsed file only (no env), applying the
@@ -445,7 +524,7 @@ impl Config {
 
     /// Build from an arbitrary key→value lookup. Keeps the parsing/clamping
     /// logic pure and testable, separate from the config source.
-    fn from_vars(get: impl Fn(&str) -> Option<String>) -> Self {
+    pub(crate) fn from_vars(get: impl Fn(&str) -> Option<String>) -> Self {
         // Seconds value, clamped to at least `min`, else `default`.
         let secs = |key: &str, default: u64, min: u64| -> u64 {
             get(key)
@@ -573,6 +652,12 @@ impl Config {
             .filter(|s| !s.is_empty())
             .unwrap_or_else(|| "icons".to_string());
 
+        // Seed the PandaScore titles with the S+A default; `[tiers]` overrides
+        // per-key in patch_from_file. Overrides start empty (built-ins apply).
+        let mut tiers = HashMap::new();
+        tiers.insert("lol".to_string(), DEFAULT_TIERS.clone());
+        tiers.insert("cs2".to_string(), DEFAULT_TIERS.clone());
+
         Self {
             token,
             ocblacktop_token,
@@ -614,6 +699,9 @@ impl Config {
             links: Vec::new(),
             twitch_discovery: TwitchDiscovery::default(),
             twitch_league_aliases: HashMap::new(),
+            tiers,
+            tier_allow: HashMap::new(),
+            tier_deny: HashMap::new(),
             icons_dir,
         }
     }
@@ -671,6 +759,67 @@ mod tests {
         assert_eq!(c.db_path, "data/cache.db");
         assert!(c.resolve_links);
         assert!(!c.demo);
+    }
+
+    #[test]
+    fn tiers_default_and_override() {
+        let c = cfg(&[]);
+        assert_eq!(
+            c.tiers_for(crate::types::Sport::Lol).to_vec(),
+            vec!["s", "a"]
+        );
+        assert_eq!(
+            c.tiers_for(crate::types::Sport::Cs2).to_vec(),
+            vec!["s", "a"]
+        );
+        // Non-PandaScore sport falls back to the same default (never consulted).
+        assert_eq!(
+            c.tiers_for(crate::types::Sport::Mlb).to_vec(),
+            vec!["s", "a"]
+        );
+        // No overrides by default.
+        assert!(c.allow_for(crate::types::Sport::Lol).is_empty());
+        assert!(c.deny_for(crate::types::Sport::Cs2).is_empty());
+    }
+
+    #[test]
+    fn tier_tables_parse_lowercase_and_ignore_non_pandascore() {
+        let src = r#"
+            [tiers]
+            lol = ["S", "A", "B"]
+            mlb = ["s"]
+            [tier_allow]
+            lol = ["League-of-Legends-First-Stand"]
+            [tier_deny]
+            cs2 = ["Showmatch-Cup"]
+            nba = ["nope"]
+        "#;
+        let fc: FileConfig = toml::from_str(src).unwrap();
+        let c = Config::from_file_for_test(fc);
+        assert_eq!(
+            c.tiers_for(crate::types::Sport::Lol).to_vec(),
+            vec!["s", "a", "b"]
+        );
+        // cs2 tiers untouched by the file → default.
+        assert_eq!(
+            c.tiers_for(crate::types::Sport::Cs2).to_vec(),
+            vec!["s", "a"]
+        );
+        // mlb tier key ignored (not a PandaScore title).
+        assert_eq!(
+            c.tiers_for(crate::types::Sport::Mlb).to_vec(),
+            vec!["s", "a"]
+        );
+        // Overrides lowercased; non-PandaScore keys dropped.
+        assert_eq!(
+            c.allow_for(crate::types::Sport::Lol).to_vec(),
+            vec!["league-of-legends-first-stand"]
+        );
+        assert_eq!(
+            c.deny_for(crate::types::Sport::Cs2).to_vec(),
+            vec!["showmatch-cup"]
+        );
+        assert!(c.deny_for(crate::types::Sport::Nba).is_empty());
     }
 
     #[test]
