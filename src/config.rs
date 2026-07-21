@@ -513,6 +513,17 @@ impl Config {
             .map_or(EMPTY_SLUGS, Vec::as_slice)
     }
 
+    /// Bundle this sport's allowed tiers + config allow/deny extras into the
+    /// tiering decision's policy. Built once per fetch / read-filter pass.
+    #[must_use]
+    pub fn tier_policy(&self, sport: Sport) -> crate::tiering::TierPolicy<'_> {
+        crate::tiering::TierPolicy {
+            allowed_tiers: self.tiers_for(sport),
+            extra_allow: self.allow_for(sport),
+            extra_deny: self.deny_for(sport),
+        }
+    }
+
     /// Test helper: build a config from a parsed file only (no env), applying the
     /// same structured-table patches as `load`.
     #[cfg(test)]

@@ -7,9 +7,10 @@
 //! `Sport` comes from a different source (see the per-sport feed modules). Docs:
 //! https://developers.pandascore.co
 
+use crate::config::config;
 use crate::feed::{FetchResult, NormalizedMatch, NormalizedTeam};
 use crate::http::DynError;
-use crate::tiering::{TierInput, is_tier_one};
+use crate::tiering::{TierInput, TierPolicy, is_tier_one};
 use crate::types::{MatchStatus, Sport, StreamView};
 use chrono::{DateTime, Duration, Utc};
 use serde::Deserialize;
@@ -294,15 +295,18 @@ fn tier_input(raw: &RawMatch) -> TierInput<'_> {
     }
 }
 
-/// Deserialize a PandaScore matches array, normalize, and keep only tier-1.
+/// Deserialize a PandaScore matches array, normalize, and keep only matches the
+/// `policy` admits (allow/deny/tier). `policy` is the caller's
+/// `config().tier_policy(sport)`; passed in so unit tests stay hermetic.
 pub fn parse_and_filter(
     sport: Sport,
     json: &str,
+    policy: &TierPolicy,
 ) -> Result<Vec<NormalizedMatch>, serde_json::Error> {
     let raw: Vec<RawMatch> = serde_json::from_str(json)?;
     Ok(raw
         .iter()
-        .filter(|m| is_tier_one(sport, &tier_input(m)))
+        .filter(|m| is_tier_one(sport, &tier_input(m), policy))
         .filter_map(|m| normalize(sport, m))
         .collect())
 }
@@ -360,7 +364,11 @@ async fn get_segment(
 ) -> Result<Vec<NormalizedMatch>, DynError> {
     let url = format!("{BASE_URL}/{}/matches/{segment}", game_path(sport));
     let (body, _) = get_text(client, token, &url, query).await?;
-    Ok(parse_and_filter(sport, &body)?)
+    Ok(parse_and_filter(
+        sport,
+        &body,
+        &config().tier_policy(sport),
+    )?)
 }
 
 /// Matches per page (PandaScore's maximum).
@@ -424,6 +432,9 @@ pub async fn fetch_game(
 
     let mut by_id: HashMap<i64, NormalizedMatch> = HashMap::new();
 
+    // Resolve the tier policy once for the whole scan (borrows &'static config).
+    let policy = config().tier_policy(sport);
+
     let max_pages = if deep { DEEP_MAX_PAGES } else { 1 };
     let mut page = 1u32;
     loop {
@@ -446,7 +457,7 @@ pub async fn fetch_game(
         let latest = raw.iter().filter_map(parse_time).max();
         for m in raw
             .iter()
-            .filter(|m| is_tier_one(sport, &tier_input(m)))
+            .filter(|m| is_tier_one(sport, &tier_input(m), &policy))
             .filter_map(|m| normalize(sport, m))
         {
             by_id.insert(m.id, m);
@@ -572,9 +583,10 @@ pub async fn fetch_past_range(
     let (body, rate_remaining) = get_text(client, token, &url, &query).await?;
     let raw: Vec<RawMatch> = serde_json::from_str(&body)?;
     let reached_end = raw.len() < per_page as usize;
+    let policy = config().tier_policy(sport);
     let matches = raw
         .iter()
-        .filter(|m| is_tier_one(sport, &tier_input(m)))
+        .filter(|m| is_tier_one(sport, &tier_input(m), &policy))
         .filter_map(|m| normalize(sport, m))
         .collect();
     Ok(RangeFetch {
@@ -588,11 +600,17 @@ pub async fn fetch_past_range(
 mod tests {
     use super::*;
 
+    fn default_policy_tiers() -> Vec<String> {
+        vec!["s".to_string(), "a".to_string()]
+    }
+
     const SAMPLE: &str = include_str!("../../fixtures/pandascore_sample.json");
 
     #[test]
     fn deserializes_and_normalizes_sample() {
-        let matches = parse_and_filter(Sport::Lol, SAMPLE).expect("valid sample json");
+        let t = default_policy_tiers();
+        let matches = parse_and_filter(Sport::Lol, SAMPLE, &TierPolicy::tiers(&t))
+            .expect("valid sample json");
         // The sample has one tier-A LCK match and one denylisted challenger
         // match; only the LCK one survives the filter.
         assert_eq!(matches.len(), 1);
@@ -635,7 +653,9 @@ mod tests {
 
     #[test]
     fn handles_empty_array() {
-        let matches = parse_and_filter(Sport::Cs2, "[]").expect("empty array");
+        let t = default_policy_tiers();
+        let matches =
+            parse_and_filter(Sport::Cs2, "[]", &TierPolicy::tiers(&t)).expect("empty array");
         assert!(matches.is_empty());
     }
 
@@ -707,7 +727,8 @@ mod tests {
           {"id":3,"status":"not_started","begin_at":"2026-07-01T10:00:00Z",
            "tournament":{"slug":"x","tier":"a"}}
         ]"#;
-        let ms = parse_and_filter(Sport::Lol, json).expect("valid json");
+        let t = default_policy_tiers();
+        let ms = parse_and_filter(Sport::Lol, json, &TierPolicy::tiers(&t)).expect("valid json");
         // id1 kept via scheduled_at fallback; id2 dropped (no time); id3 dropped (no league).
         assert_eq!(ms.len(), 1);
         assert_eq!(ms[0].id, 1);
