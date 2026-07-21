@@ -10,7 +10,7 @@
 //! Run: `cargo bench --features ssr`
 
 use criterion::{Criterion, black_box, criterion_group, criterion_main};
-use plaintextesports::tiering::{TierInput, is_tier_one};
+use plaintextesports::tiering::{TierInput, TierPolicy, is_tier_one};
 use plaintextesports::types::Sport;
 
 fn bench_is_tier_one(c: &mut Criterion) {
@@ -36,12 +36,16 @@ fn bench_is_tier_one(c: &mut Criterion) {
     };
     let inputs = [&base_keep, &deny_hit, &base_reject];
 
+    // Default allowed tier set (PandaScore S + A), matching the config default.
+    let allowed = vec!["s".to_string(), "a".to_string()];
+    let policy = TierPolicy::tiers(&allowed);
+
     let mut g = c.benchmark_group("is_tier_one");
     g.bench_function("lol_mixed_branches", |b| {
         b.iter(|| {
             let mut kept = 0u32;
             for inp in inputs {
-                if is_tier_one(black_box(Sport::Lol), black_box(inp)) {
+                if is_tier_one(black_box(Sport::Lol), black_box(inp), black_box(&policy)) {
                     kept += 1;
                 }
             }
