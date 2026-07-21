@@ -53,6 +53,27 @@ youtube_api_key = ""
 # competetft_pins = ["116323184504995859"]   # always include these tournament ids
 # competetft_exclude = []                     # never include these ids
 
+# --- PandaScore tier filtering (lol/cs2 only) --------------------------------
+# PandaScore tags each tournament S/A/B/C/D. `[tiers]` lists which tiers to show
+# per title (case-insensitive). Applied both when fetching AND when reading the
+# cache, so removing a tier hides its matches even if already stored (they
+# reappear if you add it back — no re-fetch). Defaults to ["s","a"] for any title
+# not listed. Note: the regional majors (LCK/LEC/LCS/LPL/CBLOL) are tier "a", so
+# dropping "a" hides them.
+# [tiers]
+# lol = ["s", "a"]
+# cs2 = ["s", "a"]
+
+# Force-include events regardless of tier (exact PandaScore slug match). Merges
+# with the built-in allowlist. Also applied at read time.
+# [tier_allow]
+# lol = ["league-of-legends-first-stand"]
+
+# Force-exclude noise even when tagged S/A (substring match on any slug). Merges
+# with the built-in denylist (academy/challenger/qualifier/showmatch/...).
+# [tier_deny]
+# cs2 = ["showmatch-cup"]
+
 # Curated co-streamers (Twitch logins), shown on a match's page when they're live
 # and streaming that match's game. Two kinds of key, merged for each match:
 #   - a game key = the sport slug ("lol" or "cs2") applies to EVERY league of that
