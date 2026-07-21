@@ -104,6 +104,9 @@ pub fn open(path: &str) -> rusqlite::Result<Connection> {
             team_b_logo  TEXT,
             stream_url   TEXT,
             tournament_id INTEGER,
+            league_slug   TEXT,
+            series_slug   TEXT,
+            tournament_slug TEXT,
             -- Serialized MotorResultRef (`series|event_id|session_id`) for WRC/WEC/
             -- MotoGP rows, so a finished stage's results survive a restart without
             -- waiting for the next (infrequent) ocblacktop fetch. NULL otherwise.
@@ -210,6 +213,9 @@ pub fn open(path: &str) -> rusqlite::Result<Connection> {
     let _ = conn.execute("ALTER TABLE matches ADD COLUMN team_a_logo TEXT", []);
     let _ = conn.execute("ALTER TABLE matches ADD COLUMN team_b_logo TEXT", []);
     let _ = conn.execute("ALTER TABLE matches ADD COLUMN motor_ref TEXT", []);
+    let _ = conn.execute("ALTER TABLE matches ADD COLUMN league_slug TEXT", []);
+    let _ = conn.execute("ALTER TABLE matches ADD COLUMN series_slug TEXT", []);
+    let _ = conn.execute("ALTER TABLE matches ADD COLUMN tournament_slug TEXT", []);
     let _ = conn.execute(
         "ALTER TABLE reminders ADD COLUMN sport TEXT NOT NULL DEFAULT ''",
         [],
@@ -390,6 +396,9 @@ fn row_to_match(row: &rusqlite::Row) -> rusqlite::Result<Option<NormalizedMatch>
         },
         stream_url: row.get("stream_url")?,
         tournament_id: row.get("tournament_id")?,
+        league_slug: row.get("league_slug")?,
+        series_slug: row.get("series_slug")?,
+        tournament_slug: row.get("tournament_slug")?,
         venue_tz: row.get("venue_tz")?,
         venue_name: row
             .get::<_, Option<String>>("venue_name")?
@@ -467,8 +476,9 @@ pub fn upsert_and_prune(
                  team_a_label, team_a_score, team_b_label, team_b_score, stream_url,
                  league_url, tournament_id, series_name, team_a_name, team_b_name, venue_tz,
                  venue_name, venue_location, team_a_logo, team_b_logo,
-                 team_a_abbrev, team_b_abbrev, motor_ref)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25)
+                 team_a_abbrev, team_b_abbrev, motor_ref,
+                 league_slug, series_slug, tournament_slug)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28)
              ON CONFLICT(id, sport) DO UPDATE SET
                 league=excluded.league, tier=excluded.tier,
                 begin_at_ms=excluded.begin_at_ms, status=excluded.status,
@@ -482,7 +492,9 @@ pub fn upsert_and_prune(
                 venue_location=excluded.venue_location,
                 team_a_logo=excluded.team_a_logo, team_b_logo=excluded.team_b_logo,
                 team_a_abbrev=excluded.team_a_abbrev, team_b_abbrev=excluded.team_b_abbrev,
-                motor_ref=excluded.motor_ref",
+                motor_ref=excluded.motor_ref,
+                league_slug=excluded.league_slug, series_slug=excluded.series_slug,
+                tournament_slug=excluded.tournament_slug",
         )?;
         for m in matches {
             up.execute(params![
@@ -511,6 +523,9 @@ pub fn upsert_and_prune(
                 m.team_a.abbrev,
                 m.team_b.abbrev,
                 m.motor_result_ref.as_ref().map(MotorResultRef::to_db),
+                m.league_slug,
+                m.series_slug,
+                m.tournament_slug,
             ])?;
         }
         // Fully-enumerated feeds (the WRC season feed returns every rally each
@@ -1259,6 +1274,9 @@ mod tests {
             streams: Vec::new(),
             mlb_series: None,
             motor_result_ref: None,
+            league_slug: Some("league-of-legends-lck".into()),
+            series_slug: None,
+            tournament_slug: Some("lck-spring".into()),
         }
     }
 
@@ -1290,6 +1308,10 @@ mod tests {
         assert_eq!(all[0].team_b.name, "Gen.G");
         // The venue timezone round-trips (drives the local-time toggle).
         assert_eq!(all[0].venue_tz.as_deref(), Some("America/New_York"));
+        // The tiering slugs round-trip (so the read-time filter can re-judge).
+        assert_eq!(all[0].league_slug.as_deref(), Some("league-of-legends-lck"));
+        assert_eq!(all[0].series_slug, None);
+        assert_eq!(all[0].tournament_slug.as_deref(), Some("lck-spring"));
         assert_eq!(load_fetched_at(&conn), Some(now.timestamp_millis()));
 
         // Upserting the same id updates in place (no duplicate row).
