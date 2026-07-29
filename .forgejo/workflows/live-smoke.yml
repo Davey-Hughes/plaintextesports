@@ -30,17 +30,27 @@ on:
 
 jobs:
   competetft:
-    runs-on: ubuntu-latest
+    runs-on: docker
     steps:
-      - uses: actions/checkout@v7
+      - uses: https://code.forgejo.org/actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
       - name: Install Rust toolchain
-        run: rustup show
-      - uses: Swatinem/rust-cache@v2
+        run: |
+          curl --proto '=https' --tlsv1.2 -fsSL https://sh.rustup.rs | sh -s -- -y --default-toolchain none
+          . "$HOME/.cargo/env"
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+          rustup show
+      - uses: https://code.forgejo.org/actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
-          # Its own key: rust-cache scopes entries by job name, so this cannot
-          # share the `ci` workflow's `rust` entry even though it builds the same
-          # ssr test binary.
-          key: live-smoke
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          # Its own key namespace rather than sharing the ci workflow's `cargo-ssr-`
+          # entry: two workflows racing to save the same key means whichever loses
+          # keeps rebuilding anyway, and this one runs weekly against a target dir
+          # the ci workflow would otherwise have to re-warm.
+          key: cargo-live-smoke-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: cargo-live-smoke-
       # --nocapture so the printed tournament/session counts land in the log --
       # when this does fail, that output is the first thing worth reading.
       - name: CompeteTFT live pipeline

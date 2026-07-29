@@ -1,0 +1,236 @@
+# Forgejo Actions CI. Ported from the GitHub Actions workflow this repo used to run.
+#
+# What had to change, and why (Forgejo has no marketplace, and the runner is self-hosted):
+#  - actions come from the code.forgejo.org mirror, pinned to a commit SHA
+#  - the runner image ships no Rust, so `rust` is installed as a step (GitHub's
+#    ubuntu-latest had it preinstalled and `rustup show` was enough)
+#  - Swatinem/rust-cache is a GitHub-marketplace action; caching is done with
+#    actions/cache and explicit paths instead. Consequence: an entry is written
+#    once per Cargo.lock hash and never refreshed, so the dep artifacts stay
+#    cached but this crate's own artifacts rebuild each run. The dep tree is the
+#    expensive part, so that is the bulk of the win either way.
+#  - the image is built with `docker buildx build --push` against the host Docker
+#    daemon (the runner mounts its socket in), not docker/build-push-action
+#  - the registry is forge.daveynet.xyz, authed with the REGISTRY_USER /
+#    REGISTRY_TOKEN repo secrets (GitHub's automatic GITHUB_TOKEN has no
+#    equivalent here — a package-write token must be set on the repo).
+
+name: ci
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+# One CI run per ref; a newer push cancels the in-flight run (checks + image build).
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  rust:
+    runs-on: docker # runner default image: node + git + curl, so the JS actions below work
+    steps:
+      - uses: https://code.forgejo.org/actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      # rust-toolchain.toml pins the channel (nightly), the rustfmt/clippy components,
+      # and the wasm32 target; `rustup show` installs exactly that. Installed with
+      # `--default-toolchain none` so rustup does NOT first pull stable, then discard it.
+      - name: Install Rust toolchain
+        run: |
+          curl --proto '=https' --tlsv1.2 -fsSL https://sh.rustup.rs | sh -s -- -y --default-toolchain none
+          . "$HOME/.cargo/env"
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+          rustup show
+      # Cache the cargo registry + target dir across runs — a Leptos dep tree is large,
+      # so a cold clippy+test compile is minutes; this makes unchanged-dep runs quick.
+      - uses: https://code.forgejo.org/actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: cargo-ssr-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: cargo-ssr-
+      - name: Format
+        run: cargo fmt --all --check
+      # `ssr` is the server build; the majority of the crate is behind it, so linting
+      # and testing without it would skip most of the code. --all-targets also covers
+      # the benches + examples.
+      - name: Clippy
+        run: cargo clippy --features ssr --all-targets -- -D warnings
+      - name: Test
+        run: cargo test --features ssr
+
+  # The other half of `cargo leptos test`. That command is exactly two cargo
+  # invocations — the `rust` job above is the server one, this is the client one:
+  #
+  #   cargo test --lib --no-default-features --features hydrate
+  #
+  # It adds no new test *functions* — all 82 tests it runs are already among the
+  # 404 the server job runs. What it adds is running them compiled under `hydrate`
+  # instead of `ssr`, which is the only thing in CI that compiles the #[cfg(test)]
+  # modules against the client feature set. A test module behind a broken #[cfg]
+  # would otherwise never surface: `cargo leptos build` compiles the hydrate lib,
+  # but a non-test build never compiles the test modules.
+  #
+  # Its own job rather than a step in `rust` because it runs concurrently, so this
+  # costs no CI wall clock.
+  hydrate:
+    runs-on: docker
+    steps:
+      - uses: https://code.forgejo.org/actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - name: Install Rust toolchain
+        run: |
+          curl --proto '=https' --tlsv1.2 -fsSL https://sh.rustup.rs | sh -s -- -y --default-toolchain none
+          . "$HOME/.cargo/env"
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+          rustup show
+      - uses: https://code.forgejo.org/actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          # Its own key namespace: the whole dep tree compiles under a different
+          # feature set here, so these artifacts share nothing with the `rust` job's.
+          key: cargo-hydrate-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: cargo-hydrate-
+      # The `rust` job's clippy runs `--features ssr`, which never compiles the
+      # client-only modules — src/app/storage.rs is behind #[cfg(feature =
+      # "hydrate")] in its entirety, so it went unlinted end to end and had
+      # accumulated 12 collapsible_if warnings by the time this job was added.
+      - name: Clippy (hydrate)
+        run: cargo clippy --lib --no-default-features --features hydrate -- -D warnings
+      - name: Test (hydrate)
+        run: cargo test --lib --no-default-features --features hydrate
+
+  # The hydration bundle ships to every visitor, so its size is budgeted in
+  # scripts/perf/wasm-budget.txt. The budget and the script that checks it both
+  # existed already — but nothing ran the script, so the bundle drifted 38 KiB
+  # past the ceiling across three PRs without anyone noticing. This job is the
+  # part that was missing. It does NOT gate the image build below: an oversized
+  # bundle is a deliberate-decision problem, not a broken build, and shouldn't
+  # block a deploy.
+  wasm:
+    runs-on: docker
+    steps:
+      - uses: https://code.forgejo.org/actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - name: Install Rust toolchain
+        run: |
+          curl --proto '=https' --tlsv1.2 -fsSL https://sh.rustup.rs | sh -s -- -y --default-toolchain none
+          . "$HOME/.cargo/env"
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+          rustup show
+      - uses: https://code.forgejo.org/actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          # Its own key namespace: this job compiles the wasm32 target under the
+          # wasm-release profile, which the `rust` job above never builds.
+          key: cargo-wasm-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: cargo-wasm-
+      # Same installer the Dockerfile uses, so CI and the image agree on version.
+      - name: Install cargo-leptos
+        run: curl --proto '=https' --tlsv1.3 -LsSf https://github.com/leptos-rs/cargo-leptos/releases/latest/download/cargo-leptos-installer.sh | sh
+      # Only a release build emits the hashed assets wasm_size.sh measures.
+      - name: Build
+        run: cargo leptos build --release
+      # Exits 2 when over budget, failing the job. Raising the ceiling is a
+      # deliberate act: edit wasm-budget.txt and say why, as its history does.
+      - name: Bundle size vs budget
+        run: scripts/perf/wasm_size.sh
+
+  # Build + publish the container image to the Forgejo registry — but ONLY after the rust +
+  # hydrate checks pass (a red build never ships an image), and never on a pull request.
+  # Tags: latest (default branch), branch name, short SHA, and full semver on a v* tag. The
+  # image is built by the repo's Dockerfile (cargo-leptos release build → slim Alpine runtime).
+  docker:
+    needs: [rust, hydrate]
+    if: >-
+      !cancelled()
+      && github.event_name != 'pull_request'
+      && needs.rust.result == 'success'
+      && needs.hydrate.result == 'success'
+    runs-on: docker # runner default image + the host docker socket the runner mounts in
+    steps:
+      - uses: https://code.forgejo.org/actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      # The job image has git + node (needed by the checkout action, so we can't swap to a
+      # CLI-only image) but no docker CLI. Drop in the static docker client plus the buildx
+      # plugin; both talk to the daemon socket the runner mounts. Bump the pins as needed.
+      - name: Install the docker CLI + buildx plugin
+        run: |
+          curl -fsSL https://download.docker.com/linux/static/stable/x86_64/docker-27.5.1.tgz | tar xz -C /usr/local/bin --strip-components=1 docker/docker
+          mkdir -p "$HOME/.docker/cli-plugins"
+          curl -fsSL https://github.com/docker/buildx/releases/download/v0.19.3/buildx-v0.19.3.linux-amd64 -o "$HOME/.docker/cli-plugins/docker-buildx"
+          chmod +x "$HOME/.docker/cli-plugins/docker-buildx"
+      - name: Log in to the Forgejo registry
+        run: echo "${{ secrets.REGISTRY_TOKEN }}" | docker login forge.daveynet.xyz -u "${{ secrets.REGISTRY_USER }}" --password-stdin
+      # Build in an isolated `docker-container` builder, NOT the daemon's default `docker`
+      # driver. Why: this runner builds on the host Docker daemon (host-socket), and the
+      # default driver LOADS every built tag into that shared image store — each build then
+      # drags the local `:latest` tag onto the new image, so a running container's image
+      # silently loses its `:latest` tag and update-watchers anchor on a stale immutable
+      # `sha-*` tag. The docker-container driver pushes straight to the registry without
+      # touching the host image store.
+      #
+      # Reattach, don't rebuild: each job gets a fresh buildx *config*, but the buildkit
+      # container and its `_state` cache volume persist on the host daemon. `buildx create`
+      # isn't idempotent, so drop any stale container by name — `docker rm`, NOT
+      # `docker buildx rm` (which would also delete the cache volume) — then recreate the
+      # builder. It re-mounts the same `_state` volume, so the BuildKit cache (including the
+      # Rust compile) stays warm across runs.
+      #
+      # The builder name is repo-specific on purpose: other repos on this runner have their
+      # own, so the `docker rm -f` above can't kill a sibling repo's in-flight build or
+      # evict its cache volume.
+      - name: Set up an isolated buildx builder (keeps CI out of the host image store)
+        run: |
+          docker rm -f buildx_buildkit_pte-ci0 >/dev/null 2>&1 || true
+          docker buildx create --name pte-ci --driver docker-container --use
+      # Reproduces what docker/metadata-action generated on GitHub: sha-<short> always;
+      # the branch name (and `latest`) on a branch push; the three semver forms on a v* tag.
+      # Slashes in a branch name become `-` because a Docker tag cannot contain `/`.
+      - name: Compute tags
+        id: t
+        env: # values via env, not inline ${{ }}, so a crafted ref name can't inject shell
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+          REF: ${{ github.ref }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          set -eu
+          IMG="forge.daveynet.xyz/$(echo "$REPO" | tr '[:upper:]' '[:lower:]')"
+          TAGS="$IMG:sha-$(echo "$SHA" | cut -c1-7)"
+          case "$REF" in
+            refs/heads/main)
+              TAGS="$TAGS,$IMG:main,$IMG:latest" ;;
+            refs/heads/*)
+              TAGS="$TAGS,$IMG:$(echo "$REF_NAME" | tr '/' '-')" ;;
+            refs/tags/v*)
+              V="${REF_NAME#v}"
+              TAGS="$TAGS,$IMG:$V,$IMG:${V%.*},$IMG:${V%%.*}" ;;
+          esac
+          echo "tags=$TAGS" >> "$GITHUB_OUTPUT"
+      # No registry cache (GitHub used cache-from/to: type=gha, which has no Forgejo
+      # equivalent). The persistent `pte-ci` builder above keeps a local BuildKit cache
+      # instead — warm across runs, so unchanged stages are reused; it just isn't exported
+      # off-box. That also sidesteps Cloudflare's 100 MB request-body cap, which rejects
+      # large mode=max cache blobs with a 413.
+      #
+      # --provenance/--sbom OFF: buildx otherwise wraps the image in an OCI index with
+      # attestation manifests, which Forgejo doesn't register/display as a normal container
+      # package. Off = plain manifest. `--push` ships every tag in one pass.
+      - name: Build & push
+        env: # values via env, not inline ${{ }}
+          TAGS: ${{ steps.t.outputs.tags }}
+        run: |
+          set -eu
+          ARGS=""
+          for t in $(echo "$TAGS" | tr ',' ' '); do ARGS="$ARGS -t $t"; done
+          docker buildx build --builder pte-ci $ARGS \
+            --provenance=false --sbom=false \
+            --push .
