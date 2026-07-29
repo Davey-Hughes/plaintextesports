@@ -87,6 +87,26 @@ over running the hydrate command by hand: cargo-leptos gives that build its own
 `target/front` dir, whereas running it directly reuses `target/` and forces a
 full rebuild every time you switch feature sets.
 
+Seven `#[ignore]`d live smoke tests hit the real upstreams. They stay out of CI
+so network flakiness can never block a merge — run them by hand when touching a
+fetcher:
+
+```sh
+cargo test --lib --features ssr -- --ignored --nocapture          # all seven
+cargo test --lib --features ssr mlb_live_bracket -- --ignored --nocapture
+```
+
+Most are season-bound and will fail out of season by design: they pin a year
+(`fetch_bracket(&client, 2025)`), and `espn_live_soccer_bracket` wants a World
+Cup in progress. They mostly print for eyeballing — the assertions are shallow
+("a bracket exists", "it reaches a Final"), so they catch a hard break, not
+quiet field-level drift.
+
+`live_full_refresh` is the exception and the only one scheduled: it walks the
+whole CompeteTFT discover → refresh → assemble pipeline and works off-broadcast,
+so `.github/workflows/live-smoke.yml` runs it weekly. It gates nothing — a
+failure there means "go look", not "the build is broken".
+
 `LEPTOS_HASH_FILES=false` is not optional in a watch loop. This project sets
 `hash-files = true` for production cache-busting, but cargo-leptos only hashes
 the site on its *first* build — `add_hashes_to_site` runs in `build_proj`, and
