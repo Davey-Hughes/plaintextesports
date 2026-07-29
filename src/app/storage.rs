@@ -35,10 +35,10 @@ pub(crate) fn effective_hour24() -> bool {
 #[cfg(feature = "hydrate")]
 pub(crate) fn save_hour24_pref(hour24: bool) {
     let val = if hour24 { "1" } else { "0" };
-    if let Some(win) = web_sys::window() {
-        if let Ok(Some(storage)) = win.local_storage() {
-            let _ = storage.set_item(keys::HOUR24, val);
-        }
+    if let Some(win) = web_sys::window()
+        && let Ok(Some(storage)) = win.local_storage()
+    {
+        let _ = storage.set_item(keys::HOUR24, val);
     }
     // Mirror to a cookie so the next SSR render seeds the same value (and the
     // schedule resource doesn't re-key after hydration). See [`initial_hour24`].
@@ -103,23 +103,22 @@ pub(crate) fn apply_scores(show: bool) {
 
 #[cfg(feature = "hydrate")]
 pub(crate) fn save_subs(keys: &[String]) {
-    if let Some(win) = web_sys::window() {
-        if let Ok(Some(storage)) = win.local_storage() {
-            let _ = storage.set_item(keys::SUBS, &keys.join("\n"));
-        }
+    if let Some(win) = web_sys::window()
+        && let Ok(Some(storage)) = win.local_storage()
+    {
+        let _ = storage.set_item(keys::SUBS, &keys.join("\n"));
     }
 }
 
 #[cfg(feature = "hydrate")]
 pub(crate) fn load_subs() -> HashSet<String> {
     let mut out = HashSet::new();
-    if let Some(win) = web_sys::window() {
-        if let Ok(Some(storage)) = win.local_storage() {
-            if let Ok(Some(v)) = storage.get_item(keys::SUBS) {
-                for part in v.split('\n').filter(|p| !p.is_empty()) {
-                    out.insert(part.to_string());
-                }
-            }
+    if let Some(win) = web_sys::window()
+        && let Ok(Some(storage)) = win.local_storage()
+        && let Ok(Some(v)) = storage.get_item(keys::SUBS)
+    {
+        for part in v.split('\n').filter(|p| !p.is_empty()) {
+            out.insert(part.to_string());
         }
     }
     out
@@ -127,10 +126,10 @@ pub(crate) fn load_subs() -> HashSet<String> {
 
 #[cfg(feature = "hydrate")]
 pub(crate) fn save_timers(timers: &[i64]) {
-    if let Some(win) = web_sys::window() {
-        if let Ok(Some(storage)) = win.local_storage() {
-            let _ = storage.set_item(keys::TIMERS, &join_lead_list(timers));
-        }
+    if let Some(win) = web_sys::window()
+        && let Ok(Some(storage)) = win.local_storage()
+    {
+        let _ = storage.set_item(keys::TIMERS, &join_lead_list(timers));
     }
 }
 
@@ -145,29 +144,28 @@ pub(crate) fn load_timers() -> Option<Vec<i64>> {
 
 #[cfg(feature = "hydrate")]
 pub(crate) fn save_overrides(ov: &BTreeMap<String, Vec<i64>>) {
-    if let Some(win) = web_sys::window() {
-        if let Ok(Some(storage)) = win.local_storage() {
-            let body = ov
-                .iter()
-                .map(|(k, v)| format!("{k}\t{}", join_lead_list(v)))
-                .collect::<Vec<_>>()
-                .join("\n");
-            let _ = storage.set_item(keys::OVERRIDES, &body);
-        }
+    if let Some(win) = web_sys::window()
+        && let Ok(Some(storage)) = win.local_storage()
+    {
+        let body = ov
+            .iter()
+            .map(|(k, v)| format!("{k}\t{}", join_lead_list(v)))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let _ = storage.set_item(keys::OVERRIDES, &body);
     }
 }
 
 #[cfg(feature = "hydrate")]
 pub(crate) fn load_overrides() -> BTreeMap<String, Vec<i64>> {
     let mut out = BTreeMap::new();
-    if let Some(win) = web_sys::window() {
-        if let Ok(Some(storage)) = win.local_storage() {
-            if let Ok(Some(v)) = storage.get_item(keys::OVERRIDES) {
-                for line in v.split('\n').filter(|l| !l.is_empty()) {
-                    if let Some((k, list)) = line.split_once('\t') {
-                        out.insert(k.to_string(), parse_lead_list(list));
-                    }
-                }
+    if let Some(win) = web_sys::window()
+        && let Ok(Some(storage)) = win.local_storage()
+        && let Ok(Some(v)) = storage.get_item(keys::OVERRIDES)
+    {
+        for line in v.split('\n').filter(|l| !l.is_empty()) {
+            if let Some((k, list)) = line.split_once('\t') {
+                out.insert(k.to_string(), parse_lead_list(list));
             }
         }
     }
@@ -176,15 +174,15 @@ pub(crate) fn load_overrides() -> BTreeMap<String, Vec<i64>> {
 
 #[cfg(feature = "hydrate")]
 pub(crate) fn save_range(range: Option<(String, String)>) {
-    if let Some(win) = web_sys::window() {
-        if let Ok(Some(storage)) = win.local_storage() {
-            match range {
-                Some((s, e)) => {
-                    let _ = storage.set_item(keys::RANGE, &format!("{s}|{e}"));
-                }
-                None => {
-                    let _ = storage.remove_item(keys::RANGE);
-                }
+    if let Some(win) = web_sys::window()
+        && let Ok(Some(storage)) = win.local_storage()
+    {
+        match range {
+            Some((s, e)) => {
+                let _ = storage.set_item(keys::RANGE, &format!("{s}|{e}"));
+            }
+            None => {
+                let _ = storage.remove_item(keys::RANGE);
             }
         }
     }
@@ -314,24 +312,23 @@ pub(crate) fn remove_reveals(storage_key: &str, keys: &HashSet<String>, prefixes
 /// Persist a set of strings under `key` (newline-separated).
 #[cfg(feature = "hydrate")]
 pub(crate) fn save_str_set(key: &str, set: &HashSet<String>) {
-    if let Some(win) = web_sys::window() {
-        if let Ok(Some(storage)) = win.local_storage() {
-            let joined = set.iter().cloned().collect::<Vec<_>>().join("\n");
-            let _ = storage.set_item(key, &joined);
-        }
+    if let Some(win) = web_sys::window()
+        && let Ok(Some(storage)) = win.local_storage()
+    {
+        let joined = set.iter().cloned().collect::<Vec<_>>().join("\n");
+        let _ = storage.set_item(key, &joined);
     }
 }
 
 #[cfg(feature = "hydrate")]
 pub(crate) fn load_str_set(key: &str) -> HashSet<String> {
     let mut out = HashSet::new();
-    if let Some(win) = web_sys::window() {
-        if let Ok(Some(storage)) = win.local_storage() {
-            if let Ok(Some(v)) = storage.get_item(key) {
-                for part in v.split('\n').filter(|p| !p.is_empty()) {
-                    out.insert(part.to_string());
-                }
-            }
+    if let Some(win) = web_sys::window()
+        && let Ok(Some(storage)) = win.local_storage()
+        && let Ok(Some(v)) = storage.get_item(key)
+    {
+        for part in v.split('\n').filter(|p| !p.is_empty()) {
+            out.insert(part.to_string());
         }
     }
     out

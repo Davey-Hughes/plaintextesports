@@ -35,6 +35,42 @@ jobs:
       - name: Test
         run: cargo test --features ssr
 
+  # The other half of `cargo leptos test`. That command is exactly two cargo
+  # invocations — the `rust` job above is the server one, this is the client one:
+  #
+  #   cargo test --lib --no-default-features --features hydrate
+  #
+  # It adds no new test *functions* — all 82 tests it runs are already among the
+  # 404 the server job runs. What it adds is running them compiled under `hydrate`
+  # instead of `ssr`, which is the only thing in CI that compiles the #[cfg(test)]
+  # modules against the client feature set. A test module behind a broken #[cfg]
+  # would otherwise never surface: `cargo leptos build` compiles the hydrate lib,
+  # but a non-test build never compiles the test modules.
+  #
+  # Its own job rather than a step in `rust` for two reasons: it runs concurrently,
+  # so this costs no CI wall clock; and it keeps the default target dir instead of
+  # cargo-leptos's target/front, which would otherwise land a second full build
+  # tree in the `rust` job's cache entry (GitHub caps a repo at 10 GB total).
+  hydrate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install Rust toolchain
+        run: rustup show
+      - uses: Swatinem/rust-cache@v2
+        with:
+          # Its own key: the whole dep tree compiles under a different feature set
+          # here, so these artifacts share nothing with the `rust` job's.
+          key: hydrate
+      # The `rust` job's clippy runs `--features ssr`, which never compiles the
+      # client-only modules — src/app/storage.rs is behind #[cfg(feature =
+      # "hydrate")] in its entirety, so it went unlinted end to end and had
+      # accumulated 12 collapsible_if warnings by the time this job was added.
+      - name: Clippy (hydrate)
+        run: cargo clippy --lib --no-default-features --features hydrate -- -D warnings
+      - name: Test (hydrate)
+        run: cargo test --lib --no-default-features --features hydrate
+
   # The hydration bundle ships to every visitor, so its size is budgeted in
   # scripts/perf/wasm-budget.txt. The budget and the script that checks it both
   # existed already — but nothing ran the script, so the bundle drifted 38 KiB
@@ -64,12 +100,12 @@ jobs:
       - name: Bundle size vs budget
         run: scripts/perf/wasm_size.sh
 
-  # Build + publish the container image to ghcr.io — but ONLY after the rust checks pass
+  # Build + publish the container image to ghcr.io — but ONLY after the rust + hydrate checks pass
   # (a red build never ships an image), and never on a pull request. Tags: latest (default
   # branch), branch name, short SHA, and full semver on a v* tag. The image is built by the
   # repo's Dockerfile (cargo-leptos release build → slim Alpine runtime).
   docker:
-    needs: [rust]
+    needs: [rust, hydrate]
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     permissions:

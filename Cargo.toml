@@ -148,6 +148,20 @@ required-features = ["ssr"]
 name = "alloc_profile"
 required-features = ["ssr"]
 
+# The test suite's cost is ~100% compilation: all 397 tests *execute* in 0.07s,
+# but re-linking the test binary after touching one file is 6-12s. Most of that
+# is emitting and linking full DWARF for a 44k-line crate. `line-tables-only`
+# keeps the only debug info a test failure actually uses — the `panicked at
+# src/foo.rs:123` location and named frames in RUST_BACKTRACE — and drops the
+# variable/type records a debugger would want. Measured on the edit-one-file
+# loop: 6.4-9.3s -> 3.3s (identical to `debug = 0`, which loses the line number).
+#
+# Scoped to `test` deliberately: profile.dev is left alone so `cargo leptos watch`
+# builds stay fully debuggable. Only the local crate's test target is affected —
+# dependencies build under profile.dev and are untouched.
+[profile.test]
+debug = "line-tables-only"
+
 [profile.wasm-release]
 inherits = "release"
 opt-level = 'z'
