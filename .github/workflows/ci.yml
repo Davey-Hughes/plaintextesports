@@ -62,6 +62,12 @@ jobs:
           # Its own key: the whole dep tree compiles under a different feature set
           # here, so these artifacts share nothing with the `rust` job's.
           key: hydrate
+      # The `rust` job's clippy runs `--features ssr`, which never compiles the
+      # client-only modules — src/app/storage.rs is behind #[cfg(feature =
+      # "hydrate")] in its entirety, so it went unlinted end to end and had
+      # accumulated 12 collapsible_if warnings by the time this job was added.
+      - name: Clippy (hydrate)
+        run: cargo clippy --lib --no-default-features --features hydrate -- -D warnings
       - name: Test (hydrate)
         run: cargo test --lib --no-default-features --features hydrate
 
