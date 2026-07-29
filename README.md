@@ -65,8 +65,27 @@ Edit the allowlist/denylist in [`src/tiering.rs`](src/tiering.rs):
 ```sh
 LEPTOS_HASH_FILES=false cargo leptos watch # http://127.0.0.1:4000
 DEMO=1 cargo leptos watch --release        # force fixture data (ignores token + cache db)
-cargo test --features ssr                  # tiering + deserialization tests
+cargo test --lib --features ssr            # tiering + deserialization tests (fast loop)
+cargo test --features ssr                  # + bin-target and doc tests, as CI runs it
+cargo leptos test                           # both feature sets: ssr and hydrate
 ```
+
+Reach for `--lib` while iterating. The tests themselves take 0.07s — essentially
+all of a test run is recompiling and relinking the crate, and `--lib` skips two
+things that contribute nothing: the `src/main.rs` test binary (0 tests, but a
+full second link of a 44k-line crate) and the rustdoc pass (0 doc tests). With
+the `[profile.test]` debuginfo setting in `Cargo.toml`, that is the difference
+between ~8s and ~3.3s per edit. Run the plain form before pushing, since it is
+what CI gates on and it is the one that would catch a doc test.
+
+Run `cargo leptos test` when touching anything `#[cfg]`-gated. It is exactly two
+`cargo test` invocations — ssr, then `--lib --no-default-features --features
+hydrate` — and CI runs them as two parallel jobs. The hydrate side adds no new
+test functions (all 82 are already among the 404), but it is the only thing that
+compiles the `#[cfg(test)]` modules against the client feature set. Prefer it
+over running the hydrate command by hand: cargo-leptos gives that build its own
+`target/front` dir, whereas running it directly reuses `target/` and forces a
+full rebuild every time you switch feature sets.
 
 `LEPTOS_HASH_FILES=false` is not optional in a watch loop. This project sets
 `hash-files = true` for production cache-busting, but cargo-leptos only hashes
