@@ -1,0 +1,47 @@
+name: live-smoke
+
+# Runs ONE #[ignore]d test against the real upstream, weekly, gating nothing.
+#
+# The repo has seven live smoke tests (MLB, NHL, ESPN x3, CompeteTFT x2). They are
+# excluded from CI for good reason -- network flakiness must never block a merge --
+# but that left nothing at all watching for an upstream reshaping its payload until
+# production broke.
+#
+# Only `live_full_refresh` is scheduled here, deliberately. The other six are
+# season-bound: they pin a year (`fetch_bracket(&client, 2025)`) or, in the ESPN
+# soccer case, are documented as "run while a World Cup is on". Scheduling those
+# would fail most of the year for an entirely correct reason -- no bracket exists
+# in the off-season -- and a job that is red by default is worse than no job,
+# because it teaches you to skip it.
+#
+# `live_full_refresh` is the exception: it walks the whole discover -> refresh ->
+# assemble pipeline, and falls back to the Tactician's Crown id precisely because
+# that overview + sheet stay published off-broadcast. Verified passing off-broadcast
+# (20 tournaments discovered, 0 live events, still green). CompeteTFT is also the
+# source most worth watching -- a published Google Sheet changes shape without
+# announcing it, unlike the versioned league APIs.
+#
+# A failure here means "go look", not "the build is broken". Nothing depends on it.
+
+on:
+  schedule:
+    - cron: "0 6 * * 1" # Mondays 06:00 UTC
+  workflow_dispatch:
+
+jobs:
+  competetft:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install Rust toolchain
+        run: rustup show
+      - uses: Swatinem/rust-cache@v2
+        with:
+          # Its own key: rust-cache scopes entries by job name, so this cannot
+          # share the `ci` workflow's `rust` entry even though it builds the same
+          # ssr test binary.
+          key: live-smoke
+      # --nocapture so the printed tournament/session counts land in the log --
+      # when this does fail, that output is the first thing worth reading.
+      - name: CompeteTFT live pipeline
+        run: cargo test --lib --features ssr live_full_refresh -- --ignored --nocapture
