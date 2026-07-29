@@ -1640,15 +1640,14 @@ pub(crate) fn render_day(
             title=(!event_mode).then_some("Link to this day")
             on:click=move |_| {
                 #[cfg(feature = "hydrate")]
-                if !event_mode {
-                    if let Some(h) = web_sys::window().and_then(|w| w.history().ok()) {
+                if !event_mode
+                    && let Some(h) = web_sys::window().and_then(|w| w.history().ok()) {
                         let _ = h.replace_state_with_url(
                             &wasm_bindgen::JsValue::NULL,
                             "",
                             Some(&format!("#day-{key}")),
                         );
                     }
-                }
                 #[cfg(not(feature = "hydrate"))]
                 let _ = &key;
             }
