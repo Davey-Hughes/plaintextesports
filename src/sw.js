@@ -52,18 +52,29 @@ self.addEventListener('pushsubscriptionchange', function (event) {
   );
 });
 
+// Targets are our own paths (e.g. "/match/lol/12345"), so reusing an open tab
+// works: `WindowClient.navigate()` rejects cross-origin URLs, which is why the
+// old off-site targets only ever opened a new window and left an existing tab
+// focused but unmoved. Await the navigate before focusing so a failure falls
+// through to `openWindow` instead of being swallowed.
 self.addEventListener('notificationclick', function (event) {
   event.notification.close();
   const url = (event.notification.data && event.notification.data.url) || '/';
   event.waitUntil(
-    clients.matchAll({ type: 'window', includeUncontrolled: true }).then(function (list) {
-      for (const client of list) {
-        if ('focus' in client) {
-          client.navigate(url);
-          return client.focus();
+    clients
+      .matchAll({ type: 'window', includeUncontrolled: true })
+      .then(function (list) {
+        for (const client of list) {
+          if ('navigate' in client && 'focus' in client) {
+            return client.navigate(url).then(function (c) {
+              return (c || client).focus();
+            });
+          }
         }
-      }
-      if (clients.openWindow) return clients.openWindow(url);
-    })
+        return Promise.reject(new Error('no reusable window'));
+      })
+      .catch(function () {
+        if (clients.openWindow) return clients.openWindow(url);
+      })
   );
 });

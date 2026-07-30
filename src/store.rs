@@ -251,6 +251,16 @@ pub fn open(path: &str) -> rusqlite::Result<Connection> {
         "ALTER TABLE subscriptions ADD COLUMN hour24 INTEGER NOT NULL DEFAULT 1",
         [],
     );
+    // Notification click targets moved from the outbound source link (Liquipedia,
+    // formula1.com, …) to our own match page. Repoint already-armed reminders so
+    // they don't keep sending taps off-site until they fire. Keyed on "not a
+    // path", so it's a no-op once migrated; the `sport` guard skips pre-sport
+    // rows, which would otherwise build `/match//123`.
+    let _ = conn.execute(
+        "UPDATE reminders SET url = '/match/' || sport || '/' || match_id
+         WHERE url NOT LIKE '/%' AND sport <> ''",
+        [],
+    );
 
     // One-time: the reminders PK gained `lead_ms` so a match can hold several
     // timers (one row per lead time). SQLite can't alter a PK in place and
@@ -1688,6 +1698,53 @@ mod tests {
             })
             .unwrap();
         assert_eq!(hour24, 1, "an old 12-hour row is normalized to 24-hour");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn armed_reminders_are_repointed_from_outbound_links_to_our_match_page() {
+        // Reminders armed before the click-target change carry an outbound source
+        // link (Liquipedia, formula1.com, …) as their url, so tapping them left the
+        // site. Opening the DB must repoint those at our own match page, leave
+        // already-migrated paths alone, and skip pre-sport-column rows rather than
+        // build a `/match//9`.
+        let path = std::env::temp_dir().join("pte_reminder_url_migration_test.sqlite");
+        let _ = std::fs::remove_file(&path);
+        {
+            let conn = open(path.to_str().unwrap()).unwrap();
+            let mut legacy = reminder(7);
+            legacy.url = "https://liquipedia.net/leagueoflegends/LCK".into();
+            add_reminder(&conn, &legacy).unwrap();
+
+            let mut already = reminder(8);
+            already.url = "/match/lol/8".into();
+            add_reminder(&conn, &already).unwrap();
+
+            // A row from before `reminders.sport` existed: no slug to build a path
+            // from, so it must be left as-is.
+            let mut sportless = reminder(9);
+            sportless.sport = String::new();
+            sportless.url = "https://www.formula1.com/".into();
+            add_reminder(&conn, &sportless).unwrap();
+        }
+
+        // Re-open: the migration runs.
+        let conn = open(path.to_str().unwrap()).unwrap();
+        let url_of = |match_id: i64| -> String {
+            conn.query_row(
+                "SELECT url FROM reminders WHERE match_id = ?1",
+                [match_id],
+                |r| r.get(0),
+            )
+            .unwrap()
+        };
+        assert_eq!(url_of(7), "/match/lol/7", "outbound link repointed");
+        assert_eq!(url_of(8), "/match/lol/8", "an existing path is untouched");
+        assert_eq!(
+            url_of(9),
+            "https://www.formula1.com/",
+            "a sportless row is skipped, not turned into `/match//9`"
+        );
         let _ = std::fs::remove_file(&path);
     }
 

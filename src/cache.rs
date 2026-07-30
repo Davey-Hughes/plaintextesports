@@ -4433,7 +4433,11 @@ fn reminder_seed(m: &NormalizedMatch, lead_ms: i64, tz: &Tz, hour24: bool) -> Re
             time_label(local, hour24),
             local.format("%Z")
         ),
-        url: resolved_event_url(m.sport, &m.league, m.begin_at, m.league_url.as_deref()),
+        // Our own match page — the notification names one match, so the click
+        // lands on it (which links onward to the event page and the outbound
+        // Liquipedia/official link). NOT `resolved_event_url`: that resolves the
+        // *outbound* source link, and sent every tapped notification off-site.
+        url: crate::types::match_path(m.sport, m.id),
     }
 }
 
@@ -8223,6 +8227,33 @@ mod tests {
         );
         let seed = reminder_seed(&two, 15 * 60_000, &chrono_tz::Etc::UTC, false);
         assert_eq!(seed.title, "A vs B");
+    }
+
+    #[test]
+    fn reminder_seed_url_is_our_own_match_page() {
+        // A tapped notification must land on our site, not the outbound source
+        // link — every seed's url is the match's own page. The `source_link_*`
+        // tests cover the other side: the visible Liquipedia/official links are
+        // still resolved from `resolved_event_url` and unaffected by this.
+        let m = at(
+            "2026-06-25T02:00:00Z".parse::<DateTime<Utc>>().unwrap(),
+            MatchStatus::Upcoming,
+        );
+        let seed = reminder_seed(&m, 15 * 60_000, &chrono_tz::Etc::UTC, false);
+        assert_eq!(seed.url, crate::types::match_path(m.sport, m.id));
+        assert_eq!(seed.url, "/match/cs2/1");
+
+        // An event carrying a Liquipedia league_url must not pull it back in —
+        // that's exactly the input that used to win.
+        let mut lp = at(
+            "2026-06-25T02:00:00Z".parse::<DateTime<Utc>>().unwrap(),
+            MatchStatus::Upcoming,
+        );
+        lp.id = 987;
+        lp.sport = Sport::Lol;
+        lp.league_url = Some("https://liquipedia.net/leagueoflegends/LCK".into());
+        let seed = reminder_seed(&lp, 15 * 60_000, &chrono_tz::Etc::UTC, false);
+        assert_eq!(seed.url, "/match/lol/987");
     }
 
     #[test]
