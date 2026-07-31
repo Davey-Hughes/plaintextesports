@@ -68,6 +68,8 @@ DEMO=1 cargo leptos watch --release        # force fixture data (ignores token +
 cargo test --lib --features ssr            # tiering + deserialization tests (fast loop)
 cargo test --features ssr                  # + bin-target and doc tests, as CI runs it
 cargo leptos test                           # both feature sets: ssr and hydrate
+scripts/check-all.sh                        # everything CI gates on, in one command
+scripts/check-all.sh --no-release           # ...minus the release wasm build
 ```
 
 Reach for `--lib` while iterating. The tests themselves take 0.07s — essentially
@@ -191,6 +193,38 @@ Benchmarks and profiling tooling live in [`scripts/perf/`](scripts/perf/README.m
 criterion benches for the per-request view pipeline (`cargo bench --features ssr`),
 a dhat allocation profile, a WASM bundle-size budget check, an SSR load test, and
 a CPU-profiling recipe.
+
+## Contributing
+
+`main` is **linear** — no merge commits — and every commit on it is an **atomic unit**: it
+builds and passes the gate on its own. Work happens on a feature branch, which lands as
+**one squashed commit**.
+
+```sh
+scripts/check-all.sh                # the local mirror of CI
+scripts/land.sh                     # land the current branch (opens an editor for the subject)
+scripts/land.sh -- --no-release     # same, skipping the release wasm build
+```
+
+`land.sh` refuses a dirty tree, a `main` that differs from `origin/main`, and a branch that
+is behind `main`. It then squash-merges, runs `scripts/check-all.sh` **on the merged tree
+before the commit exists**, and commits only if that passes — which is what makes "every
+commit on `main` passes CI" a property rather than a hope. The branch is deleted once its
+tree matches `main`.
+
+A plain `git merge --squash` discards every commit message on the branch, so `land.sh`
+prefills the message with all of them under a `--- Squashed from N commits ---` marker.
+Delete what you do not want; what is left is kept verbatim.
+
+Once per clone, so a non-fast-forward merge fails rather than quietly creating a merge
+commit:
+
+```sh
+git config merge.ff only && git config pull.ff only
+```
+
+That is convenience — `.git/config` is untracked and binds nobody. The remote is the real
+constraint: it allows only squash and fast-forward merges, and deletes the branch on merge.
 
 ## Limitations
 
