@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# The local mirror of CI (.forgejo/workflows/ci.yml). Run it before landing a branch —
-# scripts/land.sh runs it for you, on the merged tree, before the commit exists.
+# The local mirror of CI (.forgejo/workflows/ci.yml). Run it before opening a pull request —
+# nothing runs it for you now that scripts/land.sh is retired, and CI runs these same checks
+# against the PR head rather than against the merged tree.
 #
 #   scripts/check-all.sh               # everything CI gates on
 #   scripts/check-all.sh --no-release  # skip the release wasm build (the slow leg)
@@ -14,7 +15,7 @@
 #
 # The release leg is ON by default rather than opt-in, because the rule it protects is that every
 # commit on main builds and passes CI by itself; a gate that skips a CI job by default cannot make
-# that claim. --no-release is there for iterating, not for landing.
+# that claim. --no-release is there for iterating, not for opening a PR.
 set -euo pipefail
 cd "$(git rev-parse --show-toplevel)"
 
