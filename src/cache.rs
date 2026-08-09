@@ -13,7 +13,7 @@ use crate::tiering::{TierInput, is_tier_one};
 use crate::twitch::{LiveInfo, login_of};
 use crate::types::{
     BracketMatch, BracketRound, DayGroup, EventInfo, LeagueGroup, MatchStatus, MatchView,
-    ScheduleView, SourceLink, Sport, StandingRow, StreamView, TeamView, event_name_eq,
+    ScheduleView, SourceLink, Sport, StandingRow, StreamView, TeamView, event_is, event_name_eq,
     full_event_name,
 };
 use chrono::{DateTime, Datelike, Duration, NaiveDate, TimeZone, Timelike, Utc};
@@ -3523,13 +3523,17 @@ fn group_by(views: Vec<MatchView>, tz: &Tz, chain: bool) -> Vec<DayGroup> {
             });
         }
         let day = days.last_mut().unwrap();
-        // Group by edition (league + series), so two editions of the same circuit
-        // form distinct groups with their own header and event link.
-        match day
-            .leagues
-            .iter_mut()
-            .find(|l| l.league == v.league && l.series_name == v.series_name)
-        {
+        // Group by edition (sport + league + series), so two editions of the same
+        // circuit form distinct groups with their own header and event link. The
+        // sport belongs in the key because two games can run an edition under one
+        // name — CS2 and LoL both play an "Esports World Cup 2026" — and without
+        // it their schedules merge under a single header pointing at one game's
+        // event page. Every group is seeded with a match, so `first()` is `Some`.
+        match day.leagues.iter_mut().find(|l| {
+            l.league == v.league
+                && l.series_name == v.series_name
+                && l.matches.first().is_some_and(|m| m.sport == v.sport)
+        }) {
             Some(lg) => lg.matches.push(v),
             None => day.leagues.push(LeagueGroup {
                 league: v.league.clone(),
@@ -4176,19 +4180,20 @@ pub fn range_view(
 /// All cached matches for one event/league (past + upcoming), grouped by day.
 /// Backs the internal event page.
 #[must_use]
-pub fn event_view(event: &str, tz_name: &str, hour24: bool) -> ScheduleView {
+pub fn event_view(sport: Option<Sport>, event: &str, tz_name: &str, hour24: bool) -> ScheduleView {
     let cfg = config();
     let tz = resolve_tz(tz_name, cfg.tz);
     let now = Utc::now();
 
     // `event` is the full edition name (league + series), so two editions of one
-    // circuit resolve to distinct pages.
+    // circuit resolve to distinct pages; `sport` separates two games running an
+    // edition under the same name (see [`event_is`]).
     let snap = SNAPSHOT.read().unwrap_or_else(PoisonError::into_inner);
     let all: Vec<MatchView> = snap
         .matches
         .iter()
         .filter(|m| m.status != MatchStatus::Canceled)
-        .filter(|m| event_name_eq(&m.league, &m.series_name, event))
+        .filter(|m| event_is(m.sport, sport, &m.league, &m.series_name, event))
         .map(|m| to_view(m, &tz, now, hour24))
         .collect();
 
@@ -4219,14 +4224,19 @@ pub fn event_view(event: &str, tz_name: &str, hour24: bool) -> ScheduleView {
 /// then the most recent finished. Only esports matches of `event` that actually
 /// carry streams are considered; `None` when the event has no such match. Pure
 /// (no globals/IO) so the ranking is unit-testable; `event_streams` feeds it the
-/// live snapshot. `event` is the full edition name (league + series).
-fn focus_stream_match(matches: &[NormalizedMatch], event: &str) -> Option<(Sport, i64)> {
+/// live snapshot. `event` is the full edition name (league + series), scoped by
+/// `sport` so a shared edition name resolves to this game's stream.
+fn focus_stream_match(
+    matches: &[NormalizedMatch],
+    sport: Option<Sport>,
+    event: &str,
+) -> Option<(Sport, i64)> {
     matches
         .iter()
         .filter(|m| m.sport.esports())
         .filter(|m| m.status != MatchStatus::Canceled)
         .filter(|m| !m.streams.is_empty())
-        .filter(|m| event_name_eq(&m.league, &m.series_name, event))
+        .filter(|m| event_is(m.sport, sport, &m.league, &m.series_name, event))
         .min_by_key(|m| {
             let ms = m.begin_at.timestamp_millis();
             // Group live/upcoming/finished, then tie-break by start: live and
@@ -4245,10 +4255,10 @@ fn focus_stream_match(matches: &[NormalizedMatch], event: &str) -> Option<(Sport
 /// watch the event right now — live Twitch/YouTube status merged in exactly like
 /// the match page. Empty for non-esports events and events whose matches carry no
 /// streams. `event` is the full edition name.
-pub async fn event_streams(event: &str) -> Vec<StreamView> {
+pub async fn event_streams(sport: Option<Sport>, event: &str) -> Vec<StreamView> {
     let focus = {
         let snap = SNAPSHOT.read().unwrap_or_else(PoisonError::into_inner);
-        focus_stream_match(&snap.matches, event)
+        focus_stream_match(&snap.matches, sport, event)
     };
     match focus {
         Some((sport, id)) => live_streams_for(sport, id).await,
@@ -4258,8 +4268,13 @@ pub async fn event_streams(event: &str) -> Vec<StreamView> {
 
 /// All cached matches involving a team (matched on its full name), past +
 /// upcoming, grouped by day. Backs the team page.
+///
+/// `sport` scopes the lookup, because an org's name is not unique across games —
+/// the same brand fields a roster in several (the feed happens to spell them
+/// apart today, e.g. "G2" in CS2 against "G2 Esports" in LoL, but that is the
+/// data's habit, not a guarantee). `None` matches any sport.
 #[must_use]
-pub fn team_view(team: &str, tz_name: &str, hour24: bool) -> ScheduleView {
+pub fn team_view(sport: Option<Sport>, team: &str, tz_name: &str, hour24: bool) -> ScheduleView {
     let cfg = config();
     let tz = resolve_tz(tz_name, cfg.tz);
     let now = Utc::now();
@@ -4269,6 +4284,7 @@ pub fn team_view(team: &str, tz_name: &str, hour24: bool) -> ScheduleView {
         .matches
         .iter()
         .filter(|m| m.status != MatchStatus::Canceled)
+        .filter(|m| sport.is_none_or(|s| s == m.sport))
         .filter(|m| m.team_a.name == team || m.team_b.name == team)
         .map(|m| to_view(m, &tz, now, hour24))
         .collect();
@@ -4441,15 +4457,39 @@ fn reminder_seed(m: &NormalizedMatch, lead_ms: i64, tz: &Tz, hour24: bool) -> Re
     }
 }
 
-/// Upcoming matches matching a subscription scope, as reminder seeds. `kind` is
-/// "sport" (value = "cs2"/"lol"), "league" (value = league name), "team" (value =
-/// full team name, matched against either side), or "event" (value = the full
-/// event name, e.g. an F1 Grand Prix). `tz_name` is the subscriber's IANA zone
-/// (empty ⇒ the server default) and `hour24` their clock format, used to format
-/// each body's start time.
+/// Whether `m` falls inside a subscription scope. `kind` is "sport" (value =
+/// "cs2"/"lol"), "league" (value = league name), "team" (value = full team name,
+/// matched against either side), or "event" (value = the full event name, e.g. an
+/// F1 Grand Prix).
+///
+/// `sport` is the scope's own game, and it matters for every kind but "sport"
+/// (whose `value` already names one): league names, team names and event names
+/// all repeat across games — CS2 and LoL both run an "Esports World Cup 2026",
+/// and G2 Esports fields a roster in each — so a name-only scope arms one game's
+/// subscription with the other game's matches. An empty `sport` matches any,
+/// which is what rows written before the scope carried a sport fall back to.
+///
+/// Pure (no globals/IO) so the matching is unit-testable; `scope_reminder_seeds`
+/// feeds it the live snapshot.
+fn scope_matches(m: &NormalizedMatch, kind: &str, sport: &str, value: &str) -> bool {
+    let sport_ok = sport.is_empty() || m.sport.slug() == sport;
+    match kind {
+        "sport" => m.sport.slug() == value,
+        "league" => sport_ok && m.league == value,
+        "team" => sport_ok && (m.team_a.name == value || m.team_b.name == value),
+        "event" => sport_ok && event_name_eq(&m.league, &m.series_name, value),
+        _ => false,
+    }
+}
+
+/// Upcoming matches matching a subscription scope, as reminder seeds. See
+/// [`scope_matches`] for `kind`/`sport`/`value`. `tz_name` is the subscriber's
+/// IANA zone (empty ⇒ the server default) and `hour24` their clock format, used
+/// to format each body's start time.
 #[must_use]
 pub fn scope_reminder_seeds(
     kind: &str,
+    sport: &str,
     value: &str,
     lead_ms: i64,
     tz_name: &str,
@@ -4462,13 +4502,7 @@ pub fn scope_reminder_seeds(
     snap.matches
         .iter()
         .filter(|m| m.status != MatchStatus::Canceled && m.begin_at > now)
-        .filter(|m| match kind {
-            "sport" => m.sport.slug() == value,
-            "league" => m.league == value,
-            "team" => m.team_a.name == value || m.team_b.name == value,
-            "event" => event_name_eq(&m.league, &m.series_name, value),
-            _ => false,
-        })
+        .filter(|m| scope_matches(m, kind, sport, value))
         .map(|m| reminder_seed(m, lead_ms, &tz, hour24))
         .collect()
 }
@@ -4709,10 +4743,11 @@ pub fn match_basics(
 
 /// The tournament (stage) ids of an event's cached matches, ordered by when each
 /// stage started — so a multi-stage event (e.g. Swiss stages → playoffs) renders
-/// its stages in order. `event` is the full edition name (league + series).
+/// its stages in order. `event` is the full edition name (league + series),
+/// scoped by `sport` so a name two games share resolves to this game's stages.
 #[must_use]
-pub fn event_stages(event: &str) -> Vec<(i64, Sport)> {
-    stages_matching(|m| event_name_eq(&m.league, &m.series_name, event))
+pub fn event_stages(sport: Option<Sport>, event: &str) -> Vec<(i64, Sport)> {
+    stages_matching(|m| event_is(m.sport, sport, &m.league, &m.series_name, event))
 }
 
 /// The stage tournament ids of a league filter's cached matches. Like
@@ -7259,15 +7294,24 @@ mod tests {
             upcoming_late.clone(),
             live,
         ];
-        assert_eq!(focus_stream_match(&all, &ev), Some((Sport::Tft, 5)));
+        assert_eq!(
+            focus_stream_match(&all, Some(Sport::Tft), &ev),
+            Some((Sport::Tft, 5))
+        );
 
         // No live → the soonest upcoming session.
         let no_live = vec![finished_new.clone(), upcoming_late, upcoming_soon];
-        assert_eq!(focus_stream_match(&no_live, &ev), Some((Sport::Tft, 3)));
+        assert_eq!(
+            focus_stream_match(&no_live, Some(Sport::Tft), &ev),
+            Some((Sport::Tft, 3))
+        );
 
         // Only finished → the most recent one.
         let done = vec![finished_old, finished_new];
-        assert_eq!(focus_stream_match(&done, &ev), Some((Sport::Tft, 2)));
+        assert_eq!(
+            focus_stream_match(&done, Some(Sport::Tft), &ev),
+            Some((Sport::Tft, 2))
+        );
     }
 
     #[test]
@@ -7279,7 +7323,11 @@ mod tests {
         live_no_streams.status = MatchStatus::Live;
         let upcoming = streamed_session(2, series, "2026-07-12T13:00:00Z", MatchStatus::Upcoming);
         assert_eq!(
-            focus_stream_match(&[live_no_streams.clone(), upcoming.clone()], &ev),
+            focus_stream_match(
+                &[live_no_streams.clone(), upcoming.clone()],
+                Some(Sport::Tft),
+                &ev
+            ),
             Some((Sport::Tft, 2)),
         );
 
@@ -7288,13 +7336,91 @@ mod tests {
             streamed_session(3, series, "2026-07-12T13:00:00Z", MatchStatus::Canceled);
         canceled.id = 3;
         assert_eq!(
-            focus_stream_match(&[live_no_streams.clone(), canceled], &ev),
+            focus_stream_match(&[live_no_streams.clone(), canceled], Some(Sport::Tft), &ev),
             None,
         );
 
         // Wrong event, and a streamless-only event, both yield nothing.
-        assert_eq!(focus_stream_match(&[upcoming], "TFT Other Event"), None);
-        assert_eq!(focus_stream_match(&[live_no_streams], &ev), None);
+        assert_eq!(
+            focus_stream_match(&[upcoming], Some(Sport::Tft), "TFT Other Event"),
+            None
+        );
+        assert_eq!(
+            focus_stream_match(&[live_no_streams], Some(Sport::Tft), &ev),
+            None
+        );
+    }
+
+    /// A subscription scope is identified by its game as well as its name. Event,
+    /// league and team names all repeat across games, so a name-only scope arms
+    /// one game's subscription with another game's matches.
+    #[test]
+    fn scope_matches_separates_scopes_two_sports_share() {
+        let mut cs2 = at(Utc::now(), MatchStatus::Upcoming);
+        cs2.sport = Sport::Cs2;
+        cs2.league = "Esports World Cup".into();
+        cs2.series_name = "2026".into();
+        cs2.team_a.name = "G2 Esports".into();
+        let mut lol = cs2.clone();
+        lol.sport = Sport::Lol;
+
+        let ev = "Esports World Cup 2026";
+        // The event scope: each game's subscription sees only its own matches.
+        assert!(scope_matches(&cs2, "event", "cs2", ev));
+        assert!(!scope_matches(&lol, "event", "cs2", ev));
+        assert!(scope_matches(&lol, "event", "lol", ev));
+
+        // The league and team scopes collide the same way — "Esports World Cup"
+        // is a league name, and G2 fields a roster in both games.
+        assert!(scope_matches(&cs2, "league", "cs2", "Esports World Cup"));
+        assert!(!scope_matches(&lol, "league", "cs2", "Esports World Cup"));
+        assert!(scope_matches(&cs2, "team", "cs2", "G2 Esports"));
+        assert!(!scope_matches(&lol, "team", "cs2", "G2 Esports"));
+
+        // A whole-sport scope names its game in `value`; the sport column is
+        // redundant there and must not double-filter it away.
+        assert!(scope_matches(&lol, "sport", "", "lol"));
+        assert!(!scope_matches(&lol, "sport", "", "cs2"));
+
+        // An empty sport matches any — rows written before scopes carried one.
+        assert!(scope_matches(&cs2, "event", "", ev));
+        assert!(scope_matches(&lol, "event", "", ev));
+
+        // An unknown kind never matches.
+        assert!(!scope_matches(&cs2, "bogus", "cs2", ev));
+    }
+
+    /// CS2 and LoL both run an "Esports World Cup 2026". The event page asks by
+    /// sport, so each game's page surfaces its own stream — not whichever edition
+    /// happened to rank first. A `None` sport keeps the old name-only behaviour
+    /// for links that carry no usable slug.
+    #[test]
+    fn focus_stream_match_scopes_an_event_name_two_sports_share() {
+        let ev = "Esports World Cup 2026";
+        let ewc = |id: i64, sport: Sport, begin: &str, status: MatchStatus| {
+            let mut m = streamed_session(id, "2026", begin, status);
+            m.sport = sport;
+            m.league = "Esports World Cup".into();
+            m
+        };
+        // LoL's edition is over; CS2's has not started.
+        let lol = ewc(1, Sport::Lol, "2026-07-19T12:30:00Z", MatchStatus::Finished);
+        let cs2 = ewc(2, Sport::Cs2, "2026-08-12T15:00:00Z", MatchStatus::Upcoming);
+        let all = vec![lol, cs2];
+
+        assert_eq!(
+            focus_stream_match(&all, Some(Sport::Cs2), ev),
+            Some((Sport::Cs2, 2)),
+            "the CS2 page must not fall through to LoL's finished edition",
+        );
+        assert_eq!(
+            focus_stream_match(&all, Some(Sport::Lol), ev),
+            Some((Sport::Lol, 1)),
+        );
+        // Neither game's edition exists under a third sport.
+        assert_eq!(focus_stream_match(&all, Some(Sport::Tft), ev), None);
+        // Unscoped, the ranking still applies across both (upcoming beats finished).
+        assert_eq!(focus_stream_match(&all, None, ev), Some((Sport::Cs2, 2)));
     }
 
     fn at(begin: DateTime<Utc>, status: MatchStatus) -> NormalizedMatch {
@@ -7579,6 +7705,39 @@ mod tests {
         assert_eq!(days[0].leagues[1].league, "LEC");
         assert_eq!(days[0].leagues[1].bo, Some("Bo3".to_string()));
         assert_eq!(days[1].leagues[0].bo, Some("Bo3".to_string()));
+    }
+
+    /// Two games can run an edition under one name — CS2 and LoL both play an
+    /// "Esports World Cup 2026" — so the day grouping keys on the sport as well
+    /// as the edition. Without it the two schedules merge into one block under a
+    /// single header, pointing at whichever game's event page sorted first.
+    #[test]
+    fn group_days_splits_one_event_name_shared_by_two_sports() {
+        let ms = |h| {
+            Tz::UTC
+                .with_ymd_and_hms(2026, 8, 12, h, 0, 0)
+                .unwrap()
+                .timestamp_millis()
+        };
+        let mk = |at_ms: i64, sport: Sport| MatchView {
+            sport,
+            league: "Esports World Cup".into(),
+            series_name: "2026".into(),
+            ..chain_view(at_ms, "Esports World Cup")
+        };
+        let days = group_days(vec![mk(ms(1), Sport::Cs2), mk(ms(2), Sport::Lol)], &Tz::UTC);
+        assert_eq!(days.len(), 1);
+        assert_eq!(
+            days[0].leagues.len(),
+            2,
+            "CS2 and LoL editions of one event name must not share a group",
+        );
+        let sports: Vec<Sport> = days[0]
+            .leagues
+            .iter()
+            .filter_map(|lg| lg.matches.first().map(|m| m.sport))
+            .collect();
+        assert_eq!(sports, vec![Sport::Cs2, Sport::Lol]);
     }
 
     /// A minimal LoL view at `at_ms` for the day-grouping tests.

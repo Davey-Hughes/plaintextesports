@@ -500,8 +500,9 @@ fn span_from_date_labels(first: &str, last: &str) -> String {
 /// closer than [`crate::types::CHAIN_GAP_MS`] share a group even across midnight,
 /// so a late slate that spills past 12 in the viewer's zone reads as one night —
 /// the same chaining the event page does server-side. Only called when the
-/// schedule is narrowed to one event, so every match is the same edition and each
-/// output group is a single `LeagueGroup`.
+/// schedule is narrowed to one event — one `(sport, league, series)`, the sport
+/// included because a chip name can span two games — so every match is the same
+/// edition and each output group is a single `LeagueGroup` built from its template.
 fn chain_single_event_days(days: Vec<DayGroup>) -> Vec<DayGroup> {
     let Some(template) = days.iter().flat_map(|d| &d.leagues).next().cloned() else {
         return days;
@@ -620,12 +621,19 @@ fn prepare_days(
     // Narrowed to a single event? Chain its calendar days into broadcast nights
     // (a late slate that crosses midnight reads as one), like the event page. Only
     // for a single edition, so the gap rule is unambiguous.
+    //
+    // The sport is part of that test: a filter chip is a bare league name, and one
+    // name can cover two games (CS2 and LoL both run an "Esports World Cup"). On
+    // the name alone the two editions look like one, and chaining would fold both
+    // games' matches into a single group under one game's header and event link.
     let single_event = {
-        let mut eds = filtered
-            .days
-            .iter()
-            .flat_map(|d| &d.leagues)
-            .map(|lg| (lg.league.as_str(), lg.series_name.as_str()));
+        let mut eds = filtered.days.iter().flat_map(|d| &d.leagues).map(|lg| {
+            (
+                lg.matches.first().map(|m| m.sport),
+                lg.league.as_str(),
+                lg.series_name.as_str(),
+            )
+        });
         eds.next()
             .map(|first| eds.all(|e| e == first))
             .unwrap_or(false)
@@ -2114,6 +2122,54 @@ mod tests {
             let got = any_day_survives(&s, &games, &leagues, false);
             assert_eq!(got, want, "games={games:?} leagues={leagues:?}");
         }
+    }
+
+    /// A filter chip is a bare league name, and one name can cover two games —
+    /// CS2 and LoL both run an "Esports World Cup". Selecting that chip must not
+    /// read as a single edition: chaining would fold both games' matches into one
+    /// group under one game's header and event link.
+    #[test]
+    fn one_chip_name_covering_two_games_is_not_chained_as_a_single_event() {
+        let s = ScheduleView {
+            days: vec![DayGroup {
+                day_key: "2026-08-12".into(),
+                day_label: "Wednesday, August 12".into(),
+                leagues: vec![
+                    group(Sport::Cs2, "Esports World Cup", "2026", 2),
+                    group(Sport::Lol, "Esports World Cup", "2026", 1),
+                ],
+            }],
+            ..mixed_view()
+        };
+        let days = prepare_days(s, &set(&[]), &set(&["Esports World Cup"]), false);
+        let groups: Vec<&LeagueGroup> = days.iter().flat_map(|d| &d.day.leagues).collect();
+        assert_eq!(
+            groups.len(),
+            2,
+            "the two games' editions must stay separate groups",
+        );
+        let sports: Vec<Option<Sport>> = groups
+            .iter()
+            .map(|lg| lg.matches.first().map(|m| m.sport))
+            .collect();
+        assert_eq!(sports, vec![Some(Sport::Cs2), Some(Sport::Lol)]);
+        // Each keeps all of its own matches — nothing migrated between games.
+        assert_eq!(groups[0].matches.len(), 2);
+        assert_eq!(groups[1].matches.len(), 1);
+
+        // One game alone still chains, exactly as before.
+        let one = ScheduleView {
+            days: vec![DayGroup {
+                day_key: "2026-08-12".into(),
+                day_label: "Wednesday, August 12".into(),
+                leagues: vec![group(Sport::Cs2, "Esports World Cup", "2026", 2)],
+            }],
+            ..mixed_view()
+        };
+        let days = prepare_days(one, &set(&[]), &set(&["Esports World Cup"]), false);
+        let groups: Vec<&LeagueGroup> = days.iter().flat_map(|d| &d.day.leagues).collect();
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].matches.len(), 2);
     }
 
     #[test]

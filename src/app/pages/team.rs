@@ -3,8 +3,9 @@ use crate::app::*;
 
 #[derive(Params, PartialEq, Clone)]
 pub(crate) struct TeamParams {
-    /// The sport slug segment, e.g. `"mlb"` — scopes the team but the lookup is
-    /// still keyed by `name` alone.
+    /// The sport slug segment, e.g. `"mlb"`. Part of the team's identity, not
+    /// decoration: an org's name isn't unique across games, so the schedule is
+    /// looked up by `(sport, name)`. An unknown slug matches any sport.
     sport: String,
     name: String,
 }
@@ -27,9 +28,10 @@ pub(crate) fn TeamPage() -> impl IntoView {
     let earlier = use_context::<EarlierDays>().expect("earlier context").0;
     let later = use_context::<LaterDays>().expect("later context").0;
     let sport_mode = use_context::<SportMode>().expect("sport mode context").0;
+    let sport_slug = move || params.get().ok().map(|p| p.sport).unwrap_or_default();
     let schedule = Resource::new(
-        move || (team(), tz.get(), hour24.get()),
-        |(t, z, h)| async move { get_team_schedule(t, z, h).await },
+        move || (sport_slug(), team(), tz.get(), hour24.get()),
+        |(sp, t, z, h)| async move { get_team_schedule(sp, t, z, h).await },
     );
     setup_autorefresh(schedule);
 

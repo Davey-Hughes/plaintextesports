@@ -3,9 +3,12 @@ use crate::app::*;
 
 #[derive(Params, PartialEq, Clone)]
 pub(crate) struct EventParams {
-    /// The sport slug segment, e.g. `"cs2"` — scopes the event but the lookup is
-    /// still keyed by `league` name alone.
+    /// The sport slug segment, e.g. `"cs2"`. Part of the event's identity, not
+    /// decoration: two games can run an edition under one name (CS2 and LoL both
+    /// play an "Esports World Cup 2026"), so the schedule, stages and streams are
+    /// all looked up by `(sport, league)`. An unknown slug matches any sport.
     sport: String,
+    /// The full edition name (league + series), e.g. `"Esports World Cup 2026"`.
     league: String,
 }
 
@@ -132,8 +135,44 @@ pub(crate) fn EventStages(
     times: std::collections::HashMap<i64, (String, String)>,
 ) -> impl IntoView {
     let times = StoredValue::new(times);
-    // One toggle drives every stage.
+    // One toggle drives every stage, across games as well as stages.
     let swiss_grid = RwSignal::new(true);
+    // A league name can belong to more than one game — CS2 and LoL both run an
+    // "Esports World Cup" — and the front-page single-event panel keys on that
+    // name alone, so it can receive both games' stages at once. Split them and
+    // head each game's block with its label. The event page asks by sport, so its
+    // stages are one game and this renders exactly as it did before: no heading.
+    let mut by_sport: Vec<(Sport, Vec<EventInfo>)> = Vec::new();
+    for e in stages {
+        match by_sport.iter_mut().find(|(s, _)| *s == e.sport) {
+            Some((_, v)) => v.push(e),
+            None => by_sport.push((e.sport, vec![e])),
+        }
+    }
+    let labelled = by_sport.len() > 1;
+    let blocks = by_sport
+        .into_iter()
+        .map(move |(sport, stages)| {
+            let head = labelled.then(|| view! { <h2 class="game-head">{sport.label()}</h2> });
+            view! {
+                {head}
+                <EventStagesForGame stages swiss_grid times=times.get_value() />
+            }
+        })
+        .collect_view();
+    view! { <div class="event-stages">{blocks}</div> }
+}
+
+/// One game's stages, laid out as the grid [`EventStages`] describes. Split out
+/// so a panel showing two games can head each block with its game label.
+#[component]
+fn EventStagesForGame(
+    stages: Vec<EventInfo>,
+    /// Shared with every other game's block, so one toggle drives them all.
+    swiss_grid: RwSignal<bool>,
+    #[prop(optional)] times: std::collections::HashMap<i64, (String, String)>,
+) -> impl IntoView {
+    let times = StoredValue::new(times);
     // Pure standings stages (a group/division table — no bracket or Swiss grid)
     // group under one shared "Standings" heading, each labelled by its group or
     // division name only, rather than repeating "Standings" for every one. Richer
@@ -149,7 +188,7 @@ pub(crate) fn EventStages(
         .into_iter()
         .map(move |e| view! { <EventStageCombo event=e swiss_grid times=times.get_value() /> })
         .collect_view();
-    view! { <div class="event-stages">{standings}{combos}</div> }
+    view! { {standings}{combos} }
 }
 
 /// The event's group/division standings under one shared "Standings" heading, each
@@ -212,6 +251,11 @@ pub(crate) fn EventPage() -> impl IntoView {
             .map(|p| dec_segment(&p.league))
             .unwrap_or_default()
     };
+    // The sport slug scopes every lookup below: two games can run an edition
+    // under one name (CS2 and LoL both play an "Esports World Cup 2026"), and the
+    // name alone would put one game's matches, stages and streams on the other's
+    // page. Unknown/absent slugs fall through to a name-only match server-side.
+    let sport_slug = move || params.get().ok().map(|p| p.sport).unwrap_or_default();
     let hour24 = use_context::<RwSignal<bool>>().expect("hour24 context");
     let tz = use_context::<RwSignal<String>>().expect("tz context");
     // The earlier/later expanders + sport mode drive the windowed view of a
@@ -221,16 +265,19 @@ pub(crate) fn EventPage() -> impl IntoView {
     let later = use_context::<LaterDays>().expect("later context").0;
     let sport_mode = use_context::<SportMode>().expect("sport mode context").0;
     let schedule = Resource::new(
-        move || (league(), tz.get(), hour24.get()),
-        |(lg, z, h)| async move { get_event_schedule(lg, z, h).await },
+        move || (sport_slug(), league(), tz.get(), hour24.get()),
+        |(sp, lg, z, h)| async move { get_event_schedule(sp, lg, z, h).await },
     );
-    let stages = Resource::new(league, |lg| async move {
-        if lg.is_empty() {
-            Ok(Vec::new())
-        } else {
-            get_event_stages(lg).await
-        }
-    });
+    let stages = Resource::new(
+        move || (sport_slug(), league()),
+        |(sp, lg)| async move {
+            if lg.is_empty() {
+                Ok(Vec::new())
+            } else {
+                get_event_stages(sp, lg).await
+            }
+        },
+    );
     // An F1 GP event page shows each finished session's full finishing order,
     // fetched on demand once the schedule reveals which (season, round) it is.
     let f1_results = Resource::new(
@@ -319,20 +366,20 @@ pub(crate) fn EventPage() -> impl IntoView {
         move || {
             schedule.with(|r| {
                 let Some(Ok(s)) = r else {
-                    return String::new();
+                    return (String::new(), String::new());
                 };
                 if schedule_is_esports(s) {
-                    league()
+                    (sport_slug(), league())
                 } else {
-                    String::new()
+                    (String::new(), String::new())
                 }
             })
         },
-        |lg| async move {
+        |(sp, lg)| async move {
             if lg.is_empty() {
                 Vec::new()
             } else {
-                get_event_streams(lg).await.unwrap_or_default()
+                get_event_streams(sp, lg).await.unwrap_or_default()
             }
         },
     );

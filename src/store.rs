@@ -168,6 +168,13 @@ pub fn open(path: &str) -> rusqlite::Result<Connection> {
             p256dh      TEXT    NOT NULL,
             auth        TEXT    NOT NULL,
             scope_kind  TEXT    NOT NULL,
+            -- The scope's game ('cs2'/'lol'/…), part of its identity: league, team
+            -- and event names all repeat across games (CS2 and LoL both run an
+            -- 'Esports World Cup 2026'), so the name alone would arm one game's
+            -- subscription with the other's matches. '' ⇒ any sport, which is what
+            -- rows written before this column fall back to. Redundant for
+            -- scope_kind='sport', whose scope_value already names the game.
+            scope_sport TEXT    NOT NULL DEFAULT '',
             scope_value TEXT    NOT NULL,
             -- Legacy single lead, kept for back-compat; lead_list is authoritative.
             lead_ms     INTEGER NOT NULL,
@@ -178,7 +185,7 @@ pub fn open(path: &str) -> rusqlite::Result<Connection> {
             -- Subscriber's 12h/24h pref, for formatting reminder bodies; the site
             -- default is 24-hour (1), 0 ⇒ 12h.
             hour24      INTEGER NOT NULL DEFAULT 1,
-            PRIMARY KEY (endpoint, scope_kind, scope_value)
+            PRIMARY KEY (endpoint, scope_kind, scope_sport, scope_value)
         );
         CREATE TABLE IF NOT EXISTS result_cache (
             ns            TEXT    NOT NULL,
@@ -251,6 +258,45 @@ pub fn open(path: &str) -> rusqlite::Result<Connection> {
         "ALTER TABLE subscriptions ADD COLUMN hour24 INTEGER NOT NULL DEFAULT 1",
         [],
     );
+
+    // One-time: the subscriptions PK gained `scope_sport`, so the two games that
+    // share an event/league/team name can be subscribed to independently (CS2 and
+    // LoL both run an "Esports World Cup 2026"). As with the reminders rebuild
+    // below, SQLite can't alter a PK in place and `CREATE TABLE IF NOT EXISTS`
+    // won't reshape an existing table, so recreate it. Existing rows carry '' —
+    // any sport — which is exactly the behaviour they have today; re-subscribing
+    // from the UI writes the real slug. Runs after the ALTERs above so the copy
+    // can name `lead_list`/`tz`/`hour24`, and is gated on both a meta flag and the
+    // absent column, so it runs once and is a no-op on a fresh DB.
+    if get_meta(&conn, "subscriptions_pk_sport").is_none() {
+        if !subscriptions_has_scope_sport_column(&conn) {
+            conn.execute_batch(
+                "DROP TABLE IF EXISTS subscriptions_sport_new;
+                 CREATE TABLE subscriptions_sport_new (
+                    endpoint    TEXT    NOT NULL,
+                    p256dh      TEXT    NOT NULL,
+                    auth        TEXT    NOT NULL,
+                    scope_kind  TEXT    NOT NULL,
+                    scope_sport TEXT    NOT NULL DEFAULT '',
+                    scope_value TEXT    NOT NULL,
+                    lead_ms     INTEGER NOT NULL,
+                    lead_list   TEXT    NOT NULL DEFAULT '',
+                    tz          TEXT    NOT NULL DEFAULT '',
+                    hour24      INTEGER NOT NULL DEFAULT 1,
+                    PRIMARY KEY (endpoint, scope_kind, scope_sport, scope_value)
+                 );
+                 INSERT OR IGNORE INTO subscriptions_sport_new
+                    (endpoint, p256dh, auth, scope_kind, scope_sport, scope_value,
+                     lead_ms, lead_list, tz, hour24)
+                 SELECT endpoint, p256dh, auth, scope_kind, '', scope_value,
+                     lead_ms, lead_list, tz, hour24
+                 FROM subscriptions;
+                 DROP TABLE subscriptions;
+                 ALTER TABLE subscriptions_sport_new RENAME TO subscriptions;",
+            )?;
+        }
+        set_meta(&conn, "subscriptions_pk_sport", "1")?;
+    }
     // Notification click targets moved from the outbound source link (Liquipedia,
     // formula1.com, …) to our own match page. Repoint already-armed reminders so
     // they don't keep sending taps off-site until they fire. Keyed on "not a
@@ -338,6 +384,14 @@ pub fn open(path: &str) -> rusqlite::Result<Connection> {
 /// predates the multi-timer PK and needs the recreate migration).
 fn reminders_has_excluded_column(conn: &Connection) -> bool {
     conn.prepare("SELECT 1 FROM pragma_table_info('reminders') WHERE name = 'excluded'")
+        .and_then(|mut s| s.exists([]))
+        .unwrap_or(false)
+}
+
+/// Whether the `subscriptions` table already carries `scope_sport` (i.e. it's on
+/// the sport-scoped PK and needs no recreate).
+fn subscriptions_has_scope_sport_column(conn: &Connection) -> bool {
+    conn.prepare("SELECT 1 FROM pragma_table_info('subscriptions') WHERE name = 'scope_sport'")
         .and_then(|mut s| s.exists([]))
         .unwrap_or(false)
 }
@@ -1075,6 +1129,10 @@ pub struct Subscription {
     pub auth: String,
     /// "sport" or "league" (also "team"/"event").
     pub scope_kind: String,
+    /// The scope's game slug, part of its identity for the league/team/event
+    /// kinds — those names repeat across games. Empty ⇒ any sport (pre-column
+    /// rows); redundant for `scope_kind == "sport"`, which names it in the value.
+    pub scope_sport: String,
     /// "cs2"/"lol" for a sport, else the league name.
     pub scope_value: String,
     /// Legacy single lead, kept for back-compat reads.
@@ -1108,13 +1166,16 @@ fn parse_lead_list(s: &str, fallback: i64) -> Vec<i64> {
     if v.is_empty() { vec![fallback] } else { v }
 }
 
-/// The reminders-table WHERE clause matching a subscription scope (`?2` = value).
+/// The reminders-table WHERE clause matching a subscription scope (`?2` = value,
+/// `?3` = the scope's sport slug, `''` ⇒ any). Every branch references `?3` so the
+/// parameter count is the same whichever kind is used. A whole-sport scope names
+/// its game in `value` already, so there the guard is simply redundant, not wrong.
 fn scope_where(kind: &str) -> &'static str {
     match kind {
-        "sport" => "sport=?2",
-        "team" => "(team_a=?2 OR team_b=?2)",
-        "event" => "event=?2",
-        _ => "league=?2",
+        "sport" => "sport=?2 AND (?3='' OR sport=?3)",
+        "team" => "(team_a=?2 OR team_b=?2) AND (?3='' OR sport=?3)",
+        "event" => "event=?2 AND (?3='' OR sport=?3)",
+        _ => "league=?2 AND (?3='' OR sport=?3)",
     }
 }
 
@@ -1122,9 +1183,10 @@ pub fn add_subscription(conn: &Connection, s: &Subscription) -> rusqlite::Result
     let lead_list = join_lead_list(&s.lead_list);
     conn.execute(
         "INSERT INTO subscriptions
-            (endpoint, p256dh, auth, scope_kind, scope_value, lead_ms, lead_list, tz, hour24)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
-         ON CONFLICT(endpoint, scope_kind, scope_value) DO UPDATE SET
+            (endpoint, p256dh, auth, scope_kind, scope_sport, scope_value,
+             lead_ms, lead_list, tz, hour24)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+         ON CONFLICT(endpoint, scope_kind, scope_sport, scope_value) DO UPDATE SET
             p256dh=excluded.p256dh, auth=excluded.auth,
             lead_ms=excluded.lead_ms, lead_list=excluded.lead_list, tz=excluded.tz,
             hour24=excluded.hour24",
@@ -1133,6 +1195,7 @@ pub fn add_subscription(conn: &Connection, s: &Subscription) -> rusqlite::Result
             s.p256dh,
             s.auth,
             s.scope_kind,
+            s.scope_sport,
             s.scope_value,
             s.lead_ms,
             lead_list,
@@ -1147,6 +1210,7 @@ pub fn add_subscription(conn: &Connection, s: &Subscription) -> rusqlite::Result
         conn,
         &s.endpoint,
         &s.scope_kind,
+        &s.scope_sport,
         &s.scope_value,
         &s.lead_list,
     )?;
@@ -1158,6 +1222,7 @@ fn prune_scope_leads(
     conn: &Connection,
     endpoint: &str,
     kind: &str,
+    sport: &str,
     value: &str,
     leads: &[i64],
 ) -> rusqlite::Result<()> {
@@ -1172,7 +1237,7 @@ fn prune_scope_leads(
             "DELETE FROM reminders
              WHERE endpoint=?1 AND {where_scope} AND sent=0 AND lead_ms NOT IN ({keep})"
         ),
-        params![endpoint, value],
+        params![endpoint, value, sport],
     )?;
     Ok(())
 }
@@ -1181,33 +1246,37 @@ pub fn remove_subscription(
     conn: &Connection,
     endpoint: &str,
     kind: &str,
+    sport: &str,
     value: &str,
 ) -> rusqlite::Result<()> {
     conn.execute(
-        "DELETE FROM subscriptions WHERE endpoint=?1 AND scope_kind=?2 AND scope_value=?3",
-        params![endpoint, kind, value],
+        "DELETE FROM subscriptions
+         WHERE endpoint=?1 AND scope_kind=?2 AND scope_sport=?3 AND scope_value=?4",
+        params![endpoint, kind, sport, value],
     )?;
     Ok(())
 }
 
 pub fn list_subscriptions(conn: &Connection) -> rusqlite::Result<Vec<Subscription>> {
     let mut stmt = conn.prepare(
-        "SELECT endpoint, p256dh, auth, scope_kind, scope_value, lead_ms, lead_list, tz, hour24
+        "SELECT endpoint, p256dh, auth, scope_kind, scope_sport, scope_value,
+                lead_ms, lead_list, tz, hour24
          FROM subscriptions",
     )?;
     let rows = stmt.query_map([], |r| {
-        let lead_ms: i64 = r.get(5)?;
-        let lead_list: String = r.get(6)?;
+        let lead_ms: i64 = r.get(6)?;
+        let lead_list: String = r.get(7)?;
         Ok(Subscription {
             endpoint: r.get(0)?,
             p256dh: r.get(1)?,
             auth: r.get(2)?,
             scope_kind: r.get(3)?,
-            scope_value: r.get(4)?,
+            scope_sport: r.get(4)?,
+            scope_value: r.get(5)?,
             lead_ms,
             lead_list: parse_lead_list(&lead_list, lead_ms),
-            tz: r.get(7)?,
-            hour24: r.get(8)?,
+            tz: r.get(8)?,
+            hour24: r.get(9)?,
         })
     })?;
     rows.collect()
@@ -1219,12 +1288,13 @@ pub fn delete_unsent_reminders_by_scope(
     conn: &Connection,
     endpoint: &str,
     kind: &str,
+    sport: &str,
     value: &str,
 ) -> rusqlite::Result<()> {
     let where_scope = scope_where(kind);
     conn.execute(
         &format!("DELETE FROM reminders WHERE endpoint=?1 AND sent=0 AND {where_scope}"),
-        params![endpoint, value],
+        params![endpoint, value, sport],
     )?;
     Ok(())
 }
@@ -1661,6 +1731,76 @@ mod tests {
         let _ = std::fs::remove_file(&path);
     }
 
+    /// A DB written before scopes carried a sport must keep every subscription
+    /// through the PK rebuild, landing on `scope_sport = ''` — "any sport", which
+    /// is exactly what those rows matched before. The rebuild must also leave the
+    /// new PK in place, so the two games sharing an event name can then diverge.
+    #[test]
+    fn pre_sport_subscriptions_survive_the_scope_sport_rebuild() {
+        let path = std::env::temp_dir().join("pte_scope_sport_migration_test.sqlite");
+        let _ = std::fs::remove_file(&path);
+        {
+            let conn = Connection::open(&path).unwrap();
+            // The old shape: no `scope_sport`, PK without it.
+            conn.execute_batch(
+                "CREATE TABLE subscriptions (
+                    endpoint    TEXT    NOT NULL,
+                    p256dh      TEXT    NOT NULL,
+                    auth        TEXT    NOT NULL,
+                    scope_kind  TEXT    NOT NULL,
+                    scope_value TEXT    NOT NULL,
+                    lead_ms     INTEGER NOT NULL,
+                    lead_list   TEXT    NOT NULL DEFAULT '',
+                    tz          TEXT    NOT NULL DEFAULT '',
+                    hour24      INTEGER NOT NULL DEFAULT 1,
+                    PRIMARY KEY (endpoint, scope_kind, scope_value)
+                 );
+                 INSERT INTO subscriptions
+                    (endpoint, p256dh, auth, scope_kind, scope_value, lead_ms, lead_list, tz, hour24)
+                 VALUES ('https://push/x', 'p', 'a', 'event', 'Esports World Cup 2026',
+                         900000, '900000', 'Europe/Berlin', 1);",
+            )
+            .unwrap();
+        }
+        let conn = open(path.to_str().unwrap()).unwrap();
+
+        // The row survived, with its settings, defaulting to "any sport".
+        let subs = list_subscriptions(&conn).unwrap();
+        assert_eq!(subs.len(), 1);
+        assert_eq!(subs[0].scope_sport, "");
+        assert_eq!(subs[0].scope_value, "Esports World Cup 2026");
+        assert_eq!(subs[0].tz, "Europe/Berlin");
+        assert_eq!(subs[0].lead_list, vec![900_000]);
+
+        // …and the new PK is live: the same name under two games now coexists
+        // with the migrated any-sport row rather than replacing it.
+        for sport in ["cs2", "lol"] {
+            add_subscription(
+                &conn,
+                &Subscription {
+                    endpoint: "https://push/x".into(),
+                    p256dh: "p".into(),
+                    auth: "a".into(),
+                    scope_kind: "event".into(),
+                    scope_sport: sport.into(),
+                    scope_value: "Esports World Cup 2026".into(),
+                    lead_ms: 900_000,
+                    lead_list: vec![900_000],
+                    tz: String::new(),
+                    hour24: true,
+                },
+            )
+            .unwrap();
+        }
+        assert_eq!(list_subscriptions(&conn).unwrap().len(), 3);
+
+        // Re-opening is a no-op — the meta flag and the column guard both hold.
+        drop(conn);
+        let conn = open(path.to_str().unwrap()).unwrap();
+        assert_eq!(list_subscriptions(&conn).unwrap().len(), 3);
+        let _ = std::fs::remove_file(&path);
+    }
+
     #[test]
     fn a_reminder_left_on_the_12h_default_is_normalized_to_24h() {
         // A DB that already carries the hour24 column at the old 0 (12h) default,
@@ -2060,12 +2200,53 @@ mod tests {
             &conn,
             "https://push.example/x",
             "event",
+            "",
             "F1 Austrian Grand Prix",
         )
         .unwrap();
         let due = due_reminders(&conn, 1000).unwrap();
         assert_eq!(due.len(), 1);
         assert_eq!(due[0].match_id, 2);
+    }
+
+    /// Every scope kind must survive `add_subscription`, which runs
+    /// `prune_scope_leads` through `scope_where` — each branch now binds ?3, so a
+    /// mismatched parameter count would fail at runtime, not compile time.
+    #[test]
+    fn every_scope_kind_round_trips_through_add_and_remove() {
+        let conn = open(":memory:").unwrap();
+        let cases = [
+            ("sport", "", "cs2"),
+            ("league", "cs2", "IEM"),
+            ("team", "cs2", "Team Vitality"),
+            ("event", "cs2", "IEM Cologne Major 2026"),
+        ];
+        for (kind, sport, value) in cases {
+            add_subscription(
+                &conn,
+                &Subscription {
+                    endpoint: "https://push.example/x".into(),
+                    p256dh: "p".into(),
+                    auth: "a".into(),
+                    scope_kind: kind.into(),
+                    scope_sport: sport.into(),
+                    scope_value: value.into(),
+                    lead_ms: 900_000,
+                    lead_list: vec![900_000],
+                    tz: String::new(),
+                    hour24: true,
+                },
+            )
+            .unwrap_or_else(|e| panic!("add {kind}: {e}"));
+            delete_unsent_reminders_by_scope(&conn, "https://push.example/x", kind, sport, value)
+                .unwrap_or_else(|e| panic!("delete {kind}: {e}"));
+        }
+        assert_eq!(list_subscriptions(&conn).unwrap().len(), 4);
+        for (kind, sport, value) in cases {
+            remove_subscription(&conn, "https://push.example/x", kind, sport, value)
+                .unwrap_or_else(|e| panic!("remove {kind}: {e}"));
+        }
+        assert!(list_subscriptions(&conn).unwrap().is_empty());
     }
 
     #[test]
@@ -2078,6 +2259,7 @@ mod tests {
                 p256dh: "p".into(),
                 auth: "a".into(),
                 scope_kind: "league".into(),
+                scope_sport: String::new(),
                 scope_value: "LCK".into(),
                 lead_ms: 900_000,
                 lead_list: vec![900_000, 3_600_000],
@@ -2095,6 +2277,49 @@ mod tests {
         assert_eq!(subs[0].lead_list, vec![900_000, 3_600_000]);
     }
 
+    /// Two games can run an event under one name — CS2 and LoL both play an
+    /// "Esports World Cup 2026" — so the sport is part of a scope's identity.
+    /// Subscribing to one must neither overwrite nor arm the other.
+    #[test]
+    fn scopes_that_differ_only_by_sport_are_separate_subscriptions() {
+        let conn = open(":memory:").unwrap();
+        let ewc = |sport: &str, lead: i64| Subscription {
+            endpoint: "https://push.example/x".into(),
+            p256dh: "p".into(),
+            auth: "a".into(),
+            scope_kind: "event".into(),
+            scope_sport: sport.into(),
+            scope_value: "Esports World Cup 2026".into(),
+            lead_ms: lead,
+            lead_list: vec![lead],
+            tz: String::new(),
+            hour24: true,
+        };
+        add_subscription(&conn, &ewc("cs2", 900_000)).unwrap();
+        add_subscription(&conn, &ewc("lol", 3_600_000)).unwrap();
+
+        let mut subs = list_subscriptions(&conn).unwrap();
+        subs.sort_by(|a, b| a.scope_sport.cmp(&b.scope_sport));
+        assert_eq!(subs.len(), 2, "one sport's sub overwrote the other's");
+        assert_eq!(subs[0].scope_sport, "cs2");
+        assert_eq!(subs[0].lead_list, vec![900_000]);
+        assert_eq!(subs[1].scope_sport, "lol");
+        assert_eq!(subs[1].lead_list, vec![3_600_000]);
+
+        // Unsubscribing from the CS2 edition leaves the LoL one armed.
+        remove_subscription(
+            &conn,
+            "https://push.example/x",
+            "event",
+            "cs2",
+            "Esports World Cup 2026",
+        )
+        .unwrap();
+        let left = list_subscriptions(&conn).unwrap();
+        assert_eq!(left.len(), 1);
+        assert_eq!(left[0].scope_sport, "lol");
+    }
+
     #[test]
     fn migrate_endpoint_moves_rows_to_the_new_subscription() {
         let conn = open(":memory:").unwrap();
@@ -2107,6 +2332,7 @@ mod tests {
                 p256dh: "old-p".into(),
                 auth: "old-a".into(),
                 scope_kind: "league".into(),
+                scope_sport: String::new(),
                 scope_value: "LCK".into(),
                 lead_ms: 900_000,
                 lead_list: vec![900_000],
@@ -2156,6 +2382,7 @@ mod tests {
                 p256dh: "p".into(),
                 auth: "a".into(),
                 scope_kind: "team".into(),
+                scope_sport: String::new(),
                 scope_value: "T1".into(),
                 lead_ms: 0,
                 lead_list: vec![0],

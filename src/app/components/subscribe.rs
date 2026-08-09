@@ -31,8 +31,16 @@ pub(crate) fn SubscribeStar(kind: &'static str, sport: Sport, value: String) -> 
         {
             let keys: Vec<String> = subscribed.with_untracked(|s| s.iter().cloned().collect());
             let leads = effective_leads(&key, &overrides.get_untracked(), &global.get_untracked());
+            // A whole-sport scope names its game in `value`; the rest carry it
+            // separately, since their names repeat across games.
+            let scope_sport = if kind == "sport" {
+                String::new()
+            } else {
+                sport.slug().to_string()
+            };
             subscribe_scope(
                 kind.to_string(),
+                scope_sport,
                 value.clone(),
                 !now_on,
                 keys,

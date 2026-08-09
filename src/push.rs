@@ -354,6 +354,7 @@ fn expand_subscriptions(conn: &rusqlite::Connection) {
         for &lead_ms in &s.lead_list {
             for seed in crate::cache::scope_reminder_seeds(
                 &s.scope_kind,
+                &s.scope_sport,
                 &s.scope_value,
                 lead_ms,
                 &s.tz,

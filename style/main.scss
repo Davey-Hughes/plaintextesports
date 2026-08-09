@@ -2103,6 +2103,27 @@ a {
   .event-extra-wide {
     grid-column: 1 / -1;
   }
+
+  // When one league name covers two games (CS2 and LoL both run an "Esports
+  // World Cup"), each game's stages sit under its own heading. It spans the full
+  // grid so the stages below start on a fresh row rather than beside the label.
+  .game-head {
+    grid-column: 1 / -1;
+    font-size: 15px;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--muted, var(--fg));
+    margin: 0;
+    padding-bottom: 0.3rem;
+    border-bottom: 1px solid var(--border);
+
+    // The first heading already has the grid's top margin above it; later ones
+    // need room to read as a new section rather than a row of the previous one.
+    & ~ .game-head {
+      margin-top: 1rem;
+    }
+  }
 }
 
 #sched {

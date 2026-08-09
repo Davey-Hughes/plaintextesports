@@ -403,6 +403,29 @@ pub fn event_name_eq(league: &str, series: &str, target: &str) -> bool {
     }
 }
 
+/// Whether a match of `sport` belongs to the event `target` of `want` — the full
+/// event identity, as [`event_name_eq`] plus the game.
+///
+/// The name alone is not an identity: two games can run an edition under one
+/// name (CS2 and LoL both play an "Esports World Cup 2026"), and filtering by
+/// name alone puts one game's finished matches on the other's event page. The
+/// `/event/{sport}/{name}` URL has carried the sport all along — this is what
+/// reads it.
+///
+/// `want == None` matches any sport, for callers holding no sport: a hand-typed
+/// or pre-existing link with an unknown slug, and the traditional-sport league
+/// pages, whose names are unique across sports anyway.
+#[must_use]
+pub fn event_is(
+    sport: Sport,
+    want: Option<Sport>,
+    league: &str,
+    series: &str,
+    target: &str,
+) -> bool {
+    want.is_none_or(|w| w == sport) && event_name_eq(league, series, target)
+}
+
 /// The best-fit noun for a tier-2 competition, for display (the subscription tag).
 /// The `league` field is a mix of true leagues (MLB, LCK, "… Pro League"),
 /// knockout tournaments (World Cup, IEM, the invitationals/majors), and racing
@@ -520,6 +543,12 @@ pub struct SubscribeReq {
     pub sub: PushSub,
     /// "sport" or "league".
     pub kind: String,
+    /// The scope's game slug. Part of the scope's identity for the league/team/
+    /// event kinds, whose names repeat across games (CS2 and LoL both run an
+    /// "Esports World Cup 2026"). Empty ⇒ any sport; redundant for `kind ==
+    /// "sport"`, which names the game in `value`.
+    #[serde(default)]
+    pub sport: String,
     /// "cs2"/"lol" for a sport, else the league name.
     pub value: String,
     /// Effective lead offsets (ms) for this scope: its override else the global
@@ -1384,6 +1413,48 @@ mod tests {
         assert!(!event_name_eq("IEM", "Cologne", "IEM Cologne Major")); // series is a prefix
         assert!(!event_name_eq("LCK", "", "LCK Spring"));
         assert!(!event_name_eq("IEM", "Cologne", "IEMCologne")); // missing the space
+    }
+
+    #[test]
+    fn event_is_separates_two_sports_sharing_an_edition_name() {
+        let (league, series) = ("Esports World Cup", "2026");
+        let name = full_event_name(league, series);
+        assert_eq!(name, "Esports World Cup 2026");
+
+        // The same name, two games: each matches only its own sport.
+        assert!(event_is(
+            Sport::Cs2,
+            Some(Sport::Cs2),
+            league,
+            series,
+            &name
+        ));
+        assert!(!event_is(
+            Sport::Lol,
+            Some(Sport::Cs2),
+            league,
+            series,
+            &name
+        ));
+        assert!(event_is(
+            Sport::Lol,
+            Some(Sport::Lol),
+            league,
+            series,
+            &name
+        ));
+
+        // No sport asked for → name-only, the behaviour every caller had before.
+        assert!(event_is(Sport::Lol, None, league, series, &name));
+
+        // The sport never rescues a name that doesn't match.
+        assert!(!event_is(
+            Sport::Cs2,
+            Some(Sport::Cs2),
+            league,
+            series,
+            "Esports World Cup 2027"
+        ));
     }
 
     #[test]

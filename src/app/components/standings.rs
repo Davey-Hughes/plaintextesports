@@ -468,7 +468,10 @@ pub(crate) fn TraditionalStandings(league: Memo<String>) -> impl IntoView {
             if lg.is_empty() {
                 Ok(Vec::new())
             } else {
-                get_event_stages(lg).await
+                // No sport slug: these are traditional leagues (MLB, NHL, …),
+                // whose names are unique across sports and which resolve through
+                // `standings_for_event_name` before the sport-scoped lookup.
+                get_event_stages(String::new(), lg).await
             }
         },
     );

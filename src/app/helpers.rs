@@ -300,6 +300,24 @@ pub(crate) fn parse_sub_key(key: &str) -> (String, Option<Sport>, String) {
     }
 }
 
+/// The server-side scope triple for a persisted subscription key: its kind, the
+/// sport slug the scope is confined to, and the bare value.
+///
+/// A whole-sport scope already names its game in the value, so its slug is empty;
+/// every other kind carries its game, because league, team and event names repeat
+/// across games (CS2 and LoL both run an "Esports World Cup 2026", and G2 Esports
+/// fields a roster in each) and the name alone would arm one game's subscription
+/// with the other's matches. A key with an unparseable slug yields an empty one,
+/// which the server reads as "any sport" — the behaviour before scopes had one.
+pub(crate) fn sub_scope(key: &str) -> (String, String, String) {
+    let (kind, sport, value) = parse_sub_key(key);
+    let slug = match sport {
+        Some(s) if kind != "sport" => s.slug().to_string(),
+        _ => String::new(),
+    };
+    (kind, slug, value)
+}
+
 /// Resolve the initial sport mode (`true` = traditional sports) from the page's
 /// inputs. Shared by SSR (request URL + `Cookie` header) and hydrate (location +
 /// `document.cookie`) so both render the same mode — no first-paint flash and no

@@ -270,19 +270,28 @@ pub async fn get_youtube_live(handle: String) -> Result<Option<u64>, ServerFnErr
 }
 
 /// All cached matches for one event/league (past + upcoming), for the event page.
+/// `sport` is the page's sport slug — it scopes the lookup so an edition name two
+/// games share ("Esports World Cup 2026") resolves to one game's schedule. An
+/// empty or unknown slug matches any sport, as the name-only lookup used to.
 #[server(GetEventSchedule, "/api")]
 pub async fn get_event_schedule(
+    sport: String,
     league: String,
     tz: String,
     hour24: bool,
 ) -> Result<ScheduleView, ServerFnError> {
     #[cfg(feature = "ssr")]
     {
-        Ok(crate::cache::event_view(&league, &tz, hour24))
+        Ok(crate::cache::event_view(
+            Sport::from_filter(&sport),
+            &league,
+            &tz,
+            hour24,
+        ))
     }
     #[cfg(not(feature = "ssr"))]
     {
-        let _ = (league, tz, hour24);
+        let _ = (sport, league, tz, hour24);
         Ok(ScheduleView::default())
     }
 }
@@ -292,14 +301,17 @@ pub async fn get_event_schedule(
 /// edition name. Live Twitch/YouTube status is merged in like the match page's
 /// streams. Empty for non-esports events and events without stream data.
 #[server(GetEventStreams, "/api")]
-pub async fn get_event_streams(league: String) -> Result<Vec<StreamView>, ServerFnError> {
+pub async fn get_event_streams(
+    sport: String,
+    league: String,
+) -> Result<Vec<StreamView>, ServerFnError> {
     #[cfg(feature = "ssr")]
     {
-        Ok(crate::cache::event_streams(&league).await)
+        Ok(crate::cache::event_streams(Sport::from_filter(&sport), &league).await)
     }
     #[cfg(not(feature = "ssr"))]
     {
-        let _ = league;
+        let _ = (sport, league);
         Ok(Vec::new())
     }
 }
@@ -359,28 +371,41 @@ pub async fn get_notifications(
 }
 
 /// All cached matches involving a team (by full name), past + upcoming, for the
-/// team page.
+/// team page. `sport` is the page's sport slug, scoping the lookup the same way
+/// [`get_event_schedule`] does — an org's name isn't unique across games. An empty
+/// or unknown slug matches any sport.
 #[server(GetTeamSchedule, "/api")]
 pub async fn get_team_schedule(
+    sport: String,
     team: String,
     tz: String,
     hour24: bool,
 ) -> Result<ScheduleView, ServerFnError> {
     #[cfg(feature = "ssr")]
     {
-        Ok(crate::cache::team_view(&team, &tz, hour24))
+        Ok(crate::cache::team_view(
+            Sport::from_filter(&sport),
+            &team,
+            &tz,
+            hour24,
+        ))
     }
     #[cfg(not(feature = "ssr"))]
     {
-        let _ = (team, tz, hour24);
+        let _ = (sport, team, tz, hour24);
         Ok(ScheduleView::default())
     }
 }
 
 /// Standings/bracket for every stage of an event (by league name), in order —
 /// e.g. Swiss Stage 1/2/3 then the Playoffs bracket. Empty stages are dropped.
+/// `sport` scopes the lookup (see [`get_event_schedule`]); an empty or unknown
+/// slug matches any sport, which is what the traditional-league callers pass.
 #[server(GetEventStages, "/api")]
-pub async fn get_event_stages(league: String) -> Result<Vec<EventInfo>, ServerFnError> {
+pub async fn get_event_stages(
+    sport: String,
+    league: String,
+) -> Result<Vec<EventInfo>, ServerFnError> {
     #[cfg(feature = "ssr")]
     {
         // Traditional sports have no per-tournament standings; their event page
@@ -388,12 +413,12 @@ pub async fn get_event_stages(league: String) -> Result<Vec<EventInfo>, ServerFn
         if let Some(tables) = crate::cache::standings_for_event_name(&league) {
             return Ok(tables);
         }
-        let tids = crate::cache::event_stages(&league);
+        let tids = crate::cache::event_stages(Sport::from_filter(&sport), &league);
         Ok(crate::cache::stages_info(tids, &league).await)
     }
     #[cfg(not(feature = "ssr"))]
     {
-        let _ = league;
+        let _ = (sport, league);
         Ok(Vec::new())
     }
 }
@@ -648,6 +673,7 @@ pub async fn add_subscription(req: SubscribeReq) -> Result<(), ServerFnError> {
             p256dh: req.sub.p256dh,
             auth: req.sub.auth,
             scope_kind: req.kind,
+            scope_sport: req.sport,
             scope_value: req.value,
             // Keep a single legacy value too (the smallest offset is the closest
             // to start, a sensible single fallback for any old reader).
@@ -674,11 +700,14 @@ pub async fn add_subscription(req: SubscribeReq) -> Result<(), ServerFnError> {
     }
 }
 
-/// Unsubscribe from a sport/event (also drops its pending reminders).
+/// Unsubscribe from a sport/event (also drops its pending reminders). `sport` is
+/// the scope's game — the same one [`add_subscription`] stored, since a name alone
+/// doesn't identify a scope (see `SubscribeReq::sport`).
 #[server(RemoveSubscription, "/api")]
 pub async fn remove_subscription(
     endpoint: String,
     kind: String,
+    sport: String,
     value: String,
 ) -> Result<(), ServerFnError> {
     #[cfg(feature = "ssr")]
@@ -690,9 +719,9 @@ pub async fn remove_subscription(
         tokio::task::spawn_blocking(move || {
             let conn = crate::store::shared(&cfg.db_path)
                 .map_err(|e| ServerFnError::new(format!("db: {e}")))?;
-            crate::store::remove_subscription(&conn, &endpoint, &kind, &value)
+            crate::store::remove_subscription(&conn, &endpoint, &kind, &sport, &value)
                 .map_err(|e| ServerFnError::new(format!("db: {e}")))?;
-            crate::store::delete_unsent_reminders_by_scope(&conn, &endpoint, &kind, &value)
+            crate::store::delete_unsent_reminders_by_scope(&conn, &endpoint, &kind, &sport, &value)
                 .map_err(|e| ServerFnError::new(format!("db: {e}")))?;
             Ok::<(), ServerFnError>(())
         })

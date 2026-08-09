@@ -535,13 +535,13 @@ pub(crate) fn NotificationsPage() -> impl IntoView {
         {
             save_timers(&next);
             let ov = overrides.get_untracked();
-            let subs_re: Vec<(String, String, Vec<i64>)> = subscribed
+            let subs_re: Vec<(String, String, String, Vec<i64>)> = subscribed
                 .get_untracked()
                 .iter()
                 .filter(|k| !ov.contains_key(*k))
                 .map(|k| {
-                    let (kind, _s, value) = parse_sub_key(k);
-                    (kind, value, next.clone())
+                    let (kind, sport, value) = sub_scope(k);
+                    (kind, sport, value, next.clone())
                 })
                 .collect();
             let stars_re: Vec<(i64, String, Vec<i64>)> = starred
@@ -632,8 +632,8 @@ pub(crate) fn NotificationsPage() -> impl IntoView {
                 .subs
                 .iter()
                 .map(|k| {
-                    let (kind, _s, value) = parse_sub_key(k);
-                    (kind, value, effective_leads(k, &ov, &g))
+                    let (kind, sport, value) = sub_scope(k);
+                    (kind, sport, value, effective_leads(k, &ov, &g))
                 })
                 .collect();
             let stars_re: Vec<_> = b
@@ -816,17 +816,21 @@ pub(crate) fn SubRow(key: String) -> impl IntoView {
     // Keys are `sport|<slug>` or `<kind>|<slug>|<name>` (team/league/event are
     // sport-scoped, see `sub_key`, so their page link can be rebuilt here).
     let (kind, sport, value) = parse_sub_key(&key);
+    // The sport slug the server scopes this subscription by (see `sub_scope`).
+    let (_, scope_sport, _) = sub_scope(&key);
     // Re-arm this scope with the given lead list (its override or the global one),
     // called by its per-entry timer control.
     let rearm = {
         let kind = kind.clone();
         let value = value.clone();
+        let scope_sport = scope_sport.clone();
         Callback::new(move |leads: Vec<i64>| {
             #[cfg(feature = "hydrate")]
             {
                 let keys: Vec<String> = subscribed.with_untracked(|s| s.iter().cloned().collect());
                 subscribe_scope(
                     kind.clone(),
+                    scope_sport.clone(),
                     value.clone(),
                     true,
                     keys,
@@ -836,7 +840,7 @@ pub(crate) fn SubRow(key: String) -> impl IntoView {
             }
             #[cfg(not(feature = "hydrate"))]
             {
-                let _ = (&kind, &value, vapid, leads);
+                let _ = (&kind, &scope_sport, &value, vapid, leads);
             }
         })
     };
@@ -879,6 +883,7 @@ pub(crate) fn SubRow(key: String) -> impl IntoView {
             let keys: Vec<String> = subscribed.with_untracked(|s| s.iter().cloned().collect());
             subscribe_scope(
                 kind.clone(),
+                scope_sport.clone(),
                 value.clone(),
                 false,
                 keys,
@@ -888,7 +893,14 @@ pub(crate) fn SubRow(key: String) -> impl IntoView {
         }
         #[cfg(not(feature = "hydrate"))]
         {
-            let _ = (&kind, &value, vapid, overrides, &key_for_click);
+            let _ = (
+                &kind,
+                &scope_sport,
+                &value,
+                vapid,
+                overrides,
+                &key_for_click,
+            );
         }
     };
 
@@ -1015,7 +1027,7 @@ pub(crate) fn StarredRow(m: MatchView) -> impl IntoView {
 #[cfg(feature = "hydrate")]
 pub(crate) fn sync_entries(
     clear_first: bool,
-    subs: Vec<(String, String, Vec<i64>)>,
+    subs: Vec<(String, String, String, Vec<i64>)>,
     stars: Vec<(i64, String, Vec<i64>)>,
     excludes: Vec<(i64, String)>,
     vapid: Option<String>,
@@ -1051,7 +1063,7 @@ pub(crate) fn sync_entries(
 pub(crate) async fn arm_entries(
     push: crate::types::PushSub,
     clear_first: bool,
-    subs: Vec<(String, String, Vec<i64>)>,
+    subs: Vec<(String, String, String, Vec<i64>)>,
     stars: Vec<(i64, String, Vec<i64>)>,
     excludes: Vec<(i64, String)>,
     tz: String,
@@ -1060,10 +1072,11 @@ pub(crate) async fn arm_entries(
     if clear_first {
         let _ = crate::server::clear_notifications(push.endpoint.clone()).await;
     }
-    for (kind, value, leads) in subs {
+    for (kind, sport, value, leads) in subs {
         let _ = crate::server::add_subscription(crate::types::SubscribeReq {
             sub: push.clone(),
             kind,
+            sport,
             value,
             leads,
             tz: tz.clone(),
@@ -1122,11 +1135,11 @@ pub(crate) fn reconcile_notifications(
     let hour24 = effective_hour24();
     // Resolve each entry's effective leads (its override else the global list) —
     // the same shape the import/global-edit paths arm with.
-    let subs_re: Vec<(String, String, Vec<i64>)> = subscribed
+    let subs_re: Vec<(String, String, String, Vec<i64>)> = subscribed
         .iter()
         .map(|k| {
-            let (kind, _s, value) = parse_sub_key(k);
-            (kind, value, effective_leads(k, &overrides, &global))
+            let (kind, sport, value) = sub_scope(k);
+            (kind, sport, value, effective_leads(k, &overrides, &global))
         })
         .collect();
     let stars_re: Vec<(i64, String, Vec<i64>)> = starred
@@ -1161,9 +1174,13 @@ pub(crate) fn reconcile_notifications(
 
 /// Persist the subscribed set and (un)register the sport/event subscription with
 /// its effective lead offsets (its override else the global list).
+/// `sport` is the scope's game slug (empty for a whole-sport scope, whose `value`
+/// already names it). It is part of the scope's identity server-side: league,
+/// team and event names all repeat across games.
 #[cfg(feature = "hydrate")]
 pub(crate) fn subscribe_scope(
     kind: String,
+    sport: String,
     value: String,
     subscribing: bool,
     keys: Vec<String>,
@@ -1196,6 +1213,7 @@ pub(crate) fn subscribe_scope(
                     auth,
                 },
                 kind,
+                sport,
                 value,
                 leads,
                 tz,
@@ -1203,7 +1221,7 @@ pub(crate) fn subscribe_scope(
             })
             .await;
         } else {
-            let _ = crate::server::remove_subscription(endpoint, kind, value).await;
+            let _ = crate::server::remove_subscription(endpoint, kind, sport, value).await;
         }
     });
 }
