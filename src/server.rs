@@ -1,6 +1,18 @@
 //! Leptos server functions. The bodies read the in-memory cache on the server;
 //! on the client the `#[server]` macro replaces them with a network call.
 
+// Every `async fn` in this file is a `#[server]` fn — 30 of 30 — and `#[server]`
+// requires `async` whether or not the body awaits: on the client the macro
+// replaces the body with an HTTP call, which does. The twelve that read the
+// in-memory cache synchronously on the server therefore look unused-async to
+// clippy and cannot drop the keyword. Scoped to this module so a genuinely
+// pointless `async fn` elsewhere still gets flagged.
+//
+// `unused_async_trait_impl` is the same thing seen from the `hydrate` build:
+// there it fires on all 30, pointing at the `ServerFn` impl the macro expands
+// to rather than at anything written here.
+#![allow(clippy::unused_async, clippy::unused_async_trait_impl)]
+
 #[cfg(feature = "ssr")]
 use crate::types::Sport;
 use crate::types::{
@@ -658,7 +670,7 @@ fn resolve_leads(leads: Vec<i64>, fallback_ms: i64) -> Vec<i64> {
     if v.is_empty() { vec![fallback_ms] } else { v }
 }
 
-/// Subscribe to a whole sport ("sport"/"cs2"|"lol") or event ("league"/<name>).
+/// Subscribe to a whole sport ("sport"/"cs2"|"lol") or event (`"league"/<name>`).
 #[server(AddSubscription, "/api")]
 pub async fn add_subscription(req: SubscribeReq) -> Result<(), ServerFnError> {
     #[cfg(feature = "ssr")]

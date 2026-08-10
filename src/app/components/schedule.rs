@@ -1,7 +1,10 @@
 //! The schedule view: filter tabs/chips, the day/league sections, the up-next
 //! bar, and the match-row rendering + progressive-reveal machinery.
-use crate::app::*;
+use crate::app::prelude::*;
+use leptos::prelude::*;
+use leptos_router::components::A;
 use std::collections::HashMap;
+use std::collections::HashSet;
 
 /// Keeps the schedule filter (games + events) in sync with the URL query so a
 /// filtered view is shareable — `?g=cs2&e=<event>`; no filter ⇒ a clean URL. On
@@ -634,9 +637,7 @@ fn prepare_days(
                 lg.series_name.as_str(),
             )
         });
-        eds.next()
-            .map(|first| eds.all(|e| e == first))
-            .unwrap_or(false)
+        eds.next().is_some_and(|first| eds.all(|e| e == first))
     };
     if single_event {
         filtered.days = chain_single_event_days(std::mem::take(&mut filtered.days));
@@ -1029,7 +1030,7 @@ pub(crate) fn ScheduleSection(
 /// The filter/chip identity for a league group. Normally the league name — but
 /// every TFT stage shares the league "TFT", so a TFT group is keyed by its
 /// tournament (one chip for the whole event, not one per stage). The TFT series is
-/// "<Tournament> - <Stage>" (e.g. "Space Gods Tactician's Crown - Swiss Stage"), so
+/// `"<Tournament> - <Stage>"` (e.g. "Space Gods Tactician's Crown - Swiss Stage"), so
 /// key on the part before the first " - ". Non-TFT groups are unaffected.
 /// Borrows from `lg` rather than allocating: this runs for every league group on
 /// every render (three times over, via the chip row and both `prepare_days`
@@ -1065,6 +1066,14 @@ pub(crate) fn chip_key(lg: &crate::types::LeagueGroup) -> &str {
 ///
 /// [`cache::homepage_render`]: crate::cache::homepage_render
 #[doc(hidden)]
+// implicit_hasher exists so a downstream caller can bring its own hasher. There
+// is no downstream caller: this is a `#[doc(hidden)]` hook that benches/request_
+// pipeline.rs calls with the same `HashSet<String>` the render path builds, and
+// every function it forwards to takes the concrete type. Generalising here would
+// push an `S` parameter through `chip_state`, `prepare_days` and
+// `any_day_survives` to serve nobody.
+#[allow(clippy::implicit_hasher)]
+#[must_use]
 pub fn schedule_render_work(
     s: &ScheduleView,
     games_set: &HashSet<String>,
@@ -1142,7 +1151,7 @@ pub(crate) fn filter_schedule(
 /// Persists the up-next bar's "scrolled past" visibility across the event/team
 /// page's per-refetch subtree rebuilds. Those pages rebuild their whole content
 /// subtree when the schedule resource resolves, which re-creates [`UpNextBar`]
-/// with fresh signals — defaulting to *visible* until its IntersectionObservers
+/// with fresh signals — defaulting to *visible* until its `IntersectionObservers`
 /// re-fire a frame later, so a scrolled-past (hidden) bar would blink back on
 /// every 60s refresh / manual refresh. Providing these signals from the page
 /// (which is itself *not* rebuilt) lets a fresh bar mount in the last-known state
@@ -1156,6 +1165,10 @@ pub(crate) struct UpNextSeen {
 /// A compact "up next" bar pinned to the bottom of the event page, previewing
 /// the current/next day's matches. Clicking it scrolls to that day in the list;
 /// it hides once that day scrolls into view, so it never duplicates what's shown.
+/// How many matches the up-next bar previews before collapsing the rest into
+/// a "+N more" — it sits above the schedule, so it stays slim.
+const UPNEXT_CAP: usize = 2;
+
 #[component]
 pub(crate) fn UpNextBar(day: DayGroup) -> impl IntoView {
     let anchor = format!("day-{}", day.day_key);
@@ -1171,9 +1184,6 @@ pub(crate) fn UpNextBar(day: DayGroup) -> impl IntoView {
         day: RwSignal::new(false),
         foot: RwSignal::new(false),
     });
-    // Flatten the day's matches (time + teams), capped so the bar stays slim —
-    // a couple of previews plus a "+N more" for the rest.
-    const CAP: usize = 2;
     let all: Vec<MatchView> = day.leagues.into_iter().flat_map(|lg| lg.matches).collect();
     // "Up next" while the day still has unplayed matches; "Latest" once it's a
     // finished event and we're pointing at its most recent day instead.
@@ -1189,10 +1199,10 @@ pub(crate) fn UpNextBar(day: DayGroup) -> impl IntoView {
         },
         day.day_label
     );
-    let more = all.len().saturating_sub(CAP);
+    let more = all.len().saturating_sub(UPNEXT_CAP);
     let rows = all
         .into_iter()
-        .take(CAP)
+        .take(UPNEXT_CAP)
         .map(|m| {
             let muid = crate::types::match_uid(m.sport, m.id);
             let mpath = crate::types::match_path(m.sport, m.id);
@@ -1324,13 +1334,11 @@ fn empty_notice(event_mode: bool, windowed: bool, traditional: bool) -> &'static
     }
 }
 
-pub(crate) fn render_schedule(
-    s: ScheduleView,
-    show_nav: bool,
-    push: bool,
-    event_mode: bool,
-    windowed: bool,
-) -> impl IntoView {
+/// This is the event/team pages' renderer specifically: both call sites are
+/// event pages, which is why there is no `event_mode` switch and no day-nav
+/// here. The homepage and the `/day/{date}` page go through [`ScheduleSection`]
+/// instead, and that is where the prev/next day nav lives.
+pub(crate) fn render_schedule(s: ScheduleView, push: bool, windowed: bool) -> impl IntoView {
     let ScheduleView {
         days,
         today_key,
@@ -1338,51 +1346,31 @@ pub(crate) fn render_schedule(
         stale,
         using_fixture,
         demo_forced,
-        date_label,
-        prev_date,
-        next_date,
         ..
     } = s;
     let today_key = StoredValue::new(today_key);
 
     let empty = days.iter().all(|d| d.leagues.is_empty());
     // The "‹ show earlier days" / "show later days ›" controls ride the schedule
-    // on the homepage (no nav, not an event) and on a windowed event page (a
-    // traditional sport, which caps its forward horizon like the homepage). The
-    // single-day view has prev/next nav instead.
-    let show_earlier = (!show_nav && !event_mode) || windowed;
+    // on a windowed event page — a traditional sport, which caps its forward
+    // horizon the way the homepage does.
+    let show_earlier = windowed;
     let has_days = !days.is_empty();
 
-    let nav = show_nav.then(|| {
-        let prev = prev_date.unwrap_or_default();
-        let next = next_date.unwrap_or_default();
-        let label = date_label.unwrap_or_default();
-        view! {
-            <nav class="day-nav">
-                <A href=format!("/day/{prev}")>"‹ prev"</A>
-                <span class="day-nav-label">{label}</span>
-                <A href=format!("/day/{next}")>"next ›"</A>
-            </nav>
-        }
-    });
-
-    // On the event page, pick the "current/next" day — the earliest day that
-    // still has an unfinished (live/upcoming) match, else the most recent day —
-    // to surface in a pinned "up next" bar so it's reachable without scrolling
-    // past the whole history.
-    let upnext_day: Option<DayGroup> = event_mode
-        .then(|| {
-            days.iter()
-                .position(|d| {
-                    d.leagues
-                        .iter()
-                        .flat_map(|lg| &lg.matches)
-                        .any(|m| matches!(m.status, MatchStatus::Live | MatchStatus::Upcoming))
-                })
-                .or_else(|| days.len().checked_sub(1))
-                .and_then(|i| days.get(i).cloned())
+    // Pick the "current/next" day — the earliest day that still has an
+    // unfinished (live/upcoming) match, else the most recent day — to surface in
+    // a pinned "up next" bar so it's reachable without scrolling past the whole
+    // history.
+    let upnext_day: Option<DayGroup> = days
+        .iter()
+        .position(|d| {
+            d.leagues
+                .iter()
+                .flat_map(|lg| &lg.matches)
+                .any(|m| matches!(m.status, MatchStatus::Live | MatchStatus::Upcoming))
         })
-        .flatten();
+        .or_else(|| days.len().checked_sub(1))
+        .and_then(|i| days.get(i).cloned());
 
     // A league head's ★ tracks the whole EVENT EDITION (an F1 GP weekend, an IEM
     // tournament — keyed by sport + league + series), not a single day of it. So
@@ -1408,12 +1396,13 @@ pub(crate) fn render_schedule(
         .into_iter()
         .enumerate()
         .map(|(idx, d)| {
+            // `true` is `event_mode`: this renderer only serves event/team pages.
             render_day(
                 d,
                 idx == 0,
                 today_key,
                 &editions_with_upcoming,
-                event_mode,
+                true,
                 show_earlier,
                 push,
             )
@@ -1437,7 +1426,6 @@ pub(crate) fn render_schedule(
     let note = notes.join(" · ");
 
     view! {
-        {nav}
         {(!note.is_empty()).then(|| view! { <div class="status-line">{note}</div> })}
         // With no days to host it inline, the control stands alone above the notice.
         {(show_earlier && !has_days).then(|| view! { <EarlierControl /> })}
@@ -1448,11 +1436,7 @@ pub(crate) fn render_schedule(
                 view! {
                     <p class="empty">
                         {move || {
-                            empty_notice(
-                                event_mode,
-                                windowed,
-                                traditional.is_some_and(|t| t.get()),
-                            )
+                            empty_notice(true, windowed, traditional.is_some_and(|t| t.get()))
                         }}
                     </p>
                 }
@@ -1470,7 +1454,19 @@ pub(crate) fn render_schedule(
 /// [`render_schedule`] so the live homepage can drive the day list with a keyed
 /// `<For>` (diffing across filter toggles and the 60s refresh) while the static
 /// event/team/day pages keep mapping it straight through.
-#[allow(clippy::too_many_arguments)]
+/// The side-bar kind of a schedule row. Consecutive rows of the same kind are
+/// grouped into one run so each draws ONE continuous bar (on the wrapping
+/// `.bar-run`) rather than per-row `.row-bar` segments, which could misalign or
+/// show overlap seams at fractional zoom (Chrome/Firefox). Upcoming and other
+/// rows form a bar-less run — their ☆/placeholder stays per-row.
+#[derive(PartialEq, Clone, Copy)]
+enum BarKind {
+    Final,
+    Live,
+    None,
+}
+
+#[allow(clippy::too_many_arguments, clippy::fn_params_excessive_bools)]
 pub(crate) fn render_day(
     d: DayGroup,
     is_first: bool,
@@ -1573,18 +1569,6 @@ pub(crate) fn render_day(
                     </div>
                 }
             });
-            // Group consecutive rows by their side-bar kind so each run of
-            // finished (grey) or live (accent) rows draws ONE continuous bar
-            // (on the wrapping `.bar-run`) instead of per-row `.row-bar`
-            // segments — segments could misalign or show overlap seams at
-            // fractional zoom (Chrome/Firefox). Upcoming/other rows form a
-            // bar-less run (their ☆/placeholder stays per-row).
-            #[derive(PartialEq, Clone, Copy)]
-            enum BarKind {
-                Final,
-                Live,
-                None,
-            }
             let bar_kind = |s: MatchStatus| match s {
                 MatchStatus::Finished => BarKind::Final,
                 MatchStatus::Live => BarKind::Live,
@@ -2040,6 +2024,8 @@ mod tests {
     use std::collections::{HashMap, HashSet};
 
     /// A league group of `n` upcoming matches for one sport/league/series.
+    // Test fixture: `n` is the literal row count each test asks for.
+    #[allow(clippy::cast_possible_wrap)]
     fn group(sport: Sport, league: &str, series: &str, n: usize) -> LeagueGroup {
         let mut lg = LeagueGroup {
             league: league.into(),

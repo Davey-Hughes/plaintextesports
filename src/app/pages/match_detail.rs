@@ -1,7 +1,11 @@
 //! The match-detail page: the detail view, streams, per-game series rows, and
 //! the F1 / motorsport result views.
 use crate::app::pages::home::motorsport_watch;
-use crate::app::*;
+use crate::app::prelude::*;
+use leptos::prelude::*;
+use leptos_router::components::A;
+use leptos_router::hooks::use_params;
+use leptos_router::params::Params;
 
 #[derive(Params, PartialEq, Clone)]
 pub(crate) struct DetailParams {
@@ -115,6 +119,10 @@ pub(crate) fn motor_anchor(name: &str) -> String {
 /// the edition, a single match page passes its id, so each page's reveals stay
 /// distinct.
 #[component]
+// A `#[component]` prop. Leptos generates a props struct from this signature
+// and `view!` builds it at the call site, so props are owned by construction —
+// a borrowed prop would need a lifetime the macro has no way to name.
+#[allow(clippy::needless_pass_by_value)]
 pub(crate) fn MotorResultsView(results: Vec<MotorResult>, key_prefix: String) -> impl IntoView {
     let sections = results
         .into_iter()
@@ -282,7 +290,7 @@ pub(crate) fn detail_view(d: MatchDetail, results: Resource<MatchResults>) -> im
     let wec_live = (m.league == "WEC").then(|| {
         Resource::new(
             || (),
-            |_| async move {
+            |()| async move {
                 get_youtube_live("@FIAWEC".to_string())
                     .await
                     .unwrap_or_default()
@@ -358,7 +366,7 @@ pub(crate) fn detail_view(d: MatchDetail, results: Resource<MatchResults>) -> im
     let (star_a, star_b) = (name_a.clone(), name_b.clone());
     let vapid_ctx = use_context::<RwSignal<Option<String>>>();
     let match_star = move || {
-        let push = vapid_ctx.is_some_and(|v| v.with(|x| x.is_some()));
+        let push = vapid_ctx.is_some_and(|v| v.with(std::option::Option::is_some));
         (star_upcoming && push).then(|| {
             view! {
                 <StarButton
@@ -419,7 +427,7 @@ pub(crate) fn detail_view(d: MatchDetail, results: Resource<MatchResults>) -> im
                             class:loser=move || reveal.get() && win_b
                         >
                             {team_logo(&logo_a, "team-logo-lg")}
-                            {team_link(sport, team_a, name_a)}
+                            {team_link(sport, team_a, &name_a)}
                         </span>
                         <span class="detail-score">
                             {move || {
@@ -435,7 +443,7 @@ pub(crate) fn detail_view(d: MatchDetail, results: Resource<MatchResults>) -> im
                             class:winner=move || reveal.get() && win_b
                             class:loser=move || reveal.get() && win_a
                         >
-                            {team_link(sport, team_b, name_b)}
+                            {team_link(sport, team_b, &name_b)}
                             {team_logo(&logo_b, "team-logo-lg")}
                         </span>
                     }
@@ -658,7 +666,7 @@ pub(crate) fn detail_view(d: MatchDetail, results: Resource<MatchResults>) -> im
 }
 
 /// Split a stream URL into a friendly (site, channel), e.g.
-/// "https://www.twitch.tv/esl_csgo" → ("Twitch", "esl_csgo").
+/// "<https://www.twitch.tv/esl_csgo>" → ("Twitch", "`esl_csgo`").
 pub(crate) fn stream_parts(url: &str) -> (String, String) {
     let after = url
         .split_once("//")
@@ -723,6 +731,9 @@ pub(crate) fn stream_tags(s: &StreamView) -> String {
 }
 
 /// Humanize a viewer count: `375` → "375", `12400` → "12.4k".
+// f64 represents every integer up to 2^53 exactly; a concurrent-viewer count
+// reaches ~10^7 at the largest events, so the division is exact in practice.
+#[allow(clippy::cast_precision_loss)]
 pub(crate) fn fmt_viewers(n: u64) -> String {
     if n >= 1000 {
         format!("{:.1}k", n as f64 / 1000.0)
@@ -739,8 +750,7 @@ fn gutter_label(s: &StreamView) -> String {
     let lang = s
         .group
         .strip_prefix("costream:")
-        .map(str::to_string)
-        .unwrap_or_else(|| s.language.to_ascii_lowercase());
+        .map_or_else(|| s.language.to_ascii_lowercase(), str::to_string);
     if lang.is_empty() {
         "Other".to_string()
     } else {

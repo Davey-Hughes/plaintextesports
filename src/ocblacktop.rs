@@ -33,6 +33,8 @@ const MOTOGP_ID_BASE: i64 = 30_000_000_000;
 
 /// A stable 0..1e9 hash of the API's UUID, so a rally/event keeps the same id
 /// across fetches (FNV-1a — deterministic, unlike `DefaultHasher`'s seeded form).
+// `h % 1_000_000_000` is under 1e9 by construction, well inside i64.
+#[allow(clippy::cast_possible_wrap)]
 fn stable_hash(s: &str) -> i64 {
     let mut h: u64 = 0xcbf2_9ce4_8422_2325;
     for b in s.bytes() {
@@ -226,7 +228,7 @@ fn motorsport_match(
         },
     );
     m.series_name = format!("{event_name} {season}");
-    m.venue_name = loc.name.clone();
+    m.venue_name.clone_from(&loc.name);
     m.venue_location = loc.label();
     m.team_a_logo = flag(&loc.country.two_code);
     m
@@ -309,7 +311,7 @@ struct RallySchedule {
 struct Stage {
     id: String,
     #[serde(rename = "stageCode", default)]
-    stage_code: String,
+    code: String,
     #[serde(default)]
     name: String,
     #[serde(rename = "startTime", default)]
@@ -322,10 +324,10 @@ struct Stage {
 /// Stage", "Shakedown"), falling back to the bare stage code.
 fn stage_label(s: &Stage) -> String {
     let name = s.name.trim();
-    if !name.is_empty() {
-        name.to_string()
+    if name.is_empty() {
+        s.code.clone()
     } else {
-        s.stage_code.clone()
+        name.to_string()
     }
 }
 
@@ -374,7 +376,7 @@ fn rally_stage_matches(
 /// The rally whose stage timetable to fetch this cycle, in priority order: the
 /// live one; else a just-finished one (within a few days of ending) so its final
 /// per-stage results are captured and then kept after the rally — see
-/// [`crate::cache::reconcile_wrc`]; else the soonest upcoming whose start is
+/// `crate::cache::reconcile_wrc`; else the soonest upcoming whose start is
 /// within the window the detailed schedule is typically published (~2 weeks out).
 /// `None` off-week, so no detail request is spent. Picking just one keeps WRC at
 /// one extra request per cycle.
@@ -416,6 +418,11 @@ fn active_rally(rallies: &[Rally], now: DateTime<Utc>) -> Option<&Rally> {
 /// of its placeholder. Returns the rows and the number of requests spent (1 for
 /// the calendar alone, 2 when an active rally's detail was also fetched), so the
 /// poller can keep its daily-quota accounting exact.
+///
+/// # Errors
+///
+/// Returns a `reqwest::Error` if the request fails or the response body
+/// does not deserialize into the expected shape.
 pub async fn fetch_wrc(
     client: &reqwest::Client,
     key: &str,
@@ -532,7 +539,8 @@ fn session_has_result(kind: &str) -> bool {
 /// real UTC start with the venue-local time available — the shared shape behind
 /// both WEC and MotoGP. `race_window` is how long the race reads as live when the
 /// feed's status is vague (WEC enduros run hours; a MotoGP race ~1 h). When
-/// `with_results`, results-bearing sessions get a [`MotorResultRef`] so the detail
+/// `with_results`, results-bearing sessions get a [`crate::types::MotorResultRef`]
+/// so the detail
 /// page can fetch that session's finishing order. An event whose schedule isn't
 /// published yet yields a single date-only placeholder (noon UTC, no clock).
 #[allow(clippy::too_many_arguments)]
@@ -587,8 +595,7 @@ fn sessions_to_matches(
         if let Some(day) = parse_date(&e.date_start) {
             let begin = day + Duration::hours(12);
             let end = parse_date(&e.date_end)
-                .map(|d| d + Duration::days(1))
-                .unwrap_or(begin + Duration::hours(30));
+                .map_or(begin + Duration::hours(30), |d| d + Duration::days(1));
             let status = status_of(&e.status, begin, end, now);
             out.push(motorsport_match(
                 session_match_id(id_base, &e.id, None),
@@ -622,6 +629,11 @@ fn event_to_matches(e: &Event, now: DateTime<Utc>) -> Vec<NormalizedMatch> {
 
 /// The WEC season as one row per session (placeholders for unpublished rounds).
 /// One request.
+///
+/// # Errors
+///
+/// Returns a `reqwest::Error` if the request fails or the response body
+/// does not deserialize into the expected shape.
 pub async fn fetch_wec(
     client: &reqwest::Client,
     key: &str,
@@ -658,13 +670,12 @@ fn motogp_venue_tz(country_code: &str) -> Option<&'static str> {
         "JP" | "JPN" => "Asia/Tokyo",
         "AT" => "Europe/Vienna",
         // San Marino observes CET; the Misano circuit is in Italy.
-        "SM" => "Europe/Rome",
+        "SM" | "IT" => "Europe/Rome",
         "GB" => "Europe/London",
         "DE" => "Europe/Berlin",
         "NL" => "Europe/Amsterdam",
         "CZ" => "Europe/Prague",
         "HU" => "Europe/Budapest",
-        "IT" => "Europe/Rome",
         "FR" => "Europe/Paris",
         // Circuit of the Americas, Austin (US Central).
         "US" => "America/Chicago",
@@ -678,6 +689,11 @@ fn motogp_venue_tz(country_code: &str) -> Option<&'static str> {
 /// its venue-local time and — for the classified sessions (race / sprint /
 /// qualifying) — a link to that session's results. The MotoGP events feed has the
 /// same shape as WEC's.
+///
+/// # Errors
+///
+/// Returns a `reqwest::Error` if the request fails or the response body
+/// does not deserialize into the expected shape.
 pub async fn fetch_motogp(
     client: &reqwest::Client,
     key: &str,
@@ -718,6 +734,9 @@ struct RawStandRow {
     points: f64,
 }
 
+// Only reached when `p.fract()` is zero, i.e. `p` already holds an integer.
+// Championship points are three digits.
+#[allow(clippy::cast_possible_truncation)]
 fn fmt_points(p: f64) -> String {
     if (p.fract()).abs() < f64::EPSILON {
         format!("{}", p as i64)
@@ -803,9 +822,7 @@ pub async fn fetch_wec_standings(client: &reqwest::Client, key: &str) -> MotorSt
 
 /// Points come as a decimal string ("186.00"); show a whole number when it is one.
 fn fmt_points_str(s: &str) -> String {
-    s.parse::<f64>()
-        .map(fmt_points)
-        .unwrap_or_else(|_| s.to_string())
+    s.parse::<f64>().map_or_else(|_| s.to_string(), fmt_points)
 }
 
 #[derive(Deserialize)]

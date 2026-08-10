@@ -55,6 +55,7 @@ pub fn version() -> &'static str {
 /// document, so the manifest an installed PWA reads points at versioned icon URLs.
 /// Returns the input unchanged when `token` is empty, the JSON can't be parsed, or
 /// a `src` is external / already carries a query.
+#[must_use]
 pub fn manifest_with_version(text: &str, token: &str) -> String {
     if token.is_empty() {
         return text.to_string();

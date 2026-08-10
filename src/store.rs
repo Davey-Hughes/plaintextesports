@@ -48,12 +48,22 @@ static SHARED: OnceCell<Mutex<Connection>> = OnceCell::new();
 
 /// Borrow the shared request-handler connection, opening (and migrating) it once.
 /// Recovers from a poisoned mutex since the connection itself stays valid.
+///
+/// # Errors
+///
+/// Returns a `rusqlite::Error` from the one-time `open` if the connection
+/// has not been established yet. A poisoned mutex is recovered, not an error.
 pub fn shared(path: &str) -> rusqlite::Result<std::sync::MutexGuard<'static, Connection>> {
     let m = SHARED.get_or_try_init(|| open(path).map(Mutex::new))?;
     Ok(m.lock().unwrap_or_else(PoisonError::into_inner))
 }
 
 /// Open (creating if needed) the cache DB and ensure the schema exists.
+///
+/// # Errors
+///
+/// Returns a `rusqlite::Error` if the file cannot be opened or the schema
+/// and migrations do not apply.
 pub fn open(path: &str) -> rusqlite::Result<Connection> {
     if let Some(parent) = Path::new(path).parent()
         && !parent.as_os_str().is_empty()
@@ -492,6 +502,10 @@ fn row_to_match(row: &rusqlite::Row) -> rusqlite::Result<Option<NormalizedMatch>
 
 /// Load all stored matches, ordered by start time. Rows with an unrecognized
 /// sport slug are skipped (see [`row_to_match`]).
+///
+/// # Errors
+///
+/// Returns a `rusqlite::Error` if the underlying SQLite call fails.
 pub fn load_all(conn: &Connection) -> rusqlite::Result<Vec<NormalizedMatch>> {
     let mut stmt = conn.prepare("SELECT * FROM matches ORDER BY begin_at_ms ASC")?;
     let rows = stmt.query_map([], row_to_match)?;
@@ -514,6 +528,10 @@ pub fn get_meta(conn: &Connection, key: &str) -> Option<String> {
 }
 
 /// Upsert an arbitrary `meta` key/value.
+///
+/// # Errors
+///
+/// Returns a `rusqlite::Error` if the underlying SQLite call fails.
 pub fn set_meta(conn: &Connection, key: &str, value: &str) -> rusqlite::Result<()> {
     conn.execute(
         "INSERT INTO meta (key, value) VALUES (?1, ?2)
@@ -525,6 +543,10 @@ pub fn set_meta(conn: &Connection, key: &str, value: &str) -> rusqlite::Result<(
 
 /// Upsert freshly polled matches, prune anything older than `cutoff_ms`, and
 /// record `fetched_at_ms` — all in one transaction.
+///
+/// # Errors
+///
+/// Returns a `rusqlite::Error` if the underlying SQLite call fails.
 pub fn upsert_and_prune(
     conn: &mut Connection,
     matches: &[NormalizedMatch],
@@ -631,6 +653,10 @@ pub fn upsert_and_prune(
 /// untouched. No-op on an empty `keep` (a failed/empty refresh never wipes the
 /// tournament). Safe because CompeteTFT is the only TFT source — each poll's feed
 /// is a tournament's complete session set.
+///
+/// # Errors
+///
+/// Returns a `rusqlite::Error` if the underlying SQLite call fails.
 pub fn replace_tft_tournament(
     conn: &Connection,
     tournament: &str,
@@ -658,6 +684,10 @@ pub fn replace_tft_tournament(
 /// duplicate CompeteTFT's own (differently-named) events, so they're cleared at
 /// startup. Scoped to TFT: `liquipedia.net` URLs on CS2/LoL rows are resolved
 /// event links and must survive. Returns the row count.
+///
+/// # Errors
+///
+/// Returns a `rusqlite::Error` if the underlying SQLite call fails.
 pub fn purge_liquipedia_tft(conn: &Connection) -> rusqlite::Result<usize> {
     conn.execute(
         "DELETE FROM matches WHERE sport = 'tft' AND league_url LIKE '%liquipedia.net%'",
@@ -667,6 +697,10 @@ pub fn purge_liquipedia_tft(conn: &Connection) -> rusqlite::Result<usize> {
 
 /// Load all cached event-link resolutions: `(key, url, checked_at_ms)` where a
 /// `None` url means "resolved, no confident match".
+///
+/// # Errors
+///
+/// Returns a `rusqlite::Error` if the underlying SQLite call fails.
 pub fn load_event_links(conn: &Connection) -> rusqlite::Result<Vec<(String, Option<String>, i64)>> {
     let mut stmt = conn.prepare("SELECT key, url, checked_at_ms FROM event_links")?;
     let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?;
@@ -674,6 +708,10 @@ pub fn load_event_links(conn: &Connection) -> rusqlite::Result<Vec<(String, Opti
 }
 
 /// Upsert one event-link resolution.
+///
+/// # Errors
+///
+/// Returns a `rusqlite::Error` if the underlying SQLite call fails.
 pub fn set_event_link(
     conn: &Connection,
     key: &str,
@@ -695,6 +733,10 @@ pub struct CacheEntry {
 }
 
 /// Read one cached payload by `(ns, key)`. `None` when absent.
+///
+/// # Errors
+///
+/// Returns a `rusqlite::Error` if the underlying SQLite call fails.
 pub fn cache_get(conn: &Connection, ns: &str, key: &str) -> rusqlite::Result<Option<CacheEntry>> {
     conn.query_row(
         "SELECT value, fetched_at_ms FROM result_cache WHERE ns = ?1 AND key = ?2",
@@ -710,6 +752,10 @@ pub fn cache_get(conn: &Connection, ns: &str, key: &str) -> rusqlite::Result<Opt
 }
 
 /// Every row of a namespace, ordered by key (for Pattern B startup load).
+///
+/// # Errors
+///
+/// Returns a `rusqlite::Error` if the underlying SQLite call fails.
 pub fn cache_get_ns(conn: &Connection, ns: &str) -> rusqlite::Result<Vec<(String, CacheEntry)>> {
     let mut stmt = conn
         .prepare("SELECT key, value, fetched_at_ms FROM result_cache WHERE ns = ?1 ORDER BY key")?;
@@ -728,6 +774,10 @@ pub fn cache_get_ns(conn: &Connection, ns: &str) -> rusqlite::Result<Vec<(String
 }
 
 /// Upsert one payload (replace on the `(ns, key)` primary key).
+///
+/// # Errors
+///
+/// Returns a `rusqlite::Error` if the underlying SQLite call fails.
 pub fn cache_put(
     conn: &Connection,
     ns: &str,
@@ -747,6 +797,10 @@ pub fn cache_put(
 /// how many were removed. Bounds id-keyed namespaces (e.g. `box_score`) that would
 /// otherwise grow one row per distinct item ever cached. `fetched_at_ms` refreshes
 /// on each re-cache, so a time cutoff acts as least-recently-used eviction.
+///
+/// # Errors
+///
+/// Returns a `rusqlite::Error` if the underlying SQLite call fails.
 pub fn prune_result_cache(conn: &Connection, ns: &str, cutoff_ms: i64) -> rusqlite::Result<usize> {
     conn.execute(
         "DELETE FROM result_cache WHERE ns = ?1 AND fetched_at_ms < ?2",
@@ -838,6 +892,10 @@ fn reminder_insert_if_absent_sql() -> String {
 /// Arm or re-arm a single timer row, clearing any opt-out for its match. Used to
 /// re-include a match opted out of a scope (and by the store tests);
 /// [`set_match_reminders`] is the multi-timer entry point for an explicit star.
+///
+/// # Errors
+///
+/// Returns a `rusqlite::Error` if the underlying SQLite call fails.
 pub fn add_reminder(conn: &Connection, r: &Reminder) -> rusqlite::Result<()> {
     conn.execute(&reminder_upsert_sql(), &reminder_params(r)[..])?;
     clear_exclusion(conn, &r.endpoint, r.match_id, &r.sport)?;
@@ -849,6 +907,10 @@ pub fn add_reminder(conn: &Connection, r: &Reminder) -> rusqlite::Result<()> {
 /// drops stale *unsent* rows first, so changing a match's timer set leaves no
 /// orphans and never re-fires a timer that already went out. Atomic; a no-op on
 /// an empty slice.
+///
+/// # Errors
+///
+/// Returns a `rusqlite::Error` if the underlying SQLite call fails.
 pub fn set_match_reminders(conn: &Connection, reminders: &[Reminder]) -> rusqlite::Result<()> {
     let Some(first) = reminders.first() else {
         return Ok(());
@@ -873,6 +935,10 @@ pub fn set_match_reminders(conn: &Connection, reminders: &[Reminder]) -> rusqlit
 
 /// Insert a timer row only if one doesn't exist (so re-expanding a sport/event
 /// subscription never re-arms an already-sent reminder).
+///
+/// # Errors
+///
+/// Returns a `rusqlite::Error` if the underlying SQLite call fails.
 pub fn add_reminder_if_absent(conn: &Connection, r: &Reminder) -> rusqlite::Result<()> {
     conn.execute(&reminder_insert_if_absent_sql(), &reminder_params(r)[..])?;
     Ok(())
@@ -881,6 +947,10 @@ pub fn add_reminder_if_absent(conn: &Connection, r: &Reminder) -> rusqlite::Resu
 /// Opt a match out of all covering subscriptions: a single row blocks every timer
 /// for `(endpoint, match_id, sport)`. Also drops its unsent reminder rows so the
 /// opt-out takes effect immediately.
+///
+/// # Errors
+///
+/// Returns a `rusqlite::Error` if the underlying SQLite call fails.
 pub fn exclude_match(
     conn: &Connection,
     endpoint: &str,
@@ -899,6 +969,10 @@ pub fn exclude_match(
 }
 
 /// Clear a match's opt-out (an explicit star wins over a prior opt-out).
+///
+/// # Errors
+///
+/// Returns a `rusqlite::Error` if the underlying SQLite call fails.
 pub fn clear_exclusion(
     conn: &Connection,
     endpoint: &str,
@@ -914,6 +988,10 @@ pub fn clear_exclusion(
 
 /// Every opt-out as `(endpoint, match_id, sport)` — the expansion loop loads this
 /// once per tick to skip re-arming opted-out matches.
+///
+/// # Errors
+///
+/// Returns a `rusqlite::Error` if the underlying SQLite call fails.
 pub fn list_exclusions(conn: &Connection) -> rusqlite::Result<HashSet<(String, i64, String)>> {
     let mut stmt = conn.prepare("SELECT endpoint, match_id, sport FROM exclusions")?;
     let rows = stmt.query_map([], |r| {
@@ -926,6 +1004,11 @@ pub fn list_exclusions(conn: &Connection) -> rusqlite::Result<HashSet<(String, i
     rows.collect()
 }
 
+/// Drop every timer this endpoint has armed for one match.
+///
+/// # Errors
+///
+/// Returns a `rusqlite::Error` if the underlying SQLite call fails.
 pub fn remove_reminder(
     conn: &Connection,
     endpoint: &str,
@@ -947,6 +1030,10 @@ pub fn remove_reminder(
 /// hasn't started (no pointless late "starts soon") *and* it isn't badly behind
 /// (a long-lead timer the server missed by hours is dropped, not fired late).
 /// Carries `sport` + `lead_ms` so the sender can mark the exact timer row sent.
+///
+/// # Errors
+///
+/// Returns a `rusqlite::Error` if the underlying SQLite call fails.
 pub fn due_reminders(conn: &Connection, now_ms: i64) -> rusqlite::Result<Vec<Reminder>> {
     // The bounds are trusted i64 consts, so inlining them is injection-safe.
     let mut stmt = conn.prepare(&format!(
@@ -985,6 +1072,10 @@ pub fn due_reminders(conn: &Connection, now_ms: i64) -> rusqlite::Result<Vec<Rem
 /// Mark exactly one timer row sent (keyed by the full PK, so delivering one
 /// timer never silences a match's other timers — or the same id under another
 /// sport).
+///
+/// # Errors
+///
+/// Returns a `rusqlite::Error` if the underlying SQLite call fails.
 pub fn mark_reminder_sent(
     conn: &Connection,
     endpoint: &str,
@@ -1005,6 +1096,10 @@ pub fn mark_reminder_sent(
 /// [`crate::cache::reschedule_plan`]). Sent rows are included so a cancellation is
 /// still announced after every timer for the match has already fired; the plan
 /// only *reschedules* the unsent ones.
+///
+/// # Errors
+///
+/// Returns a `rusqlite::Error` if the underlying SQLite call fails.
 pub fn all_reminders(conn: &Connection) -> rusqlite::Result<Vec<Reminder>> {
     let mut stmt = conn.prepare(&format!("SELECT {REMINDER_COLS}, sent FROM reminders"))?;
     let rows = stmt.query_map([], |r| {
@@ -1034,6 +1129,10 @@ pub fn all_reminders(conn: &Connection) -> rusqlite::Result<Vec<Reminder>> {
 /// Re-point an unsent timer row at a rescheduled start: update its notify time
 /// and the derived title/body/url, keyed by the full PK. Touches only unsent rows
 /// — a delivered reminder is never rewritten, and its `sent` latch is preserved.
+///
+/// # Errors
+///
+/// Returns a `rusqlite::Error` if the underlying SQLite call fails.
 pub fn update_reminder_schedule(conn: &Connection, r: &Reminder) -> rusqlite::Result<()> {
     conn.execute(
         "UPDATE reminders SET notify_at_ms=?1, title=?2, body=?3, url=?4
@@ -1054,6 +1153,10 @@ pub fn update_reminder_schedule(conn: &Connection, r: &Reminder) -> rusqlite::Re
 
 /// Remove all reminders, subscriptions, and opt-outs for a dead endpoint
 /// (404/410 push).
+///
+/// # Errors
+///
+/// Returns a `rusqlite::Error` if the underlying SQLite call fails.
 pub fn delete_endpoint(conn: &Connection, endpoint: &str) -> rusqlite::Result<()> {
     conn.execute(
         "DELETE FROM reminders WHERE endpoint = ?1",
@@ -1077,6 +1180,10 @@ pub fn delete_endpoint(conn: &Connection, endpoint: &str) -> rusqlite::Result<()
 /// re-arm. A no-op if old == new. `OR IGNORE` so a row that already exists under
 /// the new endpoint (e.g. a reconcile already ran) is left as-is — the stale old
 /// one is dropped below and would otherwise 410-prune anyway.
+///
+/// # Errors
+///
+/// Returns a `rusqlite::Error` if the underlying SQLite call fails.
 pub fn migrate_endpoint(
     conn: &Connection,
     old: &str,
@@ -1111,6 +1218,10 @@ pub fn migrate_endpoint(
 /// retained — otherwise pruning it would let the subscription-expansion's
 /// insert-if-absent re-arm it and fire a duplicate. Cleaned up once the match is
 /// safely in the past.
+///
+/// # Errors
+///
+/// Returns a `rusqlite::Error` if the underlying SQLite call fails.
 pub fn prune_reminders(conn: &Connection, cutoff_ms: i64) -> rusqlite::Result<()> {
     conn.execute(
         "DELETE FROM reminders WHERE notify_at_ms + lead_ms < ?1",
@@ -1179,6 +1290,13 @@ fn scope_where(kind: &str) -> &'static str {
     }
 }
 
+/// Insert a subscription, or update the existing row for the same
+/// `(endpoint, scope)` in place — so re-subscribing refreshes the push keys
+/// and lead times rather than duplicating the scope.
+///
+/// # Errors
+///
+/// Returns a `rusqlite::Error` if the underlying SQLite call fails.
 pub fn add_subscription(conn: &Connection, s: &Subscription) -> rusqlite::Result<()> {
     let lead_list = join_lead_list(&s.lead_list);
     conn.execute(
@@ -1242,6 +1360,11 @@ fn prune_scope_leads(
     Ok(())
 }
 
+/// Drop one endpoint's subscription to a single scope.
+///
+/// # Errors
+///
+/// Returns a `rusqlite::Error` if the underlying SQLite call fails.
 pub fn remove_subscription(
     conn: &Connection,
     endpoint: &str,
@@ -1257,6 +1380,11 @@ pub fn remove_subscription(
     Ok(())
 }
 
+/// Every stored subscription, for the expansion pass that arms reminders.
+///
+/// # Errors
+///
+/// Returns a `rusqlite::Error` if the underlying SQLite call fails.
 pub fn list_subscriptions(conn: &Connection) -> rusqlite::Result<Vec<Subscription>> {
     let mut stmt = conn.prepare(
         "SELECT endpoint, p256dh, auth, scope_kind, scope_sport, scope_value,
@@ -1284,6 +1412,10 @@ pub fn list_subscriptions(conn: &Connection) -> rusqlite::Result<Vec<Subscriptio
 
 /// On unsubscribe, drop unsent reminders this endpoint got from that scope. A
 /// team matches either side; sport/league match their single column.
+///
+/// # Errors
+///
+/// Returns a `rusqlite::Error` if the underlying SQLite call fails.
 pub fn delete_unsent_reminders_by_scope(
     conn: &Connection,
     endpoint: &str,
@@ -1301,6 +1433,10 @@ pub fn delete_unsent_reminders_by_scope(
 
 /// Remove everything an endpoint is signed up for — all subscriptions, all
 /// (unsent) reminders, and all opt-outs. Backs "clear all".
+///
+/// # Errors
+///
+/// Returns a `rusqlite::Error` if the underlying SQLite call fails.
 pub fn clear_endpoint(conn: &Connection, endpoint: &str) -> rusqlite::Result<()> {
     conn.execute(
         "DELETE FROM subscriptions WHERE endpoint = ?1",

@@ -207,16 +207,8 @@ fn clean_network(name: &str) -> String {
 /// Sort key: TV before radio, national before local, home before away. Lower
 /// sorts first, so the most useful "where to watch" entries lead the list.
 fn broadcast_rank(b: &RawBroadcast) -> (i32, i32, i32) {
-    let tv = if b.kind.eq_ignore_ascii_case("TV") {
-        0
-    } else {
-        1
-    };
-    let nat = if b.is_national || b.home_away == "national" {
-        0
-    } else {
-        1
-    };
+    let tv = i32::from(!b.kind.eq_ignore_ascii_case("TV"));
+    let nat = i32::from(!(b.is_national || b.home_away == "national"));
     let side = match b.home_away.as_str() {
         "national" => 0,
         "home" => 1,
@@ -357,6 +349,11 @@ fn to_match(g: RawGame) -> Option<NormalizedMatch> {
 }
 
 /// Fetch every MLB game in the inclusive date range (UTC days), normalized.
+///
+/// # Errors
+///
+/// Returns a `reqwest::Error` if the request fails or the response body
+/// does not deserialize into the expected shape.
 pub async fn fetch_schedule(
     client: &reqwest::Client,
     start: NaiveDate,
@@ -440,8 +437,7 @@ fn build_raw_series(
     let anchor_len = games
         .iter()
         .find(|g| g.game_pk == game_pk)
-        .map(|g| g.games_in_series)
-        .unwrap_or(0);
+        .map_or(0, |g| g.games_in_series);
     let mut raw: Vec<RawGame> = games
         .into_iter()
         .filter(|g| {
@@ -591,6 +587,11 @@ fn series_record_label(
 /// generously). `team_a`/`team_b` are the headline's away/home labels; `series`
 /// carries the team ids + this game's series position. Call [`format_series`] on
 /// the result to produce per-request display labels.
+///
+/// # Errors
+///
+/// Returns a `reqwest::Error` if the request fails or the response body
+/// does not deserialize into the expected shape.
 pub async fn fetch_series(
     client: &reqwest::Client,
     game_pk: i64,
@@ -642,6 +643,11 @@ pub async fn fetch_series(
 // a fixed template — is what gets the connectors right).
 
 /// The AL/NL playoff bracket for a season (empty before the postseason begins).
+///
+/// # Errors
+///
+/// Returns a `reqwest::Error` if the request fails or the response body
+/// does not deserialize into the expected shape.
 pub async fn fetch_bracket(
     client: &reqwest::Client,
     year: i32,
@@ -756,7 +762,7 @@ fn mlb_bracket(games: Vec<RawGame>) -> Vec<BracketRound> {
         // A series is decided once a team reaches the clinch number. Guard on a
         // known series length: `gamesInSeries` defaults to 0 when the feed omits
         // it, which would otherwise clinch (0/2 + 1 = 1) after a single win.
-        let clinch = (acc.games_in_series / 2 + 1) as i64;
+        let clinch = i64::from(acc.games_in_series / 2 + 1);
         let over = acc.games_in_series > 0 && (wa >= clinch || wb >= clinch);
         let winner = if !over {
             ""
@@ -779,7 +785,7 @@ fn mlb_bracket(games: Vec<RawGame>) -> Vec<BracketRound> {
             feed: [None, None],
         });
     }
-    bracket_build::build(raws)
+    bracket_build::build(&raws)
 }
 
 /// Top-to-bottom order for the league sub-brackets (AL on top, NL below, World
@@ -905,6 +911,11 @@ fn divisions_from(resp: StandingsResp) -> Vec<EventInfo> {
 
 /// Fetch the current MLB division standings (both leagues), one table per
 /// division. Keyless, like the schedule feed.
+///
+/// # Errors
+///
+/// Returns a `reqwest::Error` if the request fails or the response body
+/// does not deserialize into the expected shape.
 pub async fn fetch_standings(
     client: &reqwest::Client,
     season: i32,
@@ -1120,6 +1131,11 @@ struct RawPerformer {
 // ---- Fetch ----------------------------------------------------------------
 
 /// Fetch a game's linescore + boxscore (two keyless calls).
+///
+/// # Errors
+///
+/// Returns a `reqwest::Error` if the request fails or the response body
+/// does not deserialize into the expected shape.
 pub async fn fetch_box_score(
     client: &reqwest::Client,
     game_pk: i64,
@@ -1206,6 +1222,7 @@ fn pitching_table(t: &RawBsTeam) -> PlayerTable {
 }
 
 /// Normalize a game's linescore + boxscore into the shared `BoxScore`.
+#[must_use]
 pub fn to_box_score(ls: &RawLinescore, bs: &RawBoxscore) -> BoxScore {
     let (away, home) = (&bs.teams.away, &bs.teams.home);
 
@@ -1432,7 +1449,7 @@ mod tests {
                 );
             }
         }
-        assert!(!rounds.is_empty());
+        assert!(!rounds.is_empty(), "{rounds:?}");
         assert!(rounds.iter().any(|r| r.section == "final"));
     }
 
@@ -1540,7 +1557,7 @@ mod tests {
             ),
             ("Rangers Sports Network", "away · TV", "tv")
         );
-        assert!(out[1].url.is_empty());
+        assert!(out[1].url.is_empty(), "{:?}", out[1].url);
         // MLB.tv is inserted between TV and radio, with a link.
         assert_eq!(
             (out[2].name.as_str(), out[2].group.as_str()),
@@ -1555,7 +1572,7 @@ mod tests {
             ),
             ("560AM WQAM", "home · radio", "radio")
         );
-        assert!(out[3].url.is_empty());
+        assert!(out[3].url.is_empty(), "{:?}", out[3].url);
     }
 
     #[test]
@@ -1624,7 +1641,7 @@ mod tests {
         // Headline is G2 (gamePk 822799); team_a = away Astros(117), team_b = home Jays(141).
         let raw = build_raw_series(
             raw_series_games(sample_series_json()),
-            822799,
+            822_799,
             117,
             "Astros",
             "Blue Jays",
@@ -1666,7 +1683,7 @@ mod tests {
         // Flip the headline orientation: team_a = home Jays(141), team_b = away Astros(117).
         let raw = build_raw_series(
             raw_series_games(sample_series_json()),
-            822799,
+            822_799,
             141,
             "Blue Jays",
             "Astros",
@@ -1692,7 +1709,7 @@ mod tests {
         // between the same teams; it must be dropped (wrong gamesInSeries).
         let mut games = raw_series_games(sample_series_json());
         games.push(RawGame {
-            game_pk: 999999,
+            game_pk: 999_999,
             game_date: "2026-06-25T20:07:00Z".into(),
             status: RawStatus {
                 abstract_state: "Final".into(),
@@ -1724,11 +1741,11 @@ mod tests {
             broadcasts: Vec::new(),
             venue: RawVenue::default(),
         });
-        let raw = build_raw_series(games, 822799, 117, "Astros", "Blue Jays");
+        let raw = build_raw_series(games, 822_799, 117, "Astros", "Blue Jays");
         let series = format_series(&raw, utc_labels);
         // Only the three 3-game-series games survive.
         assert_eq!(series.games.len(), 3);
-        assert!(series.games.iter().all(|g| g.match_id != 999999));
+        assert!(series.games.iter().all(|g| g.match_id != 999_999));
     }
 
     #[test]

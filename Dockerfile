@@ -9,7 +9,10 @@ RUN apk update && \
 
 RUN npm install -g sass
 
-RUN curl --proto '=https' --tlsv1.3 -LsSf https://github.com/leptos-rs/cargo-leptos/releases/latest/download/cargo-leptos-installer.sh | sh
+# Pinned so the image and CI build with the same cargo-leptos — .forgejo/workflows/ci.yml
+# pins the identical version, and they are meant to be bumped together. Previously both
+# said "latest", which agreed only when they happened to run the same day.
+RUN curl --proto '=https' --tlsv1.3 -LsSf https://github.com/leptos-rs/cargo-leptos/releases/download/v0.3.7/cargo-leptos-installer.sh | sh
 
 WORKDIR /work
 COPY . .

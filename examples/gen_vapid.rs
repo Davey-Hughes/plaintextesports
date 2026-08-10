@@ -1,6 +1,6 @@
 //! Generate a VAPID keypair for Web Push reminders — no Node/npx required.
 //!
-//! Run:  cargo run --example gen_vapid --features ssr
+//! Run:  cargo run --example `gen_vapid` --features ssr
 //!
 //! Prints base64url keys in the same format as `npx web-push generate-vapid-keys`,
 //! ready to paste into `.env`.

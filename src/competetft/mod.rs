@@ -5,9 +5,10 @@
 pub mod rsc;
 pub mod sheet;
 
+use crate::feed::NOON;
 use crate::tft::ParsedSession;
 use crate::types::{TftBroadcast, TftDayPanel, TftLobbyRound, TftPlacement, TftStreamer};
-use chrono::{DateTime, Datelike, Utc};
+use chrono::{DateTime, Datelike, NaiveTime, Utc};
 
 const HOST: &str = "https://competetft.com";
 
@@ -30,7 +31,7 @@ pub fn infer_year(month: u32, day: u32, status: &str, now: DateTime<Utc>) -> i32
         let Some(d) = chrono::NaiveDate::from_ymd_opt(y, month, day) else {
             continue;
         };
-        let dt = d.and_hms_opt(0, 0, 0).unwrap().and_utc();
+        let dt = d.and_time(NaiveTime::MIN).and_utc();
         let delta = (dt - now).num_days();
         let mut score = delta.abs();
         if upcoming && delta < 0 {
@@ -293,6 +294,9 @@ pub fn split_day_panels(
 /// row spanning the range. Off-broadcast rows are anchored at 12:00 UTC (nominal;
 /// date-granular). Empty when there's neither a feed nor a date range.
 #[must_use]
+// Both conversions are over `t.stages`: its length, and an enumerate index
+// used as a day offset. A tournament has a handful of stages.
+#[allow(clippy::cast_possible_wrap)]
 pub fn derive_sessions(
     t: &rsc::CompeteTournament,
     events: &[rsc::CompeteEvent],
@@ -319,8 +323,7 @@ pub fn derive_sessions(
                     .stages
                     .iter()
                     .find(|s| s.stage_id == e.stage_id)
-                    .map(|s| s.title.clone())
-                    .unwrap_or_else(|| e.event_type.replace('_', " "));
+                    .map_or_else(|| e.event_type.replace('_', " "), |s| s.title.clone());
                 mk(label, e.date)
             })
             .collect();
@@ -343,7 +346,7 @@ pub fn derive_sessions(
         return Vec::new();
     };
     // Nominal noon UTC keeps the calendar day stable for most viewer timezones.
-    let start = start_d.and_hms_opt(12, 0, 0).unwrap().and_utc();
+    let start = start_d.and_time(NOON).and_utc();
     let span = (end_d - start_d).num_days() + 1;
 
     let distinct = {
@@ -728,8 +731,10 @@ mod tests {
 
     #[test]
     fn day_round_counts_is_empty_without_parseable_labels() {
-        assert!(day_round_counts(&[]).is_empty());
-        assert!(day_round_counts(&[lobby("Lobby A"), lobby("nonsense")]).is_empty());
+        let counts = day_round_counts(&[]);
+        assert!(counts.is_empty(), "{counts:?}");
+        let counts = day_round_counts(&[lobby("Lobby A"), lobby("nonsense")]);
+        assert!(counts.is_empty(), "{counts:?}");
     }
 
     fn tourn(
@@ -881,8 +886,10 @@ mod tests {
 
     #[test]
     fn sheet_url_is_empty_when_nothing_is_published() {
-        assert!(sheet_url(&tourn_with_sheets(&["", ""])).is_empty());
-        assert!(sheet_url(&tourn("t", "n", None, &[])).is_empty());
+        let url = sheet_url(&tourn_with_sheets(&["", ""]));
+        assert!(url.is_empty(), "{url:?}");
+        let url = sheet_url(&tourn("t", "n", None, &[]));
+        assert!(url.is_empty(), "{url:?}");
     }
 
     #[test]
@@ -931,7 +938,7 @@ mod tests {
             &["Day 1", "Day 2", "Finals"],
         );
         let s = derive_sessions(&t, &[], now);
-        assert!(!s.is_empty());
+        assert!(!s.is_empty(), "{s:?}");
         assert!(s.iter().all(|x| x.tournament == "Tactician's Crown 2026"));
     }
 
@@ -966,13 +973,13 @@ mod tests {
         ];
         let now = "2026-07-13T00:00:00Z".parse::<DateTime<Utc>>().unwrap();
         let d = assemble(&t, &events, &tabs, now);
-        assert!(!d.standings.is_empty());
+        assert!(!d.standings.is_empty(), "{:?}", d.standings);
         // The fixture carries lobby data, so the combined panel splits: Day 1
         // (re-totaled/re-ranked) sorts first, ahead of Day 2 and Finals.
         assert_eq!(d.standings[0].label, "Day 1");
-        assert!(!d.placements.is_empty());
+        assert!(!d.placements.is_empty(), "{:?}", d.placements);
         assert!(d.streamers.len() >= 15);
-        assert!(!d.lobbies.is_empty());
+        assert!(!d.lobbies.is_empty(), "{:?}", d.lobbies);
         assert!(d.broadcasts.iter().any(|b| b.label == "KR"));
         // three broadcast days, with feed-sourced labels
         assert_eq!(d.sessions.len(), 3);
@@ -989,7 +996,7 @@ mod tests {
         let client = reqwest::Client::new();
         let sched = rt.block_on(fetch_schedule(&client));
         // The tournament list is present year-round, independent of broadcasts.
-        assert!(!sched.tournaments.is_empty());
+        assert!(!sched.tournaments.is_empty(), "{:?}", sched.tournaments);
         assert!(
             sched
                 .events

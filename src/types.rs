@@ -172,9 +172,9 @@ impl Sport {
             Self::Mlb | Self::Nba => "GB",
             Self::Nhl | Self::Soccer => "PTS",
             Self::Nfl => "PCT",
-            Self::Motorsport => "",
-            // No standings table in the schedule feed (placements are a follow-on).
-            Self::Tft => "",
+            // F1 has no standings table at all; TFT has no standings in the
+            // schedule feed (its placements arrive as a follow-on fetch).
+            Self::Motorsport | Self::Tft => "",
         }
     }
 
@@ -327,8 +327,8 @@ pub struct MatchView {
     pub team_a: TeamView,
     pub team_b: TeamView,
     /// The source's official league/event URL (often empty). Carried so
-    /// [`group_days`] can resolve each `LeagueGroup`'s event link once from its
-    /// first row, instead of every row paying for the resolve. Never read per-row
+    /// `cache::group_days` can resolve each `LeagueGroup`'s event link once from
+    /// its first row, instead of every row paying for the resolve. Never read per-row
     /// on the client, so it's skipped on the wire.
     #[serde(skip)]
     pub league_url: String,
@@ -426,6 +426,19 @@ pub fn event_is(
     want.is_none_or(|w| w == sport) && event_name_eq(league, series, target)
 }
 
+/// Knockout/standalone competition markers: cups, invitationals, majors,
+/// masters, championships, and Intel Extreme Masters ("IEM"). A domestic
+/// "… League" (Premier League, XSE Pro League) contains none of them, so it
+/// stays a league.
+const TOURNAMENT_WORDS: &[&str] = &[
+    "cup",
+    "invitational",
+    "major",
+    "masters",
+    "championship",
+    "iem",
+];
+
 /// The best-fit noun for a tier-2 competition, for display (the subscription tag).
 /// The `league` field is a mix of true leagues (MLB, LCK, "… Pro League"),
 /// knockout tournaments (World Cup, IEM, the invitationals/majors), and racing
@@ -440,17 +453,6 @@ pub fn competition_kind(league: &str) -> &'static str {
     if matches!(league, "F1" | "MotoGP" | "WRC" | "WEC") {
         return "series";
     }
-    // Knockout/standalone competitions: cups, invitationals, majors, masters,
-    // championships, and Intel Extreme Masters ("IEM"). A domestic "… League"
-    // (Premier League, XSE Pro League) has none of these, so it stays a league.
-    const TOURNAMENT_WORDS: &[&str] = &[
-        "cup",
-        "invitational",
-        "major",
-        "masters",
-        "championship",
-        "iem",
-    ];
     let lower = league.to_ascii_lowercase();
     if TOURNAMENT_WORDS.iter().any(|w| lower.contains(w)) {
         return "tournament";
@@ -526,7 +528,7 @@ pub struct ReminderReq {
     /// lead, preserving the prior single-reminder behaviour.
     #[serde(default)]
     pub leads: Vec<i64>,
-    /// The viewer's IANA timezone (e.g. "America/New_York"), so the server bakes
+    /// The viewer's IANA timezone (e.g. "`America/New_York`"), so the server bakes
     /// the notification body's start time in the viewer's zone rather than its own
     /// configured display tz. Empty (old client / serde default) ⇒ the server tz.
     #[serde(default)]
@@ -578,6 +580,11 @@ pub struct NotificationsView {
 /// One broadcast/stream for a match. Esports entries (from PandaScore
 /// `streams_list`) carry a clickable `url`; MLB TV/radio broadcasts carry no
 /// link, just a network `name` and a pre-formatted `tag` (e.g. "national · TV").
+// The bools are orthogonal facts about one broadcast (`official` and `main` are
+// PandaScore's own two flags, and a stream can be either, both, or neither).
+// This type is also the wire format for the server-fn responses, so collapsing
+// them into an enum would be a JSON-shape change, not a refactor.
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StreamView {
     pub url: String,
@@ -1390,6 +1397,9 @@ fn stat_value(s: &str) -> Option<f64> {
 /// Away's whole-percent share of the two values, for the comparison lead bar.
 /// `None` when either value isn't numeric or the two sum to zero.
 #[must_use]
+// `.clamp(0.0, 100.0)` immediately precedes the cast, so the value is in
+// 0..=100 and neither truncates nor loses a sign.
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
 pub fn stat_share(away: &str, home: &str) -> Option<u8> {
     let (a, h) = (stat_value(away)?, stat_value(home)?);
     let sum = a + h;
@@ -1571,13 +1581,16 @@ mod tests {
     #[test]
     fn match_uid_round_trips_for_every_game() {
         for &g in Sport::ALL {
-            let uid = match_uid(g, 1494586);
-            assert_eq!(parse_match_uid(&uid), Some((g, 1494586)), "uid {uid}");
+            let uid = match_uid(g, 1_494_586);
+            assert_eq!(parse_match_uid(&uid), Some((g, 1_494_586)), "uid {uid}");
             // The slug has no '-', so the split is unambiguous.
             assert_eq!(uid, format!("{}-1494586", g.slug()));
         }
-        assert_eq!(parse_match_uid("cs2-1494586"), Some((Sport::Cs2, 1494586)));
-        assert_eq!(parse_match_uid("mlb-822869"), Some((Sport::Mlb, 822869)));
+        assert_eq!(
+            parse_match_uid("cs2-1494586"),
+            Some((Sport::Cs2, 1_494_586))
+        );
+        assert_eq!(parse_match_uid("mlb-822869"), Some((Sport::Mlb, 822_869)));
         // Malformed / unknown slug → None.
         assert_eq!(parse_match_uid("1494586"), None); // no separator
         assert_eq!(parse_match_uid("bogus-1"), None); // unknown sport
@@ -1586,8 +1599,8 @@ mod tests {
 
     #[test]
     fn match_path_scopes_sport_and_id_into_segments() {
-        assert_eq!(match_path(Sport::Mlb, 824255), "/match/mlb/824255");
-        assert_eq!(match_path(Sport::Cs2, 1494586), "/match/cs2/1494586");
+        assert_eq!(match_path(Sport::Mlb, 824_255), "/match/mlb/824255");
+        assert_eq!(match_path(Sport::Cs2, 1_494_586), "/match/cs2/1494586");
         // The path segments are exactly the uid split on its single '-'.
         for &g in Sport::ALL {
             let (slug, id) = parse_match_uid(&match_uid(g, 7)).unwrap();
@@ -1656,7 +1669,7 @@ mod tests {
             }],
             timeline: vec![ScoreEvent {
                 segment: "2nd".into(),
-                clock: "".into(),
+                clock: String::new(),
                 team: "BAL".into(),
                 kind: "hr".into(),
                 description: "Ruiz HR (2)".into(),

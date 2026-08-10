@@ -62,6 +62,26 @@ jobs:
         run: cargo clippy --features ssr --all-targets -- -D warnings
       - name: Test
         run: cargo test --features ssr
+      # Doc links break silently — no other job here compiles a doc comment, so a
+      # `[`renamed_fn`]` left behind by a refactor passes everything else.
+      # `--document-private-items` is the view that matters: this crate is `pub`
+      # only so the binary and the wasm build can consume it, which leaves the
+      # interesting items `pub(crate)` and absent from the default doc build.
+      # A step in `rust` rather than its own job — it reuses that job's warm
+      # target dir, where a fresh job would rebuild the dep tree to do one pass.
+      # `--bins` matters: without it this documents the lib only, and a broken
+      # link in main.rs passes every gate. Verified by planting one — the lib-only
+      # command did not notice.
+      - name: Docs
+        run: cargo doc --no-deps --document-private-items --bins --features ssr
+        env:
+          RUSTDOCFLAGS: -D warnings
+      # `--all-targets` above type-checks the benches but never codegens or runs
+      # them, so a bench that panics on its own fixtures is invisible. Criterion's
+      # `--test` runs each one once with no measurement, which is the cheap half
+      # of that: it catches breakage without spending CI time on statistics.
+      - name: Benches (smoke)
+        run: cargo bench --features ssr -- --test
 
   # The other half of `cargo leptos test`. That command is exactly two cargo
   # invocations — the `rust` job above is the server one, this is the client one:
@@ -105,6 +125,14 @@ jobs:
         run: cargo clippy --lib --no-default-features --features hydrate -- -D warnings
       - name: Test (hydrate)
         run: cargo test --lib --no-default-features --features hydrate
+      # Docs need both feature sets for the same reason clippy does: they compile
+      # different code, and an intra-doc link resolves against whichever half is
+      # present. A path into `cache` (ssr-only) resolves under ssr and dangles
+      # under hydrate — which is exactly how this step earned its place.
+      - name: Docs (hydrate)
+        run: cargo doc --no-deps --document-private-items --lib --no-default-features --features hydrate
+        env:
+          RUSTDOCFLAGS: -D warnings
 
   # The hydration bundle ships to every visitor, so its size is budgeted in
   # scripts/perf/wasm-budget.txt. The budget and the script that checks it both
@@ -125,17 +153,54 @@ jobs:
           rustup show
       - uses: https://code.forgejo.org/actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
+          # `~/.cache/cargo-leptos` is where `cargo leptos build` puts the tools
+          # it shells out to — wasm-bindgen and sass — downloaded from github.com
+          # on first use. NOT `~/.cargo/bin`, which holds only cargo-leptos
+          # itself. Without it here the job re-downloads wasm-bindgen every run
+          # and is never more available than GitHub is from the runner: that is
+          # how it failed once, `dns error: No address associated with hostname`
+          # for the wasm-bindgen tarball, minutes after the cargo-leptos
+          # installer had reached the same host fine.
+          #
+          # Keying on Cargo.lock is right for it: cargo-leptos fetches the
+          # wasm-bindgen version the lock pins, so a bump invalidates the entry
+          # and re-downloads exactly once.
+          #
+          # `cargo-leptos` is listed as the one file rather than all of
+          # `~/.cargo/bin`, which also holds the rustup shims that the toolchain
+          # step just wrote — restoring a previous run's copies over those is a
+          # way to break the toolchain for no gain. The install step re-fetches
+          # whenever the cached binary is not the pinned version, so a stale
+          # entry corrects itself rather than sticking.
           path: |
             ~/.cargo/registry
             ~/.cargo/git
             target
+            ~/.cache/cargo-leptos
+            ~/.cargo/bin/cargo-leptos
           # Its own key namespace: this job compiles the wasm32 target under the
           # wasm-release profile, which the `rust` job above never builds.
           key: cargo-wasm-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: cargo-wasm-
       # Same installer the Dockerfile uses, so CI and the image agree on version.
+      # Pinned, not `latest`. The Dockerfile pins the same version, which is what
+      # actually makes CI and the image agree — both saying "latest" only agreed
+      # if they happened to run the same day. Pinning also makes the binary
+      # cacheable: `latest` restored from cache would silently freeze CI on
+      # whatever was current when the entry was written, while the image kept
+      # moving. Bump both together.
+      #
+      # Skipped when the cache already holds this exact version, so the usual run
+      # makes no request to github.com for it.
       - name: Install cargo-leptos
-        run: curl --proto '=https' --tlsv1.3 -LsSf https://github.com/leptos-rs/cargo-leptos/releases/latest/download/cargo-leptos-installer.sh | sh
+        run: |
+          want=0.3.7
+          if cargo leptos --version 2>/dev/null | grep -qx "cargo-leptos $want"; then
+            echo "cargo-leptos $want already present (from cache)"
+          else
+            curl --proto '=https' --tlsv1.3 -LsSf \
+              "https://github.com/leptos-rs/cargo-leptos/releases/download/v$want/cargo-leptos-installer.sh" | sh
+          fi
       # Only a release build emits the hashed assets wasm_size.sh measures.
       - name: Build
         run: cargo leptos build --release

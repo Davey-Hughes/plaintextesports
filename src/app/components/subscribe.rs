@@ -1,5 +1,7 @@
 //! Reminder subscribe controls: the sport/event ★ and the per-match ★.
-use crate::app::*;
+use crate::app::prelude::*;
+use leptos::prelude::*;
+use std::collections::HashSet;
 
 /// ★ toggle to subscribe to a whole sport (`kind="sport"`, value "cs2"/"lol") or
 /// a league/competition (`kind="league"`, value = league name). `sport` scopes
@@ -16,7 +18,7 @@ pub(crate) fn SubscribeStar(kind: &'static str, sport: Sport, value: String) -> 
     let key = sub_key(kind, sport, &value);
     let key_active = key.clone();
     let is_on = Memo::new(move |_| subscribed.with(|s| s.contains(&key_active)));
-    let hidden = move || vapid.with(|v| v.is_none());
+    let hidden = move || vapid.with(std::option::Option::is_none);
 
     let on_click = move |_| {
         let now_on = subscribed.with_untracked(|s| s.contains(&key));
@@ -69,6 +71,10 @@ pub(crate) fn SubscribeStar(kind: &'static str, sport: Sport, value: String) -> 
 }
 
 #[component]
+// A `#[component]` prop. Leptos generates a props struct from this signature
+// and `view!` builds it at the call site, so props are owned by construction —
+// a borrowed prop would need a lifetime the macro has no way to name.
+#[allow(clippy::needless_pass_by_value)]
 pub(crate) fn StarButton(
     id: i64,
     sport: Sport,

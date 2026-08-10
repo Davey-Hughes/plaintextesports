@@ -38,6 +38,7 @@ struct CoField {
 
 /// Extract the co-streamer logins (lowercased, empties dropped) from a GQL
 /// response body. Malformed / null ⇒ empty, never panics.
+#[must_use]
 pub fn parse_costreamers(json: &str) -> Vec<String> {
     serde_json::from_str::<Resp>(json)
         .ok()
@@ -95,11 +96,12 @@ mod tests {
         ]}}}}"#;
         assert_eq!(parse_costreamers(json), vec!["caedrel", "sneaky"]); // lowercased, empty dropped
         // Empty list / null / malformed → empty, no panic.
-        assert!(
-            parse_costreamers(r#"{"data":{"user":{"adProperties":{"costreamers":[]}}}}"#)
-                .is_empty()
-        );
-        assert!(parse_costreamers(r#"{"data":{"user":null}}"#).is_empty());
-        assert!(parse_costreamers("nonsense").is_empty());
+        let costreamers =
+            parse_costreamers(r#"{"data":{"user":{"adProperties":{"costreamers":[]}}}}"#);
+        assert!(costreamers.is_empty(), "{costreamers:?}");
+        let costreamers = parse_costreamers(r#"{"data":{"user":null}}"#);
+        assert!(costreamers.is_empty(), "{costreamers:?}");
+        let costreamers = parse_costreamers("nonsense");
+        assert!(costreamers.is_empty(), "{costreamers:?}");
     }
 }

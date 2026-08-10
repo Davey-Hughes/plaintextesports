@@ -3,8 +3,9 @@
 //! use. Split out of the page components in `super` (which render these via the
 //! `pub(crate)` entry points `StandingsTable`, `SwissBracket`, `Bracket`).
 
-use super::*;
+use super::prelude::*;
 use crate::types::{BracketMatch, BracketRound, Sport, StandingRow, SwissMatch, SwissRound};
+use leptos::prelude::*;
 use std::collections::HashSet;
 
 /// The shared core behind [`section_reveal`] and [`page_reveal`]: reveal state for
@@ -165,10 +166,8 @@ fn touch_bracket_on_view(
 pub(crate) fn stage_of(set: &HashSet<String>, bn: &str, bs: &str) -> u8 {
     if set.contains(bs) {
         2
-    } else if set.contains(bn) {
-        1
     } else {
-        0
+        u8::from(set.contains(bn))
     }
 }
 
@@ -487,26 +486,25 @@ pub(crate) fn StandingsTable(
     let show_last = sport.standings_single_value();
     // Follow the block's shared reveal when grouped; else self-manage an own
     // "Standings" toggle (click the title to reveal/hide the table).
-    let (revealed, header) = match shared {
-        Some(m) => (m, None),
-        None => {
-            let (r, toggle) = section_reveal(format!("st:{tournament_id}"));
-            let head = view! {
-                <div class="section-head">
-                    <button
-                        class="section-title section-toggle"
-                        class:on=move || r.get()
-                        title=move || if r.get() { "Hide the standings" } else { "Show the standings" }
-                        aria-expanded=move || if r.get() { "true" } else { "false" }
-                        on:click=toggle
-                    >
-                        "Standings"
-                    </button>
-                    {move || (!r.get()).then(|| view! { <span class="section-hint">"hidden"</span> })}
-                </div>
-            };
-            (r, Some(head))
-        }
+    let (revealed, header) = if let Some(m) = shared {
+        (m, None)
+    } else {
+        let (r, toggle) = section_reveal(format!("st:{tournament_id}"));
+        let head = view! {
+            <div class="section-head">
+                <button
+                    class="section-title section-toggle"
+                    class:on=move || r.get()
+                    title=move || if r.get() { "Hide the standings" } else { "Show the standings" }
+                    aria-expanded=move || if r.get() { "true" } else { "false" }
+                    on:click=toggle
+                >
+                    "Standings"
+                </button>
+                {move || (!r.get()).then(|| view! { <span class="section-hint">"hidden"</span> })}
+            </div>
+        };
+        (r, Some(head))
     };
     // Record alignment: if any team has ties/OT losses, every row shows the third
     // field (blank where a team has none) so the W, L and T columns line up; each
@@ -1072,6 +1070,16 @@ pub(crate) fn SwissBracket(
     .into_any()
 }
 
+/// Vertical em budget above slot 0, in the order it stacks: section banner,
+/// its gap, the round title (name over date), its gap, and the pad above the
+/// topmost of them. Paired with [`bracket::ROW_EM`] / [`bracket::BOX_H_EM`],
+/// which the CSS mirrors as `--bk-*`.
+const TITLE_EM: f64 = 2.8; // round name + date (two lines)
+const TITLE_GAP: f64 = 0.5; // below the date, above the box
+const LABEL_EM: f64 = 1.5; // section banner
+const LABEL_GAP: f64 = 1.2; // below the banner, above the title
+const TOP_PAD: f64 = 0.3; // above the topmost banner/title
+
 #[component]
 pub(crate) fn Bracket(
     rounds: Vec<BracketRound>,
@@ -1106,11 +1114,6 @@ pub(crate) fn Bracket(
     // property so the CSS box matches the geometry the connectors are drawn to.
     let box_w_em = bracket::box_width_em(&rounds, layout.cols);
     let col_em = bracket::col_em(box_w_em);
-    const TITLE_EM: f64 = 2.8; // round name + date (two lines)
-    const TITLE_GAP: f64 = 0.5; // below the date, above the box
-    const LABEL_EM: f64 = 1.5; // section banner
-    const LABEL_GAP: f64 = 1.2; // below the banner, above the title
-    const TOP_PAD: f64 = 0.3; // above the topmost banner/title
     let half_h = bracket::BOX_H_EM / 2.0;
     let multi = layout.group_rows.len() > 1
         || layout
@@ -1208,6 +1211,9 @@ pub(crate) fn Bracket(
         .into_iter()
         .enumerate()
         .map(|(r, (section, title, sres))| {
+            // Column index into em space. Bracket column counts are single
+            // digits; f64 is exact well past that.
+            #[allow(clippy::cast_precision_loss)]
             let x_em = positions[r].first().map_or(0, |p| p.col) as f64 * col_em;
             let sec_ymin = group_rows
                 .iter()
@@ -1464,6 +1470,8 @@ pub(crate) fn Bracket(
 
     // Connector overlay: one elbow path per feeder edge, drawn behind the boxes in
     // the same em coordinate space, so it stays attached at any shape or zoom.
+    // Same column-index-to-em conversion as above; counts are single digits.
+    #[allow(clippy::cast_precision_loss)]
     let w_em = layout.cols as f64 * col_em;
     let h_em = positions
         .iter()
@@ -1477,11 +1485,13 @@ pub(crate) fn Bracket(
         .map(|e| {
             let (fr, fi) = e.from;
             let (tr, ti) = e.to;
+            #[allow(clippy::cast_precision_loss)]
             let x1 = positions[fr][fi].col as f64 * col_em + box_w_em;
             let y1 = center_em(positions[fr][fi].y);
+            #[allow(clippy::cast_precision_loss)]
             let x2 = positions[tr][ti].col as f64 * col_em;
             let y2 = center_em(positions[tr][ti].y);
-            let xm = (x1 + x2) / 2.0;
+            let xm = f64::midpoint(x1, x2);
             view! { <path d=format!("M {x1:.2} {y1:.2} H {xm:.2} V {y2:.2} H {x2:.2}") /> }
         })
         .collect_view();

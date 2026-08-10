@@ -1,4 +1,4 @@
-//! Twitch category discovery (server-only): scan `Get Streams` by game_id +
+//! Twitch category discovery (server-only): scan `Get Streams` by `game_id` +
 //! language to surface co-streamers not in the curated list. Reuses `twitch.rs`
 //! for auth/client. Unconfigured / any error ⇒ empty, so the page never depends
 //! on it.
@@ -32,7 +32,10 @@ const BUILTIN_GAME_IDS: &[(Sport, &str)] = &[
 
 /// The Twitch category id for `sport`: a config override wins, else the built-in
 /// table; `None` for a sport with no mapping (never discovered).
-pub fn game_id(sport: Sport, overrides: &HashMap<String, String>) -> Option<String> {
+pub fn game_id<S: std::hash::BuildHasher>(
+    sport: Sport,
+    overrides: &HashMap<String, String, S>,
+) -> Option<String> {
     if let Some(id) = overrides.get(sport.slug()) {
         return Some(id.clone());
     }
@@ -72,6 +75,7 @@ struct RawDiscover {
 
 /// Parse a `Get Streams` body into `(streams, next cursor)`. Empty-login rows are
 /// dropped; logins are lowercased. Malformed input ⇒ `(vec![], None)`, no panic.
+#[must_use]
 pub fn parse_discover_page(json: &str) -> (Vec<DiscoveredStream>, Option<String>) {
     let resp: StreamsResp = serde_json::from_str(json).unwrap_or_default();
     let streams = resp
@@ -89,7 +93,7 @@ pub fn parse_discover_page(json: &str) -> (Vec<DiscoveredStream>, Option<String>
     (streams, resp.pagination.cursor)
 }
 
-/// Per-game cache of the last category scan, keyed by game_id. One scan per game
+/// Per-game cache of the last category scan, keyed by `game_id`. One scan per game
 /// per TTL serves every live match of that game.
 /// A cached scan: when it was taken, and the streams it found.
 type DiscoverEntry = (DateTime<Utc>, Vec<DiscoveredStream>);
@@ -100,7 +104,7 @@ const DISCOVER_TTL_SECS: i64 = 120;
 const MAX_PAGES: usize = 2;
 
 /// Live streams in a Twitch category, filtered to `langs`, sorted by viewers
-/// desc. Cached ~120s per game_id. Empty when Twitch is unconfigured or on any
+/// desc. Cached ~120s per `game_id`. Empty when Twitch is unconfigured or on any
 /// error — callers degrade to no discovery.
 pub async fn discover(game_id: &str, langs: &[String]) -> Vec<DiscoveredStream> {
     {
@@ -133,16 +137,15 @@ pub async fn discover(game_id: &str, langs: &[String]) -> Vec<DiscoveredStream> 
         if let Some(c) = &cursor {
             q.push(("after", c.clone()));
         }
-        let resp = match client
+        let Ok(resp) = client
             .get("https://api.twitch.tv/helix/streams")
             .query(&q)
             .header("Client-Id", &id)
             .bearer_auth(&token)
             .send()
             .await
-        {
-            Ok(r) => r,
-            Err(_) => break,
+        else {
+            break;
         };
         if !resp.status().is_success() {
             break;
@@ -184,7 +187,8 @@ mod tests {
         assert_eq!(v[0].tags, vec!["English", "Esports"]);
         assert_eq!(cursor.as_deref(), Some("abc"));
         // Malformed / empty → no panic, empty page, no cursor.
-        assert!(parse_discover_page("nonsense").0.is_empty());
+        let streams = parse_discover_page("nonsense").0;
+        assert!(streams.is_empty(), "{streams:?}");
         assert!(parse_discover_page(r#"{"data":[]}"#).1.is_none());
     }
 

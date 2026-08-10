@@ -84,7 +84,7 @@ async fn main() {
     use leptos::logging::log;
     use leptos::prelude::*;
     use leptos_axum::{LeptosRoutes, generate_route_list};
-    use plaintextesports::app::*;
+    use plaintextesports::app::{App, shell};
     use tower_http::compression::CompressionLayer;
 
     /// Lightweight liveness probe for Docker HEALTHCHECK / load-balancers.

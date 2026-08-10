@@ -7,7 +7,7 @@
 //! demo fixture (relative to "now") so the UI is always usable.
 
 use crate::config::{Config, config};
-use crate::feed::{FetchResult, NormalizedMatch, NormalizedTeam};
+use crate::feed::{FetchResult, NOON, NormalizedMatch, NormalizedTeam};
 use crate::pandascore::fetch_game;
 use crate::tiering::{TierInput, is_tier_one};
 use crate::twitch::{LiveInfo, login_of};
@@ -49,7 +49,7 @@ struct EventLink {
 }
 
 /// Cache of event-page links keyed by `event_key` (sport|league|year). Read on
-/// every render (to_view), written by the poll-time resolver.
+/// every render (`to_view`), written by the poll-time resolver.
 static EVENT_LINKS: Lazy<RwLock<HashMap<String, EventLink>>> =
     Lazy::new(|| RwLock::new(HashMap::new()));
 
@@ -378,35 +378,35 @@ async fn refresh_brackets(client: &reqwest::Client, now: DateTime<Utc>) {
     );
     update_bracket(
         "World Cup",
-        BRACKET_ID_SOCCER + wc_year as i64,
+        BRACKET_ID_SOCCER + i64::from(wc_year),
         "Knockout Stage",
         Sport::Soccer,
         soccer,
     );
     update_bracket(
         "NFL",
-        BRACKET_ID_NFL + nfl_year as i64,
+        BRACKET_ID_NFL + i64::from(nfl_year),
         "Playoffs",
         Sport::Nfl,
         nfl,
     );
     update_bracket(
         "NBA",
-        BRACKET_ID_NBA + hoops_year as i64,
+        BRACKET_ID_NBA + i64::from(hoops_year),
         "Playoffs",
         Sport::Nba,
         nba,
     );
     update_bracket(
         "NHL",
-        BRACKET_ID_NHL + hoops_year as i64,
+        BRACKET_ID_NHL + i64::from(hoops_year),
         "Stanley Cup Playoffs",
         Sport::Nhl,
         nhl,
     );
     update_bracket(
         "MLB",
-        BRACKET_ID_MLB + hoops_year as i64,
+        BRACKET_ID_MLB + i64::from(hoops_year),
         "Postseason",
         Sport::Mlb,
         mlb,
@@ -431,6 +431,7 @@ fn tables_with_team(tables: &[EventInfo], team_a: &str, team_b: &str) -> Vec<Eve
 /// League-wide standings for a traditional event page, by event name (e.g. the
 /// six MLB divisions for `/event/MLB`). `None` for an esports event, whose
 /// standings come from its tournament instead.
+#[must_use]
 pub fn standings_for_event_name(name: &str) -> Option<Vec<EventInfo>> {
     // The league/group tables, then (in postseason) a bracket-only stage appended
     // after them. `bracket_key` is the event name the bracket is cached under.
@@ -457,6 +458,7 @@ pub fn standings_for_event_name(name: &str) -> Option<Vec<EventInfo>> {
 /// The standings table(s) the two sides of a traditional match belong to (their
 /// divisions/conferences/groups), for the match detail page. Empty for esports
 /// and F1. MLB keys its standings by short label; the others by full team name.
+#[must_use]
 pub fn team_standings_for_match(
     sport: Sport,
     league: &str,
@@ -785,7 +787,7 @@ fn fill_stream_languages(streams: &mut [StreamView], langs: &HashMap<String, Str
         if s.language.is_empty()
             && let Some(lang) = login_of(&s.url).and_then(|l| langs.get(&l))
         {
-            s.language = lang.clone();
+            s.language.clone_from(lang);
         }
     }
 }
@@ -1346,9 +1348,9 @@ pub async fn box_score(sport: crate::types::Sport, id: i64) -> crate::types::Box
                 ),
             }
         }
-        // Soccer is deferred: its ESPN summary needs the specific competition
-        // slug (eng.1 / World Cup / …), which isn't derivable from (sport, id).
-        crate::types::Sport::Soccer => (crate::types::BoxScore::default(), false),
+        // No box score addressable by (sport, id). Soccer is the one that could
+        // have been: its ESPN summary needs the specific competition slug
+        // (eng.1 / World Cup / …), which isn't derivable from (sport, id).
         _ => (crate::types::BoxScore::default(), false),
     };
     cache_box_score(
@@ -1550,7 +1552,7 @@ fn cache_db_disabled(demo: bool, db_path: &str) -> bool {
 /// Dedicated connection for the persistent result cache (`store::result_cache`),
 /// used by both the on-demand caches and the poller's standings persistence.
 /// `None` in DEMO mode, for an empty `db_path`, or under `cargo test` → every
-/// `db_cache_*` helper no-ops and the caches stay memory-only. WAL + busy_timeout
+/// `db_cache_*` helper no-ops and the caches stay memory-only. WAL + `busy_timeout`
 /// (set by `store::open`) let it coexist with the poller's and push sender's
 /// connections.
 static CACHE_DB: Lazy<Option<Mutex<rusqlite::Connection>>> = Lazy::new(|| {
@@ -1637,7 +1639,7 @@ fn db_cache_get_ns<T: serde::de::DeserializeOwned>(ns: &str) -> Vec<(String, T, 
         .collect()
 }
 
-/// Populate the poller-refreshed standings caches from the persisted result_cache
+/// Populate the poller-refreshed standings caches from the persisted `result_cache`
 /// on boot, so a restart serves the last-known standings before the first poll.
 /// `tft_retain_days`/`now` bound which TFT enrichment rows are worth loading (see
 /// [`restore_tft_caches`]); the standings caches are single-row and unbounded by
@@ -1860,9 +1862,9 @@ fn spawn_competetft_poller(cfg: &'static Config, client: reqwest::Client) {
             let now = Utc::now();
             let rows = competetft_cycle(cfg, &client, now, &mut ctft_cursor).await;
 
-            let live = Duration::seconds(cfg.ocblacktop_live_poll.as_secs().max(30) as i64);
-            let near = Duration::seconds(cfg.ocblacktop_near_poll.as_secs() as i64);
-            let idle = Duration::seconds(cfg.idle_poll.as_secs() as i64);
+            let live = poll_interval(cfg.ocblacktop_live_poll).max(Duration::seconds(30));
+            let near = poll_interval(cfg.ocblacktop_near_poll);
+            let idle = poll_interval(cfg.idle_poll);
             // Cadence off the rows this cycle just derived, not off the snapshot:
             // the snapshot won't carry them until the main poller applies them, a
             // cycle later, so pacing on it would mean deriving a live session and
@@ -1881,8 +1883,13 @@ fn spawn_competetft_poller(cfg: &'static Config, client: reqwest::Client) {
                 *TFT_PENDING.lock().unwrap_or_else(PoisonError::into_inner) = Some(rows);
             }
 
-            let secs = iv.num_seconds().max(30) as u64;
-            tokio::time::sleep(std::time::Duration::from_secs(secs)).await;
+            // Floor first, then convert: `to_std` rejects a negative duration,
+            // and 30s is both the floor and the right fallback if it ever did.
+            let nap = iv
+                .max(Duration::seconds(30))
+                .to_std()
+                .unwrap_or(std::time::Duration::from_secs(30));
+            tokio::time::sleep(nap).await;
         }
     });
 }
@@ -2036,6 +2043,7 @@ pub fn spawn_poller() {
             spawn_competetft_poller(cfg, client.clone());
         }
         loop {
+            use crate::espn::{EPL, NBA, NFL, WORLD_CUP, european_season, season_year};
             let now = Utc::now();
             let active = {
                 let snap = SNAPSHOT.read().unwrap_or_else(PoisonError::into_inner);
@@ -2044,7 +2052,7 @@ pub fn spawn_poller() {
             // Always deep-scan when idle; while active, deep-scan only every
             // `idle_poll` so a long live event still discovers far-out matches
             // without paginating the whole window every minute.
-            let deep_interval = Duration::seconds(cfg.idle_poll.as_secs() as i64);
+            let deep_interval = poll_interval(cfg.idle_poll);
             let deep = !active || last_deep.is_none_or(|t| now - t >= deep_interval);
             if deep {
                 last_deep = Some(now);
@@ -2076,7 +2084,6 @@ pub fn spawn_poller() {
             let espn_window = mlb_window;
             // F1 comes from its own keyless API (Jolpica); the whole season's
             // sessions are fetched and the snapshot windowing decides what shows.
-            use crate::espn::{EPL, NBA, NFL, WORLD_CUP, european_season, season_year};
             let (
                 cs_res,
                 lol_res,
@@ -2137,9 +2144,9 @@ pub fn spawn_poller() {
                     ocb_save_budget(store.as_ref(), now.date_naive(), ocb_used);
                 }
                 let cap = cfg.ocblacktop_daily_cap;
-                let live = Duration::seconds(cfg.ocblacktop_live_poll.as_secs() as i64);
-                let near = Duration::seconds(cfg.ocblacktop_near_poll.as_secs() as i64);
-                let idle = Duration::seconds(cfg.ocblacktop_idle_poll.as_secs() as i64);
+                let live = poll_interval(cfg.ocblacktop_live_poll);
+                let near = poll_interval(cfg.ocblacktop_near_poll);
+                let idle = poll_interval(cfg.ocblacktop_idle_poll);
                 // The three series' currently-known rows, from the snapshot. Cadence
                 // is derived from these, so it survives a restart (the in-memory
                 // last_* caches are empty until refetched).
@@ -2216,8 +2223,7 @@ pub fn spawn_poller() {
                 // + MotoGP riders/teams). They only change post-round, so refresh on
                 // a daily floor plus an edge-trigger once any series finishes a round
                 // (no oftener than the `near` cadence).
-                let standings_floor =
-                    Duration::seconds(cfg.ocblacktop_standings_poll.as_secs() as i64);
+                let standings_floor = poll_interval(cfg.ocblacktop_standings_poll);
                 if standings_due(&ocb_ms, now, ocb_standings_at, standings_floor, near)
                     && ocb_used + 6 <= cap
                 {
@@ -2518,6 +2524,18 @@ const OCB_NEAR_WITHIN: Duration = Duration::days(14);
 /// after its start, covering a race weekend's worth of just-completed sessions.
 const OCB_STANDINGS_SETTLE: Duration = Duration::hours(48);
 
+/// A configured poll interval as a `chrono::Duration`.
+///
+/// The config holds `std::time::Duration` (u64 seconds) and `Duration::seconds`
+/// takes an i64, so an operator who sets an interval past `i64::MAX` seconds
+/// would wrap it to a *negative* duration — which reads as "always due" and
+/// turns the poll loop into a request spin against a rate-limited API. There is
+/// no sane interval that large, so saturate rather than wrap: the failure mode
+/// becomes "this source never polls again", which is visible and harmless.
+fn poll_interval(d: std::time::Duration) -> Duration {
+    Duration::seconds(i64::try_from(d.as_secs()).unwrap_or(i64::MAX))
+}
+
 /// Per-series poll cadence derived from a series' currently-known matches: the
 /// fast `live` tier when a session is running or starts within the hour, the
 /// medium `near` tier when its next event is within ~2 weeks, else the slow
@@ -2713,6 +2731,10 @@ fn retain_configured_tiers(matches: &mut Vec<NormalizedMatch>, cfg: &Config) {
 
 /// Persist freshly polled matches (if a store is present) and refresh the
 /// in-memory snapshot. Synchronous — no `.await` while touching the DB.
+/// The per-match fields a poll carries that the DB does not persist, so they
+/// have to be re-attached by id after a reload.
+type LiveExtras = (Vec<StreamView>, Option<crate::types::MlbSeriesRef>);
+
 fn apply_poll(
     results: Vec<(Sport, FetchResult)>,
     store: Option<&mut rusqlite::Connection>,
@@ -2813,7 +2835,6 @@ fn apply_poll(
                 // motorsport result ref IS persisted now — see store.rs — so it
                 // survives the reload directly, which is why a finished WRC stage
                 // still renders its results after a restart.)
-                type LiveExtras = (Vec<StreamView>, Option<crate::types::MlbSeriesRef>);
                 let mut live: HashMap<i64, LiveExtras> = fresh
                     .into_iter()
                     .filter(|m| !m.streams.is_empty() || m.mlb_series.is_some())
@@ -3023,7 +3044,7 @@ struct Candidate {
 }
 
 /// Distinct events in the snapshot that still need a Liquipedia lookup (unseen,
-/// or a stale "not found"). Pure read of SNAPSHOT + EVENT_LINKS.
+/// or a stale "not found"). Pure read of SNAPSHOT + `EVENT_LINKS`.
 fn collect_resolution_candidates() -> Vec<Candidate> {
     let now = Utc::now();
     let snap = SNAPSHOT.read().unwrap_or_else(PoisonError::into_inner);
@@ -3093,7 +3114,7 @@ fn apply_resolutions(
 
 // ----- View building -------------------------------------------------------
 
-fn local_day_start(tz: &Tz, date: NaiveDate) -> DateTime<Utc> {
+fn local_day_start(tz: Tz, date: NaiveDate) -> DateTime<Utc> {
     let naive = date.and_hms_opt(0, 0, 0).expect("valid midnight");
     tz.from_local_datetime(&naive).earliest().map_or_else(
         || Utc.from_utc_datetime(&naive),
@@ -3189,8 +3210,9 @@ fn effective_status(m: &NormalizedMatch, now: DateTime<Utc>) -> MatchStatus {
 }
 
 #[doc(hidden)]
-pub fn to_view(m: &NormalizedMatch, tz: &Tz, now: DateTime<Utc>, hour24: bool) -> MatchView {
-    let local = m.begin_at.with_timezone(tz);
+#[must_use]
+pub fn to_view(m: &NormalizedMatch, tz: Tz, now: DateTime<Utc>, hour24: bool) -> MatchView {
+    let local = m.begin_at.with_timezone(&tz);
     let status = effective_status(m, now);
 
     // Motorsport rows that carry only a calendar date (no session time), anchored
@@ -3359,13 +3381,18 @@ fn traditional_event_url(sport: Sport, league: &str) -> String {
 
 /// Minimal percent-encoding for a URL query value.
 fn pct_encode(s: &str) -> String {
+    // Formats into `out` rather than allocating a String per escaped byte.
+    // The result is discarded because `fmt::Write` for `String` cannot fail.
+    use std::fmt::Write as _;
     let mut out = String::with_capacity(s.len());
     for b in s.bytes() {
         match b {
             b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
                 out.push(b as char);
             }
-            _ => out.push_str(&format!("%{b:02X}")),
+            _ => {
+                let _ = write!(out, "%{b:02X}");
+            }
         }
     }
     out
@@ -3492,13 +3519,13 @@ fn day_span_label(first: DateTime<Tz>, last: DateTime<Tz>) -> String {
 /// is set, a run of matches that crosses local midnight without a [`CHAIN_GAP_MS`]
 /// break stays in one group (a late-night slate reads as one night); otherwise a
 /// new group starts on every calendar-date change.
-fn group_by(views: Vec<MatchView>, tz: &Tz, chain: bool) -> Vec<DayGroup> {
+fn group_by(views: Vec<MatchView>, tz: Tz, chain: bool) -> Vec<DayGroup> {
     let mut days: Vec<DayGroup> = Vec::new();
     let mut prev: Option<(i64, String)> = None; // (begin_at_ms, day_key) of the last view
     for v in views {
         let local = DateTime::from_timestamp_millis(v.begin_at_ms)
             .unwrap_or_else(Utc::now)
-            .with_timezone(tz);
+            .with_timezone(&tz);
         let key = local.format("%Y-%m-%d").to_string();
         // Calendar-day grouping breaks on every date change; chain grouping breaks
         // only on a real gap between consecutive matches (so a run that crosses
@@ -3559,7 +3586,7 @@ fn group_by(views: Vec<MatchView>, tz: &Tz, chain: bool) -> Vec<DayGroup> {
             let to_local = |ms: i64| {
                 DateTime::from_timestamp_millis(ms)
                     .unwrap_or_else(Utc::now)
-                    .with_timezone(tz)
+                    .with_timezone(&tz)
             };
             day.day_label = day_span_label(to_local(lo), to_local(hi));
         }
@@ -3610,14 +3637,15 @@ fn group_by(views: Vec<MatchView>, tz: &Tz, chain: bool) -> Vec<DayGroup> {
 /// Group time-sorted views into per-day buckets (one calendar day each). See
 /// [`group_by`].
 #[doc(hidden)]
-pub fn group_days(views: Vec<MatchView>, tz: &Tz) -> Vec<DayGroup> {
+#[must_use]
+pub fn group_days(views: Vec<MatchView>, tz: Tz) -> Vec<DayGroup> {
     group_by(views, tz, false)
 }
 
 /// Like [`group_days`], but a late run of matches that crosses local midnight
 /// without a [`CHAIN_GAP_MS`] break stays in one group — used on the event page so
 /// a broadcast that spills past midnight in the viewer's zone reads as one night.
-pub(crate) fn group_chains(views: Vec<MatchView>, tz: &Tz) -> Vec<DayGroup> {
+pub(crate) fn group_chains(views: Vec<MatchView>, tz: Tz) -> Vec<DayGroup> {
     group_by(views, tz, true)
 }
 
@@ -3631,7 +3659,8 @@ pub(crate) fn group_chains(views: Vec<MatchView>, tz: &Tz) -> Vec<DayGroup> {
 /// start time, which also reorders any events `next_motorsport_events` appended
 /// out of window. Idempotent on input with no timed WRC stages.
 #[doc(hidden)]
-pub fn collapse_wrc_days(views: Vec<MatchView>, tz: &Tz, snap: &Snapshot) -> Vec<MatchView> {
+#[must_use]
+pub fn collapse_wrc_days(views: Vec<MatchView>, tz: Tz, snap: &Snapshot) -> Vec<MatchView> {
     use std::collections::{BTreeSet, HashMap, HashSet};
 
     // Leg ordinal + power-stage flag per (event, local day), taken from the whole
@@ -3645,7 +3674,7 @@ pub fn collapse_wrc_days(views: Vec<MatchView>, tz: &Tz, snap: &Snapshot) -> Vec
             continue;
         }
         let event = full_event_name(&m.league, &m.series_name);
-        let day = m.begin_at.with_timezone(tz).format("%Y-%m-%d").to_string();
+        let day = m.begin_at.with_timezone(&tz).format("%Y-%m-%d").to_string();
         if m.team_a.label.contains("Power Stage") {
             power_days.insert((event.clone(), day.clone()));
         }
@@ -3681,7 +3710,7 @@ pub fn collapse_wrc_days(views: Vec<MatchView>, tz: &Tz, snap: &Snapshot) -> Vec
 /// snapshot lives in each caller's `label_of` closure, since the filters differ.
 fn collapse_days(
     views: Vec<MatchView>,
-    tz: &Tz,
+    tz: Tz,
     is_target: impl Fn(&MatchView) -> bool,
     key_of: impl Fn(&MatchView) -> String,
     label_of: impl Fn(&[MatchView], &str, &str) -> String,
@@ -3702,7 +3731,7 @@ fn collapse_days(
         if is_target(&v) {
             let day = DateTime::from_timestamp_millis(v.begin_at_ms)
                 .unwrap_or_else(Utc::now)
-                .with_timezone(tz)
+                .with_timezone(&tz)
                 .format("%Y-%m-%d")
                 .to_string();
             groups.entry((key_of(&v), day)).or_default().push(v);
@@ -3770,7 +3799,8 @@ fn tft_day_label(
 /// schedule row, like [`collapse_wrc_days`] does for rally stages: the home/day/
 /// range views show one "Day 2" / "Grand Finals" row linking to the event page
 /// (which lists every game), instead of a row per game. Non-TFT rows pass through.
-pub fn collapse_tft_days(views: Vec<MatchView>, tz: &Tz, snap: &Snapshot) -> Vec<MatchView> {
+#[must_use]
+pub fn collapse_tft_days(views: Vec<MatchView>, tz: Tz, snap: &Snapshot) -> Vec<MatchView> {
     use std::collections::{BTreeSet, HashMap};
 
     // Distinct local days per event (from the whole snapshot, not just the window)
@@ -3781,7 +3811,7 @@ pub fn collapse_tft_days(views: Vec<MatchView>, tz: &Tz, snap: &Snapshot) -> Vec
             continue;
         }
         let event = full_event_name(&m.league, &m.series_name);
-        let day = m.begin_at.with_timezone(tz).format("%Y-%m-%d").to_string();
+        let day = m.begin_at.with_timezone(&tz).format("%Y-%m-%d").to_string();
         days_by_event.entry(event).or_default().insert(day);
     }
 
@@ -3808,13 +3838,14 @@ fn day_status(stages: &[MatchView]) -> MatchStatus {
 
 #[doc(hidden)]
 #[allow(clippy::too_many_arguments)]
+#[must_use]
 pub fn matches_in_window(
     snap: &Snapshot,
     traditional: bool,
     sport: Option<Sport>,
     start: DateTime<Utc>,
     end: DateTime<Utc>,
-    tz: &Tz,
+    tz: Tz,
     now: DateTime<Utc>,
     hour24: bool,
     live_from: Option<DateTime<Utc>>,
@@ -3861,6 +3892,7 @@ fn resolve_tz(name: &str, default: Tz) -> Tz {
 
 /// Freshness metadata copied out of the snapshot before the read lock is
 /// released, so the post-lock assembly doesn't borrow the snapshot.
+#[derive(Clone, Copy)]
 struct FreshMeta {
     fetched_at: DateTime<Utc>,
     stale: bool,
@@ -3873,7 +3905,7 @@ struct FreshMeta {
 #[allow(clippy::too_many_arguments)]
 fn assemble_schedule_view(
     days: Vec<DayGroup>,
-    tz: &Tz,
+    tz: Tz,
     now: DateTime<Utc>,
     meta: FreshMeta,
     demo: bool,
@@ -3885,12 +3917,12 @@ fn assemble_schedule_view(
     ScheduleView {
         days,
         today_key: now
-            .with_timezone(tz)
+            .with_timezone(&tz)
             .date_naive()
             .format("%Y-%m-%d")
             .to_string(),
         fetched_at_ms: meta.fetched_at.timestamp_millis(),
-        fetched_label: time_label(meta.fetched_at.with_timezone(tz), hour24),
+        fetched_label: time_label(meta.fetched_at.with_timezone(&tz), hour24),
         stale: meta.stale,
         using_fixture: meta.using_fixture,
         demo_forced: demo,
@@ -3915,11 +3947,11 @@ fn homepage_rows(
     cfg: &Config,
     now: DateTime<Utc>,
     game_filter: &str,
-    tz: &Tz,
+    tz: Tz,
     hour24: bool,
 ) -> (Vec<MatchView>, FreshMeta) {
     let (traditional, sport) = mode_filter(game_filter);
-    let today = now.with_timezone(tz).date_naive();
+    let today = now.with_timezone(&tz).date_naive();
     let start = local_day_start(tz, today);
     // Traditional sports play daily, so cap the default forward window (the
     // client's "show later days" extends it up to TRAD_FORWARD_MAX). Esports
@@ -3982,14 +4014,14 @@ pub fn homepage_view(game_filter: &str, tz_name: &str, hour24: bool) -> Schedule
     let now = Utc::now();
 
     let snap = SNAPSHOT.read().unwrap_or_else(PoisonError::into_inner);
-    let (rows, meta) = homepage_rows(&snap, cfg, now, game_filter, &tz, hour24);
+    let (rows, meta) = homepage_rows(&snap, cfg, now, game_filter, tz, hour24);
     // Done with the snapshot — release the read lock before group_days (sort +
     // clones) so it doesn't block the poller's periodic write.
     drop(snap);
 
     assemble_schedule_view(
-        group_days(rows, &tz),
-        &tz,
+        group_days(rows, tz),
+        tz,
         now,
         meta,
         cfg.demo,
@@ -4004,12 +4036,13 @@ pub fn homepage_view(game_filter: &str, tz_name: &str, hour24: bool) -> Schedule
 /// minus the global lock. Used by benches/examples (the lock is uncontended
 /// there, so this measures the same CPU cost a request pays).
 #[doc(hidden)]
+#[must_use]
 pub fn homepage_render(
     snap: &Snapshot,
     cfg: &Config,
     now: DateTime<Utc>,
     game_filter: &str,
-    tz: &Tz,
+    tz: Tz,
     hour24: bool,
 ) -> ScheduleView {
     let (rows, meta) = homepage_rows(snap, cfg, now, game_filter, tz, hour24);
@@ -4037,6 +4070,7 @@ pub fn homepage_render(
 /// (a rally has up to ~16 stages, most of them already-finished past days the
 /// homepage then drops). Empty off-season.
 #[doc(hidden)]
+#[must_use]
 pub fn next_motorsport_events(snap: &Snapshot) -> Vec<&NormalizedMatch> {
     use std::collections::{HashMap, HashSet};
     // One pass: per league, the series_name of its soonest live/upcoming row.
@@ -4073,37 +4107,27 @@ pub fn day_view(date: &str, game_filter: &str, tz_name: &str, hour24: bool) -> S
 
     let day = NaiveDate::parse_from_str(date, "%Y-%m-%d")
         .unwrap_or_else(|_| now.with_timezone(&tz).date_naive());
-    let start = local_day_start(&tz, day);
-    let end = local_day_start(&tz, day + Duration::days(1));
+    let start = local_day_start(tz, day);
+    let end = local_day_start(tz, day + Duration::days(1));
 
     let snap = SNAPSHOT.read().unwrap_or_else(PoisonError::into_inner);
     // No live carry-over here: a single-day page is anchored to an explicit date,
     // and a live match that began the evening before belongs to that day's page
     // (reachable via prev/next), not this one.
-    let all = matches_in_window(
-        &snap,
-        traditional,
-        sport,
-        start,
-        end,
-        &tz,
-        now,
-        hour24,
-        None,
-    );
-    let all = collapse_wrc_days(all, &tz, &snap);
-    let all = collapse_tft_days(all, &tz, &snap);
+    let all = matches_in_window(&snap, traditional, sport, start, end, tz, now, hour24, None);
+    let all = collapse_wrc_days(all, tz, &snap);
+    let all = collapse_tft_days(all, tz, &snap);
     let (fetched_at, stale, using_fixture) = (snap.fetched_at, snap.stale, snap.using_fixture);
     drop(snap);
 
     let local_noon = tz
-        .from_local_datetime(&day.and_hms_opt(12, 0, 0).unwrap())
+        .from_local_datetime(&day.and_time(NOON))
         .earliest()
-        .unwrap_or_else(|| tz.from_utc_datetime(&day.and_hms_opt(12, 0, 0).unwrap()));
+        .unwrap_or_else(|| tz.from_utc_datetime(&day.and_time(NOON)));
 
     assemble_schedule_view(
-        group_days(all, &tz),
-        &tz,
+        group_days(all, tz),
+        tz,
         now,
         FreshMeta {
             fetched_at,
@@ -4137,32 +4161,22 @@ pub fn range_view(
     let parse = |s: &str| NaiveDate::parse_from_str(s, "%Y-%m-%d");
     let start_day = parse(start_date).unwrap_or(today);
     let end_day = parse(end_date).unwrap_or(today).max(start_day);
-    let start = local_day_start(&tz, start_day);
+    let start = local_day_start(tz, start_day);
     // Inclusive end day → window runs to the start of the following day.
-    let end = local_day_start(&tz, end_day + Duration::days(1));
+    let end = local_day_start(tz, end_day + Duration::days(1));
 
     let snap = SNAPSHOT.read().unwrap_or_else(PoisonError::into_inner);
     // The range's start day is chosen explicitly, so it already includes whatever
     // day a carried-over live match would belong to — no grace band needed.
-    let all = matches_in_window(
-        &snap,
-        traditional,
-        sport,
-        start,
-        end,
-        &tz,
-        now,
-        hour24,
-        None,
-    );
-    let all = collapse_wrc_days(all, &tz, &snap);
-    let all = collapse_tft_days(all, &tz, &snap);
+    let all = matches_in_window(&snap, traditional, sport, start, end, tz, now, hour24, None);
+    let all = collapse_wrc_days(all, tz, &snap);
+    let all = collapse_tft_days(all, tz, &snap);
     let (fetched_at, stale, using_fixture) = (snap.fetched_at, snap.stale, snap.using_fixture);
     drop(snap);
 
     assemble_schedule_view(
-        group_days(all, &tz),
-        &tz,
+        group_days(all, tz),
+        tz,
         now,
         FreshMeta {
             fetched_at,
@@ -4194,14 +4208,14 @@ pub fn event_view(sport: Option<Sport>, event: &str, tz_name: &str, hour24: bool
         .iter()
         .filter(|m| m.status != MatchStatus::Canceled)
         .filter(|m| event_is(m.sport, sport, &m.league, &m.series_name, event))
-        .map(|m| to_view(m, &tz, now, hour24))
+        .map(|m| to_view(m, tz, now, hour24))
         .collect();
 
     ScheduleView {
         // The event page chains a late slate that crosses local midnight into one
         // day group (a broadcast running past 12 in the viewer's zone reads as one
         // night) — unlike the home/day/team views, which keep calendar days.
-        days: group_chains(all, &tz),
+        days: group_chains(all, tz),
         today_key: now
             .with_timezone(&tz)
             .date_naive()
@@ -4286,11 +4300,11 @@ pub fn team_view(sport: Option<Sport>, team: &str, tz_name: &str, hour24: bool) 
         .filter(|m| m.status != MatchStatus::Canceled)
         .filter(|m| sport.is_none_or(|s| s == m.sport))
         .filter(|m| m.team_a.name == team || m.team_b.name == team)
-        .map(|m| to_view(m, &tz, now, hour24))
+        .map(|m| to_view(m, tz, now, hour24))
         .collect();
 
     ScheduleView {
-        days: group_days(all, &tz),
+        days: group_days(all, tz),
         today_key: now
             .with_timezone(&tz)
             .date_naive()
@@ -4324,14 +4338,14 @@ pub fn notifications_view(
     let snap = SNAPSHOT.read().unwrap_or_else(PoisonError::into_inner);
     let mut upcoming = Vec::new();
     let mut stale = Vec::new();
-    for m in snap.matches.iter() {
+    for m in &snap.matches {
         // Starred matches are keyed by their uid (id isn't unique across games).
         let uid = crate::types::match_uid(m.sport, m.id);
         if !wanted.contains(uid.as_str()) {
             continue;
         }
         if m.status == MatchStatus::Upcoming && m.begin_at > now {
-            upcoming.push(to_view(m, &tz, now, hour24));
+            upcoming.push(to_view(m, tz, now, hour24));
         } else {
             stale.push(uid);
         }
@@ -4410,8 +4424,8 @@ impl ReminderSeed {
 /// Build a reminder seed for one upcoming match. Centralizes the time/title/
 /// body/url derivation so every reminder (single-match ★ and sport/event
 /// subscription) is produced server-side from the same snapshot data.
-fn reminder_seed(m: &NormalizedMatch, lead_ms: i64, tz: &Tz, hour24: bool) -> ReminderSeed {
-    let local = m.begin_at.with_timezone(tz);
+fn reminder_seed(m: &NormalizedMatch, lead_ms: i64, tz: Tz, hour24: bool) -> ReminderSeed {
+    let local = m.begin_at.with_timezone(&tz);
     ReminderSeed {
         match_id: m.id,
         sport: m.sport.slug().to_string(),
@@ -4503,7 +4517,7 @@ pub fn scope_reminder_seeds(
         .iter()
         .filter(|m| m.status != MatchStatus::Canceled && m.begin_at > now)
         .filter(|m| scope_matches(m, kind, sport, value))
-        .map(|m| reminder_seed(m, lead_ms, &tz, hour24))
+        .map(|m| reminder_seed(m, lead_ms, tz, hour24))
         .collect()
 }
 
@@ -4535,7 +4549,7 @@ pub fn reminder_seeds_for_match(
     };
     leads
         .iter()
-        .map(|&lead| reminder_seed(m, lead, &tz, hour24))
+        .map(|&lead| reminder_seed(m, lead, tz, hour24))
         .collect()
 }
 
@@ -4576,9 +4590,9 @@ pub struct ReschedulePlan {
 fn reschedule_to(r: &crate::store::Reminder, seed: &ReminderSeed) -> crate::store::Reminder {
     let mut u = r.clone();
     u.notify_at_ms = seed.notify_at_ms;
-    u.title = seed.title.clone();
-    u.body = seed.body.clone();
-    u.url = seed.url.clone();
+    u.title.clone_from(&seed.title);
+    u.body.clone_from(&seed.body);
+    u.url.clone_from(&seed.url);
     u
 }
 
@@ -4633,7 +4647,7 @@ pub fn reschedule_plan(
             // tick until then, without a stale reminder firing in the meantime.
             let rep = rows[0];
             let tz = resolve_tz(&rep.tz, cfg.tz);
-            let seed = reminder_seed(m, rep.lead_ms, &tz, rep.hour24);
+            let seed = reminder_seed(m, rep.lead_ms, tz, rep.hour24);
             let mut notice = rep.clone();
             notice.title = seed.title;
             notice.body = format!("{} · canceled", m.league);
@@ -4666,7 +4680,7 @@ pub fn reschedule_plan(
         if crossed_earlier && grace_open {
             let mut subsumed = Vec::new();
             for r in &unsent {
-                let seed = reminder_seed(m, r.lead_ms, &tz, r.hour24);
+                let seed = reminder_seed(m, r.lead_ms, tz, r.hour24);
                 if seed.notify_at_ms <= now_ms {
                     subsumed.push((*r).clone());
                 } else {
@@ -4676,15 +4690,15 @@ pub fn reschedule_plan(
             // One alert for the whole group — the body carries the new start with
             // an "earlier than scheduled" tag; lead/notify are irrelevant to a send.
             let rep = unsent[0];
-            let seed = reminder_seed(m, rep.lead_ms, &tz, rep.hour24);
+            let seed = reminder_seed(m, rep.lead_ms, tz, rep.hour24);
             let mut reminder = rep.clone();
-            reminder.title = seed.title.clone();
+            reminder.title.clone_from(&seed.title);
             reminder.body = format!("{} — earlier than scheduled", seed.body);
-            reminder.url = seed.url.clone();
+            reminder.url.clone_from(&seed.url);
             plan.alerts.push(CollapseAlert { reminder, subsumed });
         } else {
             for r in &unsent {
-                let seed = reminder_seed(m, r.lead_ms, &tz, r.hour24);
+                let seed = reminder_seed(m, r.lead_ms, tz, r.hour24);
                 if (r.notify_at_ms - seed.notify_at_ms).abs() >= RESCHEDULE_EPSILON_MS {
                     plan.updates.push(reschedule_to(r, &seed));
                 }
@@ -4733,7 +4747,7 @@ pub fn match_basics(
         .iter()
         .find(|m| m.id == match_id && m.sport == sport)?;
     Some((
-        to_view(m, &tz, now, hour24),
+        to_view(m, tz, now, hour24),
         m.streams.clone(),
         m.tournament_id,
         m.league.clone(),
@@ -5796,7 +5810,7 @@ fn contains_token(hay: &str, kw: &str) -> bool {
 /// Attribute discovered streams to a league's match: keep those whose title or a
 /// tag contains a league keyword (as a token), that clear `min_viewers`, and
 /// whose login isn't already present; sort by viewers desc, take `max`, map to
-/// `costream` StreamViews.
+/// `costream` `StreamViews`.
 fn attribute_costreams(
     scan: &[crate::twitch_discover::DiscoveredStream],
     keywords: &[String],
@@ -5862,13 +5876,13 @@ fn dedupe_youtube_streams(
         };
         if let Some(&i) = seen.get(chan) {
             if out[i].language.is_empty() && !s.language.is_empty() {
-                out[i].language = s.language.clone();
+                out[i].language.clone_from(&s.language);
             }
             // Prefer a stable channel permalink over the per-video URL.
             if crate::youtube::is_channel_url(&s.url)
                 && !crate::youtube::is_channel_url(&out[i].url)
             {
-                out[i].url = s.url.clone();
+                out[i].url.clone_from(&s.url);
             }
             out[i].official |= s.official;
             out[i].main |= s.main;
@@ -6076,11 +6090,13 @@ fn demo_streams() -> Vec<StreamView> {
 }
 
 /// Demo data anchored to `now` so the page is populated without a token.
+// `day` is the `1..=12i64` loop literal, so `day - 1` indexes 0..=11.
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
 fn demo_matches(now: DateTime<Utc>) -> Vec<NormalizedMatch> {
     use MatchStatus::{Finished, Live, Upcoming};
-    let h = Duration::hours;
-    let m = Duration::minutes;
-    let d = Duration::days;
+    let hours = Duration::hours;
+    let mins = Duration::minutes;
+    let days = Duration::days;
     let mut out = vec![
         // CS2 — IEM: a playoff day — three finished results, a live sport, and an
         // upcoming one (shows an event whose matches are mostly final). The
@@ -6090,7 +6106,7 @@ fn demo_matches(now: DateTime<Utc>) -> Vec<NormalizedMatch> {
             Sport::Cs2,
             "IEM",
             "S",
-            now - m(105),
+            now - mins(105),
             Finished,
             3,
             demo_team("NAVI", Some(2)),
@@ -6101,7 +6117,7 @@ fn demo_matches(now: DateTime<Utc>) -> Vec<NormalizedMatch> {
             Sport::Cs2,
             "IEM",
             "S",
-            now - m(70),
+            now - mins(70),
             Finished,
             3,
             demo_team("FaZe", Some(2)),
@@ -6112,7 +6128,7 @@ fn demo_matches(now: DateTime<Utc>) -> Vec<NormalizedMatch> {
             Sport::Cs2,
             "IEM",
             "S",
-            now - m(35),
+            now - mins(35),
             Finished,
             3,
             demo_team("NAVI", Some(1)),
@@ -6123,7 +6139,7 @@ fn demo_matches(now: DateTime<Utc>) -> Vec<NormalizedMatch> {
             Sport::Cs2,
             "IEM",
             "S",
-            now - m(10),
+            now - mins(10),
             Live,
             3,
             demo_team("G2", Some(1)),
@@ -6134,7 +6150,7 @@ fn demo_matches(now: DateTime<Utc>) -> Vec<NormalizedMatch> {
             Sport::Cs2,
             "IEM",
             "S",
-            now + h(2),
+            now + hours(2),
             Upcoming,
             3,
             demo_team("VIT", None),
@@ -6146,7 +6162,7 @@ fn demo_matches(now: DateTime<Utc>) -> Vec<NormalizedMatch> {
             Sport::Cs2,
             "BLAST",
             "S",
-            now - m(50),
+            now - mins(50),
             Finished,
             3,
             demo_team("SPIRIT", Some(2)),
@@ -6157,7 +6173,7 @@ fn demo_matches(now: DateTime<Utc>) -> Vec<NormalizedMatch> {
             Sport::Cs2,
             "BLAST",
             "S",
-            now + h(4),
+            now + hours(4),
             Upcoming,
             1,
             demo_team("FaZe", None),
@@ -6169,7 +6185,7 @@ fn demo_matches(now: DateTime<Utc>) -> Vec<NormalizedMatch> {
             Sport::Cs2,
             "ESL Pro League",
             "A",
-            now + h(5),
+            now + hours(5),
             Upcoming,
             3,
             demo_team("NIP", None),
@@ -6181,7 +6197,7 @@ fn demo_matches(now: DateTime<Utc>) -> Vec<NormalizedMatch> {
             Sport::Cs2,
             "ESL One",
             "S",
-            now - m(80),
+            now - mins(80),
             Finished,
             3,
             demo_team("FaZe", Some(2)),
@@ -6192,7 +6208,7 @@ fn demo_matches(now: DateTime<Utc>) -> Vec<NormalizedMatch> {
             Sport::Cs2,
             "ESL One",
             "S",
-            now + h(3),
+            now + hours(3),
             Upcoming,
             5,
             demo_team("FaZe", None),
@@ -6204,7 +6220,7 @@ fn demo_matches(now: DateTime<Utc>) -> Vec<NormalizedMatch> {
             Sport::Cs2,
             "PGL Major",
             "S",
-            now - m(95),
+            now - mins(95),
             Finished,
             3,
             demo_team("NAVI", Some(2)),
@@ -6215,7 +6231,7 @@ fn demo_matches(now: DateTime<Utc>) -> Vec<NormalizedMatch> {
             Sport::Cs2,
             "PGL Major",
             "S",
-            now + h(6),
+            now + hours(6),
             Upcoming,
             3,
             demo_team("SPIRIT", None),
@@ -6228,7 +6244,7 @@ fn demo_matches(now: DateTime<Utc>) -> Vec<NormalizedMatch> {
             Sport::Cs2,
             "Bye Cup",
             "S",
-            now + h(7),
+            now + hours(7),
             Upcoming,
             3,
             demo_team("Alpha", None),
@@ -6239,7 +6255,7 @@ fn demo_matches(now: DateTime<Utc>) -> Vec<NormalizedMatch> {
             Sport::Cs2,
             "Reset Cup",
             "S",
-            now + h(8),
+            now + hours(8),
             Upcoming,
             5,
             demo_team("Sun", None),
@@ -6250,7 +6266,7 @@ fn demo_matches(now: DateTime<Utc>) -> Vec<NormalizedMatch> {
             Sport::Cs2,
             "Gauntlet",
             "S",
-            now + h(9),
+            now + hours(9),
             Upcoming,
             3,
             demo_team("A", None),
@@ -6261,7 +6277,7 @@ fn demo_matches(now: DateTime<Utc>) -> Vec<NormalizedMatch> {
             Sport::Cs2,
             "Mega Bracket",
             "S",
-            now + h(10),
+            now + hours(10),
             Upcoming,
             3,
             demo_team("T01", None),
@@ -6272,7 +6288,7 @@ fn demo_matches(now: DateTime<Utc>) -> Vec<NormalizedMatch> {
             Sport::Cs2,
             "Long Names Cup",
             "S",
-            now + h(11),
+            now + hours(11),
             Upcoming,
             3,
             demo_team("kukkosoosi", None),
@@ -6284,7 +6300,7 @@ fn demo_matches(now: DateTime<Utc>) -> Vec<NormalizedMatch> {
             Sport::Lol,
             "LCK",
             "A",
-            now - m(35),
+            now - mins(35),
             Finished,
             3,
             demo_team("T1", Some(2)),
@@ -6295,7 +6311,7 @@ fn demo_matches(now: DateTime<Utc>) -> Vec<NormalizedMatch> {
             Sport::Lol,
             "LCK",
             "A",
-            now + h(3),
+            now + hours(3),
             Upcoming,
             3,
             demo_team("HLE", None),
@@ -6307,7 +6323,7 @@ fn demo_matches(now: DateTime<Utc>) -> Vec<NormalizedMatch> {
             Sport::Lol,
             "LEC",
             "A",
-            now - m(20),
+            now - mins(20),
             Finished,
             3,
             demo_team("G2", Some(1)),
@@ -6318,7 +6334,7 @@ fn demo_matches(now: DateTime<Utc>) -> Vec<NormalizedMatch> {
             Sport::Lol,
             "LEC",
             "A",
-            now + d(1),
+            now + days(1),
             Upcoming,
             3,
             demo_team("MAD", None),
@@ -6330,7 +6346,7 @@ fn demo_matches(now: DateTime<Utc>) -> Vec<NormalizedMatch> {
             Sport::Lol,
             "LPL",
             "A",
-            now + h(6),
+            now + hours(6),
             Upcoming,
             3,
             demo_team("BLG", None),
@@ -6342,7 +6358,7 @@ fn demo_matches(now: DateTime<Utc>) -> Vec<NormalizedMatch> {
             Sport::Lol,
             "MSI",
             "S",
-            now + d(1) + h(2),
+            now + days(1) + hours(2),
             Upcoming,
             5,
             demo_team("T1", None),
@@ -6353,7 +6369,7 @@ fn demo_matches(now: DateTime<Utc>) -> Vec<NormalizedMatch> {
             Sport::Lol,
             "Worlds",
             "S",
-            now + d(3),
+            now + days(3),
             Upcoming,
             5,
             demo_team("GEN", None),
@@ -6391,7 +6407,7 @@ fn demo_matches(now: DateTime<Utc>) -> Vec<NormalizedMatch> {
             Sport::Cs2,
             cs_events[i % cs_events.len()],
             "S",
-            now - d(day) - h(3),
+            now - days(day) - hours(3),
             Finished,
             3,
             demo_team(a, Some(2)),
@@ -6404,7 +6420,7 @@ fn demo_matches(now: DateTime<Utc>) -> Vec<NormalizedMatch> {
             Sport::Lol,
             lol_events[i % lol_events.len()],
             "A",
-            now - d(day) - h(2),
+            now - days(day) - hours(2),
             Finished,
             3,
             demo_team(a, Some(2)),
@@ -6438,6 +6454,9 @@ pub fn snapshot_from(matches: Vec<NormalizedMatch>, now: DateTime<Utc>) -> Snaps
 /// RNG) so runs are comparable.
 #[doc(hidden)]
 #[must_use]
+// `i as i64` over `0..n`, where `n` is the row count a bench asks for. The
+// wrap point is 2^63 rows.
+#[allow(clippy::cast_possible_wrap)]
 pub fn synthetic_matches(n: usize, now: DateTime<Utc>) -> Vec<NormalizedMatch> {
     use MatchStatus::{Finished, Live, Upcoming};
     let sports = [
@@ -6536,9 +6555,12 @@ mod tests {
 
     #[test]
     fn tft_extra_accessors_default_empty() {
-        assert!(tft_streamers("nope").is_empty());
-        assert!(tft_broadcasts("nope").is_empty());
-        assert!(tft_lobbies("nope").is_empty());
+        let streamers = tft_streamers("nope");
+        assert!(streamers.is_empty(), "{streamers:?}");
+        let broadcasts = tft_broadcasts("nope");
+        assert!(broadcasts.is_empty(), "{broadcasts:?}");
+        let lobbies = tft_lobbies("nope");
+        assert!(lobbies.is_empty(), "{lobbies:?}");
     }
 
     #[test]
@@ -6558,8 +6580,10 @@ mod tests {
         // Lookup is exact-only. CompeteTFT is the sole TFT source and keys both its
         // schedule rows and its enrichment off the same `tournament_event_name`, so
         // a near-miss is a real miss rather than a name-divergence to paper over.
-        assert!(tft_streamers("TFT Exact Lookup Cup: Some Set").is_empty());
-        assert!(tft_streamers("TFT Totally Unrelated Event").is_empty());
+        let exact = tft_streamers("TFT Exact Lookup Cup: Some Set");
+        assert!(exact.is_empty(), "{exact:?}");
+        let unrelated = tft_streamers("TFT Totally Unrelated Event");
+        assert!(unrelated.is_empty(), "{unrelated:?}");
     }
 
     /// A co-streamer stream, as `streamer_to_stream` builds them.
@@ -6882,13 +6906,16 @@ mod tests {
                 "https://docs.google.com/spreadsheets/d/e/KEY/pubhtml".to_string(),
             );
         assert!(tft_sheet("TFT Sheet Lookup Cup").contains("/KEY/"));
-        assert!(tft_sheet("TFT Sheet Lookup Cup: Some Set").is_empty());
-        assert!(tft_sheet("TFT Some Other Event").is_empty());
+        let exact = tft_sheet("TFT Sheet Lookup Cup: Some Set");
+        assert!(exact.is_empty(), "{exact:?}");
+        let other = tft_sheet("TFT Some Other Event");
+        assert!(other.is_empty(), "{other:?}");
     }
 
     #[test]
     fn tft_sheet_defaults_empty() {
-        assert!(tft_sheet("nope, never fetched").is_empty());
+        let missing = tft_sheet("nope, never fetched");
+        assert!(missing.is_empty(), "{missing:?}");
     }
 
     #[test]
@@ -6967,7 +6994,7 @@ mod tests {
             (Sport::Nba, "nba"),
             (Sport::Nfl, "nfl"),
         ] {
-            let s = match_source_link(sport, 401688573, "NHL", 0, None).unwrap();
+            let s = match_source_link(sport, 401_688_573, "NHL", 0, None).unwrap();
             assert_eq!(
                 s.url,
                 format!("https://www.espn.com/{slug}/game/_/gameId/401688573")
@@ -6978,7 +7005,7 @@ mod tests {
 
     #[test]
     fn source_link_mlb_builds_gameday_url() {
-        let s = match_source_link(Sport::Mlb, 745444, "MLB", 0, None).unwrap();
+        let s = match_source_link(Sport::Mlb, 745_444, "MLB", 0, None).unwrap();
         assert_eq!(s.url, "https://www.mlb.com/gameday/745444");
         assert_eq!(s.label, "MLB");
     }
@@ -7133,9 +7160,9 @@ mod tests {
         let views: Vec<MatchView> = snap
             .matches
             .iter()
-            .map(|m| to_view(m, &tz, now, false))
+            .map(|m| to_view(m, tz, now, false))
             .collect();
-        let out = collapse_wrc_days(views, &tz, &snap);
+        let out = collapse_wrc_days(views, tz, &snap);
 
         // The five stages fold into four day rows (June 25–28), labelled Day 1..4
         // with the power-stage day flagged; the placeholder and F1 row survive — so
@@ -7163,20 +7190,18 @@ mod tests {
         );
         // The collapsed rows keep a real venue-local clock (not the blank date-only
         // cell), while the untouched placeholder stays date-only.
-        assert!(
-            !out.iter()
-                .find(|m| m.team_a.label == "Day 1")
-                .unwrap()
-                .clock_label
-                .is_empty()
-        );
-        assert!(
-            out.iter()
-                .find(|m| m.team_a.label == "Rally Estonia")
-                .unwrap()
-                .clock_label
-                .is_empty()
-        );
+        let day1_clock = &out
+            .iter()
+            .find(|m| m.team_a.label == "Day 1")
+            .unwrap()
+            .clock_label;
+        assert!(!day1_clock.is_empty(), "{day1_clock:?}");
+        let rally_clock = &out
+            .iter()
+            .find(|m| m.team_a.label == "Rally Estonia")
+            .unwrap()
+            .clock_label;
+        assert!(rally_clock.is_empty(), "{rally_clock:?}");
     }
 
     fn tft_session(id: i64, label: &str, series: &str, begin: &str) -> NormalizedMatch {
@@ -7233,9 +7258,9 @@ mod tests {
         let views: Vec<MatchView> = snap
             .matches
             .iter()
-            .map(|m| to_view(m, &tz, now, false))
+            .map(|m| to_view(m, tz, now, false))
             .collect();
-        let out = collapse_tft_days(views, &tz, &snap);
+        let out = collapse_tft_days(views, tz, &snap);
 
         // 7 games → 3 collapsed day rows: shared-prefix labels for Swiss/Finals,
         // ordinal fallback for the multi-lobby day.
@@ -7582,7 +7607,7 @@ mod tests {
         let mut fin = at(now - Duration::hours(2), MatchStatus::Finished);
         fin.team_a.score = Some(2);
         fin.team_b.score = Some(1);
-        let v = to_view(&fin, &Tz::UTC, now, true);
+        let v = to_view(&fin, Tz::UTC, now, true);
         assert_eq!(v.team_a.score, Some(2));
         assert!(v.team_a.winner && !v.team_b.winner);
 
@@ -7590,7 +7615,7 @@ mod tests {
         let mut up = at(now + Duration::hours(2), MatchStatus::Upcoming);
         up.team_a.score = Some(0);
         up.team_b.score = Some(0);
-        let v = to_view(&up, &Tz::UTC, now, true);
+        let v = to_view(&up, Tz::UTC, now, true);
         assert_eq!(v.team_a.score, None);
         assert_eq!(v.team_b.score, None);
     }
@@ -7604,7 +7629,7 @@ mod tests {
         let mut fin = at(now - Duration::hours(8), MatchStatus::Finished);
         fin.team_a.score = Some(0);
         fin.team_b.score = Some(0);
-        let v = to_view(&fin, &Tz::UTC, now, true);
+        let v = to_view(&fin, Tz::UTC, now, true);
         assert_eq!(v.team_a.score, None);
         assert_eq!(v.team_b.score, None);
         assert!(!v.team_a.winner && !v.team_b.winner);
@@ -7620,7 +7645,7 @@ mod tests {
         draw.sport = Sport::Soccer;
         draw.team_a.score = Some(0);
         draw.team_b.score = Some(0);
-        let v = to_view(&draw, &Tz::UTC, now, true);
+        let v = to_view(&draw, Tz::UTC, now, true);
         assert_eq!(v.team_a.score, Some(0));
         assert_eq!(v.team_b.score, Some(0));
         // A draw has no winner.
@@ -7634,7 +7659,7 @@ mod tests {
         let mut live = at(now - Duration::minutes(10), MatchStatus::Live);
         live.team_a.score = Some(1);
         live.team_b.score = Some(0);
-        let v = to_view(&live, &Tz::UTC, now, true);
+        let v = to_view(&live, Tz::UTC, now, true);
         assert_eq!(v.team_a.score, Some(1));
         assert!(!v.team_a.winner && !v.team_b.winner, "no winner mid-match");
 
@@ -7642,7 +7667,7 @@ mod tests {
         let mut live0 = at(now - Duration::minutes(10), MatchStatus::Live);
         live0.team_a.score = Some(0);
         live0.team_b.score = Some(0);
-        let v = to_view(&live0, &Tz::UTC, now, true);
+        let v = to_view(&live0, Tz::UTC, now, true);
         assert_eq!(v.team_a.score, None);
     }
 
@@ -7696,7 +7721,7 @@ mod tests {
             mk(ms(3), "LCK", "Bo5"),
             mk(day2, "LCK", "Bo3"),
         ];
-        let days = group_days(views, &Tz::UTC);
+        let days = group_days(views, Tz::UTC);
         assert_eq!(days.len(), 2);
         assert_eq!(days[0].leagues.len(), 2);
         assert_eq!(days[0].leagues[0].league, "LCK");
@@ -7725,7 +7750,7 @@ mod tests {
             series_name: "2026".into(),
             ..chain_view(at_ms, "Esports World Cup")
         };
-        let days = group_days(vec![mk(ms(1), Sport::Cs2), mk(ms(2), Sport::Lol)], &Tz::UTC);
+        let days = group_days(vec![mk(ms(1), Sport::Cs2), mk(ms(2), Sport::Lol)], Tz::UTC);
         assert_eq!(days.len(), 1);
         assert_eq!(
             days[0].leagues.len(),
@@ -7792,7 +7817,7 @@ mod tests {
             chain_view(at(4, 1), "MSI"),  // Sat 1am (5h later, crosses midnight)
             chain_view(at(4, 20), "MSI"), // Sat 8pm (19h later)
         ];
-        let days = group_chains(views, &Tz::UTC);
+        let days = group_chains(views, Tz::UTC);
         assert_eq!(
             days.len(),
             2,
@@ -7819,7 +7844,7 @@ mod tests {
         // Two evenings ~24h apart stay separate even when chaining.
         let evenings = vec![chain_view(at(3, 20), "X"), chain_view(at(4, 20), "X")];
         assert_eq!(
-            group_chains(evenings, &Tz::UTC).len(),
+            group_chains(evenings, Tz::UTC).len(),
             2,
             "24h apart => separate days"
         );
@@ -7827,12 +7852,12 @@ mod tests {
         // group_chains keeps it as one night.
         let across = vec![chain_view(at(3, 22), "X"), chain_view(at(4, 1), "X")];
         assert_eq!(
-            group_days(across.clone(), &Tz::UTC).len(),
+            group_days(across.clone(), Tz::UTC).len(),
             2,
             "calendar-day grouping still splits at midnight"
         );
         assert_eq!(
-            group_chains(across, &Tz::UTC).len(),
+            group_chains(across, Tz::UTC).len(),
             1,
             "chaining keeps them together"
         );
@@ -7885,7 +7910,7 @@ mod tests {
             mk(ms(3), Sport::Lol, "LEC"),
             mk(ms(4), Sport::Cs2, "BLAST"),
         ];
-        let days = group_days(views, &Tz::UTC);
+        let days = group_days(views, Tz::UTC);
         let order: Vec<&str> = days[0].leagues.iter().map(|l| l.league.as_str()).collect();
         // CS2 events first (time order), then LoL events.
         assert_eq!(order, vec!["IEM", "BLAST", "LCK", "LEC"]);
@@ -7936,7 +7961,7 @@ mod tests {
             mk(ms(2), "Katowice"),
             mk(ms(3), "Cologne Major"),
         ];
-        let days = group_days(views, &Tz::UTC);
+        let days = group_days(views, Tz::UTC);
         assert_eq!(days.len(), 1);
         // Same league, two editions => two groups (one per edition).
         assert_eq!(days[0].leagues.len(), 2);
@@ -8260,7 +8285,8 @@ mod tests {
         assert_eq!(same.len(), 1);
         assert_eq!(same[0].stage, "Central");
         // Neither present → nothing.
-        assert!(tables_with_team(&tables, "Kraken", "Jets").is_empty());
+        let hits = tables_with_team(&tables, "Kraken", "Jets");
+        assert!(hits.is_empty(), "{hits:?}");
     }
 
     #[test]
@@ -8333,7 +8359,7 @@ mod tests {
         );
         let lead = 15 * 60_000;
 
-        let ny = reminder_seed(&m, lead, &chrono_tz::America::New_York, false);
+        let ny = reminder_seed(&m, lead, chrono_tz::America::New_York, false);
         assert!(ny.body.contains("10:00 PM"), "NY body: {}", ny.body);
         assert!(
             ny.body.contains("EDT"),
@@ -8341,7 +8367,7 @@ mod tests {
             ny.body
         );
 
-        let la = reminder_seed(&m, lead, &chrono_tz::America::Los_Angeles, false);
+        let la = reminder_seed(&m, lead, chrono_tz::America::Los_Angeles, false);
         assert!(la.body.contains("7:00 PM"), "LA body: {}", la.body);
         assert!(
             la.body.contains("PDT"),
@@ -8350,7 +8376,7 @@ mod tests {
         );
 
         // The 24h preference formats the same instant as "22:00", not "10:00 PM".
-        let ny24 = reminder_seed(&m, lead, &chrono_tz::America::New_York, true);
+        let ny24 = reminder_seed(&m, lead, chrono_tz::America::New_York, true);
         assert!(ny24.body.contains("22:00"), "NY 24h body: {}", ny24.body);
         assert!(
             !ny24.body.contains("PM"),
@@ -8376,7 +8402,7 @@ mod tests {
         m.league = "F1".into();
         m.team_a.label = "Practice 1".into();
         m.team_b.label = String::new();
-        let seed = reminder_seed(&m, 15 * 60_000, &chrono_tz::Etc::UTC, false);
+        let seed = reminder_seed(&m, 15 * 60_000, chrono_tz::Etc::UTC, false);
         assert_eq!(seed.title, "Practice 1");
 
         // A normal two-sided match still reads "A vs B".
@@ -8384,7 +8410,7 @@ mod tests {
             "2026-06-25T02:00:00Z".parse::<DateTime<Utc>>().unwrap(),
             MatchStatus::Upcoming,
         );
-        let seed = reminder_seed(&two, 15 * 60_000, &chrono_tz::Etc::UTC, false);
+        let seed = reminder_seed(&two, 15 * 60_000, chrono_tz::Etc::UTC, false);
         assert_eq!(seed.title, "A vs B");
     }
 
@@ -8398,7 +8424,7 @@ mod tests {
             "2026-06-25T02:00:00Z".parse::<DateTime<Utc>>().unwrap(),
             MatchStatus::Upcoming,
         );
-        let seed = reminder_seed(&m, 15 * 60_000, &chrono_tz::Etc::UTC, false);
+        let seed = reminder_seed(&m, 15 * 60_000, chrono_tz::Etc::UTC, false);
         assert_eq!(seed.url, crate::types::match_path(m.sport, m.id));
         assert_eq!(seed.url, "/match/cs2/1");
 
@@ -8411,7 +8437,7 @@ mod tests {
         lp.id = 987;
         lp.sport = Sport::Lol;
         lp.league_url = Some("https://liquipedia.net/leagueoflegends/LCK".into());
-        let seed = reminder_seed(&lp, 15 * 60_000, &chrono_tz::Etc::UTC, false);
+        let seed = reminder_seed(&lp, 15 * 60_000, chrono_tz::Etc::UTC, false);
         assert_eq!(seed.url, "/match/lol/987");
     }
 
@@ -8423,8 +8449,8 @@ mod tests {
         let begin = Utc::now() + Duration::hours(1);
         let m = at(begin, MatchStatus::Upcoming);
         let now = Utc::now().timestamp_millis();
-        let soon = reminder_seed(&m, 15 * 60_000, &chrono_tz::Etc::UTC, false);
-        let far = reminder_seed(&m, 24 * 60 * 60_000, &chrono_tz::Etc::UTC, false);
+        let soon = reminder_seed(&m, 15 * 60_000, chrono_tz::Etc::UTC, false);
+        let far = reminder_seed(&m, 24 * 60 * 60_000, chrono_tz::Etc::UTC, false);
         assert!(soon.is_armable(now), "the 15-min timer is still ahead");
         assert!(
             !far.is_armable(now),
@@ -8713,7 +8739,7 @@ mod tests {
         let mut m = at(when, MatchStatus::Upcoming);
         m.sport = Sport::Mlb;
         m.venue_tz = Some("America/New_York".into());
-        let view = to_view(&m, &la, when, false);
+        let view = to_view(&m, la, when, false);
         assert_eq!(view.clock_label, "\u{2007}4:10 PM"); // viewer tz (PDT), padded
         assert!(
             view.venue_label.ends_with("7:10 PM EDT"),
@@ -8725,7 +8751,8 @@ mod tests {
         // No venue tz (esports) → no venue label, nothing to swap to.
         let mut e = at(when, MatchStatus::Upcoming);
         e.venue_tz = None;
-        assert!(to_view(&e, &la, when, false).venue_label.is_empty());
+        let venue_label = to_view(&e, la, when, false).venue_label;
+        assert!(venue_label.is_empty(), "{venue_label:?}");
     }
 
     #[test]
@@ -8738,9 +8765,9 @@ mod tests {
         let mut m = at(noon, MatchStatus::Upcoming);
         m.sport = Sport::Motorsport;
         m.league = "WRC".into();
-        let view = to_view(&m, &la, noon, false);
+        let view = to_view(&m, la, noon, false);
         assert_eq!(view.clock_label, "");
-        assert!(view.venue_label.is_empty());
+        assert!(view.venue_label.is_empty(), "{:?}", view.venue_label);
         assert_eq!(view.date_label, "Thursday, January 22");
     }
 
@@ -8755,9 +8782,9 @@ mod tests {
         ph.sport = Sport::Motorsport;
         ph.league = "WEC".into();
         ph.venue_tz = None;
-        let v = to_view(&ph, &la, now, false);
+        let v = to_view(&ph, la, now, false);
         assert_eq!(v.clock_label, "");
-        assert!(v.venue_label.is_empty());
+        assert!(v.venue_label.is_empty(), "{:?}", v.venue_label);
 
         // A real session (has a venue tz) keeps its clock and venue-time toggle.
         let mut sess = at(
@@ -8767,9 +8794,9 @@ mod tests {
         sess.sport = Sport::Motorsport;
         sess.league = "WEC".into();
         sess.venue_tz = Some("America/Sao_Paulo".into());
-        let vs = to_view(&sess, &la, now, false);
-        assert!(!vs.clock_label.is_empty());
-        assert!(!vs.venue_label.is_empty());
+        let vs = to_view(&sess, la, now, false);
+        assert!(!vs.clock_label.is_empty(), "{:?}", vs.clock_label);
+        assert!(!vs.venue_label.is_empty(), "{:?}", vs.venue_label);
     }
 
     #[test]
@@ -8838,7 +8865,8 @@ mod tests {
                 now + Duration::hours(2),
             ),
         ];
-        assert!(motor_result_plan(&rows).is_empty());
+        let plan = motor_result_plan(&rows);
+        assert!(plan.is_empty(), "{plan:?}");
     }
 
     #[test]
@@ -8885,7 +8913,8 @@ mod tests {
         let mut m = at(now, MatchStatus::Finished);
         m.sport = Sport::Motorsport;
         m.league = "F1".into(); // F1 carries no motor_result_ref
-        assert!(motor_result_plan(&[m]).is_empty());
+        let plan = motor_result_plan(&[m]);
+        assert!(plan.is_empty(), "{plan:?}");
     }
 
     #[test]
@@ -8975,7 +9004,7 @@ mod tests {
         );
 
         let snap = snapshot_from(vec![recent_live, stale_live, finished_prev], now);
-        let (rows, _meta) = homepage_rows(&snap, cfg, now, "all", &tz, false);
+        let (rows, _meta) = homepage_rows(&snap, cfg, now, "all", tz, false);
         let ids: Vec<i64> = rows.iter().map(|m| m.id).collect();
         assert!(
             ids.contains(&1),
@@ -9036,7 +9065,7 @@ mod tests {
         canceled.series_name = "Katowice 2026".to_string();
 
         let snap = snapshot_from(vec![live, far, canceled], now);
-        let (rows, meta) = homepage_rows(&snap, cfg, now, "all", &tz, false);
+        let (rows, meta) = homepage_rows(&snap, cfg, now, "all", tz, false);
         let ids: Vec<i64> = rows.iter().map(|m| m.id).collect();
         assert!(ids.contains(&1), "live match should be in window");
         assert!(!ids.contains(&2), "match past horizon should be excluded");
@@ -9083,7 +9112,7 @@ mod tests {
         );
 
         let snap = snapshot_from(vec![f1, mlb], now);
-        let (rows, _meta) = homepage_rows(&snap, cfg, now, "trad", &tz, false);
+        let (rows, _meta) = homepage_rows(&snap, cfg, now, "trad", tz, false);
         let ids: Vec<i64> = rows.iter().map(|m| m.id).collect();
 
         assert!(ids.contains(&101), "in-window MLB game should be present");
@@ -9137,7 +9166,7 @@ mod tests {
         let cfg = config();
         let snap = synthetic_snapshot(300, now);
 
-        let view = homepage_render(&snap, cfg, now, "all", &tz, false);
+        let view = homepage_render(&snap, cfg, now, "all", tz, false);
         assert!(!view.days.is_empty(), "expected grouped days");
         // Day groups must be in ascending day order.
         let keys: Vec<&str> = view.days.iter().map(|d| d.day_key.as_str()).collect();
@@ -9241,7 +9270,7 @@ mod tests {
         .into_iter()
         .collect();
         let out = enrich_streams(Vec::new(), &live, &["x".to_string()], "");
-        assert!(out.is_empty());
+        assert!(out.is_empty(), "{out:?}");
     }
 
     #[test]
@@ -9334,7 +9363,8 @@ mod tests {
             vec!["lec".to_string()]
         );
         // Empty league → no keywords.
-        assert!(league_keywords("", &std::collections::HashMap::new()).is_empty());
+        let keywords = league_keywords("", &std::collections::HashMap::new());
+        assert!(keywords.is_empty(), "{keywords:?}");
     }
 
     #[test]
@@ -9461,7 +9491,7 @@ mod tests {
             viewers: v,
             title: title.to_string(),
             language: "en".to_string(),
-            tags: tags.iter().map(|s| s.to_string()).collect(),
+            tags: tags.iter().map(ToString::to_string).collect(),
         };
         let scan = vec![
             ds("caedrel", 40000, "MSI Watchparty Day 3", &[]), // title hit
@@ -9504,8 +9534,8 @@ mod tests {
         };
         let scan = vec![
             ds("nope", 90000, "rare card collector stream"), // "lec" only inside "collector"
-            ds("a", 100000, "LEC Summer finals"),
-            ds("b", 200000, "LEC watch party"),
+            ds("a", 100_000, "LEC Summer finals"),
+            ds("b", 200_000, "LEC watch party"),
             ds("c", 50000, "LEC co-stream"),
         ];
         let out = attribute_costreams(
@@ -9652,7 +9682,8 @@ mod tests {
             vec!["caedrel".to_string(), "sneaky".to_string()]
         );
         // A game/league with no entry → empty.
-        assert!(costreamer_seeds(&cs, "IEM", Sport::Cs2).is_empty());
+        let seeds = costreamer_seeds(&cs, "IEM", Sport::Cs2);
+        assert!(seeds.is_empty(), "{seeds:?}");
     }
 
     #[test]

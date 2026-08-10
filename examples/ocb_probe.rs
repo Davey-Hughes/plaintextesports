@@ -2,9 +2,9 @@
 //! WEC / MotoGP calendar + standings endpoints once and reports what came back,
 //! plus the poll tier each series' current data would select. ~10 requests.
 //!
-//! Run:  cargo run --example ocb_probe --features ssr
+//! Run:  cargo run --example `ocb_probe` --features ssr
 //!
-//! Reads the key from config.toml / OCBLACKTOP_TOKEN, exactly like the server.
+//! Reads the key from config.toml / `OCBLACKTOP_TOKEN`, exactly like the server.
 
 use chrono::{DateTime, Datelike, Duration, Utc};
 use plaintextesports::feed::NormalizedMatch;

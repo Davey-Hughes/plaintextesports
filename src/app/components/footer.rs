@@ -1,5 +1,7 @@
 //! Site footer.
-use crate::app::*;
+use crate::app::prelude::*;
+use leptos::prelude::*;
+use leptos_router::components::A;
 
 #[component]
 pub(crate) fn SiteFooter() -> impl IntoView {

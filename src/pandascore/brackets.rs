@@ -23,6 +23,11 @@ struct RawTournamentDetail {
 
 /// A tournament's stage name (e.g. "Stage 1", "Playoffs") and whether it's an
 /// elimination bracket (vs a Swiss/group stage represented by standings).
+///
+/// # Errors
+///
+/// Returns an error if the request fails or the response does not
+/// deserialize into the expected shape.
 pub async fn fetch_tournament_meta(
     client: &reqwest::Client,
     token: &str,
@@ -55,6 +60,11 @@ struct RawStanding {
 
 /// Fetch a tournament's standings (group/Swiss table). Bracket-only tournaments
 /// return rows without W-L; those are dropped (the bracket carries that info).
+///
+/// # Errors
+///
+/// Returns an error if the request fails or the response does not
+/// deserialize into the expected shape.
 pub async fn fetch_standings(
     client: &reqwest::Client,
     token: &str,
@@ -112,6 +122,11 @@ struct RawPrevMatch {
 /// Fetch a tournament's bracket and reconstruct it: an elimination tree
 /// (`rounds`) for a playoff, or a Swiss buchholz grid (`swiss`) for a "Round N"
 /// group stage. At most one is non-empty.
+///
+/// # Errors
+///
+/// Returns an error if the request fails or the response does not
+/// deserialize into the expected shape.
 pub async fn fetch_bracket(
     client: &reqwest::Client,
     token: &str,
@@ -272,6 +287,9 @@ fn parse_round(name: &str) -> Option<u32> {
 
 /// The win/loss target for a Swiss stage with `rounds` rounds: a first-to-N
 /// Swiss runs 2N-1 rounds, so N = (rounds + 1) / 2 (3 for the usual 5 rounds).
+// A Swiss stage runs 3, 5, or 7 rounds. The count comes from the round list
+// the caller just built, never from the wire.
+#[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
 fn win_target(rounds: usize) -> i32 {
     ((rounds as i32) + 1) / 2
 }

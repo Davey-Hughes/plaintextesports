@@ -16,6 +16,10 @@ use serde::de::DeserializeOwned;
 
 const BASE: &str = "https://api.openf1.org/v1";
 
+// The field names are the OpenF1 wire keys verbatim (no `#[serde(rename)]`
+// on this struct), so dropping the prefix means adding a rename attribute to
+// each field restating the name it just lost.
+#[allow(clippy::struct_field_names)]
 #[derive(Deserialize)]
 struct Meeting {
     meeting_key: i64,
@@ -25,6 +29,10 @@ struct Meeting {
     date_start: String,
 }
 
+// The field names are the OpenF1 wire keys verbatim (no `#[serde(rename)]`
+// on this struct), so dropping the prefix means adding a rename attribute to
+// each field restating the name it just lost.
+#[allow(clippy::struct_field_names)]
 #[derive(Deserialize)]
 struct Session {
     session_key: i64,
@@ -34,6 +42,10 @@ struct Session {
     date_start: String,
 }
 
+// The field names are the OpenF1 wire keys verbatim (no `#[serde(rename)]`
+// on this struct), so dropping the prefix means adding a rename attribute to
+// each field restating the name it just lost.
+#[allow(clippy::struct_field_names)]
 #[derive(Deserialize)]
 struct Driver {
     driver_number: i64,
@@ -94,6 +106,11 @@ fn date_of(ts: &str) -> Option<NaiveDate> {
 }
 
 /// Format a lap time given in seconds, e.g. 76.363 → "1:16.363".
+// A lap time in seconds from the wire. Rust defines float-to-int `as` as
+// saturating (and NaN as 0), so a nonsense value formats as a nonsense time
+// rather than wrapping to a plausible-looking one; `secs <= 0.0` is rejected
+// above. Real laps are two to three digits of seconds.
+#[allow(clippy::cast_possible_truncation)]
 fn fmt_laptime(secs: f64) -> String {
     if secs <= 0.0 {
         return String::new();

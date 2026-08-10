@@ -5,7 +5,7 @@
 //! the work one homepage request does over a synthetic snapshot, and prints total
 //! allocations + bytes — a hard, re-runnable number to verify clone-reduction work
 //! against. Also writes `dhat-heap.json` for the dhat viewer
-//! (https://nnethercote.github.io/dh_view/dh_view.html).
+//! (<https://nnethercote.github.io/dh_view/dh_view.html>).
 //!
 //! A request has two halves, and they're profiled separately because they regress
 //! independently:
@@ -75,7 +75,7 @@ fn main() {
 
     // 1) Build the view + serialize it — the half that was always measured here.
     let ((view, json_len), build) = measure(|| {
-        let view = cache::homepage_render(&snap, cfg, now, "all", &tz, false);
+        let view = cache::homepage_render(&snap, cfg, now, "all", tz, false);
         let json = serde_json::to_string(&view).unwrap();
         let len = json.len();
         std::hint::black_box(&json);

@@ -42,6 +42,8 @@ pub struct ParsedSession {
 }
 
 /// A stable 0..1e9 FNV-1a hash of a string.
+// `h % 1_000_000_000` is under 1e9 by construction, well inside i64.
+#[allow(clippy::cast_possible_wrap)]
 fn hash(s: &str) -> i64 {
     let mut h: u64 = 0xcbf2_9ce4_8422_2325;
     for b in s.bytes() {
@@ -56,6 +58,7 @@ fn hash(s: &str) -> i64 {
 /// rather than duplicating — the schedule (and any armed reminder) moves with it.
 /// Assumes session labels are unique within a tournament (each stage is labelled
 /// distinctly, e.g. "Day 1 - Swiss" vs "Grand Finals").
+#[must_use]
 pub fn session_id(tournament: &str, session_label: &str) -> i64 {
     TFT_ID_BASE + hash(&format!("{tournament}\u{1f}{session_label}"))
 }
@@ -74,6 +77,7 @@ fn status_at(begin_at: DateTime<Utc>, now: DateTime<Utc>) -> MatchStatus {
 
 /// Map a parsed session to the source-agnostic row. Single-entity: `team_a`
 /// carries the session label; `team_b` is empty.
+#[must_use]
 pub fn session_to_match(s: &ParsedSession, now: DateTime<Utc>) -> NormalizedMatch {
     let entity = NormalizedTeam {
         label: s.session_label.clone(),
@@ -96,12 +100,12 @@ pub fn session_to_match(s: &ParsedSession, now: DateTime<Utc>) -> NormalizedMatc
         entity,
         empty,
     );
-    m.series_name = s.tournament.clone();
+    m.series_name.clone_from(&s.tournament);
     // The tournament's CompeteTFT page — the "view this" source link for this row.
     if !s.tournament_url.is_empty() {
         m.league_url = Some(s.tournament_url.clone());
     }
-    m.streams = s.streams.clone();
+    m.streams.clone_from(&s.streams);
     m
 }
 

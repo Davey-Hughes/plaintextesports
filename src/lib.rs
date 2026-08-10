@@ -1,6 +1,15 @@
 // The view tree's deeply-nested types overflow the default trait-solver depth
 // under the release LTO build, so bump it (mirrors the bin's main.rs).
 #![recursion_limit = "512"]
+// Nine doc comments on `pub` fns link to a private neighbour (`box_width_em` to
+// `FIT_BUDGET_EM`, `load_all` to `row_to_match`, ...). rustdoc warns because the
+// *default* doc build would not contain the target — but this crate is `pub`
+// only so the binary and the wasm build can consume it, and the docs worth
+// reading are `cargo doc --document-private-items`, where every one of these
+// resolves. That is the build CI runs, so the links are checked rather than
+// merely tolerated. Genuinely broken links are a different lint
+// (`broken_intra_doc_links`) and stay denied.
+#![allow(rustdoc::private_intra_doc_links)]
 
 pub mod app;
 pub mod bracket;
@@ -62,7 +71,7 @@ pub mod youtube;
 #[cfg(feature = "hydrate")]
 #[wasm_bindgen::prelude::wasm_bindgen]
 pub fn hydrate() {
-    use crate::app::*;
+    use crate::app::App;
     console_error_panic_hook::set_once();
     leptos::mount::hydrate_body(App);
 }

@@ -4,6 +4,8 @@
 //! toggle. The schedule endpoint returns a week at a time, so a date-range fetch
 //! walks it a week at a time and de-dupes.
 
+use std::fmt::Write as _;
+
 use crate::bracket_build::{self, RawSeries};
 use crate::feed::{NormalizedMatch, NormalizedTeam};
 use crate::types::{
@@ -64,7 +66,7 @@ struct RawTeam {
     abbrev: String,
     #[serde(default)]
     score: Option<i64>,
-    /// SVG logo URL, e.g. "https://assets.nhle.com/logos/nhl/svg/TOR_light.svg".
+    /// SVG logo URL, e.g. "<https://assets.nhle.com/logos/nhl/svg/TOR_light.svg>".
     #[serde(default)]
     logo: String,
 }
@@ -91,10 +93,10 @@ struct RawBroadcast {
 impl RawTeam {
     /// Short row label — the nickname ("Canadiens"), falling back to the abbrev.
     fn label(&self) -> String {
-        if !self.common_name.default.is_empty() {
-            self.common_name.default.clone()
-        } else {
+        if self.common_name.default.is_empty() {
             self.abbrev.clone()
+        } else {
+            self.common_name.default.clone()
         }
     }
 
@@ -195,7 +197,8 @@ fn broadcasts(raw: &[RawBroadcast]) -> Vec<StreamView> {
             format!("{scope} · TV")
         };
         if !x.country.is_empty() && !x.country.eq_ignore_ascii_case("US") {
-            tag.push_str(&format!(" · {}", x.country.to_ascii_uppercase()));
+            // Discarded: `fmt::Write` for `String` cannot fail.
+            let _ = write!(tag, " · {}", x.country.to_ascii_uppercase());
         }
         let url = if national {
             crate::watch::national_watch_url(name)
@@ -258,6 +261,11 @@ fn to_match(g: RawGame) -> Option<NormalizedMatch> {
 /// endpoint returns a week per call, so we step through the window a week at a
 /// time and de-dupe by sport id. The first week's call propagates a network error
 /// (so a real outage keeps the old data); later weeks are best-effort.
+///
+/// # Errors
+///
+/// Returns a `reqwest::Error` if the request fails or the response body
+/// does not deserialize into the expected shape.
 pub async fn fetch_schedule(
     client: &reqwest::Client,
     start: NaiveDate,
@@ -410,6 +418,11 @@ fn divisions_from(resp: StandingsResp) -> Vec<EventInfo> {
 }
 
 /// Fetch the current NHL standings, one table per division. Keyless, like MLB.
+///
+/// # Errors
+///
+/// Returns a `reqwest::Error` if the request fails or the response body
+/// does not deserialize into the expected shape.
 pub async fn fetch_standings(client: &reqwest::Client) -> Result<Vec<EventInfo>, reqwest::Error> {
     let url = format!("{BASE}/standings/now");
     let resp: StandingsResp = client
@@ -494,6 +507,11 @@ impl BracketTeam {
 }
 
 /// The NHL playoff bracket for a season (empty off-season / before the playoffs).
+///
+/// # Errors
+///
+/// Returns a `reqwest::Error` if the request fails or the response body
+/// does not deserialize into the expected shape.
 pub async fn fetch_bracket(
     client: &reqwest::Client,
     year: i32,
@@ -507,7 +525,7 @@ pub async fn fetch_bracket(
         .error_for_status()?
         .json()
         .await?;
-    Ok(nhl_bracket(resp.series))
+    Ok(nhl_bracket(&resp.series))
 }
 
 fn nhl_round_title(round: i64) -> String {
@@ -523,7 +541,11 @@ fn nhl_round_title(round: i64) -> String {
 /// Assemble NHL bracket series into rounds. Every series in each round contributes
 /// — including ones not yet seeded, which render as empty/TBD boxes — and the letter
 /// order within each round places matches so the standard tree connects them.
-fn nhl_bracket(series: Vec<BracketSeries>) -> Vec<BracketRound> {
+// Two conversions, both bounded by the shape of a playoff bracket: `round` runs
+// 1..=4 (the loop literal), and `i % half_size` is under half the series in one
+// round — eight at most, in the first.
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+fn nhl_bracket(series: &[BracketSeries]) -> Vec<BracketRound> {
     if series.is_empty() {
         return Vec::new();
     }
@@ -572,7 +594,7 @@ fn nhl_bracket(series: Vec<BracketSeries>) -> Vec<BracketRound> {
             });
         }
     }
-    bracket_build::build(raws)
+    bracket_build::build(&raws)
 }
 
 // ---- landing ----
@@ -773,10 +795,10 @@ fn val_str(v: &serde_json::Value) -> String {
         serde_json::Value::Number(n) => {
             // Percentages come as a 0..1 float; show whole numbers plainly.
             if let Some(f) = n.as_f64() {
-                if f.fract() != 0.0 {
-                    format!("{:.1}%", f * 100.0)
-                } else {
+                if f.fract() == 0.0 {
                     format!("{f}")
+                } else {
+                    format!("{:.1}%", f * 100.0)
                 }
             } else {
                 n.to_string()
@@ -788,6 +810,11 @@ fn val_str(v: &serde_json::Value) -> String {
 
 /// Fetch a game's landing (summary/scoring/stars), right-rail (linescore + team
 /// stats), and boxscore (per-player stats) — three keyless calls.
+///
+/// # Errors
+///
+/// Returns a `reqwest::Error` if the request fails or the response body
+/// does not deserialize into the expected shape.
 pub async fn fetch_box_score(
     client: &reqwest::Client,
     game_id: i64,
@@ -881,6 +908,7 @@ fn goalie_table(abbrev: &str, team: &RawPbgTeam) -> PlayerTable {
 }
 
 /// Normalize a game's landing + right-rail + boxscore into the shared `BoxScore`.
+#[must_use]
 pub fn to_box_score(landing: &RawLanding, rr: &RawRightRail, bs: &RawNhlBox) -> BoxScore {
     let (aw, hm) = (&landing.away_team, &landing.home_team);
 
@@ -1122,7 +1150,7 @@ mod tests {
                 );
             }
         }
-        assert!(!rounds.is_empty());
+        assert!(!rounds.is_empty(), "{rounds:?}");
         let sections: Vec<&str> = rounds.iter().map(|r| r.section.as_str()).collect();
         assert!(sections.contains(&"east") && sections.contains(&"west"));
         assert!(rounds.iter().any(|r| r.section == "final"));
@@ -1183,7 +1211,8 @@ mod tests {
             broadcasts(&[b("ESPN", "N", "US", 1), b("ESPN", "N", "US", 2)]).len(),
             1
         );
-        assert!(broadcasts(&[]).is_empty());
+        let out = broadcasts(&[]);
+        assert!(out.is_empty(), "{out:?}");
     }
 
     #[test]

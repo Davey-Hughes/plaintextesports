@@ -8,7 +8,18 @@
 
 use crate::http::DynError;
 use crate::types::{MatchStatus, Sport, StreamView};
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, NaiveTime, Utc};
+
+/// 12:00:00, for anchoring a date-only value to the middle of its day so the
+/// calendar date survives a shift into any viewer's timezone.
+///
+/// A const rather than `and_hms_opt(12, 0, 0).unwrap()` at each use: the
+/// argument check happens during const evaluation, so an invalid time is a
+/// compile error instead of a panic the callers have to document.
+pub const NOON: NaiveTime = match NaiveTime::from_hms_opt(12, 0, 0) {
+    Some(t) => t,
+    None => unreachable!(),
+};
 
 /// Result of fetching one sport's tier-1 matches.
 pub type FetchResult = Result<Vec<NormalizedMatch>, DynError>;
@@ -158,12 +169,12 @@ mod tests {
         assert_eq!(m.team_b.label, "Canadiens");
         // Everything a keyless team feed doesn't supply is defaulted off.
         assert!(m.league_url.is_none());
-        assert!(m.series_name.is_empty());
+        assert!(m.series_name.is_empty(), "{:?}", m.series_name);
         assert!(m.best_of.is_none());
         assert!(m.stream_url.is_none());
         assert!(m.tournament_id.is_none());
         assert!(m.venue_tz.is_none());
-        assert!(m.streams.is_empty());
+        assert!(m.streams.is_empty(), "{:?}", m.streams);
         assert!(m.mlb_series.is_none());
     }
 }

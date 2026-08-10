@@ -116,6 +116,40 @@ ssr = [
   "leptos_router/ssr",
 ]
 
+# Clippy's `pedantic` group, on for the whole crate. CI already runs clippy with
+# `-D warnings`, so everything below that stays at `warn` is a hard gate — the
+# `warn` level is what lets `cargo clippy` locally show the whole list at once
+# instead of stopping at the first one.
+#
+# `priority = -1` on the group is load-bearing: without it, cargo rejects the
+# table because the individual `allow`s below conflict with the group that
+# contains them. A lower priority means the group is applied first and the
+# specific lints override it.
+#
+# Every `allow` here needs the reason next to it. The bar for adding one is that
+# the lint is asking for a change this crate has decided against — not that it
+# fires a lot.
+[lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+
+# Fires on any fn over 100 lines, at 32 sites. Two thirds are `view!` trees
+# (`App`, `EventPage`, `NotificationsPage`, `Bracket`, `render_day`, …) and the
+# `to_box_score` feed converters: one flat sequence each, with no reusable middle
+# to extract, so satisfying the lint would mean inventing helpers that exist only
+# to move lines out of sight. The rest are genuinely long procedures —
+# `spawn_poller`, `apply_poll`, `Config::from_vars`, `store::open`, `main` — and
+# those are worth watching, but by a reader rather than by a line count.
+too_many_lines = "allow"
+
+# Flags name pairs that differ by a character. Most of the 14 are WRC vs WEC —
+# two motorsport series whose three-letter names differ by one letter and sit
+# side by side all through the poller (`last_wec`/`last_wrc`, `wec_iv`/`wrc_iv`,
+# `ocb_wec_at`/`ocb_wrc_at`, and the `wrc_s, wec_s, motogp_s` join) — plus
+# `team_a_label`/`team_b_label`. The similarity is the domain's, not the code's,
+# and renaming would make deliberate pairs read as unrelated.
+similar_names = "allow"
+
+
 [dev-dependencies]
 getrandom = "0.2"
 criterion = "0.5"

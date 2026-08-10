@@ -30,7 +30,7 @@ static CLIENT: Lazy<reqwest::Client> = Lazy::new(|| {
         // (itself a panic in reqwest); fail loudly and specifically instead.
         .expect("failed to build the YouTube HTTP client")
 });
-/// (utc_date, units_used_today) — resets on date change.
+/// (`utc_date`, `units_used_today`) — resets on date change.
 static BUDGET: Lazy<RwLock<(NaiveDate, u32)>> =
     Lazy::new(|| RwLock::new((Utc::now().date_naive(), 0)));
 /// `@handle` → `UC…` channel id, cached forever (a channel id is permanent).
@@ -55,6 +55,7 @@ pub struct LiveInfo {
 
 /// Normalize a YouTube channel handle or URL to a canonical identifier: `@handle`
 /// (lowercased) or a `UC…` channel id. `None` for non-YouTube / unrecognized.
+#[must_use]
 pub fn channel_ident(s: &str) -> Option<String> {
     let t = s.trim();
     if let Some(rest) = t.strip_prefix("@") {
@@ -132,8 +133,7 @@ fn youtube_ref(url: &str) -> Option<YtRef> {
     // offsets, so the index is valid in `t`.)
     let after = low
         .find("youtube.com/")
-        .map(|i| &t[i + "youtube.com/".len()..])
-        .unwrap_or("")
+        .map_or("", |i| &t[i + "youtube.com/".len()..])
         .trim_start_matches('/');
     if after.is_empty() {
         return None;
@@ -154,8 +154,7 @@ fn youtube_ref(url: &str) -> Option<YtRef> {
         // /watch?v=<id> — the id lives in the query string.
         "watch" => after
             .split_once('?')
-            .map(|(_, q)| q)
-            .unwrap_or("")
+            .map_or("", |(_, q)| q)
             .split('&')
             .find_map(|kv| kv.strip_prefix("v="))
             .map(|v| v.split(['&', '#']).next().unwrap_or("").trim())
@@ -197,6 +196,7 @@ fn youtube_ref(url: &str) -> Option<YtRef> {
 /// `/channel/UC…`) rather than a specific video (`/watch`, `/live/<id>`,
 /// `youtu.be/<id>`). Used to prefer a stable channel permalink when collapsing
 /// duplicate streams that resolve to the same channel.
+#[must_use]
 pub fn is_channel_url(url: &str) -> bool {
     matches!(youtube_ref(url), Some(YtRef::Handle(_) | YtRef::Channel(_)))
 }

@@ -1,5 +1,9 @@
 //! The team schedule page.
-use crate::app::*;
+use crate::app::prelude::*;
+use leptos::prelude::*;
+use leptos_router::components::A;
+use leptos_router::hooks::use_params;
+use leptos_router::params::Params;
 
 #[derive(Params, PartialEq, Clone)]
 pub(crate) struct TeamParams {
@@ -102,7 +106,7 @@ pub(crate) fn TeamPage() -> impl IntoView {
                                     <h1 class="detail-title">{name.clone()}</h1>
                                 </div>
                                 <div id="sched" class="spy">
-                                    {render_schedule(s, false, push, true, windowed)}
+                                    {render_schedule(s, push, windowed)}
                                 </div>
                             </article>
                         }

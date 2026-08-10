@@ -35,10 +35,10 @@ fn bench_homepage(c: &mut Criterion) {
         // Esports mode ("all") and traditional mode ("trad", exercises the
         // motorsport-event + WRC-collapse branch) have different hot paths.
         g.bench_with_input(BenchmarkId::new("all", n), &snap, |b, snap| {
-            b.iter(|| cache::homepage_render(black_box(snap), cfg, now, "all", &tz, false));
+            b.iter(|| cache::homepage_render(black_box(snap), cfg, now, "all", tz, false));
         });
         g.bench_with_input(BenchmarkId::new("trad", n), &snap, |b, snap| {
-            b.iter(|| cache::homepage_render(black_box(snap), cfg, now, "trad", &tz, false));
+            b.iter(|| cache::homepage_render(black_box(snap), cfg, now, "trad", tz, false));
         });
     }
     g.finish();
@@ -56,7 +56,7 @@ fn bench_building_blocks(c: &mut Criterion) {
 
     g.bench_function("to_view_single", |b| {
         let m = &matches[0];
-        b.iter(|| cache::to_view(black_box(m), &tz, now, false));
+        b.iter(|| cache::to_view(black_box(m), tz, now, false));
     });
 
     g.bench_function("matches_in_window_esports", |b| {
@@ -69,7 +69,7 @@ fn bench_building_blocks(c: &mut Criterion) {
                 None,
                 start,
                 end,
-                &tz,
+                tz,
                 now,
                 false,
                 None,
@@ -81,10 +81,10 @@ fn bench_building_blocks(c: &mut Criterion) {
         // Pre-build the views once; measure only the collapse pass.
         let start = now - chrono::Duration::days(5);
         let end = now + chrono::Duration::days(15);
-        let views = cache::matches_in_window(&snap, true, None, start, end, &tz, now, false, None);
+        let views = cache::matches_in_window(&snap, true, None, start, end, tz, now, false, None);
         b.iter_batched(
             || views.clone(),
-            |v| cache::collapse_wrc_days(black_box(v), &tz, &snap),
+            |v| cache::collapse_wrc_days(black_box(v), tz, &snap),
             criterion::BatchSize::SmallInput,
         );
     });
@@ -92,10 +92,10 @@ fn bench_building_blocks(c: &mut Criterion) {
     g.bench_function("group_days", |b| {
         let start = now - chrono::Duration::days(5);
         let end = now + chrono::Duration::days(15);
-        let views = cache::matches_in_window(&snap, false, None, start, end, &tz, now, false, None);
+        let views = cache::matches_in_window(&snap, false, None, start, end, tz, now, false, None);
         b.iter_batched(
             || views.clone(),
-            |v| cache::group_days(black_box(v), &tz),
+            |v| cache::group_days(black_box(v), tz),
             criterion::BatchSize::SmallInput,
         );
     });
@@ -117,7 +117,7 @@ fn bench_serialize(c: &mut Criterion) {
         cfg,
         now,
         "all",
-        &tz,
+        tz,
         false,
     );
     c.bench_function("serialize_schedule_view_1500", |b| {

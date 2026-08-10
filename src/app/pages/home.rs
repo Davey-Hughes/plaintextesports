@@ -1,6 +1,9 @@
 //! The home (schedule) page and single-day page, plus the schedule-window
 //! math (earlier/later/traditional bounds) and schedule-shape predicates.
-use crate::app::*;
+use crate::app::prelude::*;
+use leptos::prelude::*;
+use leptos_router::hooks::use_params;
+use leptos_router::params::Params;
 
 #[component]
 pub(crate) fn HomePage() -> impl IntoView {

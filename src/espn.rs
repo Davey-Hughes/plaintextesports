@@ -304,17 +304,17 @@ struct TeamRef {
     #[serde(default)]
     abbreviation: String,
     /// Full-size (500px) raster logo URL, e.g.
-    /// "https://a.espncdn.com/i/teamlogos/nba/500/orl.png".
+    /// "<https://a.espncdn.com/i/teamlogos/nba/500/orl.png>".
     #[serde(default)]
     logo: String,
 }
 
 impl TeamRef {
     fn label(&self) -> String {
-        if !self.short_display_name.is_empty() {
-            self.short_display_name.clone()
-        } else {
+        if self.short_display_name.is_empty() {
             self.abbreviation.clone()
+        } else {
+            self.short_display_name.clone()
         }
     }
     fn full_name(&self) -> String {
@@ -410,11 +410,7 @@ fn status_of(state: &str, name: &str) -> MatchStatus {
 /// Sort key so the most useful "where to watch" entries lead: video before
 /// radio, national before local (home before away).
 fn geo_rank(g: &GeoBroadcast) -> (i32, i32) {
-    let radio = if g.kind.short_name.eq_ignore_ascii_case("Radio") {
-        1
-    } else {
-        0
-    };
+    let radio = i32::from(g.kind.short_name.eq_ignore_ascii_case("Radio"));
     let side = match g.market.kind.as_str() {
         "National" => 0,
         "Home" => 1,
@@ -531,7 +527,7 @@ fn to_match(e: Event, lg: &EspnLeague) -> Option<NormalizedMatch> {
             score: score(home),
         },
     );
-    m.venue_name = comp.venue.full_name.clone();
+    m.venue_name.clone_from(&comp.venue.full_name);
     m.venue_location = comp.venue.location();
     m.team_a_logo = espn_logo(&away.team.logo);
     m.team_b_logo = espn_logo(&home.team.logo);
@@ -551,6 +547,11 @@ fn to_match(e: Event, lg: &EspnLeague) -> Option<NormalizedMatch> {
 
 /// Fetch every game of `lg` in the inclusive UTC-day range, normalized. ESPN's
 /// scoreboard accepts a `YYYYMMDD-YYYYMMDD` range, so the whole window is one call.
+///
+/// # Errors
+///
+/// Returns a `reqwest::Error` if the request fails or the response body
+/// does not deserialize into the expected shape.
 pub async fn fetch_schedule(
     client: &reqwest::Client,
     lg: &EspnLeague,
@@ -625,6 +626,10 @@ struct Stat {
 }
 
 impl Entry {
+    // ESPN sends stat values as JSON floats. Rust defines float-to-int `as`
+    // as saturating, with NaN mapping to 0 — which is the clamp this wants
+    // for a garbage value, and is why it is not a `try_from`.
+    #[allow(clippy::cast_possible_truncation)]
     fn stat_i32(&self, name: &str) -> i32 {
         self.stats
             .iter()
@@ -650,6 +655,10 @@ fn conf_label(name: &str, abbrev: &str) -> String {
     }
 }
 
+// Two enumerate indices: a standings row rank, and a conference offset added
+// to a league's `standings_base`. A league has single-digit conferences and
+// tens of teams, not 2^31 of either.
+#[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
 fn conferences_from(resp: StandingsResp, lg: &EspnLeague) -> Vec<EventInfo> {
     resp.children
         .into_iter()
@@ -704,6 +713,11 @@ fn conferences_from(resp: StandingsResp, lg: &EspnLeague) -> Vec<EventInfo> {
 /// Fetch `lg`'s standings, one table per group/conference. `season` is ESPN's
 /// season year (see [`season_year`] / [`european_season`]); `None` lets ESPN pick
 /// the current one (used for the World Cup, which isn't a yearly season).
+///
+/// # Errors
+///
+/// Returns a `reqwest::Error` if the request fails or the response body
+/// does not deserialize into the expected shape.
 pub async fn fetch_standings(
     client: &reqwest::Client,
     lg: &EspnLeague,
@@ -871,6 +885,13 @@ struct RawPlayType {
     abbreviation: String,
 }
 
+/// Fetch one event's ESPN summary document (the raw shape `to_box_score`
+/// converts into a [`BoxScore`]).
+///
+/// # Errors
+///
+/// Returns a `reqwest::Error` if the request fails or the response body
+/// does not deserialize into the expected shape.
 pub async fn fetch_box_score(
     client: &reqwest::Client,
     lg: &EspnLeague,
@@ -888,6 +909,7 @@ pub async fn fetch_box_score(
         .await
 }
 
+#[must_use]
 pub fn to_box_score(s: &RawSummary) -> BoxScore {
     // Away/home from the header competitors.
     let comp = s.header.competitions.first();
@@ -1120,6 +1142,11 @@ impl KnMatch {
 /// The World Cup (or any single-elimination soccer knockout) bracket: fetch the
 /// whole year's scoreboard (one call captures every knockout round wherever the
 /// tournament falls; the group stage is dropped by round size) and assemble it.
+///
+/// # Errors
+///
+/// Returns a `reqwest::Error` if the request fails or the response body
+/// does not deserialize into the expected shape.
 pub async fn fetch_soccer_bracket(
     client: &reqwest::Client,
     lg: &EspnLeague,
@@ -1132,6 +1159,10 @@ pub async fn fetch_soccer_bracket(
 }
 
 /// Parse scoreboard events into knockout matches (dropping anything unparseable).
+/// One side of a knockout fixture as parsed from ESPN:
+/// `(label, score, finished-winner?, placeholder (seed, is-home))`.
+type SideParse = (String, Option<i64>, bool, Option<(u32, bool)>);
+
 fn parse_knockout(events: Vec<Event>) -> Vec<KnMatch> {
     let mut out = Vec::new();
     for e in events {
@@ -1142,8 +1173,6 @@ fn parse_knockout(events: Vec<Event>) -> Vec<KnMatch> {
             continue;
         };
         let finished = e.status.r#type.state == "post";
-        // (label, score, finished-winner?, placeholder (seed, is-home))
-        type SideParse = (String, Option<i64>, bool, Option<(u32, bool)>);
         let side = |ha: &str| -> Option<SideParse> {
             let c = comp.competitors.iter().find(|c| c.home_away == ha)?;
             let ph = parse_placeholder(&c.team.display_name);
@@ -1192,6 +1221,9 @@ fn soccer_round_title(size: usize) -> String {
 /// when seeded — so the real bracket crossovers (QF1 ← R16 #1 & #2, QF2 ← #5 & #6)
 /// are honored rather than assumed. The two one-match buckets split into the final
 /// and, one day earlier, the third-place match (its own labeled column).
+// Round, slot and feeder-slot indices into `u32` bracket coordinates. A
+// knockout bracket is 32 matches at the very top end.
+#[allow(clippy::cast_possible_truncation)]
 fn soccer_bracket(matches: Vec<KnMatch>) -> Vec<BracketRound> {
     use std::collections::HashMap;
     // Bucket by round stage id, keep only knockout-sized buckets.
@@ -1319,7 +1351,7 @@ fn soccer_bracket(matches: Vec<KnMatch>) -> Vec<BracketRound> {
             feed: [None, None],
         });
     }
-    bracket_build::build(series)
+    bracket_build::build(&series)
 }
 
 // ----- NFL playoff bracket ---------------------------------------------------
@@ -1327,6 +1359,11 @@ fn soccer_bracket(matches: Vec<KnMatch>) -> Vec<BracketRound> {
 /// The NFL playoff bracket for a season (empty outside the postseason). The
 /// postseason plays in January/February of the year after the season's start
 /// year, so the window spans the season boundary.
+///
+/// # Errors
+///
+/// Returns a `reqwest::Error` if the request fails or the response body
+/// does not deserialize into the expected shape.
 pub async fn fetch_nfl_bracket(
     client: &reqwest::Client,
     lg: &EspnLeague,
@@ -1368,8 +1405,7 @@ fn nfl_bracket(events: Vec<Event>) -> Vec<BracketRound> {
             .competitions
             .first()
             .and_then(|c| c.notes.first())
-            .map(|n| n.headline.as_str())
-            .unwrap_or("");
+            .map_or("", |n| n.headline.as_str());
         let section = if headline.contains("Super Bowl") || e.week.number == 5 {
             "final"
         } else if headline.starts_with("AFC") {
@@ -1417,13 +1453,18 @@ fn nfl_bracket(events: Vec<Event>) -> Vec<BracketRound> {
             feed: [None, None],
         });
     }
-    bracket_build::build(raws)
+    bracket_build::build(&raws)
 }
 
 // ----- NBA playoff bracket ---------------------------------------------------
 
 /// The NBA playoff bracket for a season (empty outside the playoffs). The playoffs
 /// run mid-April to mid-June of the season's end year.
+///
+/// # Errors
+///
+/// Returns a `reqwest::Error` if the request fails or the response body
+/// does not deserialize into the expected shape.
 pub async fn fetch_nba_bracket(
     client: &reqwest::Client,
     lg: &EspnLeague,
@@ -1495,11 +1536,7 @@ fn nba_bracket(events: Vec<Event>) -> Vec<BracketRound> {
         let Some(comp) = e.competitions.into_iter().next() else {
             continue;
         };
-        let headline = comp
-            .notes
-            .first()
-            .map(|n| n.headline.as_str())
-            .unwrap_or("");
+        let headline = comp.notes.first().map_or("", |n| n.headline.as_str());
         let Some((section, round, title)) = nba_round(headline) else {
             continue;
         };
@@ -1526,8 +1563,7 @@ fn nba_bracket(events: Vec<Event>) -> Vec<BracketRound> {
         let wins_of = |tid: &str| -> i64 {
             series
                 .and_then(|s| s.competitors.iter().find(|c| c.id == tid))
-                .map(|c| c.wins)
-                .unwrap_or(0)
+                .map_or(0, |c| c.wins)
         };
         let entry = map
             .entry((section.to_string(), round, pair))
@@ -1551,11 +1587,11 @@ fn nba_bracket(events: Vec<Event>) -> Vec<BracketRound> {
             entry.best_id = id;
             entry.team_a = away.team.label();
             entry.team_b = home.team.label();
-            entry.id_a = ida.clone();
-            entry.id_b = idb.clone();
+            entry.id_a.clone_from(&ida);
+            entry.id_b.clone_from(&idb);
             entry.wins_a = wins_of(&ida);
             entry.wins_b = wins_of(&idb);
-            entry.completed = series.map(|s| s.completed).unwrap_or(false);
+            entry.completed = series.is_some_and(|s| s.completed);
         }
     }
     let mut accs: Vec<Acc> = map.into_values().collect();
@@ -1593,7 +1629,7 @@ fn nba_bracket(events: Vec<Event>) -> Vec<BracketRound> {
             feed: [None, None],
         });
     }
-    bracket_build::build(raws)
+    bracket_build::build(&raws)
 }
 
 fn nba_section_rank(section: &str) -> u8 {
@@ -1674,11 +1710,7 @@ mod tests {
             .map(|&(_, p)| p)
             .collect();
         assert_eq!(sf1.len(), 2);
-        assert_eq!(
-            (sf1[0] as i32 - sf1[1] as i32).abs(),
-            1,
-            "SF1 feeders adjacent"
-        );
+        assert_eq!(sf1[0].abs_diff(sf1[1]), 1, "SF1 feeders adjacent");
         let mut all: Vec<usize> = sf1.into_iter().chain(sf2).collect();
         all.sort_unstable();
         assert_eq!(all, vec![0, 1, 2, 3], "the two SFs cover all four QFs");
@@ -1730,7 +1762,7 @@ mod tests {
 
     fn sorted(v: &[(usize, usize)]) -> Vec<(usize, usize)> {
         let mut v = v.to_vec();
-        v.sort();
+        v.sort_unstable();
         v
     }
 
@@ -1779,7 +1811,7 @@ mod tests {
         let client = reqwest::Client::new();
         let rounds = fetch_nba_bracket(&client, &NBA, 2026).await.unwrap();
         print_bracket("NBA 2026", &rounds);
-        assert!(!rounds.is_empty());
+        assert!(!rounds.is_empty(), "{rounds:?}");
         assert!(rounds.iter().any(|r| r.section == "final"));
     }
 
@@ -1790,7 +1822,7 @@ mod tests {
         // The 2025 NFL season's playoffs play in Jan/Feb 2026.
         let rounds = fetch_nfl_bracket(&client, &NFL, 2025).await.unwrap();
         print_bracket("NFL 2025", &rounds);
-        assert!(!rounds.is_empty());
+        assert!(!rounds.is_empty(), "{rounds:?}");
         assert!(rounds.iter().any(|r| r.section == "final"));
     }
 
@@ -1900,7 +1932,8 @@ mod tests {
 
     #[test]
     fn empty_geo_broadcasts_yield_no_streams() {
-        assert!(broadcasts(&[]).is_empty());
+        let out = broadcasts(&[]);
+        assert!(out.is_empty(), "{out:?}");
     }
 
     #[test]

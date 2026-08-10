@@ -1,28 +1,14 @@
-use crate::bracket;
-use crate::server::{
-    get_day, get_event_schedule, get_event_stages, get_event_stages_by_league, get_event_streams,
-    get_f1_results, get_f1_standings, get_live_streams, get_match_detail, get_match_results,
-    get_motor_results, get_motor_standings, get_notifications, get_range, get_schedule, get_site,
-    get_team_schedule, get_tft_placements, get_tft_standings, get_youtube_live,
-};
-use crate::types::{
-    DayGroup, EventInfo, F1Result, F1Standings, MatchDetail, MatchResults, MatchStatus, MatchView,
-    MotorResult, MotorStandingTable, MotorStandings, ScheduleView, Series, SeriesGame, Sport,
-    StreamView, competition_kind, full_event_name,
-};
+use crate::types::Sport;
 use leptos::prelude::*;
 use leptos_meta::{HashedStylesheet, MetaTags, Title, provide_meta_context};
 use leptos_router::{
     ParamSegment, StaticSegment,
-    components::{A, Route, Router, Routes},
-    hooks::use_params,
-    params::Params,
+    components::{Route, Router, Routes},
 };
 use std::collections::{BTreeMap, HashSet};
 
 // Standings / Swiss grid / elimination bracket rendering + reveal machinery.
 mod playoffs;
-pub(crate) use playoffs::*;
 
 // Page route components, shared UI components, free helpers, and the
 // hydrate-only browser-storage glue — split out of this file. Re-exported
@@ -44,6 +30,36 @@ pub use components::schedule::schedule_render_work;
 pub(crate) use components::*;
 pub(crate) mod pages;
 pub(crate) use pages::*;
+
+/// The shared surface every view module needs from this crate: the reactive
+/// context types defined here, plus the page/component/helper items the
+/// submodules export.
+///
+/// It exists so a view module can say `use crate::app::prelude::*;` and get
+/// *this crate's* names, and `use leptos::prelude::*;` and get the framework's
+/// — two lines that say where each half comes from. Before this, a single
+/// `use crate::app::*;` pulled both, because the private `use leptos::prelude::*`
+/// at the top of this module is visible to its descendants: expanding that glob
+/// produced a 500-name list of Leptos traits.
+pub(crate) mod prelude {
+    #[cfg(feature = "hydrate")]
+    pub(crate) use super::keys;
+    #[cfg(feature = "hydrate")]
+    pub(crate) use super::storage::*;
+    pub(in crate::app) use super::{
+        DateRange, EarlierDays, Excluded, FlashPageScores, FlashScores, Games, GlobalTimers,
+        LastUpdated, LaterDays, Leagues, Overrides, PageRevealKeys, PageScores, RefreshTrigger,
+        RevealEnd, RevealedMatches, RevealedSections, SelectedSports, ShowScores, ShowVenue,
+        SportMode, Subscribed, clear_page_local_reveals, current_reveal_end, hide_deflected,
+        page_scores_ctx, register_page_match, register_page_section, register_page_section_prefix,
+    };
+    pub(crate) use super::{components::*, helpers::*, pages::*, playoffs::*};
+    // This crate's own domain surface, re-exported so a view module gets it from
+    // the same one line rather than repeating the import in seventeen files.
+    pub(crate) use crate::bracket;
+    pub(crate) use crate::server::*;
+    pub(crate) use crate::types::*;
+}
 
 /// localStorage / cookie keys, centralized so a preference's read and write can't
 /// silently drift onto different keys (and so the storage schema is greppable in
@@ -338,13 +354,11 @@ pub(crate) struct RevealEnd(pub(crate) i64);
 /// end is simply protected for a week, then ages out by inactivity).
 #[cfg(feature = "hydrate")]
 pub(crate) fn current_reveal_end() -> i64 {
-    use_context::<RevealEnd>()
-        .map(|r| r.0)
-        .unwrap_or_else(now_ms)
+    use_context::<RevealEnd>().map_or_else(now_ms, |r| r.0)
 }
 #[cfg(not(feature = "hydrate"))]
 pub(crate) fn current_reveal_end() -> i64 {
-    use_context::<RevealEnd>().map(|r| r.0).unwrap_or(0)
+    use_context::<RevealEnd>().map_or(0, |r| r.0)
 }
 
 /// Set of "kind|value" scopes the user is subscribed to (sport/event reminders).
@@ -403,8 +417,13 @@ struct RefreshTrigger(RwSignal<u64>);
 #[derive(Clone, Copy)]
 struct SportMode(RwSignal<bool>);
 
+// The only `#[component]` the lint reaches, and it is reaching the macro's
+// output rather than this fn: `#[component]` expands to a props struct plus a
+// generated constructor, and the attribute does not carry onto it (verified —
+// `#[must_use]` here silences nothing, in either attribute order). Meaningless
+// besides: `App` is called by `shell`, not by code that could drop its value.
+#[allow(clippy::must_use_candidate)]
 #[component]
-#[must_use]
 pub fn App() -> impl IntoView {
     provide_meta_context();
 
@@ -604,6 +623,9 @@ pub fn App() -> impl IntoView {
 #[cfg(test)]
 mod tests {
     use super::*;
+    // The items under test live in the submodules; the prelude is how every
+    // other module in `app` reaches them, so the tests use the same door.
+    use super::prelude::*;
     use crate::types::{BracketMatch, DayGroup, LeagueGroup, Sport, TeamView};
 
     #[test]
@@ -631,8 +653,10 @@ mod tests {
         let v = vec![0, 900_000, 86_400_000];
         assert_eq!(parse_lead_list(&join_lead_list(&v)), v);
         // Empty / junk parses to nothing.
-        assert!(parse_lead_list("").is_empty());
-        assert!(parse_lead_list("x,,y").is_empty());
+        let leads = parse_lead_list("");
+        assert!(leads.is_empty(), "{leads:?}");
+        let leads = parse_lead_list("x,,y");
+        assert!(leads.is_empty(), "{leads:?}");
     }
 
     #[test]
@@ -735,17 +759,6 @@ mod tests {
         assert_eq!(a, league_color_class("Mid-Season Invitational"));
         let n: u32 = a.strip_prefix("lc-").unwrap().parse().unwrap();
         assert!(n < LEAGUE_COLORS);
-    }
-
-    #[test]
-    fn calendar_date_math() {
-        // 2026-06-21 is a Sunday (0); 2026-06-01 is a Monday (1).
-        assert_eq!(weekday(2026, 6, 21), 0);
-        assert_eq!(weekday(2026, 6, 1), 1);
-        assert_eq!(days_in_month(2026, 6), 30);
-        assert_eq!(days_in_month(2026, 2), 28);
-        assert_eq!(days_in_month(2024, 2), 29);
-        assert_eq!(month_name(6), "June");
     }
 
     #[test]
@@ -1026,7 +1039,8 @@ mod tests {
         };
         assert_eq!(names_of(&HashSet::new()), vec!["LCK", "LEC", "LPL"]);
         // `mv` matches are LoL, so the cs2 sport filter hides them all.
-        assert!(names_of(&names(&["cs2"])).is_empty());
+        let got = names_of(&names(&["cs2"]));
+        assert!(got.is_empty(), "{got:?}");
         assert_eq!(names_of(&names(&["lol"])), vec!["LCK", "LEC", "LPL"]);
         // Each chip carries its match's sport, for the sport-scoped subscribe key.
         assert!(
@@ -1144,11 +1158,8 @@ mod tests {
                 .len(),
             1
         );
-        assert!(
-            filter_schedule(s.clone(), &names(&["cs2"]), &HashSet::new())
-                .days
-                .is_empty()
-        );
+        let days = filter_schedule(s.clone(), &names(&["cs2"]), &HashSet::new()).days;
+        assert!(days.is_empty(), "{days:?}");
         // lol AND only the LCK event → one group.
         let f = filter_schedule(s, &names(&["lol"]), &names(&["LCK"]));
         assert_eq!(f.days[0].leagues.len(), 1);

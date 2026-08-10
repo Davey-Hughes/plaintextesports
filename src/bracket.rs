@@ -15,6 +15,12 @@
 //! `ROW_EM`/`BOX_H_EM` MUST match the `--bk-*` custom properties in
 //! `style/main.scss` (cross-referenced there).
 
+// Every `usize as f64` in this module converts a bracket count — columns,
+// parent matches, the longest team name in characters — into the em coordinate
+// space. A bracket that reached the 2^53 where f64 stops representing integers
+// exactly would have more rounds than there are atoms to play them with.
+#![allow(clippy::cast_precision_loss)]
+
 use crate::types::BracketRound;
 use std::collections::HashSet;
 
@@ -398,7 +404,7 @@ mod tests {
             "LB final sits on its single in-section feeder"
         );
         // Grand final centred between the two bracket finals.
-        assert_eq!(y(&l, 4, 0), (0.5 + lb) / 2.0);
+        assert_eq!(y(&l, 4, 0), f64::midpoint(0.5, lb));
         // Both finals right-aligned to the same column; grand final follows.
         assert_eq!(l.positions[1][0].col, l.positions[3][0].col);
         assert_eq!(l.positions[4][0].col, l.positions[1][0].col + 1);

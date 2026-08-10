@@ -1,6 +1,9 @@
 //! Header preference toggles (theme, icons, 24h, scores, sport mode) and the
 //! clock-link, plus their apply/saved helpers.
-use crate::app::*;
+use crate::app::prelude::*;
+use leptos::prelude::*;
+use leptos_router::components::A;
+use std::collections::HashSet;
 
 #[component]
 pub(crate) fn ThemeToggle() -> impl IntoView {
@@ -32,7 +35,7 @@ pub(crate) fn ThemeToggle() -> impl IntoView {
 }
 
 /// Global on/off for team / driver / constructor logos. Default on; the actual
-/// hiding is CSS keyed on `data-icons` on <html> (set pre-paint in the shell to
+/// hiding is CSS keyed on `data-icons` on `<html>` (set pre-paint in the shell to
 /// avoid a flash), so this only tracks state for the button's brightness and
 /// flips the attribute + saved preference. Mirrors [`ThemeToggle`].
 #[component]
@@ -77,7 +80,7 @@ pub(crate) fn saved_icons() -> bool {
         == Some("1".to_string())
 }
 
-/// Apply the icon preference: set `data-icons` on <html> and persist it.
+/// Apply the icon preference: set `data-icons` on `<html>` and persist it.
 #[cfg(feature = "hydrate")]
 pub(crate) fn apply_icons(on: bool) {
     let val = if on { "1" } else { "0" };
@@ -91,7 +94,7 @@ pub(crate) fn apply_icons(on: bool) {
     }
 }
 
-/// Apply a theme: set `data-theme` on <html> and persist it.
+/// Apply a theme: set `data-theme` on `<html>` and persist it.
 #[cfg(feature = "hydrate")]
 pub(crate) fn apply_theme(theme: &str) {
     if let Some(win) = web_sys::window() {

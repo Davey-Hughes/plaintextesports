@@ -1,7 +1,10 @@
 //! Small shared free functions: URL-segment & path encoding, team/logo view
 //! cells, league colours, sport-mode resolution, date math, and app-bootstrap
 //! initial-state readers. Moved out of `super` (the App shell) verbatim.
-use crate::app::*;
+use crate::app::prelude::*;
+use leptos::prelude::*;
+use leptos_router::components::A;
+use std::collections::HashSet;
 
 /// The sport-mode cookie key (and `?mode` query param). Unlike the other storage
 /// keys it's read on the server too (to render the right mode on the first paint),
@@ -16,7 +19,7 @@ pub(crate) const SPORT_MODE_KEY: &str = "mode";
 #[cfg(any(feature = "ssr", feature = "hydrate"))]
 pub(crate) const TZ_COOKIE_KEY: &str = "tz";
 
-/// The 24-hour-clock cookie key ("1"/"0"). Mirrors the localStorage [`keys::HOUR24`]
+/// The 24-hour-clock cookie key ("1"/"0"). Mirrors the localStorage `keys::HOUR24`
 /// preference into a cookie so the server can seed it on the first paint (same
 /// re-key-and-refetch avoidance as [`TZ_COOKIE_KEY`]).
 #[cfg(any(feature = "ssr", feature = "hydrate"))]
@@ -69,7 +72,7 @@ pub(crate) fn scrollspy_update() {
         if r.top() <= trigger {
             last_above = el.id();
             if r.bottom() > trigger {
-                contained = last_above.clone();
+                contained.clone_from(&last_above);
             }
         }
     }
@@ -150,12 +153,16 @@ pub(crate) fn flash_match_row(uid: &str) -> bool {
 
 /// Percent-encode a league name for use as a URL path segment.
 pub(crate) fn enc_segment(s: &str) -> String {
+    // `write!` formats straight into `out`; `push_str(&format!(..))` would
+    // allocate a three-byte String per escaped byte and immediately drop it.
+    // The result is discarded because `fmt::Write` for `String` cannot fail.
+    use std::fmt::Write as _;
     let mut out = String::with_capacity(s.len());
     for b in s.bytes() {
         if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b'~') {
             out.push(b as char);
         } else {
-            out.push_str(&format!("%{b:02X}"));
+            let _ = write!(out, "%{b:02X}");
         }
     }
     out
@@ -196,11 +203,11 @@ pub(crate) fn event_path(sport: Sport, name: &str) -> String {
 /// A team name rendered as a link to its team page — or plain text when the
 /// opponent isn't a real team yet (TBD / empty name). `name` keys the page;
 /// `sport` scopes the URL (see [`team_path`]).
-pub(crate) fn team_link(sport: Sport, label: String, name: String) -> AnyView {
+pub(crate) fn team_link(sport: Sport, label: String, name: &str) -> AnyView {
     if name.is_empty() || name == "TBD" {
         label.into_any()
     } else {
-        view! { <A href=team_path(sport, &name)>{label}</A> }.into_any()
+        view! { <A href=team_path(sport, name)>{label}</A> }.into_any()
     }
 }
 
@@ -390,13 +397,13 @@ pub(crate) fn initial_tz() -> String {
 
 /// The app-wide clock format when a viewer has no stored preference: 24-hour.
 /// Both the display seed ([`initial_hour24`]) and notification arming
-/// ([`super::storage::effective_hour24`]) fall back to this, so the schedule and
+/// (`super::storage::effective_hour24`) fall back to this, so the schedule and
 /// its push notifications never show different clocks for the same viewer — keep
 /// them routed through this one constant so the two defaults can't drift apart.
 pub(crate) const DEFAULT_HOUR24: bool = true;
 
 /// Resolve a stored `"1"`/`"0"` clock string (from the `h24` cookie or the
-/// [`keys::HOUR24`] localStorage key) to a bool, falling back to
+/// `keys::HOUR24` localStorage key) to a bool, falling back to
 /// [`DEFAULT_HOUR24`] when it was never set. Anything other than `"0"` counts as
 /// 24h, matching how the toggle persists the preference.
 pub(crate) fn resolve_hour24(stored: Option<&str>) -> bool {
@@ -548,6 +555,10 @@ pub(crate) fn initial_leagues() -> HashSet<String> {
 
 /// `YYYY-MM-DD` for today plus `offset_days` (browser-local date).
 #[cfg(feature = "hydrate")]
+// Bridging `js_sys::Date`, which speaks f64 ms and u32 date parts. `offset_days`
+// is a schedule window of days, and `get_full_year` returns a four-digit year;
+// f64 is exact to 2^53 and neither value is near an i32/i64 boundary.
+#[allow(clippy::cast_precision_loss, clippy::cast_possible_wrap)]
 pub(crate) fn iso_from_today(offset_days: i64) -> String {
     let ms = js_sys::Date::now() + (offset_days as f64) * 86_400_000.0;
     let d = js_sys::Date::new(&wasm_bindgen::JsValue::from_f64(ms));
@@ -578,15 +589,15 @@ pub(crate) fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
     let yoe = y - era * 400; // [0, 399]
     let doy = (153 * (if m > 2 { m - 3 } else { m + 9 }) + 2) / 5 + d - 1; // [0, 365]
     let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy; // [0, 146096]
-    era * 146097 + doe - 719468
+    era * 146_097 + doe - 719_468
 }
 
 /// Inverse of [`days_from_civil`]: `(year, month, day)` for a days-since-epoch.
 pub(crate) fn civil_from_days(z: i64) -> (i64, i64, i64) {
-    let z = z + 719468;
-    let era = if z >= 0 { z } else { z - 146096 } / 146097;
-    let doe = z - era * 146097; // [0, 146096]
-    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365; // [0, 399]
+    let z = z + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = z - era * 146_097; // [0, 146096]
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365; // [0, 399]
     let y = yoe + era * 400;
     let doy = doe - (365 * yoe + yoe / 4 - yoe / 100); // [0, 365]
     let mp = (5 * doy + 2) / 153; // [0, 11]
@@ -653,7 +664,7 @@ pub(crate) fn setup_autorefresh(resource: Resource<Result<ScheduleView, ServerFn
 }
 
 /// The separator between the two teams of a match. Traditional sports list the
-/// away team "at" the home team (team_a is away, team_b home — see `mlb.rs`);
+/// away team "at" the home team (`team_a` is away, `team_b` home — see `mlb.rs`);
 /// esports use "vs".
 pub(crate) const fn versus_sep(sport: Sport) -> &'static str {
     match sport {
@@ -682,6 +693,10 @@ pub(crate) fn league_color_class(name: &str) -> String {
 /// Which optional site-icon files exist in the configured `icons_dir`. Drives the
 /// conditional `<head>` links: present files get real `<link>`s; when no favicon
 /// file is present the shell keeps today's empty-data icon placeholder.
+// Four independent "does this file exist" answers, not a state machine — there
+// is no invalid combination for an enum to rule out, and each field is read on
+// its own to emit one `<link>`.
+#[allow(clippy::struct_excessive_bools)]
 pub(crate) struct IconPresence {
     pub(crate) ico: bool,
     pub(crate) svg: bool,

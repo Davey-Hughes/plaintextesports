@@ -1,0 +1,25 @@
+# Words `clippy::doc_markdown` must not demand backticks around.
+#
+# doc_markdown flags any CamelCase-looking word in a doc comment on the theory
+# that it is a Rust identifier that should be code-formatted. Every entry below
+# is a proper noun instead — a data source, a game, or a site this crate talks
+# to. Backticking them would render the prose as if they were types.
+#
+# `".."` extends clippy's built-in list (JavaScript, GitHub, OAuth, ...) rather
+# than replacing it. Drop it and the defaults come back as warnings.
+#
+# Add to this list ONLY for real proper nouns. A genuine identifier that leaks
+# into prose (`result_cache`, `from_rfc3339`) wants backticks, which is exactly
+# what the lint is for.
+doc-valid-idents = [
+  "AfreecaTV",
+  "CompeteTFT",
+  "LoL",
+  "MediaWiki",
+  "MotoGP",
+  "OpenF1",
+  "PandaScore",
+  "RustCrypto",
+  "YouTube",
+  "..",
+]

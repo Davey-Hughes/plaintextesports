@@ -4,7 +4,7 @@
 # against the PR head rather than against the merged tree.
 #
 #   scripts/check-all.sh               # everything CI gates on
-#   scripts/check-all.sh --no-release  # skip the release wasm build (the slow leg)
+#   scripts/check-all.sh --no-release  # skip the slow legs: release wasm build + bench smoke
 #
 # The point of this file is that the local gate and the CI gate cannot drift: CI's gating jobs are
 # reproduced here in the same order with the same flags. When a job changes there, change it here.
@@ -15,7 +15,8 @@
 #
 # The release leg is ON by default rather than opt-in, because the rule it protects is that every
 # commit on main builds and passes CI by itself; a gate that skips a CI job by default cannot make
-# that claim. --no-release is there for iterating, not for opening a PR.
+# that claim. --no-release is there for iterating, not for opening a PR. The bench smoke run is
+# grouped with it for the same reason it is slow: both pay for a fresh non-debug compile.
 set -euo pipefail
 cd "$(git rev-parse --show-toplevel)"
 
@@ -36,10 +37,30 @@ run() { echo; echo "==> $*"; "$@"; }
 run cargo fmt --all --check
 run cargo clippy --features ssr --all-targets -- -D warnings
 run cargo test --features ssr
+# Doc links break silently: nothing else in this file compiles a doc comment, so a
+# `[`renamed_fn`]` left behind by a refactor survives every other gate here.
+# `--document-private-items` is the view that matters — this crate is `pub` only so
+# the binary and the wasm build can consume it, so the interesting items are
+# `pub(crate)` and absent from the default build.
+run env RUSTDOCFLAGS=-Dwarnings cargo doc --no-deps --document-private-items --bins --features ssr
 
 # --- the `hydrate` job ---
 run cargo clippy --lib --no-default-features --features hydrate -- -D warnings
 run cargo test --lib --no-default-features --features hydrate
+# Docs need both feature sets for the same reason clippy does: they compile
+# different code, and a link is resolved against whichever half is present. A
+# path into `cache` (ssr-only) resolves under ssr and dangles under hydrate.
+run env RUSTDOCFLAGS=-Dwarnings cargo doc --no-deps --document-private-items --lib --no-default-features --features hydrate
+
+# --- the `rust` job's bench smoke (slow: benches compile under their own profile) ---
+if [ "$no_release" -eq 1 ]; then
+  echo; echo "==> SKIPPED: cargo bench -- --test (--no-release)"
+else
+  # `--all-targets` above type-checks the benches but never runs them, so a bench
+  # that panics on its own fixtures is invisible. Criterion's `--test` runs each
+  # once with no measurement.
+  run cargo bench --features ssr -- --test
+fi
 
 # --- the `wasm` job ---
 if [ "$no_release" -eq 1 ]; then

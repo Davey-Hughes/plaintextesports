@@ -1,7 +1,10 @@
 //! The notifications page and the whole reminder model: timer presets, the
 //! export/import backup codec, the per-entry timer pickers, and the hydrate-only
 //! arming / reconciliation glue (incl. the Web Push JS interop).
-use crate::app::*;
+use crate::app::prelude::*;
+use leptos::prelude::*;
+use leptos_router::components::A;
+use std::collections::{BTreeMap, HashSet};
 
 // ----- Reminder timers (lead offsets) --------------------------------------
 
@@ -30,13 +33,14 @@ pub(crate) const TIMER_PRESETS: [i64; 12] = [
 /// A compact label for a lead offset: "at start", "15m", "3h", "2d", "1w" —
 /// the largest whole unit that divides it, else minutes.
 pub(crate) fn fmt_lead(ms: i64) -> String {
+    // Minutes in each unit, largest first.
+    const WK: i64 = 7 * 24 * 60;
+    const DAY: i64 = 24 * 60;
+    const HR: i64 = 60;
     if ms <= 0 {
         return "at start".to_string();
     }
     let mins = ms / 60_000;
-    const WK: i64 = 7 * 24 * 60;
-    const DAY: i64 = 24 * 60;
-    const HR: i64 = 60;
     if mins % WK == 0 {
         format!("{}w", mins / WK)
     } else if mins % DAY == 0 {
@@ -246,7 +250,7 @@ pub(crate) fn TimerPicker(
         }
         adding.set(false);
     };
-    let add_custom = move |_| {
+    let add_custom = move |()| {
         let Ok(n) = num.get_untracked().trim().parse::<i64>() else {
             return;
         };
@@ -362,7 +366,7 @@ pub(crate) fn EntryTimers(entry_key: String, rearm: Callback<Vec<i64>>) -> impl 
     let overrides = use_context::<Overrides>().expect("overrides context").0;
     let vapid = use_context::<RwSignal<Option<String>>>().expect("vapid context");
     // Nothing to schedule when push is off.
-    let hidden = move || vapid.with(|v| v.is_none());
+    let hidden = move || vapid.with(std::option::Option::is_none);
 
     let k_has = entry_key.clone();
     let has_override = Memo::new(move |_| overrides.with(|o| o.contains_key(&k_has)));
@@ -503,7 +507,7 @@ pub(crate) fn NotificationsPage() -> impl IntoView {
         .expect("global timers context")
         .0;
     let overrides = use_context::<Overrides>().expect("overrides context").0;
-    let push_on = move || vapid.with(|v| v.is_some());
+    let push_on = move || vapid.with(std::option::Option::is_some);
 
     // Anything to clear? (subscriptions or stars; exclusions alone aren't shown).
     let has_any = move || !subscribed.with(HashSet::is_empty) || !starred.with(HashSet::is_empty);
@@ -809,6 +813,10 @@ pub(crate) fn NotificationsPage() -> impl IntoView {
 /// One subscription row on the notifications page — its label (linking to the
 /// team/event page where there is one) and a remove button.
 #[component]
+// A `#[component]` prop. Leptos generates a props struct from this signature
+// and `view!` builds it at the call site, so props are owned by construction —
+// a borrowed prop would need a lifetime the macro has no way to name.
+#[allow(clippy::needless_pass_by_value)]
 pub(crate) fn SubRow(key: String) -> impl IntoView {
     let subscribed = use_context::<Subscribed>().expect("subscribed context").0;
     let vapid = use_context::<RwSignal<Option<String>>>().expect("vapid context");
@@ -1042,9 +1050,8 @@ pub(crate) fn sync_entries(
     let hour24 = effective_hour24();
     leptos::task::spawn_local(async move {
         // A user action, so it's fine to prompt + create a subscription.
-        let sub = match pte_subscribe(&vapid).await {
-            Ok(s) => s,
-            Err(_) => return,
+        let Ok(sub) = pte_subscribe(&vapid).await else {
+            return;
         };
         let Some(push) = push_from_js(&sub) else {
             return;
@@ -1117,6 +1124,10 @@ pub(crate) async fn arm_entries(
 /// endpoint and idempotent, and the arming gate means only still-ahead timers are
 /// re-armed (no retroactive burst).
 #[cfg(feature = "hydrate")]
+// Every caller passes `signal.get_untracked()`, which already clones out of
+// the signal. Taking references would mean binding six temporaries at each
+// call site to own exactly the same clones — the copy happens either way.
+#[allow(clippy::needless_pass_by_value)]
 pub(crate) fn reconcile_notifications(
     subscribed: HashSet<String>,
     starred: HashSet<String>,
@@ -1159,9 +1170,8 @@ pub(crate) fn reconcile_notifications(
         .filter_map(|u| parse_uid(u).map(|(sp, id)| (id, sp.slug().to_string())))
         .collect();
     leptos::task::spawn_local(async move {
-        let sub = match pte_existing_sub().await {
-            Ok(s) => s,
-            Err(_) => return,
+        let Ok(sub) = pte_existing_sub().await else {
+            return;
         };
         // `null` (no permission / no subscription yet) ⇒ nothing to reconcile, and
         // crucially no prompt.
@@ -1178,6 +1188,9 @@ pub(crate) fn reconcile_notifications(
 /// already names it). It is part of the scope's identity server-side: league,
 /// team and event names all repeat across games.
 #[cfg(feature = "hydrate")]
+// Same as `reconcile_notifications`: the caller is an event handler holding a
+// fresh clone out of a signal, so by-value is what it already has.
+#[allow(clippy::needless_pass_by_value)]
 pub(crate) fn subscribe_scope(
     kind: String,
     sport: String,
@@ -1194,9 +1207,8 @@ pub(crate) fn subscribe_scope(
     let tz = detect_tz().unwrap_or_default();
     let hour24 = effective_hour24();
     leptos::task::spawn_local(async move {
-        let sub = match pte_subscribe(&vapid).await {
-            Ok(s) => s,
-            Err(_) => return,
+        let Ok(sub) = pte_subscribe(&vapid).await else {
+            return;
         };
         let (Some(endpoint), Some(p256dh), Some(auth)) = (
             reflect_str(&sub, "endpoint"),
@@ -1247,7 +1259,7 @@ pub(crate) fn reflect_str(obj: &wasm_bindgen::JsValue, key: &str) -> Option<Stri
         .as_string()
 }
 
-/// Build a [`PushSub`](crate::types::PushSub) from a `{ endpoint, p256dh, auth }`
+/// Build a [`crate::types::PushSub`] from a `{ endpoint, p256dh, auth }`
 /// JS object (`pteSubscribe`/`pteExistingSub`'s return). `None` if any field is
 /// missing — e.g. `pteExistingSub` returned `null` (no permission/subscription).
 #[cfg(feature = "hydrate")]
@@ -1277,9 +1289,8 @@ pub(crate) fn sync_match_reminder(
     let tz = detect_tz().unwrap_or_default();
     let hour24 = effective_hour24();
     leptos::task::spawn_local(async move {
-        let sub = match pte_subscribe(&vapid).await {
-            Ok(s) => s,
-            Err(_) => return,
+        let Ok(sub) = pte_subscribe(&vapid).await else {
+            return;
         };
         let (Some(endpoint), Some(p256dh), Some(auth)) = (
             reflect_str(&sub, "endpoint"),
@@ -1327,9 +1338,8 @@ pub(crate) fn sync_match_reminder(
 pub(crate) fn clear_all_notifications(vapid: Option<String>) {
     let Some(vapid) = vapid else { return };
     leptos::task::spawn_local(async move {
-        let sub = match pte_subscribe(&vapid).await {
-            Ok(s) => s,
-            Err(_) => return,
+        let Ok(sub) = pte_subscribe(&vapid).await else {
+            return;
         };
         if let Some(endpoint) = reflect_str(&sub, "endpoint") {
             let _ = crate::server::clear_notifications(endpoint).await;

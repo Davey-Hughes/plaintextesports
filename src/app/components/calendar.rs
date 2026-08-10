@@ -1,5 +1,6 @@
 //! The calendar date picker and its civil-date math helpers.
-use crate::app::*;
+use crate::app::prelude::*;
+use leptos::prelude::*;
 
 // ----- Calendar date-range picker ------------------------------------------
 
@@ -14,24 +15,24 @@ pub(crate) fn is_leap(y: i32) -> bool {
 pub(crate) fn days_in_month(y: i32, m: u32) -> u32 {
     match m {
         1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
-        4 | 6 | 9 | 11 => 30,
-        2 => {
-            if is_leap(y) {
-                29
-            } else {
-                28
-            }
-        }
+        2 if is_leap(y) => 29,
+        2 => 28,
+        // 4, 6, 9, 11 — and any out-of-range month, which no caller passes.
         _ => 30,
     }
 }
 
 /// Day of week for a date (0 = Sunday), via Sakamoto's algorithm.
-pub(crate) fn weekday(y: i32, m: u32, d: u32) -> u32 {
-    let t = [0, 3, 2, 5, 0, 3, 5, 1, 4, 6, 2, 4];
-    let yy = if m < 3 { y - 1 } else { y };
-    let w = yy + yy / 4 - yy / 100 + yy / 400 + t[(m - 1) as usize] + d as i32;
-    (w.rem_euclid(7)) as u32
+// `day` is a day-of-month, 1..=31 — every caller gets it from `days_in_month`
+// or a parsed ISO date. Nowhere near i32's range.
+#[allow(clippy::cast_possible_wrap)]
+pub(crate) fn weekday(year: i32, month: u32, day: u32) -> u32 {
+    // Sakamoto's per-month offset table, indexed by month - 1.
+    let offsets = [0, 3, 2, 5, 0, 3, 5, 1, 4, 6, 2, 4];
+    // January and February are treated as months 13 and 14 of the prior year.
+    let y = if month < 3 { year - 1 } else { year };
+    let sum = y + y / 4 - y / 100 + y / 400 + offsets[(month - 1) as usize] + day as i32;
+    sum.rem_euclid(7) as u32
 }
 
 pub(crate) fn month_name(m: u32) -> &'static str {
@@ -56,6 +57,8 @@ pub(crate) fn month_name(m: u32) -> &'static str {
 
 /// Today as (year, month, day) in the browser's local date.
 #[cfg(feature = "hydrate")]
+// `js_sys::Date::get_full_year` returns a u32 holding a four-digit year.
+#[allow(clippy::cast_possible_wrap)]
 pub(crate) fn today_ymd() -> (i32, u32, u32) {
     let d = js_sys::Date::new_0();
     (d.get_full_year() as i32, d.get_month() + 1, d.get_date())
@@ -109,16 +112,15 @@ pub(crate) fn CalendarPicker() -> impl IntoView {
         });
     };
     // First click sets the start; second sets the end (ordered); a third restarts.
-    let pick = move |iso: String| match (sel_start.get_untracked(), sel_end.get_untracked()) {
-        (Some(start), None) => {
+    let pick = move |iso: String| {
+        if let (Some(start), None) = (sel_start.get_untracked(), sel_end.get_untracked()) {
             if iso < start {
                 sel_start.set(Some(iso));
                 sel_end.set(Some(start));
             } else {
                 sel_end.set(Some(iso));
             }
-        }
-        _ => {
+        } else {
             sel_start.set(Some(iso));
             sel_end.set(None);
         }
@@ -253,5 +255,66 @@ pub(crate) fn CalendarPicker() -> impl IntoView {
                     })
             }}
         </span>
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{days_in_month, is_leap, month_name, weekday};
+
+    #[test]
+    fn leap_years_follow_the_gregorian_rule() {
+        // Divisible by 4, except centuries, except multiples of 400.
+        assert!(is_leap(2024));
+        assert!(!is_leap(2026));
+        assert!(!is_leap(1900), "a century that is not a multiple of 400");
+        assert!(is_leap(2000), "a century that is a multiple of 400");
+    }
+
+    #[test]
+    fn february_is_the_only_month_whose_length_moves() {
+        assert_eq!(days_in_month(2026, 2), 28);
+        assert_eq!(days_in_month(2024, 2), 29);
+        assert_eq!(days_in_month(1900, 2), 28);
+        assert_eq!(days_in_month(2000, 2), 29);
+        // The 31/30 split is fixed. Guards the wildcard arm, which covers the
+        // 30-day months by falling through rather than by listing them.
+        for m in [1, 3, 5, 7, 8, 10, 12] {
+            assert_eq!(days_in_month(2026, m), 31, "month {m}");
+        }
+        for m in [4, 6, 9, 11] {
+            assert_eq!(days_in_month(2026, m), 30, "month {m}");
+        }
+    }
+
+    #[test]
+    fn weekday_matches_known_dates() {
+        // 0 = Sunday. Includes January and February, which Sakamoto's algorithm
+        // treats as months 13 and 14 of the prior year — the branch a rewrite is
+        // most likely to break.
+        assert_eq!(weekday(2026, 8, 1), 6, "2026-08-01 is a Saturday");
+        assert_eq!(weekday(2026, 8, 10), 1, "2026-08-10 is a Monday");
+        assert_eq!(weekday(2026, 1, 1), 4, "2026-01-01 is a Thursday");
+        assert_eq!(weekday(2026, 2, 28), 6, "2026-02-28 is a Saturday");
+        assert_eq!(weekday(2024, 2, 29), 4, "leap day 2024 is a Thursday");
+        assert_eq!(weekday(2000, 1, 1), 6, "2000-01-01 is a Saturday");
+        // Carried over from `app::tests::calendar_date_math`, which used to hold
+        // this file's coverage from the parent module.
+        assert_eq!(weekday(2026, 6, 21), 0, "2026-06-21 is a Sunday");
+        assert_eq!(weekday(2026, 6, 1), 1, "2026-06-01 is a Monday");
+    }
+
+    #[test]
+    fn month_name_is_one_based_and_bounded() {
+        assert_eq!(month_name(1), "January");
+        assert_eq!(month_name(6), "June");
+        assert_eq!(month_name(12), "December");
+        // Past the end yields "" rather than panicking on the index.
+        assert_eq!(month_name(13), "");
+        // Below the start does NOT: `saturating_sub(1)` floors 0 at index 0, so
+        // month 0 aliases to January. Harmless — every caller passes 1..=12 from
+        // `ym` or a parsed date — but asserted so the aliasing is a known
+        // property rather than a surprise if someone starts trusting the bound.
+        assert_eq!(month_name(0), "January");
     }
 }

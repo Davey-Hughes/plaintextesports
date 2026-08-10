@@ -50,7 +50,7 @@ struct FileConfig {
     /// Tournament ids to never include.
     competetft_exclude: Option<Vec<String>>,
     /// PandaScore tiers to show per esports title (slug → tier letters). Only
-    /// lol/cs2 have tiers; other keys are ignored. Missing ⇒ ["s","a"].
+    /// lol/cs2 have tiers; other keys are ignored. Missing ⇒ `["s","a"]`.
     tiers: Option<HashMap<String, Vec<String>>>,
     /// Extra force-include slugs per title, merged with the built-in allowlist.
     tier_allow: Option<HashMap<String, Vec<String>>>,
@@ -81,10 +81,10 @@ struct FileConfig {
     reminder_lead_minutes: Option<i64>,
     archive_months: Option<i64>,
     /// Days to keep a persisted box score after its last fetch before pruning it
-    /// from result_cache (default 360; 0 disables pruning).
+    /// from `result_cache` (default 360; 0 disables pruning).
     box_score_retention_days: Option<i64>,
     /// Days to keep persisted TFT enrichment after its last refresh before pruning
-    /// it from result_cache (default 540; 0 disables pruning).
+    /// it from `result_cache` (default 540; 0 disables pruning).
     tft_retention_days: Option<i64>,
     past_refresh: Option<bool>,
     backfill: Option<bool>,
@@ -209,7 +209,7 @@ impl FileConfig {
 pub struct TwitchDiscovery {
     /// Sport slugs the discovery runs for (e.g. "lol", "cs2"). Empty ⇒ off.
     pub enabled_sports: Vec<String>,
-    /// Stream languages to include (ISO-639-1). Defaults to ["en"].
+    /// Stream languages to include (ISO-639-1). Defaults to `["en"]`.
     pub languages: Vec<String>,
     /// Skip discovered streams below this viewer count.
     pub min_viewers: u64,
@@ -222,6 +222,10 @@ pub struct TwitchDiscovery {
     pub gql_costreamers: bool,
 }
 
+// The deserialized shape of the operator's config file: its bools are separate
+// on/off switches for unrelated subsystems, so there is no state to model as an
+// enum. Grouping them would only add a level of nesting to every read.
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Clone)]
 pub struct Config {
     /// PandaScore API token. `None` => serve demo fixture data.
@@ -262,10 +266,10 @@ pub struct Config {
     /// `enabled_sports` is empty.
     pub twitch_discovery: TwitchDiscovery,
     /// League name → Twitch title keywords for attributing discovered streams
-    /// (e.g. "Mid-Season Invitational" → ["MSI"]). Empty when unconfigured.
+    /// (e.g. "Mid-Season Invitational" → `["MSI"]`). Empty when unconfigured.
     pub twitch_league_aliases: HashMap<String, Vec<String>>,
     /// PandaScore tiers to show per title (slug → lowercased letters). Seeded with
-    /// ["s","a"] for lol/cs2; overridden by `[tiers]`. Read by ingest + display.
+    /// `["s","a"]` for lol/cs2; overridden by `[tiers]`. Read by ingest + display.
     pub tiers: HashMap<String, Vec<String>>,
     /// Extra force-include slugs per title (lowercased), merged with the built-in
     /// allowlist. Empty unless `[tier_allow]` sets it.
@@ -303,10 +307,10 @@ pub struct Config {
     /// history is shallow, so this is capped low).
     pub archive_months: i64,
     /// Days to keep a persisted box score after its last fetch before it's pruned
-    /// from result_cache (0 disables pruning).
+    /// from `result_cache` (0 disables pruning).
     pub box_score_retention_days: i64,
     /// Days to keep persisted TFT enrichment (standings, lobbies, streamers, …)
-    /// after its last refresh before it's pruned from result_cache (0 disables).
+    /// after its last refresh before it's pruned from `result_cache` (0 disables).
     pub tft_retention_days: i64,
     /// Periodically re-fetch recent past days to catch late score corrections.
     pub past_refresh: bool,
@@ -351,8 +355,13 @@ impl Config {
     /// months, so month-length differences are handled correctly).
     #[must_use]
     pub fn archive_cutoff(&self, now: DateTime<Utc>) -> DateTime<Utc> {
-        now.checked_sub_months(Months::new(self.archive_months as u32))
-            .unwrap_or(now)
+        // `from_env` clamps this to 1..=3, so the conversion cannot fail today.
+        // Falling back to the config default rather than `as` matters if that
+        // ever stops holding: a negative `archive_months` would wrap to a huge
+        // u32, `checked_sub_months` would return None, and the `unwrap_or(now)`
+        // below would silently set the cutoff to *now* — pruning all history.
+        let months = u32::try_from(self.archive_months).unwrap_or(1);
+        now.checked_sub_months(Months::new(months)).unwrap_or(now)
     }
 }
 
@@ -488,7 +497,7 @@ impl Config {
     }
 
     /// Configured PandaScore tiers to show for `sport` (lowercased). Defaults to
-    /// ["s","a"] for a title with no `[tiers]` entry. Only meaningful for
+    /// `["s","a"]` for a title with no `[tiers]` entry. Only meaningful for
     /// PandaScore titles; never consulted for other sports.
     #[must_use]
     pub fn tiers_for(&self, sport: Sport) -> &[String] {
@@ -577,9 +586,9 @@ impl Config {
         let ocblacktop_near_poll =
             Duration::from_secs(secs("OCBLACKTOP_NEAR_POLL_SECS", 10800, 300));
         let ocblacktop_idle_poll =
-            Duration::from_secs(secs("OCBLACKTOP_IDLE_POLL_SECS", 172800, 3600));
+            Duration::from_secs(secs("OCBLACKTOP_IDLE_POLL_SECS", 172_800, 3600));
         let ocblacktop_standings_poll =
-            Duration::from_secs(secs("OCBLACKTOP_STANDINGS_POLL_SECS", 259200, 3600));
+            Duration::from_secs(secs("OCBLACKTOP_STANDINGS_POLL_SECS", 259_200, 3600));
         let ocblacktop_daily_cap = secs("OCBLACKTOP_DAILY_CAP", 240, 0);
 
         let tz = get("DISPLAY_TZ")
@@ -629,9 +638,9 @@ impl Config {
 
         // Both default on; disabled with the usual falsey values.
         let flag = |key: &str, default: bool| -> bool {
-            get(key)
-                .map(|v| !matches!(v.trim().to_ascii_lowercase().as_str(), "0" | "false" | "no"))
-                .unwrap_or(default)
+            get(key).map_or(default, |v| {
+                !matches!(v.trim().to_ascii_lowercase().as_str(), "0" | "false" | "no")
+            })
         };
         let past_refresh = flag("ENABLE_PAST_REFRESH", true);
         let backfill = flag("ENABLE_BACKFILL", true);
@@ -649,9 +658,9 @@ impl Config {
             )
         });
 
-        let resolve_links = get("ENABLE_LIQUIPEDIA")
-            .map(|v| !matches!(v.trim().to_ascii_lowercase().as_str(), "0" | "false" | "no"))
-            .unwrap_or(true);
+        let resolve_links = get("ENABLE_LIQUIPEDIA").is_none_or(|v| {
+            !matches!(v.trim().to_ascii_lowercase().as_str(), "0" | "false" | "no")
+        });
 
         let trimmed = |k: &str| get(k).map(|s| s.trim().to_string()).unwrap_or_default();
         let vapid_public = trimmed("VAPID_PUBLIC_KEY");
@@ -736,8 +745,12 @@ mod tests {
         let c = cfg(&[]);
         assert!(!c.competetft_enabled);
         assert!(c.competetft_autodiscover);
-        assert!(c.competetft_pins.is_empty());
-        assert!(c.competetft_exclude.is_empty());
+        assert!(c.competetft_pins.is_empty(), "{:?}", c.competetft_pins);
+        assert!(
+            c.competetft_exclude.is_empty(),
+            "{:?}",
+            c.competetft_exclude
+        );
         let c = cfg(&[
             ("COMPETETFT_ENABLED", "true"),
             ("COMPETETFT_AUTODISCOVER", "false"),
@@ -753,8 +766,8 @@ mod tests {
         assert!(c.ocblacktop_token.is_none());
         assert_eq!(c.ocblacktop_live_poll.as_secs(), 300);
         assert_eq!(c.ocblacktop_near_poll.as_secs(), 10800);
-        assert_eq!(c.ocblacktop_idle_poll.as_secs(), 172800);
-        assert_eq!(c.ocblacktop_standings_poll.as_secs(), 259200);
+        assert_eq!(c.ocblacktop_idle_poll.as_secs(), 172_800);
+        assert_eq!(c.ocblacktop_standings_poll.as_secs(), 259_200);
         assert_eq!(c.ocblacktop_daily_cap, 240);
         assert_eq!(c.tz, chrono_tz::America::Los_Angeles);
         assert_eq!(c.idle_poll.as_secs(), 1200);
@@ -789,8 +802,10 @@ mod tests {
             vec!["s", "a"]
         );
         // No overrides by default.
-        assert!(c.allow_for(crate::types::Sport::Lol).is_empty());
-        assert!(c.deny_for(crate::types::Sport::Cs2).is_empty());
+        let allow = c.allow_for(crate::types::Sport::Lol);
+        assert!(allow.is_empty(), "{allow:?}");
+        let deny = c.deny_for(crate::types::Sport::Cs2);
+        assert!(deny.is_empty(), "{deny:?}");
     }
 
     #[test]
@@ -830,7 +845,8 @@ mod tests {
             c.deny_for(crate::types::Sport::Cs2).to_vec(),
             vec!["showmatch-cup"]
         );
-        assert!(c.deny_for(crate::types::Sport::Nba).is_empty());
+        let deny = c.deny_for(crate::types::Sport::Nba);
+        assert!(deny.is_empty(), "{deny:?}");
     }
 
     #[test]
@@ -892,7 +908,7 @@ mod tests {
             cfg(&[("OCBLACKTOP_STANDINGS_POLL_SECS", "100")])
                 .ocblacktop_standings_poll
                 .as_secs(),
-            259200 // below min 3600 -> default
+            259_200 // below min 3600 -> default
         );
     }
 
@@ -1098,7 +1114,11 @@ mod tests {
         // Absent entirely: disabled.
         let empty: FileConfig = toml::from_str("").unwrap();
         let cfg2 = Config::from_file_for_test(empty);
-        assert!(cfg2.twitch_discovery.enabled_sports.is_empty());
+        assert!(
+            cfg2.twitch_discovery.enabled_sports.is_empty(),
+            "{:?}",
+            cfg2.twitch_discovery.enabled_sports
+        );
         assert!(!cfg2.discovery_enabled(crate::types::Sport::Lol));
     }
 

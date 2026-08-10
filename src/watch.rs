@@ -9,6 +9,7 @@
 ///
 /// Matching is case-insensitive substring. Order matters where one name contains
 /// another: check the more specific/streaming brand first so it wins.
+#[must_use]
 pub fn national_watch_url(name: &str) -> Option<&'static str> {
     let n = name.to_ascii_uppercase();
     Some(if n.contains("SPORTSNET") {

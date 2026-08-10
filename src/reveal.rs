@@ -124,7 +124,11 @@ pub fn remove(recs: &mut Vec<Record>, key: &str) {
 /// leaving individually-revealed items still showing. `prefixes` covers the
 /// brackets, whose per-round keys (`bn:<tid>:…`) are generated inside the grid.
 /// One pass over the store, rather than a read-modify-write per key.
-pub fn remove_many(recs: &mut Vec<Record>, keys: &HashSet<String>, prefixes: &[String]) {
+pub fn remove_many<S: std::hash::BuildHasher>(
+    recs: &mut Vec<Record>,
+    keys: &HashSet<String, S>,
+    prefixes: &[String],
+) {
     recs.retain(|r| !(keys.contains(&r.key) || prefixes.iter().any(|p| r.key.starts_with(p))));
 }
 
@@ -219,7 +223,7 @@ mod tests {
             }
         );
         remove(&mut recs, "k");
-        assert!(recs.is_empty());
+        assert!(recs.is_empty(), "{recs:?}");
     }
 
     #[test]

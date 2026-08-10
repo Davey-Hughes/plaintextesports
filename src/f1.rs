@@ -306,8 +306,8 @@ fn to_matches(r: &RawRace, now: DateTime<Utc>) -> Vec<NormalizedMatch> {
             // edition is distinct (e.g. "Austrian Grand Prix 2026") — the same GP
             // recurs annually and must not collide across seasons.
             m.series_name = format!("{} {season}", r.race_name);
-            m.venue_tz = venue_tz.clone();
-            m.venue_name = r.circuit.circuit_name.clone();
+            m.venue_tz.clone_from(&venue_tz);
+            m.venue_name.clone_from(&r.circuit.circuit_name);
             m.venue_location = r.circuit.location.label();
             // F1 has no teams; use the GP host country's flag as the session icon.
             m.team_a_logo = country_flag(&r.circuit.location.country);
@@ -319,6 +319,11 @@ fn to_matches(r: &RawRace, now: DateTime<Utc>) -> Vec<NormalizedMatch> {
 
 /// Fetch the season's calendar and expand every Grand Prix into its sessions.
 /// One keyless request; Jolpica is rate-limited, so the poller caches the result.
+///
+/// # Errors
+///
+/// Returns a `reqwest::Error` if the request fails or the response body
+/// does not deserialize into the expected shape.
 pub async fn fetch_schedule(
     client: &reqwest::Client,
     season: i32,

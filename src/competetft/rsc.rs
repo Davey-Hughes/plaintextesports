@@ -152,6 +152,8 @@ pub struct DateRange {
 }
 
 /// Month number (1-12) for a 3+ letter English month abbreviation, else None.
+// The position is an index into a 12-element array, so 0..=11.
+#[allow(clippy::cast_possible_truncation)]
 fn month_num(tok: &str) -> Option<u32> {
     const M: [&str; 12] = [
         "jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec",
@@ -368,7 +370,7 @@ mod tests {
             evs.iter()
                 .all(|e| e.event_type == "TACTICIANS_CROWN" || e.event_type == "REGIONAL_FINALS")
         );
-        assert!(!evs.is_empty());
+        assert!(!evs.is_empty(), "{evs:?}");
     }
 
     #[test]

@@ -65,6 +65,7 @@ const RESERVED: &[&str] = &[
 /// URLs and forms we can't resolve to a channel. Handles `{host}/{id}`,
 /// `{host}/{id}/{broad_no}`, and the `{host}/station/{id}/...` form, across the
 /// sooplive / afreeca hosts.
+#[must_use]
 pub fn bid_of(url: &str) -> Option<String> {
     let lower = url.to_ascii_lowercase();
     let after = lower.split_once("//").map_or(lower.as_str(), |(_, r)| r);
@@ -130,9 +131,8 @@ pub async fn live_streams(bids: &[String]) -> HashMap<String, LiveInfo> {
     let mut out = HashMap::new();
     for bid in uniq {
         let url = format!("https://chapi.sooplive.co.kr/api/{bid}/station");
-        let resp = match CLIENT.get(&url).send().await {
-            Ok(r) => r,
-            Err(_) => continue,
+        let Ok(resp) = CLIENT.get(&url).send().await else {
+            continue;
         };
         if let Ok(body) = resp.text().await
             && let Some(info) = parse_station(&body)

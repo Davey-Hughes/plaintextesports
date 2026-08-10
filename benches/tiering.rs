@@ -50,7 +50,7 @@ fn bench_is_tier_one(c: &mut Criterion) {
                 }
             }
             kept
-        })
+        });
     });
     g.finish();
 }

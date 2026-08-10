@@ -1,5 +1,6 @@
 //! The about page.
-use crate::app::*;
+use leptos::prelude::*;
+use leptos_router::components::A;
 
 #[component]
 pub(crate) fn AboutPage() -> impl IntoView {

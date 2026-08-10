@@ -59,6 +59,7 @@ pub struct LiveInfo {
 
 /// The lowercased Twitch channel login from a `twitch.tv/<login>` URL, or `None`
 /// for non-Twitch URLs and embed/query forms we don't link to.
+#[must_use]
 pub fn login_of(url: &str) -> Option<String> {
     let lower = url.to_ascii_lowercase();
     let rest = lower.split("twitch.tv/").nth(1)?;
@@ -104,6 +105,14 @@ fn parse_streams(json: &str) -> HashMap<String, LiveInfo> {
         .collect()
 }
 
+/// The app-access-token response from Twitch's OAuth endpoint.
+#[derive(Deserialize)]
+struct Tok {
+    access_token: String,
+    #[serde(default)]
+    expires_in: i64,
+}
+
 /// A valid app token, from cache when fresh, else freshly fetched. `None` when
 /// credentials are unset or the token request fails.
 async fn token() -> Option<String> {
@@ -128,12 +137,6 @@ async fn token() -> Option<String> {
         .send()
         .await
         .ok()?;
-    #[derive(Deserialize)]
-    struct Tok {
-        access_token: String,
-        #[serde(default)]
-        expires_in: i64,
-    }
     let tok: Tok = resp.json().await.ok()?;
     let expires_at = Utc::now() + Duration::seconds(tok.expires_in.max(0));
     let token = tok.access_token.clone();
@@ -173,16 +176,15 @@ pub async fn live_streams(logins: &[String]) -> HashMap<String, LiveInfo> {
     let mut out = HashMap::new();
     for chunk in uniq.chunks(100) {
         let q: Vec<(&str, &str)> = chunk.iter().map(|l| ("user_login", l.as_str())).collect();
-        let resp = match CLIENT
+        let Ok(resp) = CLIENT
             .get("https://api.twitch.tv/helix/streams")
             .query(&q)
             .header("Client-Id", &id)
             .bearer_auth(&token)
             .send()
             .await
-        {
-            Ok(r) => r,
-            Err(_) => continue,
+        else {
+            continue;
         };
         if resp.status() == reqwest::StatusCode::UNAUTHORIZED {
             // Token rejected — drop it so the next call refetches.
@@ -374,7 +376,8 @@ mod tests {
     fn parse_user_ids_extracts_ids() {
         let json = r#"{"data":[{"id":"106854413","login":"tarteman"},{"id":"","login":"x"}]}"#;
         assert_eq!(parse_user_ids(json), vec!["106854413".to_string()]);
-        assert!(parse_user_ids("nope").is_empty());
+        let ids = parse_user_ids("nope");
+        assert!(ids.is_empty(), "{ids:?}");
     }
 
     #[tokio::test]

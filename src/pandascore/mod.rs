@@ -5,7 +5,7 @@
 //! deserializes the relevant fields, and normalizes them into the shared
 //! [`crate::feed::NormalizedMatch`] after applying the tier-1 filter. Every other
 //! `Sport` comes from a different source (see the per-sport feed modules). Docs:
-//! https://developers.pandascore.co
+//! <https://developers.pandascore.co>
 
 use crate::config::config;
 use crate::feed::{FetchResult, NormalizedMatch, NormalizedTeam};
@@ -301,6 +301,12 @@ fn tier_input(raw: &RawMatch) -> TierInput<'_> {
 /// Deserialize a PandaScore matches array, normalize, and keep only matches the
 /// `policy` admits (allow/deny/tier). `policy` is the caller's
 /// `config().tier_policy(sport)`; passed in so unit tests stay hermetic.
+///
+/// # Errors
+///
+/// Returns a `serde_json::Error` if `json` is not a PandaScore matches
+/// array. Filtering itself cannot fail — an admitted-nothing policy yields
+/// an empty Vec, not an error.
 pub fn parse_and_filter(
     sport: Sport,
     json: &str,
@@ -424,6 +430,13 @@ async fn get_upcoming_page(
 /// partial result (the SQLite cache fills the rest in on subsequent polls);
 /// only a first-page failure fails the whole fetch. Running + recent past are
 /// best-effort (often unavailable on the free tier).
+///
+/// # Errors
+///
+/// Returns an error if the request fails or the response does not
+/// deserialize into the expected shape.
+// `PER_PAGE as u32`: a `const PER_PAGE: usize = 100` declared in this file.
+#[allow(clippy::cast_possible_truncation)]
 pub async fn fetch_game(
     client: &reqwest::Client,
     token: &str,
@@ -531,7 +544,7 @@ pub struct RangeFetch {
     pub reached_end: bool,
 }
 
-/// The `range[begin_at]` filter value: "<from_rfc3339>,<to_rfc3339>".
+/// The `range[begin_at]` filter value: "<`from_rfc3339`>,<`to_rfc3339`>".
 fn begin_at_range(from: DateTime<Utc>, to: DateTime<Utc>) -> String {
     format!("{},{}", from.to_rfc3339(), to.to_rfc3339())
 }
@@ -539,6 +552,11 @@ fn begin_at_range(from: DateTime<Utc>, to: DateTime<Utc>) -> String {
 /// All tier-1 past matches in `[from, to]`, paging through results so a busy
 /// range isn't truncated at one page. Returns the matches and the last-seen
 /// remaining-budget header.
+///
+/// # Errors
+///
+/// Returns an error if the request fails or the response does not
+/// deserialize into the expected shape.
 pub async fn fetch_past_range_all(
     client: &reqwest::Client,
     token: &str,
@@ -564,6 +582,11 @@ pub async fn fetch_past_range_all(
 
 /// Fetch one page of tier-1 past matches whose `begin_at` is in `[from, to]`,
 /// sorted ascending. Used to refresh recent past days and to backfill history.
+///
+/// # Errors
+///
+/// Returns an error if the request fails or the response does not
+/// deserialize into the expected shape.
 pub async fn fetch_past_range(
     client: &reqwest::Client,
     token: &str,

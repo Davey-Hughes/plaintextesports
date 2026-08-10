@@ -1,7 +1,8 @@
 //! Hydrate-only `localStorage` / cookie read-write glue for every persisted
 //! preference and reminder set. Keys live in [`super::keys`]; these are the
 //! load/save pairs the App effect and the toggles call.
-use crate::app::*;
+use crate::app::prelude::*;
+use std::collections::{BTreeMap, HashSet};
 
 #[cfg(feature = "hydrate")]
 pub(crate) fn detect_tz() -> Option<String> {
@@ -86,7 +87,7 @@ pub(crate) fn save_sport_pref(traditional: bool) {
     );
 }
 
-/// Apply the scores preference: set `data-scores` on <html> (drives the scores
+/// Apply the scores preference: set `data-scores` on `<html>` (drives the scores
 /// toggle's on-state, set pre-paint to avoid a flash) and persist it.
 #[cfg(feature = "hydrate")]
 pub(crate) fn apply_scores(show: bool) {
@@ -221,6 +222,9 @@ pub(crate) fn load_excluded() -> HashSet<String> {
 /// Current wall-clock time (ms since epoch) from the browser, for stamping and
 /// pruning reveal records.
 #[cfg(feature = "hydrate")]
+// `Date::now` is f64 ms since the epoch — about 1.7e12 today, and f64 is exact
+// to 2^53, so the conversion is lossless for any date this code will see.
+#[allow(clippy::cast_possible_truncation)]
 pub(crate) fn now_ms() -> i64 {
     js_sys::Date::now() as i64
 }

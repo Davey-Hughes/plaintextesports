@@ -60,6 +60,11 @@ struct SearchHit {
 
 /// Resolve the exact Liquipedia URL for an event, or `None` if no result is a
 /// confident match (caller then keeps its generic fallback link).
+///
+/// # Errors
+///
+/// Returns an error if the request fails or the response does not
+/// deserialize into the expected shape.
 pub async fn resolve_event(
     client: &reqwest::Client,
     sport: Sport,
@@ -126,13 +131,18 @@ fn page_url(wiki: &str, title: &str) -> String {
 }
 
 fn encode_path(s: &str) -> String {
+    // Formats into `out` rather than allocating a String per escaped byte.
+    // The result is discarded because `fmt::Write` for `String` cannot fail.
+    use std::fmt::Write as _;
     let mut out = String::with_capacity(s.len());
     for b in s.bytes() {
         match b {
             b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' | b'/' => {
                 out.push(b as char);
             }
-            _ => out.push_str(&format!("%{b:02X}")),
+            _ => {
+                let _ = write!(out, "%{b:02X}");
+            }
         }
     }
     out

@@ -89,7 +89,11 @@ fn section_rank(section: &str, first_seen: &HashMap<String, usize>) -> (u8, usiz
 /// (`Vec<BracketRound>`, section-major then round-ascending) that the bracket
 /// renderer lays out, with each match's `feeders` filled in.
 #[must_use]
-pub fn build(series: Vec<RawSeries>) -> Vec<BracketRound> {
+// `side as u32` appears in two of the feeder closures below. `side` is a team
+// index within one series — the callers pass 0 and 1 and nothing else — so the
+// structural `slot * 2 + side` pairing cannot overflow a u32 slot number.
+#[allow(clippy::cast_possible_truncation)]
+pub fn build(series: &[RawSeries]) -> Vec<BracketRound> {
     if series.is_empty() {
         return Vec::new();
     }
@@ -171,7 +175,7 @@ pub fn build(series: Vec<RawSeries>) -> Vec<BracketRound> {
             };
             cand.filter(|&j| series[j].section == s.section)
         };
-        for (sec, r, idxs) in columns.iter_mut() {
+        for (sec, r, idxs) in &mut columns {
             if *r != 0 {
                 continue; // only the leaves (first round) drive the ordering
             }
@@ -336,8 +340,8 @@ mod tests {
             round_title: String::new(),
             team_a: a.to_string(),
             team_b: b.to_string(),
-            score_a: Some(if win == "a" { 1 } else { 0 }),
-            score_b: Some(if win == "b" { 1 } else { 0 }),
+            score_a: Some(i64::from(win == "a")),
+            score_b: Some(i64::from(win == "b")),
             winner: win.to_string(),
             match_id: 0,
             feed: [None, None],
@@ -382,7 +386,7 @@ mod tests {
             game("west", 1, 0, "W1", "W2", "b"), // West final: W2 beats W1
             game("final", 0, 0, "E1", "W2", "a"), // champion E1
         ];
-        let rounds = build(series);
+        let rounds = build(&series);
         // East final (round pos 1) fed by its two first-round games.
         let east_r0 = global_col(&rounds, "east", 0);
         let ef = feeders_of(&rounds, "east", 1, 0);
@@ -417,13 +421,13 @@ mod tests {
                 ..game("afc", 1, 1, "C", "G", "a")
             },
         ];
-        let rounds = build(series);
+        let rounds = build(&series);
         let r0 = global_col(&rounds, "afc", 0);
         // Divisional s0 is A vs F — participant-matched to the first-round games A
         // and F won (NOT a structural 2k/2k+1 pairing). The planar reorder then
         // makes those two leaves adjacent so the connectors don't cross.
         let mut f0 = feeders_of(&rounds, "afc", 1, 0);
-        f0.sort();
+        f0.sort_unstable();
         assert_eq!(f0, vec![(r0, 0), (r0, 1)], "A and F, made adjacent");
         // "G" never appears as a winner, so divisional s1 only matches C.
         let f1 = feeders_of(&rounds, "afc", 1, 1);
@@ -461,12 +465,12 @@ mod tests {
                 ..Default::default()
             },
         ];
-        let rounds = build(series);
+        let rounds = build(&series);
         // rounds[0] = leaves (col 0), rounds[1] = middle (col 1).
         let mut m0 = rounds[1].matches[0].feeders.clone();
-        m0.sort();
+        m0.sort_unstable();
         let mut m1 = rounds[1].matches[1].feeders.clone();
-        m1.sort();
+        m1.sort_unstable();
         assert_eq!(
             m0,
             vec![(0, 0), (0, 1)],
@@ -485,13 +489,13 @@ mod tests {
             RawSeries {
                 team_a: "TBD".into(),
                 team_b: "TBD".into(),
-                winner: "".into(),
+                winner: String::new(),
                 score_a: None,
                 score_b: None,
                 ..game("west", 1, 0, "", "", "")
             },
         ];
-        let rounds = build(series);
+        let rounds = build(&series);
         let sf = feeders_of(&rounds, "west", 1, 0);
         let r0 = global_col(&rounds, "west", 0);
         assert_eq!(
@@ -512,7 +516,7 @@ mod tests {
             game("", 1, 0, "A", "D", "a"),      // Final
             game("third", 0, 0, "B", "C", "a"), // 3rd place, feeder-less
         ];
-        let rounds = build(series);
+        let rounds = build(&series);
         // Final fed by both semifinals.
         let ff = feeders_of(&rounds, "", 1, 0);
         assert_eq!(ff.len(), 2);
@@ -526,13 +530,13 @@ mod tests {
     #[test]
     fn explicit_feed_takes_precedence() {
         let mut s = game("", 1, 0, "A", "D", "a");
-        s.feed = [Some(("".into(), 0, 1)), Some(("".into(), 0, 0))];
+        s.feed = [Some((String::new(), 0, 1)), Some((String::new(), 0, 0))];
         let series = vec![
             game("", 0, 0, "A", "B", "a"),
             game("", 0, 1, "C", "D", "b"),
             s,
         ];
-        let rounds = build(series);
+        let rounds = build(&series);
         let ff = feeders_of(&rounds, "", 1, 0);
         let r0 = global_col(&rounds, "", 0);
         // Explicit refs used verbatim (slot1 for side a, slot0 for side b).

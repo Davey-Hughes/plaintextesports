@@ -46,6 +46,11 @@ fn decode(b64: &str) -> Result<Vec<u8>, DynError> {
 }
 
 /// Parse the VAPID private key (base64url 32-byte scalar) into a signing key.
+///
+/// # Errors
+///
+/// Returns an error if `vapid_private` is not valid base64url, or does not
+/// decode to a 32-byte P-256 scalar.
 pub fn vapid_key(cfg: &Config) -> Result<ES256KeyPair, DynError> {
     Ok(ES256KeyPair::from_bytes(&decode(&cfg.vapid_private)?)?)
 }
@@ -91,7 +96,7 @@ async fn send_one(
     };
     let (parts, body) = request.into_parts();
     let mut rb = client.post(parts.uri.to_string());
-    for (name, value) in parts.headers.iter() {
+    for (name, value) in &parts.headers {
         rb = rb.header(name.as_str(), value.as_bytes());
     }
     match rb.body(body).send().await {
@@ -454,10 +459,13 @@ mod tests {
         assert_eq!(req.method(), http::Method::POST);
         assert!(req.headers().contains_key("authorization"));
         assert_eq!(
-            req.headers().get("content-encoding").map(|v| v.as_bytes()),
+            req.headers()
+                .get("content-encoding")
+                .map(http::HeaderValue::as_bytes),
             Some(b"aes128gcm".as_ref())
         );
-        assert!(!req.body().is_empty());
+        let body = req.body();
+        assert!(!body.is_empty(), "{body:?}");
     }
 
     fn pending_reminder(match_id: i64, lead_ms: i64) -> Reminder {

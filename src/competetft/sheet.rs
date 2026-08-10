@@ -147,13 +147,7 @@ pub fn parse_leaderboard(rows: &[Vec<String>], _finals: bool) -> Leaderboard {
     let mut out_rows = Vec::new();
     let mut placements = Vec::new();
     for r in &rows[h + 1..] {
-        let get = |i: usize| {
-            r.get(i)
-                .map(String::as_str)
-                .unwrap_or("")
-                .trim()
-                .to_string()
-        };
+        let get = |i: usize| r.get(i).map_or("", String::as_str).trim().to_string();
         let rank = get(pos_i);
         let name = get(name_i);
         if rank.is_empty() || name.is_empty() {
@@ -249,8 +243,8 @@ pub fn parse_streamers(rows: &[Vec<String>]) -> Vec<TftStreamer> {
     let link_i = header.iter().position(|c| c == "STREAM LINK").unwrap_or(4);
     let mut out = Vec::new();
     for r in &rows[h + 1..] {
-        let name = r.get(name_i).map(|s| s.trim()).unwrap_or("");
-        let link = r.get(link_i).map(|s| s.trim()).unwrap_or("");
+        let name = r.get(name_i).map_or("", |s| s.trim());
+        let link = r.get(link_i).map_or("", |s| s.trim());
         if name.is_empty() {
             continue;
         }
@@ -319,8 +313,7 @@ pub fn parse_lobbies(rows: &[Vec<String>], day3: bool) -> Vec<TftLobbyRound> {
             .iter()
             .filter(|(c, _)| *c <= col)
             .max_by_key(|(c, _)| *c)
-            .map(|(_, d)| d.clone())
-            .unwrap_or_else(|| fallback_day.clone())
+            .map_or_else(|| fallback_day.clone(), |(_, d)| d.clone())
     };
 
     // Round blocks: (start_col, round_number), left to right.
@@ -341,10 +334,7 @@ pub fn parse_lobbies(rows: &[Vec<String>], day3: bool) -> Vec<TftLobbyRound> {
 
     let mut out = Vec::new();
     for (idx, (start, num)) in round_cols.iter().enumerate() {
-        let end = round_cols
-            .get(idx + 1)
-            .map(|(c, _)| *c)
-            .unwrap_or(usize::MAX);
+        let end = round_cols.get(idx + 1).map_or(usize::MAX, |(c, _)| *c);
         // sub-header columns within this round's block
         let find_col = |want: &[&str]| -> Option<usize> {
             sub.and_then(|s| {
@@ -359,7 +349,7 @@ pub fn parse_lobbies(rows: &[Vec<String>], day3: bool) -> Vec<TftLobbyRound> {
         let mut lobbies: Vec<TftLobby> = Vec::new();
         let mut cur: Option<TftLobby> = None;
         for r in data {
-            let cell = r.get(name_col).map(|s| s.trim()).unwrap_or("");
+            let cell = r.get(name_col).map_or("", |s| s.trim());
             if cell.to_ascii_uppercase().starts_with("LOBBY ") {
                 if let Some(l) = cur.take()
                     && !l.players.is_empty()
@@ -485,7 +475,7 @@ pub fn parse_broadcasts(rows: &[Vec<String>]) -> Vec<TftBroadcast> {
             continue;
         }
         let Some(k) = kind else { continue };
-        let cell = |i: usize| r.get(i).map(|s| s.trim()).unwrap_or("");
+        let cell = |i: usize| r.get(i).map_or("", |s| s.trim());
         match k {
             TftBroadcastKind::Regional => {
                 let region = cell(1);

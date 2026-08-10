@@ -6,14 +6,19 @@
 //! revealing never shifts the layout. The "Game stats" title is a toggle button
 //! (same pattern as the standings) that reveals it; the global scores toggle
 //! reveals it too.
-use crate::app::*;
+use crate::app::prelude::*;
 use crate::types::{BoxScore, LeaderCard, LineRow, LineScore, PlayerTable, ScoreEvent, StatPair};
+use leptos::prelude::*;
 
 /// The game-stats section, rendered below the standings. The "Game stats" title
 /// toggles a `key`-scoped, persisted section reveal (and the global scores toggle
 /// reveals it too) — exactly like the standings section. Renders nothing when the
 /// box score is empty.
 #[component]
+// A `#[component]` prop. Leptos generates a props struct from this signature
+// and `view!` builds it at the call site, so props are owned by construction —
+// a borrowed prop would need a lifetime the macro has no way to name.
+#[allow(clippy::needless_pass_by_value)]
 pub(crate) fn BoxScoreView(box_score: BoxScore, key: String) -> impl IntoView {
     // Nothing to show at all → render nothing (the caller also guards, but be safe).
     let empty = box_score.line.is_none()

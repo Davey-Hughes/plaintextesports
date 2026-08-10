@@ -1,7 +1,10 @@
 //! Standings view components that aren't the playoff bracket: F1 / motorsport
 //! championship tables and the traditional-sports standings wrapper.
-use crate::app::*;
-use crate::types::{TftDayPanel, TftPlacement, TftStandings};
+use std::fmt::Write as _;
+
+use crate::app::prelude::*;
+use crate::types::{TftDayPanel, TftStandings};
+use leptos::prelude::*;
 
 /// The drivers' and constructors' championship standings as of a GP's round,
 /// shown on the F1 event page. Spoiler-gated as one block (it encodes results).
@@ -87,6 +90,10 @@ pub(crate) fn F1StandingsView(standings: F1Standings, season: i64, round: i64) -
 /// co-drivers / manufacturers; WEC: per class × kind). Like the F1 table it's a
 /// spoiler, so it's blanked behind a reveal toggle. `league` is the series name.
 #[component]
+// A `#[component]` prop. Leptos generates a props struct from this signature
+// and `view!` builds it at the call site, so props are owned by construction —
+// a borrowed prop would need a lifetime the macro has no way to name.
+#[allow(clippy::needless_pass_by_value)]
 pub(crate) fn MotorStandingsView(standings: MotorStandings, league: String) -> impl IntoView {
     let (revealed, toggle) = section_reveal(format!("motorstand:{league}"));
     let tables = StoredValue::new(standings.tables);
@@ -231,7 +238,12 @@ fn tab_layout(panels: &[TftDayPanel]) -> TabLayout {
 /// `max_games` game columns, when any) · the trailing value column(s) — "Total"
 /// on a day tab. Shared so every day tab stays column-aligned.
 fn grid_cols(l: &TabLayout, trailing: &[usize]) -> String {
-    let tail: String = trailing.iter().map(|w| format!(" {w}ch")).collect();
+    // Folded rather than `map(format!).collect()` so the trailing columns land in
+    // one String instead of one per column. Discarded: writing to a String cannot fail.
+    let tail = trailing.iter().fold(String::new(), |mut s, w| {
+        let _ = write!(s, " {w}ch");
+        s
+    });
     if l.max_games == 0 {
         format!("grid-template-columns:{}ch {}ch{tail};", l.rank_w, l.name_w)
     } else {
@@ -347,11 +359,7 @@ fn day_grid_view(s: &TftStandings, l: &TabLayout, show: bool) -> AnyView {
 /// prize). One spoiler reveal gates them all; the tab bar and positions stay
 /// visible while the values hide. Defaults to the latest day's tab.
 #[component]
-fn TftResultsTabs(
-    panels: Vec<TftDayPanel>,
-    _placements: Vec<TftPlacement>,
-    event: String,
-) -> impl IntoView {
+fn TftResultsTabs(panels: Vec<TftDayPanel>, event: String) -> impl IntoView {
     if panels.is_empty() {
         return ().into_any();
     }
@@ -450,7 +458,7 @@ pub(crate) fn TftEventResults(event: Signal<String>) -> impl IntoView {
                 if !has_panels && !has_decided {
                     return ().into_any();
                 }
-                view! { <TftResultsTabs panels=ps _placements=pl event=ev /> }.into_any()
+                view! { <TftResultsTabs panels=ps event=ev /> }.into_any()
             }}
         </Transition>
     }

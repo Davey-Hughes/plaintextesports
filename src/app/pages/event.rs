@@ -1,5 +1,9 @@
 //! The event page and its stage combo / stage-list rendering.
-use crate::app::*;
+use crate::app::prelude::*;
+use leptos::prelude::*;
+use leptos_router::components::A;
+use leptos_router::hooks::use_params;
+use leptos_router::params::Params;
 
 #[derive(Params, PartialEq, Clone)]
 pub(crate) struct EventParams {
@@ -197,10 +201,7 @@ fn EventStagesForGame(
 #[component]
 fn StandingsBlock(groups: Vec<EventInfo>) -> impl IntoView {
     // One reveal for the whole block, keyed off the first group's id (stable).
-    let key = format!(
-        "st:{}",
-        groups.first().map(|e| e.tournament_id).unwrap_or(0)
-    );
+    let key = format!("st:{}", groups.first().map_or(0, |e| e.tournament_id));
     let (revealed, toggle) = section_reveal(key);
     let cells = groups
         .into_iter()
@@ -481,9 +482,7 @@ pub(crate) fn EventPage() -> impl IntoView {
                             .days
                             .iter()
                             .flat_map(|d| &d.leagues)
-                            .next()
-                            .map(|lg| (lg.league.clone(), lg.series_name.clone()))
-                            .unwrap_or_else(|| (title.clone(), String::new()));
+                            .next().map_or_else(|| (title.clone(), String::new()), |lg| (lg.league.clone(), lg.series_name.clone()));
                         // The event's external (Liquipedia/official) link, pulled
                         // from any of its league groups.
                         let url = s
@@ -753,7 +752,7 @@ pub(crate) fn EventPage() -> impl IntoView {
                                     if lg.starts_with("TFT") { lg } else { String::new() }
                                 }) />
                                 <div id="sched" class="spy">
-                                    {render_schedule(s, false, push, true, windowed)}
+                                    {render_schedule(s, push, windowed)}
                                 </div>
                                 {sep}
                                 <EventStages stages=stage_list times=times />
