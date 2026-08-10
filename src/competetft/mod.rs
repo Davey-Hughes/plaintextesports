@@ -9,6 +9,7 @@ use crate::feed::NOON;
 use crate::tft::ParsedSession;
 use crate::types::{TftBroadcast, TftDayPanel, TftLobbyRound, TftPlacement, TftStreamer};
 use chrono::{DateTime, Datelike, NaiveTime, Utc};
+use std::collections::HashMap;
 
 const HOST: &str = "https://competetft.com";
 
@@ -380,6 +381,22 @@ pub fn derive_sessions(
 /// tested directly against fixtures. Each tab is routed to its parser by header
 /// classification; each broadcast day becomes a `ParsedSession` whose `begin_at`
 /// is the feed's precise time (joined by `stage_id`).
+/// A sheet tab's name as a standings tab label: "Week 1 - Leaderboard" reads as
+/// "Week 1" once it is sitting in a row of leaderboards, where the suffix is the
+/// one thing every tab has in common. Falls back to the name unchanged.
+fn leaderboard_label(tab_name: &str) -> String {
+    let n = tab_name.trim();
+    let base = n
+        .rsplit_once('-')
+        .filter(|(_, tail)| tail.trim().eq_ignore_ascii_case("leaderboard"))
+        .map_or(n, |(head, _)| head.trim());
+    if base.is_empty() {
+        n.to_string()
+    } else {
+        base.to_string()
+    }
+}
+
 #[must_use]
 pub fn assemble(
     t: &rsc::CompeteTournament,
@@ -398,20 +415,20 @@ pub fn assemble(
     let mut broadcasts = Vec::new();
     let mut lobbies = Vec::new();
 
-    for (_gid, csv) in tabs {
+    // Leaderboards are collected first and labelled after the loop: the label
+    // depends on how many of them there turn out to be, and an empty tab produces
+    // no panel, so it cannot be decided from the tab list alone. (Stargazer Cup
+    // publishes a populated leaderboard beside an empty one — counting tabs
+    // renamed its single panel and cost it its day split.)
+    let mut leaderboards: Vec<(Option<&String>, bool, crate::types::TftStandings)> = Vec::new();
+
+    for (tab_name, csv) in tabs {
         let rows = read_csv(csv);
         match classify_tab(&rows) {
             TabKind::Leaderboard { finals } => {
                 let lb = parse_leaderboard(&rows, finals);
                 if !lb.standings.rows.is_empty() {
-                    standings.push(TftDayPanel {
-                        label: if finals {
-                            "Finals".to_string()
-                        } else {
-                            "Day 1 & 2".to_string()
-                        },
-                        standings: lb.standings,
-                    });
+                    leaderboards.push((tab_name.as_ref(), finals, lb.standings));
                 }
                 placements.extend(lb.placements);
             }
@@ -420,6 +437,30 @@ pub fn assemble(
             TabKind::Info => broadcasts = parse_broadcasts(&rows),
             TabKind::Unknown => {}
         }
+    }
+
+    // A sheet with several populated leaderboards (play-ins, week 1, week 2, ...)
+    // used to label every one of them "Day 1 & 2", so the event page rendered a row
+    // of tabs the reader could not tell apart — four of them on Regional Finals
+    // AMER 2026, carrying 16, 40, 32 and 8 players. The sheet knows their names.
+    //
+    // Only when there is more than one, though. With a single leaderboard the
+    // literal "Day 1 & 2" is load-bearing: `split_day_panels` finds the panel to
+    // split by that exact string. Keeping the old label on the old shape means this
+    // cannot regress the sheets that do split, and a multi-leaderboard sheet never
+    // splits anyway — it has no day-1 lobby data, which `split_day_panels` requires
+    // first.
+    let multi_leaderboard = leaderboards.iter().filter(|(_, finals, _)| !finals).count() > 1;
+    for (tab_name, finals, st) in leaderboards {
+        let label = match tab_name {
+            Some(n) if multi_leaderboard && !finals => leaderboard_label(n),
+            _ if finals => "Finals".to_string(),
+            _ => "Day 1 & 2".to_string(),
+        };
+        standings.push(TftDayPanel {
+            label,
+            standings: st,
+        });
     }
     // Day 1 & 2 panel before Finals.
     standings.sort_by_key(|p| p.label == "Finals");
@@ -500,8 +541,79 @@ pub async fn fetch_tournament(
     Some(rsc::parse_tournament(id, &html))
 }
 
-/// Enumerate every tab gid from a published sheet's `pubhtml` and fetch each as
-/// CSV. Returns `(gid, csv_text)` pairs.
+/// Decode the JS string escapes Google emits inside `items.push({name: "..."})`.
+///
+/// The names are written as JavaScript source, so `&` arrives as `\x26` and `/`
+/// as `\/` — a tab called "Days 1 & 2" reaches us as `Days 1 \x26 2` and would
+/// be rendered that way verbatim.
+fn unescape_js(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut it = s.chars();
+    while let Some(c) = it.next() {
+        if c != '\\' {
+            out.push(c);
+            continue;
+        }
+        match it.next() {
+            // `\xNN` and `\uNNNN` — how `&`, `'` and quotes arrive.
+            Some(esc @ ('x' | 'u')) => {
+                let width = if esc == 'x' { 2 } else { 4 };
+                let hex: String = it.by_ref().take(width).collect();
+                if let Some(ch) = u32::from_str_radix(&hex, 16).ok().and_then(char::from_u32) {
+                    out.push(ch);
+                } else {
+                    // Not a valid escape: keep it legible rather than dropping it.
+                    out.push('\\');
+                    out.push_str(&hex);
+                }
+            }
+            Some('n') => out.push('\n'),
+            Some('t') => out.push('\t'),
+            // `\/`, `\\`, `\"`, `\'` — the character escapes itself.
+            Some(other) => out.push(other),
+            None => out.push('\\'),
+        }
+    }
+    out
+}
+
+/// Tab display names from a published sheet's `pubhtml`, keyed by gid.
+///
+/// Google renders the tab strip from a script block of
+/// `items.push({name: "Week 1 - Leaderboard", pageUrl: "...gid\x3d599429418..."})`,
+/// one per tab — the names are not in the markup itself. Pure so it is tested
+/// against a fixture rather than the live sheet.
+#[must_use]
+pub fn tab_names(html: &str) -> HashMap<String, String> {
+    let mut out = HashMap::new();
+    for chunk in html.split("items.push({name:").skip(1) {
+        let Some(rest) = chunk.split_once('"') else {
+            continue;
+        };
+        let Some((name, tail)) = rest.1.split_once('"') else {
+            continue;
+        };
+        // `pageUrl` follows on the same push; its gid is escaped as `\x3d`.
+        let Some(g) = tail.split("gid").nth(1) else {
+            continue;
+        };
+        let gid: String = g
+            .trim_start_matches("\\x3d")
+            .trim_start_matches('=')
+            .chars()
+            .take_while(char::is_ascii_digit)
+            .collect();
+        if !gid.is_empty() && !name.is_empty() {
+            out.entry(gid).or_insert_with(|| unescape_js(name));
+        }
+    }
+    out
+}
+
+/// Enumerate every tab from a published sheet's `pubhtml` and fetch each as CSV.
+/// Returns `(tab_name, csv_text)` pairs — the NAME, not the gid: the gid is an
+/// opaque number, while the name is what the sheet's authors called the tab and
+/// is the only thing that tells two leaderboards apart (see `assemble`).
 #[cfg(feature = "ssr")]
 pub async fn fetch_sheet_tabs(
     client: &reqwest::Client,
@@ -518,6 +630,7 @@ pub async fn fetch_sheet_tabs(
             gids.push(g);
         }
     }
+    let names = tab_names(&html);
     // The tabs are independent of each other (only the pubhtml above had to come
     // first, to supply the gids), so fetch them together rather than paying one
     // round-trip per tab. `join_all` preserves input order, which `assemble` relies
@@ -526,7 +639,8 @@ pub async fn fetch_sheet_tabs(
         let url = format!(
             "https://docs.google.com/spreadsheets/d/e/{key}/pub?gid={g}&single=true&output=csv"
         );
-        async move { get(client, &url).await.map(|csv| (Some(g), csv)) }
+        let name = names.get(&g).cloned();
+        async move { get(client, &url).await.map(|csv| (name, csv)) }
     }))
     .await
     .into_iter()
@@ -940,6 +1054,63 @@ mod tests {
         let s = derive_sessions(&t, &[], now);
         assert!(!s.is_empty(), "{s:?}");
         assert!(s.iter().all(|x| x.tournament == "Tactician's Crown 2026"));
+    }
+
+    #[test]
+    fn tab_names_reads_the_pubhtml_tab_strip() {
+        // Shape Google actually publishes: a script block of `items.push(...)`,
+        // gid escaped as `\x3d`. Trimmed from the AMER 2026 sheet.
+        let html = r#"var items = [];items.push({name: "Overview", pageUrl: "https:\/\/docs.google.com\/spreadsheets\/d\/e\/KEY\/pubhtml\/sheet?headers\x3dfalse\x26gid\x3d1912431948"});items.push({name: "Week 1 - Leaderboard", pageUrl: "https:\/\/docs.google.com\/spreadsheets\/d\/e\/KEY\/pubhtml\/sheet?headers\x3dfalse\x26gid\x3d599429418"});"#;
+        let names = tab_names(html);
+        assert_eq!(
+            names.get("1912431948").map(String::as_str),
+            Some("Overview")
+        );
+        assert_eq!(
+            names.get("599429418").map(String::as_str),
+            Some("Week 1 - Leaderboard")
+        );
+    }
+
+    #[test]
+    fn tab_names_decodes_the_javascript_escapes() {
+        // Names are JS source: "Days 1 & 2" arrives as `Days 1 \x26 2`. Rendered
+        // raw, that is what the tab said — Stargazer Cup shipped exactly this.
+        let html = r#"items.push({name: "Days 1 \x26 2", pageUrl: "x\/y?gid\x3d42"});"#;
+        assert_eq!(
+            tab_names(html).get("42").map(String::as_str),
+            Some("Days 1 & 2")
+        );
+    }
+
+    #[test]
+    fn unescape_js_leaves_ordinary_text_alone() {
+        assert_eq!(unescape_js("Week 1 - Leaderboard"), "Week 1 - Leaderboard");
+        assert_eq!(unescape_js(r"a\/b"), "a/b");
+        assert_eq!(unescape_js(r"Tactician\x27s Crown"), "Tactician's Crown");
+        // A malformed escape is kept legible rather than silently dropped.
+        assert_eq!(unescape_js(r"bad\xZZ"), r"bad\ZZ");
+    }
+
+    #[test]
+    fn tab_names_is_empty_rather_than_wrong_on_unfamiliar_html() {
+        // If Google changes the tab strip, labelling falls back to the old
+        // hardcoded strings rather than inventing names.
+        assert!(tab_names("<html><body>no tab strip</body></html>").is_empty());
+    }
+
+    #[test]
+    fn leaderboard_label_drops_the_shared_suffix() {
+        assert_eq!(leaderboard_label("Week 1 - Leaderboard"), "Week 1");
+        assert_eq!(leaderboard_label("Play-Ins - Leaderboard"), "Play-Ins");
+        // Not a leaderboard suffix: left alone.
+        assert_eq!(
+            leaderboard_label("Grand Finals - Checkmate"),
+            "Grand Finals - Checkmate"
+        );
+        assert_eq!(leaderboard_label("Day 1"), "Day 1");
+        // Degenerate names never yield an empty tab.
+        assert_eq!(leaderboard_label(" - Leaderboard"), "- Leaderboard");
     }
 
     #[test]
