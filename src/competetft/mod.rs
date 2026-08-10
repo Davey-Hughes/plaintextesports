@@ -1179,6 +1179,74 @@ mod tests {
     /// Full live pipeline: discover → refresh one tournament → assemble. Prints
     /// the section counts. Ignored by default; run with
     /// `cargo test --features ssr live_full_refresh -- --ignored --nocapture`.
+    /// Every published tournament's standings tabs must be distinguishable.
+    ///
+    /// `live_full_refresh` above proves the pipeline on ONE tournament, and it
+    /// prefers Tactician's Crown — a single-leaderboard sheet, the shape that
+    /// keeps the hardcoded label. Neither of the two bugs this test exists for
+    /// was reachable that way, and both survived a full green unit suite:
+    ///
+    ///   - four tabs all reading "Day 1 & 2" on Regional Finals AMER, because
+    ///     the label was hardcoded rather than read from the sheet;
+    ///   - a tab reading "Days 1 \x26 2" on Stargazer Cup, because the names are
+    ///     JavaScript source and the escapes were not decoded.
+    ///
+    /// So this sweeps all of them and asserts the two properties a reader
+    /// actually needs: labels within a tournament differ, and none is raw JS.
+    #[test]
+    #[ignore = "hits live competetft + sheets"]
+    fn live_labels_are_distinct_and_decoded() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let client = reqwest::Client::new();
+        let sched = rt.block_on(fetch_schedule(&client));
+        let now = Utc::now();
+        let mut checked = 0;
+        for id in &sched.tournaments {
+            let Some(d) = rt.block_on(refresh_competetft_tournament(
+                &client,
+                id,
+                &sched.events,
+                now,
+            )) else {
+                continue;
+            };
+            let labels: Vec<&str> = d.standings.iter().map(|p| p.label.as_str()).collect();
+            if labels.is_empty() {
+                continue;
+            }
+            checked += 1;
+            println!("{:?} -> {labels:?}", d.tournament);
+
+            for l in &labels {
+                assert!(
+                    !l.contains("\\x") && !l.contains("\\u"),
+                    "{:?}: label {l:?} still carries a JavaScript escape",
+                    d.tournament
+                );
+                assert!(
+                    !l.trim().is_empty(),
+                    "{:?}: blank tab label in {labels:?}",
+                    d.tournament
+                );
+            }
+
+            let mut uniq: Vec<&str> = labels.clone();
+            uniq.sort_unstable();
+            uniq.dedup();
+            assert_eq!(
+                uniq.len(),
+                labels.len(),
+                "{:?}: duplicate tab labels in {labels:?} — the reader cannot tell them apart",
+                d.tournament
+            );
+        }
+        assert!(
+            checked > 0,
+            "no tournament published standings; the sweep proved nothing"
+        );
+        println!("checked {checked} tournament(s)");
+    }
+
     #[test]
     #[ignore = "hits live competetft + sheets"]
     fn live_full_refresh() {
