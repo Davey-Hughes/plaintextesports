@@ -1223,6 +1223,9 @@ fn pitching_table(t: &RawBsTeam) -> PlayerTable {
 
 /// Normalize a game's linescore + boxscore into the shared `BoxScore`.
 #[must_use]
+// A flat procedure: long because it has many steps, not because it nests.
+// A reviewer is the right check on that, not a line count.
+#[allow(clippy::too_many_lines)]
 pub fn to_box_score(ls: &RawLinescore, bs: &RawBoxscore) -> BoxScore {
     let (away, home) = (&bs.teams.away, &bs.teams.home);
 

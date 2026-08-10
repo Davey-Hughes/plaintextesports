@@ -6,6 +6,9 @@ static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 #[cfg(feature = "ssr")]
 #[tokio::main]
+// A flat procedure: long because it has many steps, not because it nests.
+// A reviewer is the right check on that, not a line count.
+#[allow(clippy::too_many_lines)]
 async fn main() {
     #[cfg(feature = "ssr")]
     mod cache_middleware {

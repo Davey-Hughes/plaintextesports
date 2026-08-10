@@ -223,6 +223,10 @@ pub(crate) fn decode_backup(s: &str) -> Option<NotifBackup> {
 /// (number + unit), with a live summary. Calls `on_change` with the new
 /// normalized list on every edit. Drives the global timers and per-entry overrides.
 #[component]
+// One component is one `view!` tree. Splitting it means inventing child
+// components whose only job is to make this number smaller, which moves the
+// markup somewhere else rather than simplifying it.
+#[allow(clippy::too_many_lines)]
 pub(crate) fn TimerPicker(
     #[prop(into)] current: Signal<Vec<i64>>,
     on_change: Callback<Vec<i64>>,
@@ -458,6 +462,10 @@ pub(crate) fn EntryTimers(entry_key: String, rearm: Callback<Vec<i64>>) -> impl 
 /// individually-starred upcoming matches. Matches that have already started or
 /// finished are left out (their reminders can no longer fire).
 #[component]
+// One component is one `view!` tree. Splitting it means inventing child
+// components whose only job is to make this number smaller, which moves the
+// markup somewhere else rather than simplifying it.
+#[allow(clippy::too_many_lines)]
 pub(crate) fn NotificationsPage() -> impl IntoView {
     let subscribed = use_context::<Subscribed>().expect("subscribed context").0;
     let starred = use_context::<RwSignal<HashSet<String>>>().expect("starred context");

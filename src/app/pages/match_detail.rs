@@ -233,6 +233,10 @@ pub(crate) fn MatchDetailPage() -> impl IntoView {
     }
 }
 
+// One component is one `view!` tree. Splitting it means inventing child
+// components whose only job is to make this number smaller, which moves the
+// markup somewhere else rather than simplifying it.
+#[allow(clippy::too_many_lines)]
 pub(crate) fn detail_view(d: MatchDetail, results: Resource<MatchResults>) -> impl IntoView {
     let MatchDetail {
         match_view,

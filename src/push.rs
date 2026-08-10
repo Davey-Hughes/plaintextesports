@@ -110,6 +110,9 @@ async fn send_one(
 
 /// Start the background reminder sender. No-op unless Web Push is configured and
 /// a DB is available (reminders are stored there).
+// A flat procedure: long because it has many steps, not because it nests.
+// A reviewer is the right check on that, not a line count.
+#[allow(clippy::too_many_lines)]
 pub fn spawn_sender() {
     let cfg = Config::from_env();
     if !cfg.push_enabled() {

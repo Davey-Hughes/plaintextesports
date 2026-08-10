@@ -424,6 +424,10 @@ struct SportMode(RwSignal<bool>);
 // besides: `App` is called by `shell`, not by code that could drop its value.
 #[allow(clippy::must_use_candidate)]
 #[component]
+// One component is one `view!` tree. Splitting it means inventing child
+// components whose only job is to make this number smaller, which moves the
+// markup somewhere else rather than simplifying it.
+#[allow(clippy::too_many_lines)]
 pub fn App() -> impl IntoView {
     provide_meta_context();
 

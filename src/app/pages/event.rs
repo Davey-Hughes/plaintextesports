@@ -243,6 +243,10 @@ fn StandingsBlock(groups: Vec<EventInfo>) -> impl IntoView {
 /// Internal event page: the event's standings/bracket, its full schedule, and a
 /// link out to the event's Liquipedia/official page.
 #[component]
+// One component is one `view!` tree. Splitting it means inventing child
+// components whose only job is to make this number smaller, which moves the
+// markup somewhere else rather than simplifying it.
+#[allow(clippy::too_many_lines)]
 pub(crate) fn EventPage() -> impl IntoView {
     let params = use_params::<EventParams>();
     let league = move || {

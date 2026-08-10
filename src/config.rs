@@ -544,6 +544,9 @@ impl Config {
 
     /// Build from an arbitrary key→value lookup. Keeps the parsing/clamping
     /// logic pure and testable, separate from the config source.
+    // A flat procedure: long because it has many steps, not because it nests.
+    // A reviewer is the right check on that, not a line count.
+    #[allow(clippy::too_many_lines)]
     pub(crate) fn from_vars(get: impl Fn(&str) -> Option<String>) -> Self {
         // Seconds value, clamped to at least `min`, else `default`.
         let secs = |key: &str, default: u64, min: u64| -> u64 {

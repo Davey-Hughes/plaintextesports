@@ -682,6 +682,10 @@ fn prepare_days(
 }
 
 #[component]
+// One component is one `view!` tree. Splitting it means inventing child
+// components whose only job is to make this number smaller, which moves the
+// markup somewhere else rather than simplifying it.
+#[allow(clippy::too_many_lines)]
 pub(crate) fn ScheduleSection(
     resource: Resource<Result<ScheduleView, ServerFnError>>,
     games: RwSignal<HashSet<String>>,
@@ -1170,6 +1174,10 @@ pub(crate) struct UpNextSeen {
 const UPNEXT_CAP: usize = 2;
 
 #[component]
+// One component is one `view!` tree. Splitting it means inventing child
+// components whose only job is to make this number smaller, which moves the
+// markup somewhere else rather than simplifying it.
+#[allow(clippy::too_many_lines)]
 pub(crate) fn UpNextBar(day: DayGroup) -> impl IntoView {
     let anchor = format!("day-{}", day.day_key);
     // The bar hides when its target day scrolls into view (you're already there)
@@ -1467,6 +1475,10 @@ enum BarKind {
 }
 
 #[allow(clippy::too_many_arguments, clippy::fn_params_excessive_bools)]
+// One component is one `view!` tree. Splitting it means inventing child
+// components whose only job is to make this number smaller, which moves the
+// markup somewhere else rather than simplifying it.
+#[allow(clippy::too_many_lines)]
 pub(crate) fn render_day(
     d: DayGroup,
     is_first: bool,

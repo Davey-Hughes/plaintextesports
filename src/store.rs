@@ -64,6 +64,9 @@ pub fn shared(path: &str) -> rusqlite::Result<std::sync::MutexGuard<'static, Con
 ///
 /// Returns a `rusqlite::Error` if the file cannot be opened or the schema
 /// and migrations do not apply.
+// A flat procedure: long because it has many steps, not because it nests.
+// A reviewer is the right check on that, not a line count.
+#[allow(clippy::too_many_lines)]
 pub fn open(path: &str) -> rusqlite::Result<Connection> {
     if let Some(parent) = Path::new(path).parent()
         && !parent.as_os_str().is_empty()

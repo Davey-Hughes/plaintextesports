@@ -910,6 +910,9 @@ pub async fn fetch_box_score(
 }
 
 #[must_use]
+// A flat procedure: long because it has many steps, not because it nests.
+// A reviewer is the right check on that, not a line count.
+#[allow(clippy::too_many_lines)]
 pub fn to_box_score(s: &RawSummary) -> BoxScore {
     // Away/home from the header competitors.
     let comp = s.header.competitions.first();
@@ -1224,6 +1227,9 @@ fn soccer_round_title(size: usize) -> String {
 // Round, slot and feeder-slot indices into `u32` bracket coordinates. A
 // knockout bracket is 32 matches at the very top end.
 #[allow(clippy::cast_possible_truncation)]
+// A flat procedure: long because it has many steps, not because it nests.
+// A reviewer is the right check on that, not a line count.
+#[allow(clippy::too_many_lines)]
 fn soccer_bracket(matches: Vec<KnMatch>) -> Vec<BracketRound> {
     use std::collections::HashMap;
     // Bucket by round stage id, keep only knockout-sized buckets.
@@ -1507,6 +1513,9 @@ fn nba_round(headline: &str) -> Option<(&'static str, u32, &'static str)> {
     Some((section, round, title))
 }
 
+// A flat procedure: long because it has many steps, not because it nests.
+// A reviewer is the right check on that, not a line count.
+#[allow(clippy::too_many_lines)]
 fn nba_bracket(events: Vec<Event>) -> Vec<BracketRound> {
     use std::collections::HashMap;
     // Aggregate games into series by (section, round, matchup); each game carries

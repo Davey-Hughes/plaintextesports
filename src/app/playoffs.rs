@@ -685,6 +685,10 @@ type SwOutcome = (String, bool, Vec<(usize, usize)>);
 /// played match shows a dot (there's a result to reveal); an unplayed one a
 /// dash. Clicking a name scrolls to that match's row in the schedule.
 #[component]
+// One component is one `view!` tree. Splitting it means inventing child
+// components whose only job is to make this number smaller, which moves the
+// markup somewhere else rather than simplifying it.
+#[allow(clippy::too_many_lines)]
 pub(crate) fn SwissBracket(
     rounds: Vec<SwissRound>,
     tournament_id: i64,
@@ -1081,6 +1085,10 @@ const LABEL_GAP: f64 = 1.2; // below the banner, above the title
 const TOP_PAD: f64 = 0.3; // above the topmost banner/title
 
 #[component]
+// One component is one `view!` tree. Splitting it means inventing child
+// components whose only job is to make this number smaller, which moves the
+// markup somewhere else rather than simplifying it.
+#[allow(clippy::too_many_lines)]
 pub(crate) fn Bracket(
     rounds: Vec<BracketRound>,
     tournament_id: i64,

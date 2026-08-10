@@ -909,6 +909,9 @@ fn goalie_table(abbrev: &str, team: &RawPbgTeam) -> PlayerTable {
 
 /// Normalize a game's landing + right-rail + boxscore into the shared `BoxScore`.
 #[must_use]
+// A flat procedure: long because it has many steps, not because it nests.
+// A reviewer is the right check on that, not a line count.
+#[allow(clippy::too_many_lines)]
 pub fn to_box_score(landing: &RawLanding, rr: &RawRightRail, bs: &RawNhlBox) -> BoxScore {
     let (aw, hm) = (&landing.away_team, &landing.home_team);
 

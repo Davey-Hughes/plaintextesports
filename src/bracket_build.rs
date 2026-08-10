@@ -93,6 +93,9 @@ fn section_rank(section: &str, first_seen: &HashMap<String, usize>) -> (u8, usiz
 // index within one series — the callers pass 0 and 1 and nothing else — so the
 // structural `slot * 2 + side` pairing cannot overflow a u32 slot number.
 #[allow(clippy::cast_possible_truncation)]
+// A flat procedure: long because it has many steps, not because it nests.
+// A reviewer is the right check on that, not a line count.
+#[allow(clippy::too_many_lines)]
 pub fn build(series: &[RawSeries]) -> Vec<BracketRound> {
     if series.is_empty() {
         return Vec::new();

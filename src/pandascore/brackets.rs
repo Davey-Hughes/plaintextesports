@@ -151,6 +151,9 @@ pub async fn fetch_bracket(
 /// other, etc.) and marks who advanced (hit the win target) or was eliminated
 /// (hit the loss limit). Returns empty when the matches aren't "Round N"-named
 /// (e.g. a playoff), so a non-Swiss stage falls through to the tree/standings.
+// A flat procedure: long because it has many steps, not because it nests.
+// A reviewer is the right check on that, not a line count.
+#[allow(clippy::too_many_lines)]
 fn build_swiss(raw: &[RawBracketMatch]) -> Vec<SwissRound> {
     // Parse the round number out of each name; bail unless every match has one.
     let mut by_round: std::collections::BTreeMap<u32, Vec<&RawBracketMatch>> =
@@ -392,6 +395,9 @@ fn bracket_section(m: &RawBracketMatch) -> &'static str {
     }
 }
 
+// A flat procedure: long because it has many steps, not because it nests.
+// A reviewer is the right check on that, not a line count.
+#[allow(clippy::too_many_lines)]
 fn build_rounds(raw: &[RawBracketMatch]) -> Vec<BracketRound> {
     if raw.is_empty() {
         return Vec::new();

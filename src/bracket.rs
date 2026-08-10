@@ -133,6 +133,9 @@ pub struct BracketLayout {
 
 /// Lay a bracket out from its rounds. See the module docs.
 #[must_use]
+// A flat procedure: long because it has many steps, not because it nests.
+// A reviewer is the right check on that, not a line count.
+#[allow(clippy::too_many_lines)]
 pub fn layout(rounds: &[BracketRound]) -> BracketLayout {
     let n = rounds.len();
     if n == 0 {

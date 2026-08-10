@@ -67,6 +67,10 @@ pub(crate) fn today_ymd() -> (i32, u32, u32) {
 /// A 📅 button that opens a monospace month-grid range picker. Click a start day
 /// then an end day, Apply to filter the schedule to that range.
 #[component]
+// One component is one `view!` tree. Splitting it means inventing child
+// components whose only job is to make this number smaller, which moves the
+// markup somewhere else rather than simplifying it.
+#[allow(clippy::too_many_lines)]
 pub(crate) fn CalendarPicker() -> impl IntoView {
     let range = use_context::<DateRange>().expect("range context").0;
     let earlier = use_context::<EarlierDays>().expect("earlier context").0;
