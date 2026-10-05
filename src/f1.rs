@@ -618,17 +618,11 @@ pub async fn fetch_results(client: &reqwest::Client, season: i64, round: i64) ->
             });
         }
     };
-    push(
-        "Race",
-        race.map(|r| race_rows(&r.results)).unwrap_or_default(),
-    );
-    push(
-        "Sprint",
-        sprint.map(|s| race_rows(&s.sprint)).unwrap_or_default(),
-    );
+    push("Race", race.map_or_default(|r| race_rows(&r.results)));
+    push("Sprint", sprint.map_or_default(|s| race_rows(&s.sprint)));
     push(
         "Qualifying",
-        quali.map(|q| quali_rows(&q.qualifying)).unwrap_or_default(),
+        quali.map_or_default(|q| quali_rows(&q.qualifying)),
     );
     // Practice timing (FP1/FP2/FP3) isn't in Jolpica — pull it from OpenF1 and
     // append it under qualifying. Matched to the OpenF1 weekend by the race date,
@@ -702,16 +696,12 @@ fn driver_standing_rows(rs: &[RawDriverStanding]) -> Vec<F1StandingRow> {
             F1StandingRow {
                 pos: r.position.clone(),
                 name: driver_name(&r.driver),
-                detail: team.map(|c| c.name.clone()).unwrap_or_default(),
+                detail: team.map_or_default(|c| c.name.clone()),
                 points: r.points.clone(),
                 wins: r.wins.clone(),
                 flag: nationality_flag(&r.driver.nationality),
-                constructor_logo: team
-                    .map(|c| constructor_logo(&c.constructor_id))
-                    .unwrap_or_default(),
-                constructor_abbrev: team
-                    .map(|c| constructor_abbrev(&c.constructor_id))
-                    .unwrap_or_default(),
+                constructor_logo: team.map_or_default(|c| constructor_logo(&c.constructor_id)),
+                constructor_abbrev: team.map_or_default(|c| constructor_abbrev(&c.constructor_id)),
             }
         })
         .collect()
@@ -776,12 +766,8 @@ pub async fn fetch_standings(client: &reqwest::Client, season: i64, round: i64) 
         .unwrap_or(round);
     F1Standings {
         round: asof,
-        drivers: drivers
-            .map(|l| driver_standing_rows(&l.drivers))
-            .unwrap_or_default(),
-        constructors: constructors
-            .map(|l| constructor_standing_rows(&l.constructors))
-            .unwrap_or_default(),
+        drivers: drivers.map_or_default(|l| driver_standing_rows(&l.drivers)),
+        constructors: constructors.map_or_default(|l| constructor_standing_rows(&l.constructors)),
     }
 }
 

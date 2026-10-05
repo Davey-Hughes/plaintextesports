@@ -1004,7 +1004,7 @@ fn motogp_result_rows(rows: &[MotoResultRow]) -> Vec<crate::types::MotorResultRo
                 pos: clean_pos(&r.position),
                 name: r.driver.name(),
                 codriver: String::new(),
-                team: r.team.as_ref().map(|t| t.name.clone()).unwrap_or_default(),
+                team: r.team.as_ref().map_or_default(|t| t.name.clone()),
                 time,
                 flag: String::new(),
             }
@@ -1051,11 +1051,7 @@ fn wec_result_rows(rows: &[WecResultRow]) -> Vec<crate::types::MotorResultRow> {
             j += 1;
         }
         let head = &rows[i];
-        let team = head
-            .team
-            .as_ref()
-            .map(|t| t.name.clone())
-            .unwrap_or_default();
+        let team = head.team.as_ref().map_or_default(|t| t.name.clone());
         let time = head
             .gap
             .clone()

@@ -643,8 +643,7 @@ pub(crate) fn order_streams(streams: &mut [StreamView]) {
         .iter()
         .find(|s| s.main)
         .or_else(|| streams.iter().find(|s| s.official))
-        .map(|s| s.language.to_ascii_lowercase())
-        .unwrap_or_default();
+        .map_or_default(|s| s.language.to_ascii_lowercase());
     // Top viewer count per language, to rank the non-main language groups.
     let mut lang_top: std::collections::HashMap<String, u64> = std::collections::HashMap::new();
     for s in streams.iter() {

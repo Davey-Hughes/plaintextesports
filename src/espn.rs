@@ -347,7 +347,7 @@ fn venue_tz(city: &str, country: &str) -> Option<&'static str> {
     match country {
         // US venues read "City, State"; the state fixes the zone.
         "USA" => {
-            let state = city.rsplit(',').next().map(str::trim).unwrap_or_default();
+            let state = city.rsplit(',').next().map_or_default(str::trim);
             Some(match state {
                 "California" | "Washington" | "Oregon" | "Nevada" => "America/Los_Angeles",
                 "Arizona" => "America/Phoenix", // no DST
@@ -641,8 +641,7 @@ impl Entry {
         self.stats
             .iter()
             .find(|s| s.name == name)
-            .map(|s| s.display_value.clone())
-            .unwrap_or_default()
+            .map_or_default(|s| s.display_value.clone())
     }
 }
 

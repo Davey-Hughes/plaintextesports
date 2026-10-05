@@ -44,19 +44,15 @@ pub(crate) fn BoxScoreView(box_score: BoxScore, key: String) -> impl IntoView {
     // which side); taken from the line score's rows.
     let (away_name, home_name) = line
         .as_ref()
-        .map(|l| (l.away.team.clone(), l.home.team.clone()))
-        .unwrap_or_default();
+        .map_or_default(|l| (l.away.team.clone(), l.home.team.clone()));
     // Abbreviation -> full name, so the player-table titles can show the full team
     // name even for games cached (long) with the abbreviated title.
-    let team_names: Vec<(String, String)> = line
-        .as_ref()
-        .map(|l| {
-            vec![
-                (l.away.abbrev.clone(), l.away.team.clone()),
-                (l.home.abbrev.clone(), l.home.team.clone()),
-            ]
-        })
-        .unwrap_or_default();
+    let team_names: Vec<(String, String)> = line.as_ref().map_or_default(|l| {
+        vec![
+            (l.away.abbrev.clone(), l.away.team.clone()),
+            (l.home.abbrev.clone(), l.home.team.clone()),
+        ]
+    });
     view! {
         <section class="detail-section boxscore">
             <div class="section-head">

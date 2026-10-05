@@ -15,6 +15,13 @@ RUN npm install -g sass
 RUN curl --proto '=https' --tlsv1.3 -LsSf https://github.com/leptos-rs/cargo-leptos/releases/download/v0.3.7/cargo-leptos-installer.sh | sh
 
 WORKDIR /work
+
+# The base image's nightly floats; rust-toolchain.toml pins a dated one (the same
+# toolchain CI lints with). Install it from the pin alone, in its own layer, so it
+# is cached until the pin changes rather than re-downloaded on every build.
+COPY rust-toolchain.toml .
+RUN rustup show
+
 COPY . .
 
 # Compile with BuildKit cache mounts: the cargo registry, git deps, and the

@@ -504,8 +504,7 @@ fn build_raw_series(
         .find(|g| g.game_pk == game_pk)
         .map(|g| (g.series_game_number, g.games_in_series))
         .filter(|&(n, total)| n > 0 && total > 0)
-        .map(|(n, total)| format!("Game {n} of {total}"))
-        .unwrap_or_default();
+        .map_or_default(|(n, total)| format!("Game {n} of {total}"));
 
     RawSeries {
         games: games_out,
@@ -529,8 +528,7 @@ pub fn format_series(
         .map(|g| {
             let labels = g
                 .begin_at
-                .map(|utc| fmt_labels(utc, g.venue_tz.as_deref()))
-                .unwrap_or_default();
+                .map_or_default(|utc| fmt_labels(utc, g.venue_tz.as_deref()));
             SeriesGame {
                 day_label: labels.day,
                 clock_label: labels.clock,
@@ -1160,7 +1158,7 @@ pub async fn fetch_box_score(
 // ---- Normalizer helpers ---------------------------------------------------
 
 fn i(n: Option<i64>) -> String {
-    n.map(|v| v.to_string()).unwrap_or_default()
+    n.map_or_default(|v| v.to_string())
 }
 
 fn batting_table(t: &RawBsTeam) -> PlayerTable {
@@ -1635,7 +1633,7 @@ mod tests {
         SeriesLabels {
             day: d.format("%a, %b %-d").to_string(),
             clock: d.format("%H:%M").to_string(),
-            venue: venue_tz.map(|tz| format!("@{tz}")).unwrap_or_default(),
+            venue: venue_tz.map_or_default(|tz| format!("@{tz}")),
         }
     }
 

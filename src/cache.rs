@@ -1011,15 +1011,14 @@ pub async fn mlb_series(
                 // Only worth swapping to when it differs from the viewer's clock.
                 vlocal.naive_local() != local.naive_local()
             })
-            .map(|vlocal| {
+            .map_or_default(|vlocal| {
                 format!(
                     "{} · {} {}",
                     short_day_label(vlocal),
                     time_label(vlocal, hour24),
                     vlocal.format("%Z"),
                 )
-            })
-            .unwrap_or_default();
+            });
         // Suffix the viewer's tz abbreviation onto the local time *only* when a
         // venue swap is available, so the two states are symmetric (each names its
         // zone) without cluttering rows that have no venue toggle.
@@ -3283,7 +3282,7 @@ pub fn to_view(m: &NormalizedMatch, tz: Tz, now: DateTime<Utc>, hour24: bool) ->
         m.venue_tz
             .as_deref()
             .and_then(|id| id.parse::<Tz>().ok())
-            .map(|vtz| {
+            .map_or_default(|vtz| {
                 let vlocal = m.begin_at.with_timezone(&vtz);
                 format!(
                     "{} · {} {}",
@@ -3292,7 +3291,6 @@ pub fn to_view(m: &NormalizedMatch, tz: Tz, now: DateTime<Utc>, hour24: bool) ->
                     vlocal.format("%Z")
                 )
             })
-            .unwrap_or_default()
     };
 
     MatchView {
@@ -3310,7 +3308,7 @@ pub fn to_view(m: &NormalizedMatch, tz: Tz, now: DateTime<Utc>, hour24: bool) ->
         venue_label,
         venue_name: m.venue_name.clone(),
         venue_location: m.venue_location.clone(),
-        best_of: m.best_of.map(|n| format!("Bo{n}")).unwrap_or_default(),
+        best_of: m.best_of.map_or_default(|n| format!("Bo{n}")),
         team_a,
         team_b,
         league_url: m.league_url.clone().unwrap_or_default(),
@@ -3603,26 +3601,17 @@ fn group_by(views: Vec<MatchView>, tz: Tz, chain: bool) -> Vec<DayGroup> {
             day.day_label = day_span_label(to_local(lo), to_local(hi));
         }
         for lg in &mut day.leagues {
-            let first = lg
-                .matches
-                .first()
-                .map(|m| m.best_of.clone())
-                .unwrap_or_default();
+            let first = lg.matches.first().map_or_default(|m| m.best_of.clone());
             let uniform = !first.is_empty() && lg.matches.iter().all(|m| m.best_of == first);
             lg.bo = uniform.then_some(first);
             // Resolve the event link once per league-group from its first row,
             // rather than for every row in `to_view` (only this value is ever
             // used — see `MatchView::league_url`).
-            lg.event_url = lg
-                .matches
-                .first()
-                .map(|m| {
-                    let begin =
-                        DateTime::from_timestamp_millis(m.begin_at_ms).unwrap_or_else(Utc::now);
-                    let official = (!m.league_url.is_empty()).then_some(m.league_url.as_str());
-                    resolved_event_url(m.sport, &m.league, begin, official)
-                })
-                .unwrap_or_default();
+            lg.event_url = lg.matches.first().map_or_default(|m| {
+                let begin = DateTime::from_timestamp_millis(m.begin_at_ms).unwrap_or_else(Utc::now);
+                let official = (!m.league_url.is_empty()).then_some(m.league_url.as_str());
+                resolved_event_url(m.sport, &m.league, begin, official)
+            });
         }
         // Keep each sport's events together within the day (CS2, then LoL).
         // Stable sort preserves the time order within a sport.
@@ -4874,8 +4863,7 @@ async fn fetch_event(tournament_id: i64, sport: Sport) -> EventInfo {
             .read()
             .unwrap_or_else(PoisonError::into_inner)
             .get(&tournament_id)
-            .map(|c| c.info.clone())
-            .unwrap_or_default();
+            .map_or_default(|c| c.info.clone());
     };
     // Stage meta (name + whether it's an elimination bracket) and standings are
     // independent, so fetch them together (best-effort; a failure just yields an

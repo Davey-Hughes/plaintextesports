@@ -90,7 +90,7 @@ pub async fn resolve_event(
         .json()
         .await?;
 
-    let hits = resp.query.map(|q| q.search).unwrap_or_default();
+    let hits = resp.query.map_or_default(|q| q.search);
     let year = year.to_string();
     let wanted = name_tokens(league);
     Ok(hits

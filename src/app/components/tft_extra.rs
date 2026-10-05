@@ -36,7 +36,7 @@ fn stream_li(s: &StreamView, gutter: String, col: &'static str) -> impl IntoView
             </a>
             {live
                 .then(|| {
-                    let v = viewers.map(|n| format!(" {}", fmt_viewers(n))).unwrap_or_default();
+                    let v = viewers.map_or_default(|n| format!(" {}", fmt_viewers(n)));
                     view! { <span class="stream-live">"●"{v}</span> }
                 })}
         </li>

@@ -99,13 +99,12 @@ pub fn sheet_url(t: &rsc::CompeteTournament) -> String {
     t.stages
         .iter()
         .find(|s| !s.sheet_key.is_empty())
-        .map(|s| {
+        .map_or_default(|s| {
             format!(
                 "https://docs.google.com/spreadsheets/d/e/{}/pubhtml",
                 s.sheet_key
             )
         })
-        .unwrap_or_default()
 }
 
 /// Human date-range label for a tier-3 row, e.g. "May 2 – 10" or "May 23 – Jun 7".
@@ -185,8 +184,7 @@ fn prize_of(placements: &[crate::types::TftPlacement], who: &str) -> String {
     placements
         .iter()
         .find(|p| p.participant == who)
-        .map(|p| p.prize.clone())
-        .unwrap_or_default()
+        .map_or_default(|p| p.prize.clone())
 }
 
 /// Rework the CompeteTFT leaderboard panels for display: split the sheet's

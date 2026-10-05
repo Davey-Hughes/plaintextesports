@@ -207,10 +207,10 @@ fn session_rows(
                 .cloned()
                 .unwrap_or_else(|| (format!("#{}", r.driver_number), String::new()));
             F1ResultRow {
-                pos: r.position.map(|p| p.to_string()).unwrap_or_default(),
+                pos: r.position.map_or_default(|p| p.to_string()),
                 driver,
                 constructor,
-                detail: r.duration.as_f64().map(fmt_laptime).unwrap_or_default(),
+                detail: r.duration.as_f64().map_or_default(fmt_laptime),
                 // Practice comes from OpenF1 (team names, not Ergast ids); flags +
                 // constructor logos are only wired for the race/quali results.
                 flag: String::new(),

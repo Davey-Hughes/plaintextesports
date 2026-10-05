@@ -201,8 +201,7 @@ pub(crate) fn MatchDetailPage() -> impl IntoView {
         params
             .get()
             .ok()
-            .map(|p| format!("{}-{}", p.sport, p.id))
-            .unwrap_or_default()
+            .map_or_default(|p| format!("{}-{}", p.sport, p.id))
     };
     let hour24 = use_context::<RwSignal<bool>>().expect("hour24 context");
     let tz = use_context::<RwSignal<String>>().expect("tz context");
@@ -805,7 +804,7 @@ fn stream_rows(streams: Vec<StreamView>, region_class: &'static str) -> Vec<AnyV
                     <span class="stream-lang">{gutter}</span>
                     {name}
                     {live.then(|| {
-                        let v = viewers.map(|n| format!(" {}", fmt_viewers(n))).unwrap_or_default();
+                        let v = viewers.map_or_default(|n| format!(" {}", fmt_viewers(n)));
                         view! { <span class="stream-live">"●"{v}</span> }
                     })}
                 </li>
@@ -860,7 +859,7 @@ fn broadcast_list(title: &'static str, streams: Vec<StreamView>) -> AnyView {
                     {name}
                     {(!tags.is_empty()).then(|| view! { <span class="stream-tags">{tags}</span> })}
                     {live.then(|| {
-                        let v = viewers.map(|n| format!(" {}", fmt_viewers(n))).unwrap_or_default();
+                        let v = viewers.map_or_default(|n| format!(" {}", fmt_viewers(n)));
                         view! { <span class="stream-live">"●"{v}</span> }
                     })}
                 </li>

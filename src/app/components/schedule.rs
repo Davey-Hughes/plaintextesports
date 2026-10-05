@@ -522,15 +522,12 @@ fn chain_single_event_days(days: Vec<DayGroup>) -> Vec<DayGroup> {
     all.sort_by_key(|(_, _, m)| m.begin_at_ms);
 
     let mk_day = |run: Vec<(String, String, MatchView)>| -> DayGroup {
-        let day_key = run.first().map(|(k, _, _)| k.clone()).unwrap_or_default();
-        let first_label = run.first().map(|(_, l, _)| l.clone()).unwrap_or_default();
-        let last_label = run.last().map(|(_, l, _)| l.clone()).unwrap_or_default();
+        let day_key = run.first().map_or_default(|(k, _, _)| k.clone());
+        let first_label = run.first().map_or_default(|(_, l, _)| l.clone());
+        let last_label = run.last().map_or_default(|(_, l, _)| l.clone());
         let matches: Vec<MatchView> = run.into_iter().map(|(_, _, m)| m).collect();
         let bo = {
-            let first = matches
-                .first()
-                .map(|m| m.best_of.clone())
-                .unwrap_or_default();
+            let first = matches.first().map_or_default(|m| m.best_of.clone());
             (!first.is_empty() && matches.iter().all(|m| m.best_of == first)).then_some(first)
         };
         DayGroup {
@@ -655,7 +652,7 @@ fn prepare_days(
                 .any(|m| matches!(m.status, MatchStatus::Upcoming))
         })
         .map(|lg| {
-            let sp = lg.matches.first().map(|m| m.sport).unwrap_or_default();
+            let sp = lg.matches.first().map_or_default(|m| m.sport);
             (sp, lg.league.clone(), lg.series_name.clone())
         })
         .collect();
@@ -802,8 +799,7 @@ pub(crate) fn ScheduleSection(
                         .filter(|(_, (_, _, begun))| *begun)
                         .max_by_key(|(_, (_, t, _))| *t)
                         .or_else(|| stages.iter().min_by_key(|(_, (_, t, _))| *t))
-                        .map(|(ev_name, _)| ev_name.clone())
-                        .unwrap_or_default()
+                        .map_or_default(|(ev_name, _)| ev_name.clone())
                 } else {
                     String::new()
                 }
@@ -885,8 +881,7 @@ pub(crate) fn ScheduleSection(
                         // until you clear it (and the row stays shown while selected).
                         let sel = leagues.get();
                         let sel_sports = use_context::<SelectedSports>()
-                            .map(|s| s.0.get())
-                            .unwrap_or_default();
+                            .map_or_default(|s| s.0.get());
                         let chip_list = chips_with_selected(&available, &sel, &sel_sports);
                         show_chips = show_chips || !sel.is_empty();
                         fetched_label = Some(s.fetched_label.clone());
@@ -1395,7 +1390,7 @@ pub(crate) fn render_schedule(s: ScheduleView, push: bool, windowed: bool) -> im
                 .any(|m| matches!(m.status, MatchStatus::Upcoming))
         })
         .map(|lg| {
-            let sp = lg.matches.first().map(|m| m.sport).unwrap_or_default();
+            let sp = lg.matches.first().map_or_default(|m| m.sport);
             (sp, lg.league.clone(), lg.series_name.clone())
         })
         .collect();
@@ -1498,7 +1493,7 @@ pub(crate) fn render_day(
             let league_name = lg.league.clone();
             // The group's sport (a league is single-sport) scopes the event
             // URL and the subscribe key. Read from any of its matches.
-            let sport = lg.matches.first().map(|m| m.sport).unwrap_or_default();
+            let sport = lg.matches.first().map_or_default(|m| m.sport);
             // Title the group with the full event name (league + edition,
             // e.g. "IEM Katowice"); the subscribe key stays the short
             // league name, while the full name keys the event link.

@@ -279,8 +279,8 @@ pub fn layout(rounds: &[BracketRound]) -> BracketLayout {
     // both bracket finals. Skip winner→loser drop-downs (cross-section into lower).
     let mut edges = Vec::new();
     for r in 0..n {
-        for i in 0..rounds[r].matches.len() {
-            for &(fr, fi) in &rounds[r].matches[i].feeders {
+        for (i, m) in rounds[r].matches.iter().enumerate() {
+            for &(fr, fi) in &m.feeders {
                 if section[r] == "final" || section[fr] == section[r] {
                     edges.push(Edge {
                         from: (fr, fi),

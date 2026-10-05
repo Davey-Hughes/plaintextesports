@@ -230,7 +230,7 @@ pub(crate) struct DayParams {
 #[component]
 pub(crate) fn DayPage() -> impl IntoView {
     let params = use_params::<DayParams>();
-    let date = move || params.get().ok().map(|p| p.date).unwrap_or_default();
+    let date = move || params.get().ok().map_or_default(|p| p.date);
     let games = use_context::<Games>().expect("games context").0;
     let leagues = use_context::<Leagues>().expect("leagues context").0;
     let hour24 = use_context::<RwSignal<bool>>().expect("hour24 context");

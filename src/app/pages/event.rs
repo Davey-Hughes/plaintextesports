@@ -249,18 +249,12 @@ fn StandingsBlock(groups: Vec<EventInfo>) -> impl IntoView {
 #[allow(clippy::too_many_lines)]
 pub(crate) fn EventPage() -> impl IntoView {
     let params = use_params::<EventParams>();
-    let league = move || {
-        params
-            .get()
-            .ok()
-            .map(|p| dec_segment(&p.league))
-            .unwrap_or_default()
-    };
+    let league = move || params.get().ok().map_or_default(|p| dec_segment(&p.league));
     // The sport slug scopes every lookup below: two games can run an edition
     // under one name (CS2 and LoL both play an "Esports World Cup 2026"), and the
     // name alone would put one game's matches, stages and streams on the other's
     // page. Unknown/absent slugs fall through to a name-only match server-side.
-    let sport_slug = move || params.get().ok().map(|p| p.sport).unwrap_or_default();
+    let sport_slug = move || params.get().ok().map_or_default(|p| p.sport);
     let hour24 = use_context::<RwSignal<bool>>().expect("hour24 context");
     let tz = use_context::<RwSignal<String>>().expect("tz context");
     // The earlier/later expanders + sport mode drive the windowed view of a

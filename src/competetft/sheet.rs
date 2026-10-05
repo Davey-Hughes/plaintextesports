@@ -164,9 +164,7 @@ pub fn parse_leaderboard(rows: &[Vec<String>], _finals: bool) -> Leaderboard {
             .map(|v| if v == "-" { String::new() } else { v })
             .collect();
         games.resize(game_count, String::new());
-        let (prize, status) = prize_idx
-            .map(|i| prize_or_status(&get(i)))
-            .unwrap_or_default();
+        let (prize, status) = prize_idx.map_or_default(|i| prize_or_status(&get(i)));
         out_rows.push(TftStandingRow {
             rank: rank.clone(),
             participant: name.clone(),
@@ -365,10 +363,7 @@ pub fn parse_lobbies(rows: &[Vec<String>], day3: bool) -> Vec<TftLobbyRound> {
                 if cell.is_empty() {
                     continue;
                 }
-                let placement = r
-                    .get(pts_col)
-                    .map(|s| s.trim().to_string())
-                    .unwrap_or_default();
+                let placement = r.get(pts_col).map_or_default(|s| s.trim().to_string());
                 l.players.push(TftLobbyEntry {
                     player: cell.to_string(),
                     placement,

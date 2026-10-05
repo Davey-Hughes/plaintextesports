@@ -271,9 +271,8 @@ fn between(blob: &str, start: &str, end: char) -> Option<String> {
 pub fn parse_tournament(id: &str, html: &str) -> CompeteTournament {
     let blob = rsc_blob(html);
     let name = between(&blob, "Compete TFT | ", '"').unwrap_or_default();
-    let set_label = between(&blob, "\"children\":\"Set ", '"')
-        .map(|s| format!("Set {s}"))
-        .unwrap_or_default();
+    let set_label =
+        between(&blob, "\"children\":\"Set ", '"').map_or_default(|s| format!("Set {s}"));
 
     // Status + date range are rendered display text (the header pill + date),
     // not in the RSC blob. The status sits in the first `tt_uppercase` div; the

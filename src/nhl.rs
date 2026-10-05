@@ -890,8 +890,7 @@ fn goalie_table(abbrev: &str, team: &RawPbgTeam) -> PlayerTable {
             let (sv, sa) = g
                 .save_shots_against
                 .split_once('/')
-                .map(|(a, b)| (a.to_string(), b.to_string()))
-                .unwrap_or_default();
+                .map_or_default(|(a, b)| (a.to_string(), b.to_string()));
             PlayerRow {
                 name: g.name.default.clone(),
                 note: String::new(),
@@ -932,8 +931,8 @@ pub fn to_box_score(landing: &RawLanding, rr: &RawRightRail, bs: &RawNhlBox) -> 
         },
         StatPair {
             label: "SOG".into(),
-            away: sog.map(|t| val_str(&t.away_value)).unwrap_or_default(),
-            home: sog.map(|t| val_str(&t.home_value)).unwrap_or_default(),
+            away: sog.map_or_default(|t| val_str(&t.away_value)),
+            home: sog.map_or_default(|t| val_str(&t.home_value)),
             away_share: None,
         },
     ];

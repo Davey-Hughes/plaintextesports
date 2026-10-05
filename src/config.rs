@@ -665,7 +665,7 @@ impl Config {
             !matches!(v.trim().to_ascii_lowercase().as_str(), "0" | "false" | "no")
         });
 
-        let trimmed = |k: &str| get(k).map(|s| s.trim().to_string()).unwrap_or_default();
+        let trimmed = |k: &str| get(k).map_or_default(|s| s.trim().to_string());
         let vapid_public = trimmed("VAPID_PUBLIC_KEY");
         let vapid_private = trimmed("VAPID_PRIVATE_KEY");
         let vapid_subject = trimmed("VAPID_SUBJECT");

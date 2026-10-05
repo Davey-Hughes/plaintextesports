@@ -20,19 +20,13 @@ pub(crate) struct TeamParams {
 #[component]
 pub(crate) fn TeamPage() -> impl IntoView {
     let params = use_params::<TeamParams>();
-    let team = move || {
-        params
-            .get()
-            .ok()
-            .map(|p| dec_segment(&p.name))
-            .unwrap_or_default()
-    };
+    let team = move || params.get().ok().map_or_default(|p| dec_segment(&p.name));
     let hour24 = use_context::<RwSignal<bool>>().expect("hour24 context");
     let tz = use_context::<RwSignal<String>>().expect("tz context");
     let earlier = use_context::<EarlierDays>().expect("earlier context").0;
     let later = use_context::<LaterDays>().expect("later context").0;
     let sport_mode = use_context::<SportMode>().expect("sport mode context").0;
-    let sport_slug = move || params.get().ok().map(|p| p.sport).unwrap_or_default();
+    let sport_slug = move || params.get().ok().map_or_default(|p| p.sport);
     let schedule = Resource::new(
         move || (sport_slug(), team(), tz.get(), hour24.get()),
         |(sp, t, z, h)| async move { get_team_schedule(sp, t, z, h).await },

@@ -515,21 +515,18 @@ pub(crate) fn initial_lead_ms() -> i64 {
 /// still applied by `FilterUrlSync` after hydration.
 #[cfg(any(feature = "ssr", feature = "hydrate"))]
 pub(crate) fn parse_filter_param(query: &str, key: &str) -> HashSet<String> {
-    query_param(query, key)
-        .map(|v| {
-            v.split(',')
-                .filter(|p| !p.is_empty())
-                .map(dec_segment)
-                .collect()
-        })
-        .unwrap_or_default()
+    query_param(query, key).map_or_default(|v| {
+        v.split(',')
+            .filter(|p| !p.is_empty())
+            .map(dec_segment)
+            .collect()
+    })
 }
 
 #[cfg(feature = "ssr")]
 pub(crate) fn initial_filter(key: &str) -> HashSet<String> {
     use_context::<http::request::Parts>()
-        .map(|parts| parse_filter_param(parts.uri.query().unwrap_or_default(), key))
-        .unwrap_or_default()
+        .map_or_default(|parts| parse_filter_param(parts.uri.query().unwrap_or_default(), key))
 }
 
 #[cfg(feature = "hydrate")]

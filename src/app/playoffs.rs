@@ -776,7 +776,7 @@ pub(crate) fn SwissBracket(
     let grid_sv = StoredValue::new(grid.clone());
     let eff = Memo::new(move |_| {
         let g = global.is_some_and(|s| s.get()) || page.is_some_and(|p| p.get());
-        let set = sections.map(|s| s.get()).unwrap_or_default();
+        let set = sections.map_or_default(|s| s.get());
         compute_effective(&grid, &set, g)
     });
     // The reveal "end" for this bracket's keys (the event's last match).
@@ -863,7 +863,7 @@ pub(crate) fn SwissBracket(
             let score_view = move |s: Option<i64>| -> leptos::prelude::AnyView {
                 if scores {
                     view! {
-                        <span class="sw-score">{s.map(|v| v.to_string()).unwrap_or_default()}</span>
+                        <span class="sw-score">{s.map_or_default(|v| v.to_string())}</span>
                     }
                     .into_any()
                 } else if max >= 2 {
@@ -1182,7 +1182,7 @@ pub(crate) fn Bracket(
     let grid_sv = StoredValue::new(grid.clone());
     let eff = Memo::new(move |_| {
         let g = global.is_some_and(|s| s.get()) || page.is_some_and(|p| p.get());
-        let set = sections.map(|s| s.get()).unwrap_or_default();
+        let set = sections.map_or_default(|s| s.get());
         compute_effective(&grid, &set, g)
     });
     // The reveal "end" for this bracket's keys (the event's last match).
@@ -1327,8 +1327,7 @@ pub(crate) fn Bracket(
                         if is_real(own) {
                             own.to_string()
                         } else {
-                            f.map(|(fr, fi)| winners_sv.with_value(|w| w[fr][fi].clone()))
-                                .unwrap_or_default()
+                            f.map_or_default(|(fr, fi)| winners_sv.with_value(|w| w[fr][fi].clone()))
                         }
                     };
                     let label_a = label_for(&ta, f0);
@@ -1400,7 +1399,7 @@ pub(crate) fn Bracket(
                                         if scores {
                                             view! {
                                                 <span class="bk-score">
-                                                    {s.map(|v| v.to_string()).unwrap_or_default()}
+                                                    {s.map_or_default(|v| v.to_string())}
                                                 </span>
                                             }
                                             .into_any()
