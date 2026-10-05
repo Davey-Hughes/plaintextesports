@@ -778,6 +778,9 @@ struct RawAssist {
 struct RawStar {
     #[serde(default)]
     star: i64,
+    /// Keys a goalie star to its box-score row, which carries the saves.
+    #[serde(default, rename = "playerId")]
+    player_id: i64,
     #[serde(default)]
     name: NameDefault,
     #[serde(default, rename = "teamAbbrev")]
@@ -788,8 +791,8 @@ struct RawStar {
     goals: i64,
     #[serde(default)]
     assists: i64,
-    #[serde(default)]
-    saves: i64,
+    /// A goalie star's only stat line here besides GAA — the NHL sends no saves
+    /// with a star, so those come from the box score (see `to_box_score`).
     #[serde(default, rename = "savePctg")]
     save_pctg: f64,
 }
@@ -877,6 +880,8 @@ struct RawSkater {
 }
 #[derive(Deserialize, Default)]
 struct RawGoalie {
+    #[serde(default, rename = "playerId")]
+    player_id: i64,
     #[serde(default)]
     name: NameDefault,
     #[serde(default, rename = "saveShotsAgainst")]
@@ -1098,7 +1103,20 @@ pub fn to_box_score(landing: &RawLanding, rr: &RawRightRail, bs: &RawNhlBox) -> 
         .iter()
         .map(|s| {
             let line = if s.position == "G" {
-                format!("{} SV, {:.3} SV%", s.saves, s.save_pctg)
+                // The star itself carries no saves; its box-score row does.
+                let saves = bs
+                    .players
+                    .away
+                    .goalies
+                    .iter()
+                    .chain(&bs.players.home.goalies)
+                    .find(|g| g.player_id == s.player_id)
+                    .and_then(|g| g.save_shots_against.split_once('/'))
+                    .map(|(sv, _)| sv);
+                match saves {
+                    Some(sv) => format!("{sv} SV, {:.3} SV%", s.save_pctg),
+                    None => format!("{:.3} SV%", s.save_pctg),
+                }
             } else {
                 format!("{}G {}A", s.goals, s.assists)
             };
@@ -1163,6 +1181,33 @@ pub fn to_box_score(landing: &RawLanding, rr: &RawRightRail, bs: &RawNhlBox) -> 
 #[cfg(all(test, feature = "ssr"))]
 mod boxscore_tests {
     use super::*;
+
+    /// UTA @ NYR, 2026-10-04 (game 2026020036), trimmed to the fields that matter:
+    /// the landing's goalie star carries `savePctg` but no saves — the NHL never
+    /// sends them there — so the count has to come from the box score's goalie row.
+    #[test]
+    fn a_goalie_star_shows_saves_from_the_box_score() {
+        let landing: RawLanding = serde_json::from_str(
+            r#"{"summary":{"threeStars":[{"star":3,"playerId":8478048,
+                "teamAbbrev":"NYR","position":"G","name":{"default":"I. Shesterkin"},
+                "goalsAgainstAverage":2.0,"savePctg":0.933}]}}"#,
+        )
+        .unwrap();
+        let bs: RawNhlBox = serde_json::from_str(
+            r#"{"playerByGameStats":{"homeTeam":{"goalies":[
+                {"playerId":8478048,"name":{"default":"I. Shesterkin"},
+                 "saveShotsAgainst":"28/30","goalsAgainst":2,"toi":"59:58"},
+                {"playerId":8482193,"name":{"default":"D. Garand"},
+                 "saveShotsAgainst":"0/0","goalsAgainst":0,"toi":"00:00"}]}}}"#,
+        )
+        .unwrap();
+        let out = to_box_score(&landing, &RawRightRail::default(), &bs);
+        assert_eq!(out.leaders[0].line, "28 SV, 0.933 SV%");
+
+        // A star the box score doesn't list: no count, rather than a made-up 0.
+        let none = to_box_score(&landing, &RawRightRail::default(), &RawNhlBox::default());
+        assert_eq!(none.leaders[0].line, "0.933 SV%");
+    }
 
     #[test]
     fn nhl_to_box_score_maps_line_stats_stars_and_players() {
