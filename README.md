@@ -89,12 +89,12 @@ over running the hydrate command by hand: cargo-leptos gives that build its own
 `target/front` dir, whereas running it directly reuses `target/` and forces a
 full rebuild every time you switch feature sets.
 
-Seven `#[ignore]`d live smoke tests hit the real upstreams. They stay out of CI
+Nine `#[ignore]`d live smoke tests hit the real upstreams. They stay out of CI
 so network flakiness can never block a merge — run them by hand when touching a
 fetcher:
 
 ```sh
-cargo test --lib --features ssr -- --ignored --nocapture          # all seven
+cargo test --lib --features ssr -- --ignored --nocapture          # all nine
 cargo test --lib --features ssr mlb_live_bracket -- --ignored --nocapture
 ```
 

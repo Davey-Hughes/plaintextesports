@@ -545,12 +545,13 @@ fn to_match(e: Event, lg: &EspnLeague) -> Option<NormalizedMatch> {
     Some(m)
 }
 
-/// Fetch every game of `lg` in the inclusive UTC-day range, normalized. ESPN's
-/// scoreboard accepts a `YYYYMMDD-YYYYMMDD` range, so the whole window is one call.
+/// Fetch every game of `lg` in the inclusive UTC-day range, normalized — one
+/// scoreboard request per calendar month the range touches (see
+/// [`fetch_scoreboard_events`]).
 ///
 /// # Errors
 ///
-/// Returns a `reqwest::Error` if the request fails or the response body
+/// Returns a `reqwest::Error` if any month's request fails or its response body
 /// does not deserialize into the expected shape.
 pub async fn fetch_schedule(
     client: &reqwest::Client,
@@ -558,29 +559,8 @@ pub async fn fetch_schedule(
     start: NaiveDate,
     end: NaiveDate,
 ) -> Result<Vec<NormalizedMatch>, reqwest::Error> {
-    let url = format!(
-        "{SITE}/{}/{}/scoreboard?dates={}-{}&limit=500",
-        lg.espn_sport,
-        lg.league,
-        start.format("%Y%m%d"),
-        end.format("%Y%m%d"),
-    );
-    let resp: Scoreboard = client
-        .get(&url)
-        .send()
-        .await?
-        .error_for_status()?
-        .json()
-        .await?;
-    Ok(resp
-        .events
-        .into_iter()
-        .filter_map(|e| to_match(e, lg))
-        .filter(|m| {
-            let d = m.begin_at.date_naive();
-            d >= start && d <= end
-        })
-        .collect())
+    let events = fetch_scoreboard_events(client, lg.espn_sport, lg.league, start, end).await?;
+    Ok(events.into_iter().filter_map(|e| to_match(e, lg)).collect())
 }
 
 // ----- Standings -------------------------------------------------------------
@@ -1067,20 +1047,30 @@ pub fn to_box_score(s: &RawSummary) -> BoxScore {
 // `winner`, and — for the series sports — an embedded `series` games-won summary.
 // These builders turn that into the shared `Vec<BracketRound>` the renderer draws.
 
-/// Fetch a league's scoreboard over the inclusive UTC-day range as raw events
-/// (parsed but not normalized) — the input to the bracket builders.
-async fn fetch_scoreboard_events(
+/// The `YYYYMM` scoreboard `dates` values that cover the inclusive range, in order.
+fn scoreboard_months(start: NaiveDate, end: NaiveDate) -> Vec<String> {
+    let mut out = Vec::new();
+    if start > end {
+        return out;
+    }
+    let (mut y, mut m) = (start.year(), start.month());
+    while (y, m) <= (end.year(), end.month()) {
+        out.push(format!("{y:04}{m:02}"));
+        (y, m) = if m == 12 { (y + 1, 1) } else { (y, m + 1) };
+    }
+    out
+}
+
+/// One scoreboard request: every event ESPN files under `dates` (`YYYY`, `YYYYMM`
+/// or `YYYYMMDD`, in ESPN's own US-Eastern days). `limit=500` matters — the
+/// default is 100, which silently truncates a busy NBA month (~240 games).
+async fn fetch_scoreboard_page(
     client: &reqwest::Client,
     espn_sport: &str,
     league: &str,
-    start: NaiveDate,
-    end: NaiveDate,
+    dates: &str,
 ) -> Result<Vec<Event>, reqwest::Error> {
-    let url = format!(
-        "{SITE}/{espn_sport}/{league}/scoreboard?dates={}-{}&limit=500",
-        start.format("%Y%m%d"),
-        end.format("%Y%m%d"),
-    );
+    let url = format!("{SITE}/{espn_sport}/{league}/scoreboard?dates={dates}&limit=500");
     let resp: Scoreboard = client
         .get(&url)
         .timeout(Duration::from_secs(15))
@@ -1090,6 +1080,36 @@ async fn fetch_scoreboard_events(
         .json()
         .await?;
     Ok(resp.events)
+}
+
+/// Fetch a league's scoreboard over the inclusive UTC-day range as raw events
+/// (parsed but not normalized) — the input to the schedule and bracket builders.
+///
+/// One request per calendar month, concurrently. ESPN used to take the whole
+/// range as `dates=YYYYMMDD-YYYYMMDD`, but by October 2026 it answered every
+/// range with a 400 ("Failed to get events endpoint.") while still serving
+/// single days, months and years. All months must succeed, as the one range call
+/// had to: a partial month set would build a bracket missing rounds. Events are
+/// then cut to the range by UTC day, since a month is coarser than the range.
+async fn fetch_scoreboard_events(
+    client: &reqwest::Client,
+    espn_sport: &str,
+    league: &str,
+    start: NaiveDate,
+    end: NaiveDate,
+) -> Result<Vec<Event>, reqwest::Error> {
+    let months = scoreboard_months(start, end);
+    let pages = futures::future::try_join_all(
+        months
+            .iter()
+            .map(|m| fetch_scoreboard_page(client, espn_sport, league, m)),
+    )
+    .await?;
+    Ok(pages
+        .into_iter()
+        .flatten()
+        .filter(|e| parse_date(&e.date).is_some_and(|d| (start..=end).contains(&d.date_naive())))
+        .collect())
 }
 
 /// A "… N Winner"/"… N Loser" feeder placeholder → `(feeder index 1-based, is the
@@ -1154,9 +1174,9 @@ pub async fn fetch_soccer_bracket(
     lg: &EspnLeague,
     year: i32,
 ) -> Result<Vec<BracketRound>, reqwest::Error> {
-    let start = NaiveDate::from_ymd_opt(year, 1, 1).unwrap_or_default();
-    let end = NaiveDate::from_ymd_opt(year, 12, 31).unwrap_or_default();
-    let events = fetch_scoreboard_events(client, lg.espn_sport, lg.league, start, end).await?;
+    // `dates=YYYY` rather than the twelve months: a tournament is ~100 matches,
+    // well inside the page limit, and this runs every poll cycle.
+    let events = fetch_scoreboard_page(client, lg.espn_sport, lg.league, &year.to_string()).await?;
     Ok(soccer_bracket(parse_knockout(events)))
 }
 
@@ -1832,6 +1852,43 @@ mod tests {
         print_bracket("NFL 2025", &rounds);
         assert!(!rounds.is_empty(), "{rounds:?}");
         assert!(rounds.iter().any(|r| r.section == "final"));
+    }
+
+    /// The poller's own request: the NFL schedule over its window (a week back, a
+    /// month ahead). Run in season — off-season the window can be legitimately empty.
+    #[tokio::test]
+    #[ignore = "hits the live ESPN API"]
+    async fn espn_live_nfl_schedule() {
+        let client = reqwest::Client::new();
+        let today = Utc::now().date_naive();
+        let (start, end) = (
+            today - chrono::Duration::days(8),
+            today + chrono::Duration::days(30),
+        );
+        let games = fetch_schedule(&client, &NFL, start, end).await.unwrap();
+        println!("{} NFL games {start} … {end}", games.len());
+        assert!(!games.is_empty());
+        assert!(games.iter().all(|m| {
+            let d = m.begin_at.date_naive();
+            d >= start && d <= end
+        }));
+    }
+
+    #[test]
+    fn scoreboard_months_spans_a_year_boundary() {
+        let d = |y, m, day| NaiveDate::from_ymd_opt(y, m, day).unwrap();
+        assert_eq!(
+            scoreboard_months(d(2026, 12, 1), d(2027, 3, 1)),
+            ["202612", "202701", "202702", "202703"]
+        );
+        assert_eq!(
+            scoreboard_months(d(2026, 10, 4), d(2026, 10, 4)),
+            ["202610"]
+        );
+        assert_eq!(
+            scoreboard_months(d(2026, 10, 5), d(2026, 10, 4)),
+            Vec::<String>::new()
+        );
     }
 
     #[test]
