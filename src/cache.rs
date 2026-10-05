@@ -2409,6 +2409,13 @@ pub fn spawn_poller() {
                 cfg.archive_cutoff(now).timestamp_millis(),
                 now,
             );
+            // From here on, "active" means what this cycle fetched, not what the
+            // snapshot held when it began — see `next_poll`. It also gates the
+            // low-priority past-day work below.
+            let (active, delay) = {
+                let snap = SNAPSHOT.read().unwrap_or_else(PoisonError::into_inner);
+                next_poll(&snap.matches, Utc::now(), cfg.active_poll, cfg.idle_poll)
+            };
             // Refresh each standings cache. Keep the old tables on a fetch error
             // or an empty off-season response, rather than blanking the page.
             update_standings(&MLB_STANDINGS, mlb_standings_raw, "MLB", "mlb_standings");
@@ -2575,11 +2582,6 @@ pub fn spawn_poller() {
                 }
             }
 
-            let delay = if active {
-                cfg.active_poll
-            } else {
-                cfg.idle_poll
-            };
             leptos::logging::log!(
                 "next poll in {}s (active={active}, deep={deep})",
                 delay.as_secs()
@@ -2614,6 +2616,21 @@ fn is_active_window(
         let imminent = m.begin_at > now && m.begin_at <= now + lead;
         live || imminent
     })
+}
+
+/// The main poller's cadence after a cycle: `active_poll` while anything is live
+/// or starts within 15 min, else `idle_poll`. Decided from the snapshot as the
+/// cycle *left* it. It used to be decided from the snapshot the cycle *found*,
+/// so a restart onto a stale or empty cache — which knows no current games —
+/// slept the full idle interval right after fetching games that were live.
+fn next_poll(
+    matches: &[NormalizedMatch],
+    now: DateTime<Utc>,
+    active_poll: std::time::Duration,
+    idle_poll: std::time::Duration,
+) -> (bool, std::time::Duration) {
+    let active = is_active_window(matches, now, LIVE_GRACE, Duration::minutes(15));
+    (active, if active { active_poll } else { idle_poll })
 }
 
 /// Switch an Orange Cat Blacktop series to its fast (`live`) tier this far ahead
@@ -7717,6 +7734,22 @@ mod tests {
         assert_eq!(time_label(t(0, 5), true), "00:05");
         assert_eq!(time_label(t(0, 5), false), "12:05 AM");
         assert_eq!(time_label(t(12, 0), false), "12:00 PM");
+    }
+
+    #[test]
+    fn next_poll_is_active_only_when_the_snapshot_has_something_on() {
+        let now = Utc::now();
+        let (fast, slow) = (
+            std::time::Duration::from_secs(60),
+            std::time::Duration::from_mins(20),
+        );
+        // A restart onto a stale cache: nothing current in the snapshot.
+        assert_eq!(next_poll(&[], now, fast, slow), (false, slow));
+        // The same cycle after its fetch landed a live game.
+        let live = at(now - Duration::minutes(30), MatchStatus::Live);
+        assert_eq!(next_poll(&[live], now, fast, slow), (true, fast));
+        let soon = at(now + Duration::minutes(10), MatchStatus::Upcoming);
+        assert_eq!(next_poll(&[soon], now, fast, slow), (true, fast));
     }
 
     #[test]
