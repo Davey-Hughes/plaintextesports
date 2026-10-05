@@ -1807,7 +1807,10 @@ pub(crate) fn row_reveal(
 /// A row's status/score meta cell. When `revealable` (the row has a score hidden
 /// behind the spoiler), the badge cluster is the clickable reveal control;
 /// otherwise it's static. `bo` is the optional best-of label beside the badge
-/// (matches only).
+/// (matches only); `detail` is where a live game is ("Q2 4:08"), shown only
+/// while the score is revealed — an "OT" or "SO" would give away a tie.
+// Each argument is a separate piece of the cell; a struct would only rename them.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn reveal_meta(
     reveal: Memo<bool>,
     toggle: impl Fn(leptos::ev::MouseEvent) + 'static,
@@ -1815,6 +1818,7 @@ pub(crate) fn reveal_meta(
     status_class: &str,
     badge: &'static str,
     bo: Option<String>,
+    detail: String,
     revealable: bool,
 ) -> AnyView {
     let noun = if matches!(status, MatchStatus::Live) {
@@ -1828,6 +1832,11 @@ pub(crate) fn reveal_meta(
     let bo_span = bo
         .filter(|s| !s.is_empty())
         .map(|b| view! { <span class="row-bo">{b}</span> });
+    let detail_span = (!detail.is_empty()).then_some(move || {
+        reveal
+            .get()
+            .then(|| view! { <span class="row-detail">{detail.clone()}</span> })
+    });
     if revealable {
         view! {
             <span class="row-meta">
@@ -1839,6 +1848,7 @@ pub(crate) fn reveal_meta(
                 >
                     <span class=badge_cls>{badge}</span>
                     {bo_span}
+                    {detail_span}
                 </span>
             </span>
         }
@@ -1945,6 +1955,7 @@ pub(crate) fn MatchRow(m: MatchView, show_bo: bool, push: bool) -> impl IntoView
         status_class,
         badge,
         Some(bo),
+        m.live_detail.clone(),
         has,
     );
 
@@ -2234,6 +2245,7 @@ mod tests {
             league_url: String::new(),
             begin_at_ms: ms,
             row_href: None,
+            live_detail: String::new(),
         }
     }
 
@@ -2353,6 +2365,7 @@ mod tests {
                     league_url: String::new(),
                     begin_at_ms: 0,
                     row_href: None,
+                    live_detail: String::new(),
                 }],
             }],
         }

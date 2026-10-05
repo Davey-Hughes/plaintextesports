@@ -149,6 +149,10 @@ upcoming_days = 30
 idle_poll_secs = 1200
 active_poll_secs = 60
 
+# Live fast lane: while an NFL/NBA/NHL/MLB game is live (or starts within 5
+# min), poll just that day's scoreboards this often, in seconds (min 5).
+live_poll_secs = 10
+
 # How long before a match starts to send its reminder, in minutes (0-1440).
 reminder_lead_minutes = 15
 

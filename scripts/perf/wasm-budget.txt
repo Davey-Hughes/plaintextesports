@@ -24,4 +24,12 @@
 # i.e. view code and the wire types it renders. The bundle is dominated by
 # Leptos/tachys monomorphization, which is why each new component costs real
 # KiB: the framework's view types get instantiated afresh per component.
-gzip_kb=995
+# Raised 995 -> 1008 on 2026-10-05: the live fast lane's client side — the
+# live period/clock label beside the LIVE badge (schedule rows and the match
+# header, both behind the score reveal), the schedule's live-aware 15 s refresh,
+# and the match page's own refresh while live — plus the `live_detail` field on
+# the MatchView wire type. Measured 992 KiB on the branch underneath, 998 KiB
+# with this; the match-page refresh is ~1 KiB of the 6. The server half
+# (live.rs, the fetchers, the poller) is `#[cfg(feature = "ssr")]` in lib.rs, so
+# none of it can reach this bundle. Set to 1008 for the usual ~10 KiB headroom.
+gzip_kb=1008

@@ -192,6 +192,13 @@ pub(crate) fn MotorResultsView(results: Vec<MotorResult>, key_prefix: String) ->
     }
 }
 
+/// Whether the page's match is live — the page refetches every 15 s while it is.
+fn match_is_live(d: &MatchDetail) -> bool {
+    d.match_view
+        .as_ref()
+        .is_some_and(|m| m.status == MatchStatus::Live)
+}
+
 #[component]
 pub(crate) fn MatchDetailPage() -> impl IntoView {
     let params = use_params::<DetailParams>();
@@ -209,6 +216,8 @@ pub(crate) fn MatchDetailPage() -> impl IntoView {
         move || (uid(), tz.get(), hour24.get()),
         |(uid, tz, h)| async move { get_match_detail(uid, tz, h).await },
     );
+    // A live match refetches every 15 s; anything else stays put, as before.
+    setup_autorefresh(detail, match_is_live, false);
     // The on-demand results load on their own resource so a slow (or 500ing)
     // upstream never delays the header — see `detail_view`.
     let results = Resource::new(
@@ -306,6 +315,9 @@ pub(crate) fn detail_view(d: MatchDetail, results: Resource<MatchResults>) -> im
         .collect::<Vec<_>>()
         .join(" · ");
     let venue_when = m.venue_label.clone();
+    // Where a live game is ("Q2 4:08"), appended to the trail while the score is
+    // revealed — the same rule the schedule rows follow.
+    let live_detail = m.live_detail.clone();
     let trail = [m.best_of.clone(), status_label.to_string()]
         .into_iter()
         .filter(|s| !s.is_empty())
@@ -506,6 +518,10 @@ pub(crate) fn detail_view(d: MatchDetail, results: Resource<MatchResults>) -> im
                         view! { <span>{when_local.clone()}</span> }.into_any()
                     }}
                     {(!trail.is_empty()).then(|| format!(" · {trail}"))}
+                    {move || {
+                        (reveal.get() && !live_detail.is_empty())
+                            .then(|| format!(" · {live_detail}"))
+                    }}
                 </span>
             </div>
             {(!venue_line.is_empty())
@@ -1000,6 +1016,7 @@ pub(crate) fn SeriesRow(game: SeriesGame) -> impl IntoView {
         status_class,
         badge,
         None,
+        String::new(),
         played,
     );
 

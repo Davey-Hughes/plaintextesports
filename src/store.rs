@@ -500,6 +500,7 @@ fn row_to_match(row: &rusqlite::Row) -> rusqlite::Result<Option<NormalizedMatch>
             .get::<_, Option<String>>("motor_ref")?
             .as_deref()
             .and_then(MotorResultRef::from_db),
+        live_detail: String::new(),
     }))
 }
 
@@ -1493,6 +1494,7 @@ mod tests {
             streams: Vec::new(),
             mlb_series: None,
             motor_result_ref: None,
+            live_detail: String::new(),
             league_slug: Some("league-of-legends-lck".into()),
             series_slug: None,
             tournament_slug: Some("lck-spring".into()),

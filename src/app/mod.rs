@@ -729,6 +729,7 @@ mod tests {
             league_url: String::new(),
             begin_at_ms: 0,
             row_href: None,
+            live_detail: String::new(),
         }
     }
 
@@ -755,6 +756,15 @@ mod tests {
             days,
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn view_has_live_finds_a_live_match_on_any_day() {
+        let mut v = sched(vec![vec!["LCK"], vec!["NFL", "NHL"]]);
+        assert!(!view_has_live(&v));
+        v.days[1].leagues[1].matches[0].status = MatchStatus::Live;
+        assert!(view_has_live(&v));
+        assert!(!view_has_live(&ScheduleView::default()));
     }
 
     #[test]

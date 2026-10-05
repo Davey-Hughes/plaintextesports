@@ -40,6 +40,13 @@ static SNAPSHOT: Lazy<RwLock<Snapshot>> = Lazy::new(|| {
     })
 });
 
+/// The live fast lane's latest update per game (see [`crate::live`]): written by
+/// [`spawn_live_poller`], re-applied by `apply_poll` after each reload so the
+/// main poller's older fetch can't roll a live score back. The fast lane never
+/// holds this while waiting on [`SNAPSHOT`], so taking it under the snapshot
+/// lock can't deadlock.
+static LIVE: Lazy<RwLock<crate::live::LiveMap>> = Lazy::new(|| RwLock::new(HashMap::new()));
+
 /// A resolved (or attempted) Liquipedia event link. `url: None` means we looked
 /// and found no confident match (cached so we don't keep re-querying).
 #[derive(Clone)]
@@ -1899,6 +1906,91 @@ fn spawn_competetft_poller(cfg: &'static Config, client: reqwest::Client) {
     });
 }
 
+/// How long the live fast lane waits before looking again when nothing is live.
+const LIVE_IDLE_CHECK: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// The live fast lane: while an NFL/NBA/NHL/MLB game is live or about to start,
+/// poll just that day's scoreboards every `live_poll` and patch the snapshot, so
+/// a live score is ~10–20 s old rather than a main cycle's 60 s+.
+///
+/// Memory only — it never touches SQLite. The main poller owns that connection
+/// and persists the same games on its own cycle; `apply_poll` re-applies what
+/// this task fetched after each reload ([`LIVE`]). Which rows, which requests and
+/// how updates land are the pure functions in [`crate::live`].
+fn spawn_live_poller(cfg: &'static Config, client: reqwest::Client) {
+    tokio::spawn(async move {
+        loop {
+            let now = Utc::now();
+            let targets: Vec<NormalizedMatch> = {
+                let snap = SNAPSHOT.read().unwrap_or_else(PoisonError::into_inner);
+                crate::live::live_targets(&snap.matches, now, LIVE_GRACE)
+                    .into_iter()
+                    .cloned()
+                    .collect()
+            };
+            if targets.is_empty() {
+                crate::live::prune(
+                    &mut LIVE.write().unwrap_or_else(PoisonError::into_inner),
+                    now,
+                );
+                tokio::time::sleep(LIVE_IDLE_CHECK).await;
+                continue;
+            }
+            let refs: Vec<&NormalizedMatch> = targets.iter().collect();
+            let requests = crate::live::plan_requests(&refs);
+            let results =
+                futures::future::join_all(requests.iter().map(|r| fetch_live_request(&client, r)))
+                    .await;
+            // A day's scoreboard lists every game that day; keep only the ones we
+            // asked about, so a game the snapshot doesn't carry is never added.
+            let wanted: std::collections::HashSet<(Sport, i64)> =
+                targets.iter().map(|m| (m.sport, m.id)).collect();
+            let mut updates = Vec::new();
+            for (r, res) in requests.iter().zip(results) {
+                match res {
+                    Ok(v) => {
+                        updates.extend(v.into_iter().filter(|u| wanted.contains(&(u.sport, u.id))));
+                    }
+                    Err(e) => leptos::logging::log!("live poll failed ({r:?}): {e}"),
+                }
+            }
+            let fetched = Utc::now();
+            {
+                let mut live = LIVE.write().unwrap_or_else(PoisonError::into_inner);
+                crate::live::record(&mut live, &updates, fetched);
+                crate::live::prune(&mut live, fetched);
+            }
+            let by_key: HashMap<(Sport, i64), &crate::feed::LiveUpdate> =
+                updates.iter().map(|u| ((u.sport, u.id), u)).collect();
+            {
+                let mut snap = SNAPSHOT.write().unwrap_or_else(PoisonError::into_inner);
+                for m in &mut snap.matches {
+                    if let Some(u) = by_key.get(&(m.sport, m.id)) {
+                        crate::live::patch(m, u);
+                    }
+                }
+            }
+            tokio::time::sleep(cfg.live_poll).await;
+        }
+    });
+}
+
+/// Send one fast-lane request to its source.
+async fn fetch_live_request(
+    client: &reqwest::Client,
+    r: &crate::live::LiveRequest,
+) -> Result<Vec<crate::feed::LiveUpdate>, reqwest::Error> {
+    use crate::live::LiveRequest;
+    match r {
+        LiveRequest::Espn(Sport::Nba, day) => {
+            crate::espn::fetch_live(client, &crate::espn::NBA, *day).await
+        }
+        LiveRequest::Espn(_, day) => crate::espn::fetch_live(client, &crate::espn::NFL, *day).await,
+        LiveRequest::Nhl(day) => crate::nhl::fetch_live(client, *day).await,
+        LiveRequest::Mlb(ids) => crate::mlb::fetch_live(client, ids).await,
+    }
+}
+
 // A flat procedure: long because it has many steps, not because it nests.
 // A reviewer is the right check on that, not a line count.
 #[allow(clippy::too_many_lines)]
@@ -2050,6 +2142,7 @@ pub fn spawn_poller() {
         if cfg.competetft_enabled {
             spawn_competetft_poller(cfg, client.clone());
         }
+        spawn_live_poller(cfg, client.clone());
         loop {
             use crate::espn::{EPL, NBA, NFL, WORLD_CUP, european_season, season_year};
             let now = Utc::now();
@@ -2314,6 +2407,7 @@ pub fn spawn_poller() {
                 feeds,
                 store.as_mut(),
                 cfg.archive_cutoff(now).timestamp_millis(),
+                now,
             );
             // Refresh each standings cache. Keep the old tables on a fetch error
             // or an empty off-season response, rather than blanking the page.
@@ -2750,6 +2844,7 @@ fn apply_poll(
     results: Vec<(Sport, FetchResult)>,
     store: Option<&mut rusqlite::Connection>,
     cutoff_ms: i64,
+    cycle_start: DateTime<Utc>,
 ) {
     let now = Utc::now();
     let mut fresh: Vec<NormalizedMatch> = Vec::new();
@@ -2875,6 +2970,13 @@ fn apply_poll(
                     }
                 }
                 let mut snap = SNAPSHOT.write().unwrap_or_else(PoisonError::into_inner);
+                // The reload carries this cycle's fetch; anything the live fast lane
+                // fetched since the cycle began is newer, so put it back on top.
+                crate::live::apply_live(
+                    &mut all,
+                    &LIVE.read().unwrap_or_else(PoisonError::into_inner),
+                    cycle_start,
+                );
                 let n = all.len();
                 snap.matches = all;
                 snap.using_fixture = false;
@@ -2886,11 +2988,27 @@ fn apply_poll(
             }
             Err(e) => {
                 leptos::logging::log!("cache db read failed: {e}");
-                merge_in_memory(fresh, &errored, any_ok, any_err, now, cutoff_ms);
+                merge_in_memory(
+                    fresh,
+                    &errored,
+                    any_ok,
+                    any_err,
+                    now,
+                    cutoff_ms,
+                    cycle_start,
+                );
             }
         }
     } else {
-        merge_in_memory(fresh, &errored, any_ok, any_err, now, cutoff_ms);
+        merge_in_memory(
+            fresh,
+            &errored,
+            any_ok,
+            any_err,
+            now,
+            cutoff_ms,
+            cycle_start,
+        );
     }
 }
 
@@ -2920,9 +3038,17 @@ fn merge_in_memory(
     any_err: bool,
     now: DateTime<Utc>,
     cutoff_ms: i64,
+    cycle_start: DateTime<Utc>,
 ) {
     let mut snap = SNAPSHOT.write().unwrap_or_else(PoisonError::into_inner);
-    let merged = merge_matches(&snap.matches, matches, errored, cutoff_ms);
+    let mut merged = merge_matches(&snap.matches, matches, errored, cutoff_ms);
+    // As in `apply_poll`: the live fast lane's updates since this cycle began
+    // are newer than the fetch being merged.
+    crate::live::apply_live(
+        &mut merged,
+        &LIVE.read().unwrap_or_else(PoisonError::into_inner),
+        cycle_start,
+    );
     snap.matches = merged;
     snap.using_fixture = false;
     snap.stale = any_err;
@@ -3241,12 +3367,13 @@ pub fn to_view(m: &NormalizedMatch, tz: Tz, now: DateTime<Utc>, hour24: bool) ->
     // that placeholder — so for esports map counts and assumed-over rows, trust a
     // score only once it's nonzero (a real Bo-X final always has a winner > 0, and
     // a live map count is real only past 0-0). A traditional sport the *source*
-    // itself marked finished can legitimately end 0-0 (a soccer draw), so trust
-    // that as the real result rather than blanking it.
+    // itself marked live or finished reports its real score, 0-0 included — a
+    // scoreless first period, a soccer draw — so trust it rather than blanking it.
     let nonzero = matches!((m.team_a.score, m.team_b.score), (Some(a), Some(b)) if a > 0 || b > 0);
-    let real_traditional_final = m.status == MatchStatus::Finished && m.sport.traditional();
-    let trust_scores = matches!(status, MatchStatus::Finished | MatchStatus::Live)
-        && (nonzero || real_traditional_final);
+    let source_scored =
+        matches!(m.status, MatchStatus::Finished | MatchStatus::Live) && m.sport.traditional();
+    let trust_scores =
+        matches!(status, MatchStatus::Finished | MatchStatus::Live) && (nonzero || source_scored);
     let mut team_a = TeamView {
         label: m.team_a.label.clone(),
         name: m.team_a.name.clone(),
@@ -3314,6 +3441,11 @@ pub fn to_view(m: &NormalizedMatch, tz: Tz, now: DateTime<Utc>, hour24: bool) ->
         league_url: m.league_url.clone().unwrap_or_default(),
         begin_at_ms: m.begin_at.timestamp_millis(),
         row_href: None,
+        live_detail: if status == MatchStatus::Live {
+            m.live_detail.clone()
+        } else {
+            String::new()
+        },
     }
 }
 
@@ -5590,6 +5722,7 @@ fn demo_match(
         streams: demo_streams(),
         mlb_series: None,
         motor_result_ref: None,
+        live_detail: String::new(),
     }
 }
 
@@ -7490,6 +7623,7 @@ mod tests {
             streams: Vec::new(),
             mlb_series: None,
             motor_result_ref: None,
+            live_detail: String::new(),
         }
     }
 
@@ -7678,6 +7812,30 @@ mod tests {
     }
 
     #[test]
+    fn to_view_keeps_zero_zero_on_a_live_traditional_game() {
+        let now = Utc::now();
+        // Unlike PandaScore's placeholder, a scoreless first period is a real
+        // score the source reported — and it's what makes the row revealable.
+        let mut live = at(now - Duration::minutes(10), MatchStatus::Live);
+        live.sport = Sport::Nhl;
+        live.team_a.score = Some(0);
+        live.team_b.score = Some(0);
+        let v = to_view(&live, Tz::UTC, now, true);
+        assert_eq!((v.team_a.score, v.team_b.score), (Some(0), Some(0)));
+    }
+
+    #[test]
+    fn to_view_carries_live_detail_only_while_live() {
+        let now = Utc::now();
+        let mut m = at(now - Duration::minutes(30), MatchStatus::Live);
+        m.sport = Sport::Nfl;
+        m.live_detail = "Q2 4:08".to_string();
+        assert_eq!(to_view(&m, Tz::UTC, now, true).live_detail, "Q2 4:08");
+        m.status = MatchStatus::Finished;
+        assert_eq!(to_view(&m, Tz::UTC, now, true).live_detail, "");
+    }
+
+    #[test]
     fn group_days_buckets_by_day_then_league() {
         let ms = |h| {
             Tz::UTC
@@ -7720,6 +7878,7 @@ mod tests {
             league_url: String::new(),
             begin_at_ms: at_ms,
             row_href: None,
+            live_detail: String::new(),
         };
         let views = vec![
             mk(ms(1), "LCK", "Bo3"),
@@ -7804,6 +7963,7 @@ mod tests {
             league_url: String::new(),
             begin_at_ms: at_ms,
             row_href: None,
+            live_detail: String::new(),
         }
     }
 
@@ -7908,6 +8068,7 @@ mod tests {
             league_url: String::new(),
             begin_at_ms: at_ms,
             row_href: None,
+            live_detail: String::new(),
         };
         // Interleaved by time: LoL, CS2, LoL, CS2.
         let views = vec![
@@ -7961,6 +8122,7 @@ mod tests {
             league_url: String::new(),
             begin_at_ms: at_ms,
             row_href: None,
+            live_detail: String::new(),
         };
         let views = vec![
             mk(ms(1), "Cologne Major"),

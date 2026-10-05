@@ -78,6 +78,8 @@ struct FileConfig {
     upcoming_days: Option<i64>,
     idle_poll_secs: Option<u64>,
     active_poll_secs: Option<u64>,
+    /// Live fast lane poll interval (s) while an NFL/NBA/NHL/MLB game is live.
+    live_poll_secs: Option<u64>,
     reminder_lead_minutes: Option<i64>,
     archive_months: Option<i64>,
     /// Days to keep a persisted box score after its last fetch before pruning it
@@ -167,6 +169,7 @@ impl FileConfig {
             "POLL_ACTIVE_SECS",
             self.active_poll_secs.map(|n| n.to_string()),
         );
+        put("LIVE_POLL_SECS", self.live_poll_secs.map(|n| n.to_string()));
         put(
             "REMINDER_LEAD_MINUTES",
             self.reminder_lead_minutes.map(|n| n.to_string()),
@@ -299,6 +302,9 @@ pub struct Config {
     /// Poll interval while a match is live or starts soon, to catch final
     /// scores/status promptly.
     pub active_poll: Duration,
+    /// The live fast lane's interval while an NFL/NBA/NHL/MLB game is live or
+    /// about to start — it polls only that day's scoreboards (see `live`).
+    pub live_poll: Duration,
     /// Days ahead shown on the homepage "upcoming" view.
     pub upcoming_days: i64,
     /// How long before a match starts to fire its reminder (milliseconds).
@@ -601,6 +607,9 @@ impl Config {
         // Idle base (default 20 min); active burst when live/imminent (1 min).
         let idle_poll = Duration::from_secs(secs("POLL_INTERVAL_SECS", 1200, 60));
         let active_poll = Duration::from_secs(secs("POLL_ACTIVE_SECS", 60, 30));
+        // Live fast lane (10 s): the upstream CDNs cache 7–20 s, so faster than
+        // 5 s would only re-read the same cached copy.
+        let live_poll = Duration::from_secs(secs("LIVE_POLL_SECS", 10, 5));
 
         let upcoming_days = get("UPCOMING_DAYS")
             .and_then(|s| s.parse().ok())
@@ -703,6 +712,7 @@ impl Config {
             tz,
             idle_poll,
             active_poll,
+            live_poll,
             upcoming_days,
             reminder_lead_ms,
             archive_months,
@@ -775,6 +785,7 @@ mod tests {
         assert_eq!(c.tz, chrono_tz::America::Los_Angeles);
         assert_eq!(c.idle_poll.as_secs(), 1200);
         assert_eq!(c.active_poll.as_secs(), 60);
+        assert_eq!(c.live_poll.as_secs(), 10);
         assert_eq!(c.upcoming_days, 30);
         assert_eq!(c.reminder_lead_ms, 15 * 60_000);
         assert_eq!(c.archive_months, 1);
@@ -981,11 +992,13 @@ mod tests {
             ("UPCOMING_DAYS", "999"),     // above max 60 -> default 30
             ("DISPLAY_TZ", "Nope/Nope"),  // invalid -> default
             ("POLL_ACTIVE_SECS", "abc"),  // unparseable -> default 60
+            ("LIVE_POLL_SECS", "2"),      // below min 5 -> default 10
         ]);
         assert_eq!(c.idle_poll.as_secs(), 1200);
         assert_eq!(c.upcoming_days, 30);
         assert_eq!(c.tz, chrono_tz::America::Los_Angeles);
         assert_eq!(c.active_poll.as_secs(), 60);
+        assert_eq!(c.live_poll.as_secs(), 10);
     }
 
     #[test]
@@ -1132,6 +1145,7 @@ mod tests {
             demo = true
             display_tz = "Europe/London"
             upcoming_days = 14
+            live_poll_secs = 6
             [vapid]
             public = "pub"
             private = "priv"
@@ -1146,6 +1160,7 @@ mod tests {
         let c = Config::from_vars(|k| m.get(k).cloned());
         assert!(c.demo);
         assert_eq!(c.upcoming_days, 14);
+        assert_eq!(c.live_poll.as_secs(), 6);
         assert_eq!(c.tz, chrono_tz::Europe::London);
         assert_eq!(c.token.as_deref(), Some("tok"));
         assert!(c.push_enabled());

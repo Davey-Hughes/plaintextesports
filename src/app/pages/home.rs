@@ -50,7 +50,7 @@ pub(crate) fn HomePage() -> impl IntoView {
             }
         },
     );
-    setup_autorefresh(schedule);
+    setup_autorefresh(schedule, view_has_live, true);
 
     view! {
         <FilterTabs games leagues traditional_row=false />
@@ -242,7 +242,7 @@ pub(crate) fn DayPage() -> impl IntoView {
             get_day(d, if trad { "trad" } else { "all" }.into(), z, h).await
         },
     );
-    setup_autorefresh(schedule);
+    setup_autorefresh(schedule, view_has_live, true);
 
     view! {
         <FilterTabs games leagues traditional_row=false />

@@ -382,7 +382,7 @@ pub(crate) fn EventPage() -> impl IntoView {
             }
         },
     );
-    setup_autorefresh(schedule);
+    setup_autorefresh(schedule, view_has_live, true);
 
     // The pinned "up next" bar lives inside the content subtree that gets rebuilt
     // wholesale on every refetch. Hoist its scroll-visibility signals up here (the

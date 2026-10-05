@@ -38,6 +38,8 @@ pub mod icons;
 #[cfg(feature = "ssr")]
 pub mod liquipedia;
 #[cfg(feature = "ssr")]
+pub mod live;
+#[cfg(feature = "ssr")]
 pub mod mlb;
 #[cfg(feature = "ssr")]
 pub mod nhl;

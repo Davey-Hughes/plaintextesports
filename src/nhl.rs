@@ -7,7 +7,7 @@
 use std::fmt::Write as _;
 
 use crate::bracket_build::{self, RawSeries};
-use crate::feed::{NormalizedMatch, NormalizedTeam};
+use crate::feed::{LiveUpdate, NormalizedMatch, NormalizedTeam};
 use crate::types::{
     BoxScore, BracketRound, EventInfo, LeaderCard, LineRow, LineScore, MatchStatus, PlayerRow,
     PlayerTable, ScoreEvent, Sport, StandingRow, StatPair, StreamView, stat_share,
@@ -332,6 +332,105 @@ pub async fn fetch_schedule(
         }
     }
     Ok(out)
+}
+
+// ----- Live scores (fast lane) -----------------------------------------------
+
+#[derive(Deserialize)]
+struct ScoreResp {
+    #[serde(default)]
+    games: Vec<RawScoreGame>,
+}
+
+#[derive(Deserialize)]
+struct RawScoreGame {
+    id: i64,
+    #[serde(rename = "gameState", default)]
+    game_state: String,
+    #[serde(rename = "gameScheduleState", default)]
+    schedule_state: String,
+    #[serde(rename = "awayTeam", default)]
+    away_team: RawTeam,
+    #[serde(rename = "homeTeam", default)]
+    home_team: RawTeam,
+    #[serde(rename = "periodDescriptor", default)]
+    period: PeriodDescriptor,
+    #[serde(default)]
+    clock: RawClock,
+}
+
+#[derive(Deserialize, Default)]
+struct RawClock {
+    /// "09:14".
+    #[serde(rename = "timeRemaining", default)]
+    time_remaining: String,
+    /// During an intermission the clock counts the break down instead.
+    #[serde(rename = "inIntermission", default)]
+    in_intermission: bool,
+}
+
+/// "09:14" → "9:14": one leading zero off the minutes ("00:42" → "0:42").
+fn trim_clock(s: &str) -> &str {
+    s.strip_prefix('0')
+        .filter(|r| r.starts_with(|c: char| c.is_ascii_digit()))
+        .unwrap_or(s)
+}
+
+/// Where a live game is — "P2 9:14", "P1 INT", "OT 3:12", "2OT 0:42", "SO".
+/// Empty unless live.
+fn live_label(g: &RawScoreGame) -> String {
+    if !matches!(g.game_state.as_str(), "LIVE" | "CRIT") {
+        return String::new();
+    }
+    let p = &g.period;
+    let period = match p.period_type.as_str() {
+        "SO" => return "SO".to_string(),
+        // Playoff overtime runs on: period 5 is the second OT.
+        "OT" if p.number > 4 => format!("{}OT", p.number - 3),
+        "OT" => "OT".to_string(),
+        _ => format!("P{}", p.number),
+    };
+    if g.clock.in_intermission {
+        format!("{period} INT")
+    } else {
+        format!("{period} {}", trim_clock(&g.clock.time_remaining))
+    }
+}
+
+fn parse_live(r: &ScoreResp) -> Vec<LiveUpdate> {
+    r.games
+        .iter()
+        .map(|g| LiveUpdate {
+            sport: Sport::Nhl,
+            id: g.id,
+            status: status_of(&g.game_state, &g.schedule_state),
+            score_a: g.away_team.score,
+            score_b: g.home_team.score,
+            detail: live_label(g),
+        })
+        .collect()
+}
+
+/// Live state of every game on `day` — the NHL's game date, which is the
+/// US-Eastern start date — for the live fast lane. One small request.
+///
+/// # Errors
+///
+/// Returns a `reqwest::Error` if the request fails or the response body does not
+/// deserialize into the expected shape.
+pub async fn fetch_live(
+    client: &reqwest::Client,
+    day: NaiveDate,
+) -> Result<Vec<LiveUpdate>, reqwest::Error> {
+    let url = format!("{BASE}/score/{}", day.format("%Y-%m-%d"));
+    let r: ScoreResp = client
+        .get(&url)
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    Ok(parse_live(&r))
 }
 
 // ----- Standings -------------------------------------------------------------
@@ -1156,6 +1255,73 @@ mod tests {
         let sections: Vec<&str> = rounds.iter().map(|r| r.section.as_str()).collect();
         assert!(sections.contains(&"east") && sections.contains(&"west"));
         assert!(rounds.iter().any(|r| r.section == "final"));
+    }
+
+    #[test]
+    fn nhl_live_labels() {
+        let g = |state: &str, n: i64, kind: &str, clock: &str, int: bool| RawScoreGame {
+            id: 1,
+            game_state: state.into(),
+            schedule_state: "OK".into(),
+            away_team: RawTeam::default(),
+            home_team: RawTeam::default(),
+            period: PeriodDescriptor {
+                number: n,
+                period_type: kind.into(),
+            },
+            clock: RawClock {
+                time_remaining: clock.into(),
+                in_intermission: int,
+            },
+        };
+        assert_eq!(live_label(&g("LIVE", 2, "REG", "09:14", false)), "P2 9:14");
+        assert_eq!(live_label(&g("LIVE", 2, "REG", "00:14", false)), "P2 0:14");
+        assert_eq!(live_label(&g("LIVE", 1, "REG", "12:29", true)), "P1 INT");
+        assert_eq!(live_label(&g("CRIT", 4, "OT", "03:12", false)), "OT 3:12");
+        assert_eq!(live_label(&g("LIVE", 5, "OT", "00:42", false)), "2OT 0:42");
+        assert_eq!(live_label(&g("LIVE", 5, "SO", "00:00", false)), "SO");
+        assert_eq!(live_label(&g("OFF", 3, "REG", "00:00", false)), "");
+    }
+
+    /// Captured 2026-10-05 01:51Z: two finals, two games in the 1st/2nd
+    /// intermission, and CGY @ SEA with 14 s left in the 2nd.
+    #[test]
+    fn parses_live_updates_from_a_captured_score_day() {
+        let r: ScoreResp =
+            serde_json::from_str(include_str!("testdata/nhl_score_live_20261004.json")).unwrap();
+        let u = |id, status, a, b, d: &str| LiveUpdate {
+            sport: Sport::Nhl,
+            id,
+            status,
+            score_a: Some(a),
+            score_b: Some(b),
+            detail: d.into(),
+        };
+        let (live, fin) = (MatchStatus::Live, MatchStatus::Finished);
+        assert_eq!(
+            parse_live(&r),
+            [
+                u(2_026_020_035, fin, 3, 2, ""),
+                u(2_026_020_036, fin, 2, 4, ""),
+                u(2_026_020_037, live, 1, 2, "P2 INT"),
+                u(2_026_020_038, live, 0, 5, "P2 0:14"),
+                u(2_026_020_039, live, 0, 1, "P1 INT"),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "hits the live NHL API"]
+    async fn nhl_live_scores() {
+        let day = crate::live::et_day(Utc::now());
+        let ups = fetch_live(&reqwest::Client::new(), day).await.unwrap();
+        for u in &ups {
+            println!(
+                "{} {:?} {:?}-{:?} {}",
+                u.id, u.status, u.score_a, u.score_b, u.detail
+            );
+        }
+        assert!(!ups.is_empty(), "no NHL games on {day}");
     }
 
     fn b(network: &str, market: &str, country: &str, seq: i64) -> RawBroadcast {

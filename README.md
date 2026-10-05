@@ -15,6 +15,12 @@ with an allowlist/denylist) are shown.
 - Polling is **adaptive**: schedules change slowly (and the free tier has no
   live feed), so it idles at ~20 min and bursts to ~1 min only while a match is
   live or starts within ~15 min, to catch final scores/status.
+- A **live fast lane** covers NFL, NBA, NHL and MLB: while one of their games
+  is live or starts within 5 min, a separate task polls just that day's
+  scoreboard every `live_poll_secs` (default 10 s) and patches score, status and
+  a period/clock label (`Q2 4:08`, `P1 INT`, `Bot 4th`) in memory. Open pages
+  refetch every 15 s while a live game is on screen, so a live score trails the
+  upstream feed by roughly 5–25 s. The label stays hidden with the score.
 - Fetching is **depth-aware**: the idle cadence does a *deep scan*, paginating
   the upcoming feed across the whole `UPCOMING_DAYS` window so a tier-1 event is
   found even behind hundreds of low-tier matches; frequent active polls fetch
@@ -89,12 +95,12 @@ over running the hydrate command by hand: cargo-leptos gives that build its own
 `target/front` dir, whereas running it directly reuses `target/` and forces a
 full rebuild every time you switch feature sets.
 
-Nine `#[ignore]`d live smoke tests hit the real upstreams. They stay out of CI
+Twelve `#[ignore]`d live smoke tests hit the real upstreams. They stay out of CI
 so network flakiness can never block a merge — run them by hand when touching a
 fetcher:
 
 ```sh
-cargo test --lib --features ssr -- --ignored --nocapture          # all nine
+cargo test --lib --features ssr -- --ignored --nocapture          # all twelve
 cargo test --lib --features ssr mlb_live_bracket -- --ignored --nocapture
 ```
 

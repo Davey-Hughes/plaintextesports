@@ -286,6 +286,7 @@ fn normalize(sport: Sport, raw: &RawMatch) -> Option<NormalizedMatch> {
         mlb_series: None,
         // Motorsport result refs are a WRC/MotoGP concept.
         motor_result_ref: None,
+        live_detail: String::new(),
     })
 }
 

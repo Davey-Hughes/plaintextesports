@@ -77,6 +77,25 @@ pub struct NormalizedMatch {
     /// `None` for everything else (and unpersisted — repopulated each poll, like
     /// `mlb_series`). See [`crate::types::MotorResultRef`].
     pub motor_result_ref: Option<crate::types::MotorResultRef>,
+    /// Traditional sports: where a live game is ("Q2 4:08", "P1 INT", "Bot 4th"),
+    /// set by the live fast lane. In-memory only, like `streams` — empty after a
+    /// reload until the next live poll re-applies it. Empty unless live.
+    pub live_detail: String,
+}
+
+/// One game's in-progress state from a live scoreboard poll — what the live
+/// fast lane (`cache::spawn_live_poller`) patches onto a schedule row.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LiveUpdate {
+    pub sport: Sport,
+    pub id: i64,
+    pub status: MatchStatus,
+    /// The away team — the schedule rows' `team_a`.
+    pub score_a: Option<i64>,
+    /// The home team — `team_b`.
+    pub score_b: Option<i64>,
+    /// Where the game is ("Q2 4:08", "P1 INT", "Bot 4th"). Empty unless live.
+    pub detail: String,
 }
 
 #[derive(Debug, Clone)]
@@ -135,6 +154,7 @@ impl NormalizedMatch {
             streams: Vec::new(),
             mlb_series: None,
             motor_result_ref: None,
+            live_detail: String::new(),
         }
     }
 }

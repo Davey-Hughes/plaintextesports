@@ -1279,6 +1279,12 @@ a {
   font-size: 11px;
 }
 
+// Where a live game is ("Q2 4:08"), beside the LIVE badge once revealed.
+.row-detail {
+  color: var(--accent);
+  font-size: 11px;
+}
+
 .empty,
 .loading,
 .error {

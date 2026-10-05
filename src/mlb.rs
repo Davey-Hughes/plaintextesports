@@ -3,7 +3,7 @@
 //! feeds so it flows through the existing schedule UI unchanged.
 
 use crate::bracket_build::{self, RawSeries as BracketSeries};
-use crate::feed::{NormalizedMatch, NormalizedTeam};
+use crate::feed::{LiveUpdate, NormalizedMatch, NormalizedTeam};
 use crate::types::{
     BoxScore, BracketRound, EventInfo, LeaderCard, LineRow, LineScore, MatchStatus, PlayerRow,
     PlayerTable, Sport, StandingRow, StatPair, StreamView, stat_share,
@@ -47,6 +47,9 @@ struct RawGame {
     broadcasts: Vec<RawBroadcast>,
     #[serde(default)]
     venue: RawVenue,
+    /// Present only with `hydrate=linescore` — the live fast lane's request.
+    #[serde(default)]
+    linescore: Option<RawLinescore>,
 }
 
 #[derive(Deserialize, Default)]
@@ -377,6 +380,71 @@ pub async fn fetch_schedule(
         .flat_map(|d| d.games)
         .filter_map(to_match)
         .collect())
+}
+
+// ----- Live scores (fast lane) -----------------------------------------------
+
+/// "Top 4th", "Bot 9th", "Mid 7th", "End 3rd".
+fn live_label(ls: &RawLinescore) -> String {
+    let half = match ls.inning_state.as_str() {
+        "Top" => "Top",
+        "Bottom" => "Bot",
+        "Middle" => "Mid",
+        "End" => "End",
+        _ => return ls.current_inning_ordinal.clone(),
+    };
+    format!("{half} {}", ls.current_inning_ordinal)
+}
+
+fn parse_live(r: &ScheduleResp) -> Vec<LiveUpdate> {
+    r.dates
+        .iter()
+        .flat_map(|d| &d.games)
+        .map(|g| {
+            let status = status_of(&g.status);
+            LiveUpdate {
+                sport: Sport::Mlb,
+                id: g.game_pk,
+                status,
+                score_a: g.teams.away.score,
+                score_b: g.teams.home.score,
+                detail: match (&g.linescore, status) {
+                    (Some(ls), MatchStatus::Live) => live_label(ls),
+                    _ => String::new(),
+                },
+            }
+        })
+        .collect()
+}
+
+/// Live state of the given games, looked up by `gamePk` (so there's no date to
+/// get wrong), for the live fast lane. One small request; none for no ids.
+///
+/// # Errors
+///
+/// Returns a `reqwest::Error` if the request fails or the response body does not
+/// deserialize into the expected shape.
+pub async fn fetch_live(
+    client: &reqwest::Client,
+    game_pks: &[i64],
+) -> Result<Vec<LiveUpdate>, reqwest::Error> {
+    if game_pks.is_empty() {
+        return Ok(Vec::new());
+    }
+    let pks = game_pks
+        .iter()
+        .map(i64::to_string)
+        .collect::<Vec<_>>()
+        .join(",");
+    let url = format!("{BASE}/schedule?sportId=1&gamePks={pks}&hydrate=linescore");
+    let r: ScheduleResp = client
+        .get(&url)
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    Ok(parse_live(&r))
 }
 
 // ----- Series (the multi-game set between two teams) ------------------------
@@ -939,6 +1007,12 @@ pub struct RawLinescore {
     innings: Vec<RawInning>,
     #[serde(default)]
     teams: RawLsTeams,
+    /// "Top" / "Middle" / "Bottom" / "End" — the live fast lane's inning half.
+    #[serde(rename = "inningState", default)]
+    inning_state: String,
+    /// "4th".
+    #[serde(rename = "currentInningOrdinal", default)]
+    current_inning_ordinal: String,
 }
 
 #[derive(Deserialize, Default)]
@@ -1434,6 +1508,57 @@ mod boxscore_tests {
 mod tests {
     use super::*;
 
+    #[test]
+    fn mlb_live_labels() {
+        let ls = |half: &str, ord: &str| RawLinescore {
+            inning_state: half.into(),
+            current_inning_ordinal: ord.into(),
+            ..Default::default()
+        };
+        assert_eq!(live_label(&ls("Top", "4th")), "Top 4th");
+        assert_eq!(live_label(&ls("Bottom", "9th")), "Bot 9th");
+        assert_eq!(live_label(&ls("Middle", "7th")), "Mid 7th");
+        assert_eq!(live_label(&ls("End", "3rd")), "End 3rd");
+    }
+
+    /// Captured 2026-10-05 01:54Z: SD @ MIL final, ATL @ LAD in the bottom 5th.
+    #[test]
+    fn parses_live_updates_from_a_captured_schedule() {
+        let r: ScheduleResp =
+            serde_json::from_str(include_str!("testdata/mlb_live_20261004.json")).unwrap();
+        let u = |id, status, a, b, d: &str| LiveUpdate {
+            sport: Sport::Mlb,
+            id,
+            status,
+            score_a: Some(a),
+            score_b: Some(b),
+            detail: d.into(),
+        };
+        assert_eq!(
+            parse_live(&r),
+            [
+                u(849_825, MatchStatus::Finished, 3, 4, ""),
+                u(849_823, MatchStatus::Live, 2, 1, "Bot 5th"),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "hits the live MLB API"]
+    async fn mlb_live_scores() {
+        // A 2026 Division Series game: whatever state it's in now, it must parse.
+        let ups = fetch_live(&reqwest::Client::new(), &[849_823])
+            .await
+            .unwrap();
+        for u in &ups {
+            println!(
+                "{} {:?} {:?}-{:?} {}",
+                u.id, u.status, u.score_a, u.score_b, u.detail
+            );
+        }
+        assert_eq!(ups.len(), 1);
+    }
+
     /// Live smoke test — `cargo test --features ssr -- --ignored mlb_live_bracket
     /// --nocapture`. Prints the assembled postseason bracket.
     #[tokio::test]
@@ -1741,6 +1866,7 @@ mod tests {
             games_in_series: 2,
             broadcasts: Vec::new(),
             venue: RawVenue::default(),
+            linescore: None,
         });
         let raw = build_raw_series(games, 822_799, 117, "Astros", "Blue Jays");
         let series = format_series(&raw, utc_labels);

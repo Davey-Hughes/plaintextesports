@@ -8,7 +8,7 @@
 //! toggle (like esports); the start time still shows in the viewer's zone.
 
 use crate::bracket_build::{self, RawSeries};
-use crate::feed::{NormalizedMatch, NormalizedTeam};
+use crate::feed::{LiveUpdate, NormalizedMatch, NormalizedTeam};
 use crate::types::{
     BoxScore, BracketRound, EventInfo, LeaderCard, LineRow, LineScore, MatchStatus, PlayerRow,
     PlayerTable, ScoreEvent, Sport, StandingRow, StatPair, StreamView, stat_share,
@@ -166,6 +166,12 @@ struct WeekRef {
 struct Status {
     #[serde(default)]
     r#type: StatusType,
+    /// Quarter, 1–4; 5+ is overtime. Live fast lane only.
+    #[serde(default)]
+    period: i64,
+    /// Game clock, e.g. "4:08". Live fast lane only.
+    #[serde(rename = "displayClock", default)]
+    display_clock: String,
 }
 
 #[derive(Deserialize, Default)]
@@ -561,6 +567,69 @@ pub async fn fetch_schedule(
 ) -> Result<Vec<NormalizedMatch>, reqwest::Error> {
     let events = fetch_scoreboard_events(client, lg.espn_sport, lg.league, start, end).await?;
     Ok(events.into_iter().filter_map(|e| to_match(e, lg)).collect())
+}
+
+// ----- Live scores (fast lane) -----------------------------------------------
+
+/// Where an in-progress game is — "Q2 4:08", "Half", "End Q3", "OT 3:12",
+/// "2OT 1:00". Empty unless the game is in progress. NFL and NBA both play four
+/// quarters, so one rule covers both.
+fn live_label(st: &Status) -> String {
+    if st.r#type.state != "in" {
+        return String::new();
+    }
+    let p = st.period;
+    let period = match p {
+        ..=4 => format!("Q{p}"),
+        5 => "OT".to_string(),
+        _ => format!("{}OT", p - 4),
+    };
+    match st.r#type.name.as_str() {
+        "STATUS_HALFTIME" => "Half".to_string(),
+        "STATUS_END_PERIOD" => format!("End {period}"),
+        _ => format!("{period} {}", st.display_clock),
+    }
+}
+
+/// One scoreboard event as a fast-lane update; `None` without a numeric id or a
+/// competition.
+fn live_update(e: &Event, sport: Sport) -> Option<LiveUpdate> {
+    let id = e.id.parse::<i64>().ok()?;
+    let comp = e.competitions.first()?;
+    let score = |side: &str| {
+        comp.competitors
+            .iter()
+            .find(|c| c.home_away == side)
+            .and_then(|c| c.score.parse::<i64>().ok())
+    };
+    Some(LiveUpdate {
+        sport,
+        id,
+        status: status_of(&e.status.r#type.state, &e.status.r#type.name),
+        score_a: score("away"),
+        score_b: score("home"),
+        detail: live_label(&e.status),
+    })
+}
+
+/// Live state of every `lg` game ESPN files under `day` — a US-Eastern date, the
+/// way ESPN groups its scoreboard — for the live fast lane. One small request.
+///
+/// # Errors
+///
+/// Returns a `reqwest::Error` if the request fails or the response body does not
+/// deserialize into the expected shape.
+pub async fn fetch_live(
+    client: &reqwest::Client,
+    lg: &EspnLeague,
+    day: NaiveDate,
+) -> Result<Vec<LiveUpdate>, reqwest::Error> {
+    let dates = day.format("%Y%m%d").to_string();
+    let events = fetch_scoreboard_page(client, lg.espn_sport, lg.league, &dates).await?;
+    Ok(events
+        .iter()
+        .filter_map(|e| live_update(e, lg.sport))
+        .collect())
 }
 
 // ----- Standings -------------------------------------------------------------
@@ -1889,6 +1958,86 @@ mod tests {
             scoreboard_months(d(2026, 10, 5), d(2026, 10, 4)),
             Vec::<String>::new()
         );
+    }
+
+    #[test]
+    fn live_labels_follow_the_espn_status() {
+        let st = |name: &str, state: &str, period: i64, clock: &str| Status {
+            r#type: StatusType {
+                state: state.into(),
+                name: name.into(),
+            },
+            period,
+            display_clock: clock.into(),
+        };
+        assert_eq!(
+            live_label(&st("STATUS_IN_PROGRESS", "in", 2, "4:08")),
+            "Q2 4:08"
+        );
+        assert_eq!(live_label(&st("STATUS_HALFTIME", "in", 2, "0:00")), "Half");
+        assert_eq!(
+            live_label(&st("STATUS_END_PERIOD", "in", 3, "0:00")),
+            "End Q3"
+        );
+        assert_eq!(
+            live_label(&st("STATUS_IN_PROGRESS", "in", 5, "3:12")),
+            "OT 3:12"
+        );
+        assert_eq!(
+            live_label(&st("STATUS_IN_PROGRESS", "in", 6, "1:00")),
+            "2OT 1:00"
+        );
+        assert_eq!(live_label(&st("STATUS_FINAL", "post", 4, "0:00")), "");
+    }
+
+    /// Captured during SNF on 2026-10-04: DET @ CAR in the 2nd quarter, and the
+    /// afternoon's IND @ WSH final.
+    #[test]
+    fn parses_live_updates_from_a_captured_scoreboard() {
+        let sb: Scoreboard =
+            serde_json::from_str(include_str!("testdata/espn_nfl_live_20261004.json")).unwrap();
+        let ups: Vec<LiveUpdate> = sb
+            .events
+            .iter()
+            .filter_map(|e| live_update(e, Sport::Nfl))
+            .collect();
+        assert_eq!(
+            ups,
+            [
+                LiveUpdate {
+                    sport: Sport::Nfl,
+                    id: 401_872_978,
+                    status: MatchStatus::Live,
+                    score_a: Some(13),
+                    score_b: Some(16),
+                    detail: "Q2 0:10".into(),
+                },
+                LiveUpdate {
+                    sport: Sport::Nfl,
+                    id: 401_872_965,
+                    status: MatchStatus::Finished,
+                    score_a: Some(30),
+                    score_b: Some(13),
+                    detail: String::new(),
+                },
+            ]
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "hits the live ESPN API"]
+    async fn espn_live_scores() {
+        let day = crate::live::et_day(Utc::now());
+        let ups = fetch_live(&reqwest::Client::new(), &NFL, day)
+            .await
+            .unwrap();
+        for u in &ups {
+            println!(
+                "{} {:?} {:?}-{:?} {}",
+                u.id, u.status, u.score_a, u.score_b, u.detail
+            );
+        }
+        assert!(!ups.is_empty(), "no NFL games filed under {day}");
     }
 
     #[test]

@@ -603,12 +603,36 @@ pub(crate) fn civil_from_days(z: i64) -> (i64, i64, i64) {
     (if m <= 2 { y + 1 } else { y }, m, d)
 }
 
-/// Refetch the schedule periodically so a left-open tab stays current.
-pub(crate) fn setup_autorefresh(resource: Resource<Result<ScheduleView, ServerFnError>>) {
+/// Whether any match in the view is live — the schedule pages refetch every
+/// 15 s while one is, and every 60 s otherwise.
+#[cfg_attr(not(feature = "hydrate"), allow(dead_code))]
+pub(crate) fn view_has_live(v: &ScheduleView) -> bool {
+    v.days
+        .iter()
+        .flat_map(|d| &d.leagues)
+        .flat_map(|l| &l.matches)
+        .any(|m| m.status == MatchStatus::Live)
+}
+
+/// Refetch a page's data periodically so a left-open tab stays current: every
+/// 15 s while `is_live` says a live game is on screen (the server's live fast
+/// lane refreshes those every ~10 s), and otherwise every 60 s when
+/// `idle_refresh` (the schedule pages) or not at all (a match page).
+pub(crate) fn setup_autorefresh<T>(
+    resource: Resource<Result<T, ServerFnError>>,
+    is_live: fn(&T) -> bool,
+    idle_refresh: bool,
+) where
+    T: serde::Serialize + serde::de::DeserializeOwned + Send + Sync + 'static,
+{
     // The silent refresh re-renders (replaces) the schedule subtree, which drops
     // the browser's scroll anchor and can jump the page. Remember the scroll
     // position when the timer fires and restore it once the new schedule renders.
     let pending = StoredValue::new(None::<f64>);
+    // Whether the data on screen has a live game, set by the effect below
+    // whenever the resource loads — the timer reads this rather than the
+    // resource, since a resource read outside an effect warns in hydrate mode.
+    let live = StoredValue::new(false);
     // Save the scroll position, then refetch the schedule from the server (so the
     // re-render doesn't jump the page). Shared by the 60s timer and the header's
     // manual button — neither forces the *server* to re-poll its own source.
@@ -625,13 +649,23 @@ pub(crate) fn setup_autorefresh(resource: Resource<Result<ScheduleView, ServerFn
         #[cfg(feature = "hydrate")]
         {
             use std::time::Duration;
+            // 15 s ticks: refetch on every tick while a live game is on screen,
+            // otherwise every 4th — the old 60 s — so an idle tab costs the same.
+            let tick = StoredValue::new(0u32);
+            let on_tick = move || {
+                let n = tick.get_value().wrapping_add(1);
+                tick.set_value(n);
+                if live.get_value() || (idle_refresh && n.is_multiple_of(4)) {
+                    refresh();
+                }
+            };
             // Keep the handle so client-side route changes clear the timer instead
-            // of leaking a new 60s refetch loop on every page mount.
-            if let Ok(handle) = set_interval_with_handle(refresh, Duration::from_secs(60)) {
+            // of leaking a new refetch loop on every page mount.
+            if let Ok(handle) = set_interval_with_handle(on_tick, Duration::from_secs(15)) {
                 on_cleanup(move || handle.clear());
             }
         }
-        let _ = (resource, pending, refresh);
+        let _ = (resource, pending, refresh, live, idle_refresh);
     });
     // Manual refresh from the header button: a shared, incrementing trigger.
     if let Some(RefreshTrigger(trigger)) = use_context::<RefreshTrigger>() {
@@ -643,10 +677,15 @@ pub(crate) fn setup_autorefresh(resource: Resource<Result<ScheduleView, ServerFn
             n
         });
     }
-    // After the refreshed schedule renders, put the scroll back — only for the
-    // silent auto-refresh; user-driven refetches leave `pending` unset.
+    // After the refreshed data renders, note whether it has a live game and put
+    // the scroll back — only for the silent auto-refresh; user-driven refetches
+    // leave `pending` unset.
     Effect::new(move |_| {
-        resource.track();
+        live.set_value(resource.with(|r| {
+            r.as_ref()
+                .and_then(|r| r.as_ref().ok())
+                .is_some_and(is_live)
+        }));
         #[cfg(feature = "hydrate")]
         if let Some(y) = pending.get_value() {
             pending.set_value(None);

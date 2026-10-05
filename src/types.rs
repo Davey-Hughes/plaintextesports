@@ -339,6 +339,11 @@ pub struct MatchView {
     /// `#[serde(default)]` so older cached payloads still load.
     #[serde(default)]
     pub row_href: Option<String>,
+    /// Where a live game is ("Q2 4:08"), shown beside the LIVE badge once its
+    /// score is revealed. Empty unless live. `#[serde(default)]` so older cached
+    /// payloads still load.
+    #[serde(default)]
+    pub live_detail: String,
 }
 
 impl MatchView {

@@ -31,7 +31,7 @@ pub(crate) fn TeamPage() -> impl IntoView {
         move || (sport_slug(), team(), tz.get(), hour24.get()),
         |(sp, t, z, h)| async move { get_team_schedule(sp, t, z, h).await },
     );
-    setup_autorefresh(schedule);
+    setup_autorefresh(schedule, view_has_live, true);
 
     // Persist the pinned "up next" bar's scroll-visibility across the per-refetch
     // subtree rebuild so a refresh doesn't flash the bar back on. See `UpNextSeen`.
