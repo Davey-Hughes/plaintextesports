@@ -76,4 +76,22 @@ pub fn hydrate() {
     use crate::app::App;
     console_error_panic_hook::set_once();
     leptos::mount::hydrate_body(App);
+    // Every resource read its serialized value while hydrating, so the streamed
+    // copy is dead weight from here on. The zero timeout lets the effects queued
+    // during hydration run first. Ignoring the error is deliberate: a shell
+    // without the helper just keeps the payload.
+    leptos::prelude::set_timeout(
+        || {
+            let _ = release_ssr_payload();
+        },
+        std::time::Duration::ZERO,
+    );
+}
+
+#[cfg(feature = "hydrate")]
+#[wasm_bindgen::prelude::wasm_bindgen]
+extern "C" {
+    // Defined in the shell <script> (see `shell` in app/mod.rs).
+    #[wasm_bindgen(catch, js_name = pteReleaseSsr)]
+    fn release_ssr_payload() -> Result<(), wasm_bindgen::JsValue>;
 }

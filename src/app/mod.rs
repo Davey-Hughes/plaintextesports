@@ -179,6 +179,16 @@ pub fn shell(options: LeptosOptions) -> impl IntoView {
                     };
                     "#
                 </script>
+                // Called by the wasm once it has hydrated (see `hydrate` in lib.rs).
+                // The streamed SSR payload is only read while hydrating, yet it would
+                // otherwise stay for the page's life: each resource's JSON (in
+                // __RESOLVED_RESOURCES, and again in the <script> that set it) and each
+                // out-of-order chunk's <template>, an inert copy of DOM already swapped
+                // into the page. The array is emptied in place because Leptos holds a
+                // reference to it; replacing it would free nothing.
+                <script>
+                    r#"window.pteReleaseSsr=function(){var r=window.__RESOLVED_RESOURCES;if(r)r.length=0;document.querySelectorAll('body>template[id$="-f"]').forEach(function(t){t.remove();});document.querySelectorAll('body>script:not([src])').forEach(function(s){if(s.text.lastIndexOf('__RESOLVED_RESOURCES[',0)===0)s.remove();});};"#
+                </script>
             </head>
             <body>
                 <App />

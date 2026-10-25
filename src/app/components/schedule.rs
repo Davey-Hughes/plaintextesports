@@ -1270,32 +1270,52 @@ pub(crate) fn UpNextBar(day: DayGroup) -> impl IntoView {
     {
         use wasm_bindgen::JsCast;
         use wasm_bindgen::closure::Closure;
+        type Observer = (
+            web_sys::IntersectionObserver,
+            Closure<dyn FnMut(js_sys::Array)>,
+        );
         Effect::new(move |_| {
             let Some(doc) = web_sys::window().and_then(|w| w.document()) else {
                 return;
             };
-            // Observe an element; mirror its visibility into `sig`. The observer
-            // keeps firing as long as its callback is alive; leak it for the
-            // page's lifetime (web-sys handles can't ride on_cleanup, which
-            // requires Send + Sync).
-            let observe = |el: web_sys::Element, sig: RwSignal<bool>| {
+            // Observe an element; mirror its visibility into `sig`. Returns the
+            // observer with the callback it calls, which must outlive it.
+            let observe = |el: web_sys::Element, sig: RwSignal<bool>| -> Option<Observer> {
                 let cb = Closure::<dyn FnMut(js_sys::Array)>::new(move |entries: js_sys::Array| {
                     let first = entries
                         .get(0)
                         .unchecked_into::<web_sys::IntersectionObserverEntry>();
                     sig.set(first.is_intersecting());
                 });
-                if let Ok(obs) = web_sys::IntersectionObserver::new(cb.as_ref().unchecked_ref()) {
-                    obs.observe(&el);
-                }
-                cb.forget();
+                let obs = web_sys::IntersectionObserver::new(cb.as_ref().unchecked_ref()).ok()?;
+                obs.observe(&el);
+                Some((obs, cb))
             };
-            if let Some(el) = doc.get_element_by_id(&anchor) {
-                observe(el, day_seen);
-            }
-            if let Some(el) = doc.get_element_by_id("site-footer") {
-                observe(el, foot_seen);
-            }
+            let observers: Vec<Observer> = [
+                doc.get_element_by_id(&anchor)
+                    .and_then(|el| observe(el, day_seen)),
+                doc.get_element_by_id("site-footer")
+                    .and_then(|el| observe(el, foot_seen)),
+            ]
+            .into_iter()
+            .flatten()
+            .collect();
+            // The bar is rebuilt on every schedule refetch and the footer outlives
+            // it, so an observer left running piles up one per refresh, each still
+            // firing on every footer scroll. Disconnect them as the bar unmounts.
+            // The handles aren't Send, hence a local StoredValue; it is still
+            // alive here because an owner runs its cleanups before disposing its
+            // values. Taking the queued records first stops an already-queued
+            // callback from firing into the closure dropped after it.
+            let observers = StoredValue::new_local(observers);
+            on_cleanup(move || {
+                observers.update_value(|obs| {
+                    for (o, _cb) in obs.drain(..) {
+                        o.take_records();
+                        o.disconnect();
+                    }
+                });
+            });
         });
     }
 
