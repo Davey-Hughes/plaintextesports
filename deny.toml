@@ -1,0 +1,61 @@
+# cargo-deny configuration. .forgejo/workflows/advisories.yml runs the advisories
+# check against it, and so can you, checking the same graph CI does:
+#
+#   cargo deny --locked check advisories
+#
+# Only that check is configured here. A bare `cargo deny check` runs all four, and
+# licenses, which this file does not configure, then rejects every dependency.
+#
+# [graph] turns every feature on. The crate declares no default features, so without
+# it the graph has no ssr half, and rsa and crypto-bigint (both behind
+# web-push-native) drop out of the check without a word. It is set here rather than
+# on the command line so the local command and CI check the same graph.
+#
+# [advisories] keeps cargo-deny 0.20.2's defaults but one: a vulnerability, notice
+# or unmaintained advisory fails the check, and so does an unsound one on any crate.
+# That is `unsound = "all"`; the default, "workspace", drops unsound advisories on
+# transitive crates without even a note. A yanked crate only warns. How to accept a
+# finding, by an `ignore` entry or for everything at once, is in the workflow's
+# header.
+#
+# block-buffer's GHSA-qwgh-2vcv-g2f7, which #14's OSV rescan reported, is not here.
+# It is in GitHub's database and not in RustSec's, so cargo-deny never reports it,
+# and an entry for it would only print warning[unknown-advisory].
+#
+# Matched against the RustSec database on 2026-10-27.
+
+[graph]
+all-features = true
+
+[advisories]
+unsound = "all"
+ignore = [
+  # rsa 0.9.10, via web-push-native -> jwt-simple -> superboring.
+  { id = "RUSTSEC-2023-0071", reason = """\
+    Not reachable: push.rs signs VAPID JWTs with ES256KeyPair, and nothing here \
+    signs or decrypts with RSA; superboring links rsa for jwt-simple's RS* and PS* \
+    algorithms. No release fixes it: the advisory's patched list is empty. Revisit \
+    when rsa ships a constant-time release, or if anything starts using an RSA key.""" },
+
+  # crypto-bigint 0.5.5, via p256 (and the unused k256 and p384) 0.13.
+  { id = "RUSTSEC-2026-0387", reason = """\
+    Reachable, and accepted: the VAPID signature and the RFC 8291 encryption run \
+    on p256 0.13, which uses crypto-bigint 0.5. Both happen only in the background \
+    reminder sender, on requests this server sends to push services, so no visitor \
+    has a request whose response time includes them. The fix is crypto-bigint \
+    0.7.6, which needs the p256 0.14 line, and the newest web-push-native (0.5.0) \
+    is still on p256 0.13. Revisit when a web-push-native release moves to p256 0.14.""" },
+
+  # paste 1.0.15, via either_of, leptos, reactive_graph, reactive_stores and tachys.
+  { id = "RUSTSEC-2024-0436", reason = """\
+    Unmaintained, not vulnerable, and no release will follow: its repository is \
+    archived. It is a proc macro, so it runs while Leptos compiles and none of it \
+    ships. Revisit when a Leptos release drops it (pastey is the named successor).""" },
+
+  # proc-macro-error2 2.0.1, via leptos_macro, leptos_router_macro,
+  # reactive_stores_macro and rstml's syn_derive.
+  { id = "RUSTSEC-2026-0173", reason = """\
+    Unmaintained, not vulnerable, with no release to move to. It is a helper for \
+    proc macros, so it runs while Leptos's macros compile and none of it ships. \
+    Revisit when a Leptos release moves its macros off it.""" },
+]

@@ -239,6 +239,8 @@ ordering:
   reports a skipped job as `success` on the commit-status API — so requiring it would gate on
   nothing at all. The three jobs above carry no `if:` condition, which is what makes requiring
   them directly safe here.
+- `advisories / cargo-deny` is not required either: `.forgejo/workflows/advisories.yml`'s header says
+  how to accept a finding, including the `ADVISORIES_MODE` switch for all of them at once
 - `block_on_outdated_branch` is on, so a PR green against a `main` that has since moved cannot
   merge
 - `apply_to_admins` is on, so the rule binds the repository owner too — without it the whole
