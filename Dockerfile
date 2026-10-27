@@ -42,7 +42,9 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
 # Runtime stage
 FROM alpine:latest AS runner
 
-RUN apk add --no-cache ca-certificates curl
+# `apk upgrade` first, so a rebuild ships Alpine's security fixes before
+# alpine:latest is republished with them.
+RUN apk upgrade --no-cache && apk add --no-cache ca-certificates curl
 
 # ── Build artifacts (immutable, baked into the image) ────────────────────
 # Binary + hash.txt must live in the same directory (Leptos resolves

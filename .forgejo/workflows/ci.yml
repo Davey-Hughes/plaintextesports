@@ -23,8 +23,16 @@ on:
     tags: ["v*"]
   pull_request:
   workflow_dispatch:
+  # Weekly rebuild, Sundays 10:15 UTC (03:15 PDT / 02:15 PST), so the image picks up patched
+  # Alpine packages even when nothing merges; a dispatch refreshes the same way. A push that lands
+  # during a refresh cancels it (same group below), and its own build reuses the cached upgrade
+  # layer, so that week's package refresh waits for the next Sunday. What a refresh changes is
+  # explained at "Build & push".
+  schedule:
+    - cron: "15 10 * * 0"
 
-# One CI run per ref; a newer push cancels the in-flight run (checks + image build).
+# One CI run per ref; a newer push, schedule or dispatch on that ref cancels the in-flight run
+# (checks + image build).
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
@@ -238,9 +246,9 @@ jobs:
       # driver. Why: this runner builds on the host Docker daemon (host-socket), and the
       # default driver LOADS every built tag into that shared image store — each build then
       # drags the local `:latest` tag onto the new image, so a running container's image
-      # silently loses its `:latest` tag and update-watchers anchor on a stale immutable
-      # `sha-*` tag. The docker-container driver pushes straight to the registry without
-      # touching the host image store.
+      # silently loses its `:latest` tag — and What's-Up-Docker, which derives the current tag
+      # from the image's RepoTags, can no longer detect its updates. The docker-container driver
+      # pushes straight to the registry without touching the host image store.
       #
       # Reattach, don't rebuild: each job gets a fresh buildx *config*, but the buildkit
       # container and its `_state` cache volume persist on the host daemon. `buildx create`
@@ -289,13 +297,30 @@ jobs:
       # --provenance/--sbom OFF: buildx otherwise wraps the image in an OCI index with
       # attestation manifests, which Forgejo doesn't register/display as a normal container
       # package. Off = plain manifest. `--push` ships every tag in one pass.
+      #
+      # A refresh (the schedule or a dispatch) adds --no-cache-filter runner. That rebuilds the
+      # shipped `runner` stage, whose `apk upgrade && apk add` layer the warm `pte-ci` cache would
+      # otherwise replay over an unchanged alpine:latest digest, so the refresh ships Alpine's current
+      # fixes. The docker-container builder set up above resolves each FROM tag against the registry
+      # on every build, and the `builder` stage's rustlang/rust:nightly-alpine moves almost daily, so a
+      # refresh usually rebuilds that stage too. A refresh pushes the tags a push of its ref would: on
+      # main, sha-<short>, `main` and `latest` are re-pushed with patched packages, so sha-<short>
+      # names that commit's code, not one frozen image. A dispatch on a branch publishes a new
+      # sha-<short> and branch tag for that unmerged commit; one on a v* tag re-pushes that tag's
+      # sha-<short> and its three version tags. A later run of the same ref cancels the earlier, and
+      # a refresh that cancels a push run still pushes that commit's tags. Runs on different refs (a
+      # v* tag, a branch dispatch) can still overlap and kill each other's builder.
       - name: Build & push
         env: # values via env, not inline ${{ }}
           TAGS: ${{ steps.t.outputs.tags }}
+          EVENT: ${{ github.event_name }}
         run: |
           set -eu
           ARGS=""
           for t in $(echo "$TAGS" | tr ',' ' '); do ARGS="$ARGS -t $t"; done
+          case "$EVENT" in
+            schedule|workflow_dispatch) ARGS="$ARGS --no-cache-filter runner" ;;
+          esac
           docker buildx build --builder pte-ci $ARGS \
             --provenance=false --sbom=false \
             --push .
