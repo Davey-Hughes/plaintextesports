@@ -202,7 +202,7 @@ jobs:
       # makes no request to github.com for it.
       - name: Install cargo-leptos
         run: |
-          want=0.3.7
+          want=0.3.11
           if cargo leptos --version 2>/dev/null | grep -qx "cargo-leptos $want"; then
             echo "cargo-leptos $want already present (from cache)"
           else

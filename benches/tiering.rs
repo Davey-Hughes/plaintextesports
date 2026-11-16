@@ -9,9 +9,10 @@
 //!
 //! Run: `cargo bench --features ssr`
 
-use criterion::{Criterion, black_box, criterion_group, criterion_main};
+use criterion::{Criterion, criterion_group, criterion_main};
 use plaintextesports::tiering::{TierInput, TierPolicy, is_tier_one};
 use plaintextesports::types::Sport;
+use std::hint::black_box;
 
 fn bench_is_tier_one(c: &mut Criterion) {
     // One input per decision branch, mirroring the spread a real scan sees:

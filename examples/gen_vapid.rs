@@ -14,7 +14,7 @@ fn main() {
     // astronomically rare invalid draw).
     let secret = loop {
         let mut seed = [0u8; 32];
-        getrandom::getrandom(&mut seed).expect("OS RNG unavailable");
+        getrandom::fill(&mut seed).expect("OS RNG unavailable");
         if let Ok(s) = SecretKey::from_slice(&seed) {
             break s;
         }

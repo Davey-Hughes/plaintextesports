@@ -51,11 +51,4 @@ ignore = [
     Unmaintained, not vulnerable, and no release will follow: its repository is \
     archived. It is a proc macro, so it runs while Leptos compiles and none of it \
     ships. Revisit when a Leptos release drops it (pastey is the named successor).""" },
-
-  # proc-macro-error2 2.0.1, via leptos_macro, leptos_router_macro,
-  # reactive_stores_macro and rstml's syn_derive.
-  { id = "RUSTSEC-2026-0173", reason = """\
-    Unmaintained, not vulnerable, with no release to move to. It is a helper for \
-    proc macros, so it runs while Leptos's macros compile and none of it ships. \
-    Revisit when a Leptos release moves its macros off it.""" },
 ]

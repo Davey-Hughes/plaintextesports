@@ -11,9 +11,10 @@
 
 use chrono::{DateTime, Utc};
 use chrono_tz::Tz;
-use criterion::{BenchmarkId, Criterion, Throughput, black_box, criterion_group, criterion_main};
+use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use plaintextesports::cache;
 use plaintextesports::config::config;
+use std::hint::black_box;
 
 fn fixed_now() -> DateTime<Utc> {
     "2026-06-30T18:00:00Z".parse().unwrap()

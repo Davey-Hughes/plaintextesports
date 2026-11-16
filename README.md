@@ -131,7 +131,7 @@ code. Both look like bugs in your change.
 The env var is read at build time (it overrides the manifest) and is forwarded
 to the server, so both sides agree on unhashed names. Upstream:
 [cargo-leptos#271](https://github.com/leptos-rs/cargo-leptos/issues/271), open
-since 2024, still unfixed as of 0.3.7.
+since 2024, still unfixed as of 0.3.11.
 
 ## Configuration (`config.toml`)
 
