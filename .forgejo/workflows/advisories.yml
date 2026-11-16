@@ -10,7 +10,7 @@ name: advisories
 # required status check either; branch protection names ci.yml's three jobs.
 #
 # Two ways to accept a finding. This is the one place both are described; deny.toml
-# and the README point here.
+# and docs/conventions.md point here.
 #  - one advisory, the normal path: an entry in deny.toml's `ignore` list,
 #      { id = "RUSTSEC-…", reason = "…" },
 #    whose reason says why it is accepted (no fixed release, not reachable, or a fix

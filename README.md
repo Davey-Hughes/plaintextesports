@@ -1,274 +1,63 @@
 # plaintextesports
 
-A fast, plain-text-style schedule for **tier-1 Counter-Strike 2 and League of
-Legends** matches — inspired by [plaintextsports.com](https://plaintextsports.com).
-Built with [Leptos](https://leptos.dev) (SSR + hydration) on Axum.
+A plain-text schedule of the big esports events and the major traditional sports,
+inspired by [plaintextsports.com](https://plaintextsports.com). It runs at
+[plaintextesports.com](https://plaintextesports.com).
 
-It filters out the noise: only top-tier events (PandaScore tier **S + A**, tuned
-with an allowlist/denylist) are shown.
+[![The plaintextesports.com schedule partway through a day of Worlds 2026, with one match live](https://daveyhughes.com/readme/plaintextesports/demo.webp)](https://plaintextesports.com)
 
-## How it works
+The esports side covers tier-1 Counter-Strike 2, League of Legends and Teamfight
+Tactics, and a toggle switches to the NFL, NBA, NHL, MLB, soccer and motorsport.
+Scores stay hidden until you ask for them, so you can catch up on a day's matches
+without spoilers. Times are shown in your own timezone.
 
-- A background task polls the [PandaScore](https://pandascore.co) API,
-  normalizes matches, applies the tier-1 filter, and caches the result in
-  memory. Page requests read the cache — they never block on the API.
-- Polling is **adaptive**: schedules change slowly (and the free tier has no
-  live feed), so it idles at ~20 min and bursts to ~1 min only while a match is
-  live or starts within ~15 min, to catch final scores/status.
-- A **live fast lane** covers NFL, NBA, NHL and MLB: while one of their games
-  is live or starts within 5 min, a separate task polls just that day's
-  scoreboard every `live_poll_secs` (default 10 s) and patches score, status and
-  a period/clock label (`Q2 4:08`, `P1 INT`, `Bot 4th`) in memory. Open pages
-  refetch every 15 s while a live game is on screen, so a live score trails the
-  upstream feed by roughly 5–25 s. The label stays hidden with the score.
-- Fetching is **depth-aware**: the idle cadence does a *deep scan*, paginating
-  the upcoming feed across the whole `UPCOMING_DAYS` window so a tier-1 event is
-  found even behind hundreds of low-tier matches; frequent active polls fetch
-  only the first page. A rate-limited or failed later page returns a partial
-  result and the SQLite cache fills the rest in on the next poll. All of this
-  stays far under the free tier's 1,000 req/hr limit.
-- Matches are also persisted to a small **SQLite** database (`DB_PATH`), keyed by
-  `(id, sport)` and upserted each poll with a 2-day retention window. On restart
-  the app serves the last-known data instantly (no re-fetch burst), and a match
-  that finishes and drops out of the API window is retained until it ages out.
-- Times are shown in the **viewer's own timezone** (auto-detected in the browser
-  and sent to the server, which formats + groups by day accordingly). `DISPLAY_TZ`
-  is the fallback used for the first server render / non-JS clients.
-- Time format is toggleable **24h / 12h** (default 24h), remembered in
-  `localStorage`. Each league/event gets a stable color, and can be filtered.
-- **Scores are hidden by default** (spoiler guard). A top-right "show scores"
-  toggle reveals all (persisted), or a per-event "show score" button reveals
-  just one event — so it's not all-or-nothing.
-- Each event header links to the **exact Liquipedia event page** when it can be
-  resolved (looked up once per event via Liquipedia's search API and cached in
-  SQLite, with validation + fallback so it never regresses to a worse link),
-  else the official site or a Liquipedia search. Match rows link to the official
-  stream.
-- With no API token configured, the app serves built-in demo data so the UI is
-  fully usable for development.
+## What it does
 
-## Tuning what counts as "tier 1"
+- CS2 and LoL matches come from PandaScore, kept to its S and A tier events, with an
+  allowlist and denylist in `src/tiering.rs` for events it tiers wrong. TFT, when it's
+  turned on, comes from Riot's competetft.com and the official published sheet.
+- The sports side reads each league's own public feed: ESPN for the NFL, NBA and soccer
+  (the Premier League and the World Cup), the NHL and MLB APIs, Jolpica and OpenF1 for
+  F1, and Orange Cat Blacktop for WRC, WEC and MotoGP.
+- While an NFL, NBA, NHL or MLB game is on, the server polls that day's scoreboard every
+  10 seconds and open pages refresh every 15, so the score, period and clock stay close
+  to live.
+- Scores, standings and brackets are hidden by default. You can show them all at once,
+  reveal one match, or step through a bracket a round at a time.
+- Sport tabs and event chips filter the schedule, and the address bar keeps the filter
+  so a view can be shared. There's a 12h/24h switch and dark, light and OLED themes.
+- Each event has a page with its full schedule, standings and bracket, and an esports
+  event links to its Liquipedia page when one can be found. A match's page lists where
+  to watch it (official streams, co-streams and TV) and, once it's over, the box score
+  where the source has one.
+- With VAPID keys set, starring a match, an event or a whole sport sends a Web Push
+  notification before each match starts, even with the site closed.
+- Without an API token it serves built-in demo data, so the UI works out of the box.
 
-Edit the allowlist/denylist in [`src/tiering.rs`](src/tiering.rs):
+## How it's built
 
-- **Base:** keep matches whose PandaScore tournament tier is `S` or `A`.
-- **Denylist** (substring on any slug): force-exclude noise tagged S/A
-  (academy/challenger/qualifier/showmatch…).
-- **Allowlist** (exact full-slug): force-include events the API mis-tiers.
-- Precedence: allowlist > denylist > base. Covered by unit tests.
+It's Rust, on a pinned nightly toolchain. [Leptos](https://leptos.dev) renders each page
+on an [Axum](https://github.com/tokio-rs/axum) server and hydrates it in the browser as
+WebAssembly. Background tasks poll each source on their own schedules and keep a
+normalized snapshot in memory, so a page request never waits on an upstream API, and
+the matches are also written to SQLite so a restart serves the last data straight away.
+Reminders are encrypted and signed with `web-push-native`, in pure Rust. It ships as a
+multi-stage Docker image on Alpine. Forgejo CI runs fmt, clippy with the pedantic group,
+the tests and rustdoc under both the server and client feature sets, builds the release
+WebAssembly against a size budget, and checks `Cargo.lock` for RustSec advisories. A
+weekly job runs a live smoke test against the TFT source.
 
-## Setup
+## Docs
 
-1. Get a free PandaScore token (no card): https://pandascore.co
-2. Create `config.toml` from the example and add your token:
-   ```sh
-   cp config.toml.example config.toml
-   # edit config.toml, set pandascore_token = "..."
-   ```
+- [How it works](docs/how-it-works.md): polling, caching and the live-score lane,
+  Liquipedia links, the tier-1 filter, and the limits of PandaScore's free tier.
+- [Setup and deployment](docs/setup.md): the PandaScore token, `config.toml` and its
+  environment overrides, Web Push reminders, and the Docker image.
+- [Development](docs/development.md): running locally, the tests and live smoke tests,
+  why the watch loop needs `LEPTOS_HASH_FILES=false`, and the performance tooling.
+- [Conventions](docs/conventions.md): how changes reach `main`, from linear history to
+  branch protection.
 
-## Develop
+## License
 
-```sh
-LEPTOS_HASH_FILES=false cargo leptos watch # http://127.0.0.1:4000
-DEMO=1 cargo leptos watch --release        # force fixture data (ignores token + cache db)
-cargo test --lib --features ssr            # tiering + deserialization tests (fast loop)
-cargo test --features ssr                  # + bin-target and doc tests, as CI runs it
-cargo leptos test                           # both feature sets: ssr and hydrate
-scripts/check-all.sh                        # everything CI gates on, in one command
-scripts/check-all.sh --no-release           # ...minus the release wasm build
-```
-
-Reach for `--lib` while iterating. The tests themselves take 0.07s — essentially
-all of a test run is recompiling and relinking the crate, and `--lib` skips two
-things that contribute nothing: the `src/main.rs` test binary (0 tests, but a
-full second link of a 44k-line crate) and the rustdoc pass (0 doc tests). With
-the `[profile.test]` debuginfo setting in `Cargo.toml`, that is the difference
-between ~8s and ~3.3s per edit. Run the plain form before pushing, since it is
-what CI gates on and it is the one that would catch a doc test.
-
-Run `cargo leptos test` when touching anything `#[cfg]`-gated. It is exactly two
-`cargo test` invocations — ssr, then `--lib --no-default-features --features
-hydrate` — and CI runs them as two parallel jobs. The hydrate side adds no new
-test functions (all 82 are already among the 404), but it is the only thing that
-compiles the `#[cfg(test)]` modules against the client feature set. Prefer it
-over running the hydrate command by hand: cargo-leptos gives that build its own
-`target/front` dir, whereas running it directly reuses `target/` and forces a
-full rebuild every time you switch feature sets.
-
-Twelve `#[ignore]`d live smoke tests hit the real upstreams. They stay out of CI
-so network flakiness can never block a merge — run them by hand when touching a
-fetcher:
-
-```sh
-cargo test --lib --features ssr -- --ignored --nocapture          # all twelve
-cargo test --lib --features ssr mlb_live_bracket -- --ignored --nocapture
-```
-
-Most are season-bound and will fail out of season by design: they pin a year
-(`fetch_bracket(&client, 2025)`), and `espn_live_soccer_bracket` wants a World
-Cup in progress. They mostly print for eyeballing — the assertions are shallow
-("a bracket exists", "it reaches a Final"), so they catch a hard break, not
-quiet field-level drift.
-
-`live_full_refresh` is the exception and the only one scheduled: it walks the
-whole CompeteTFT discover → refresh → assemble pipeline and works off-broadcast,
-so `.forgejo/workflows/live-smoke.yml` runs it weekly. It gates nothing — a
-failure there means "go look", not "the build is broken".
-
-`LEPTOS_HASH_FILES=false` is not optional in a watch loop. This project sets
-`hash-files = true` for production cache-busting, but cargo-leptos only hashes
-the site on its *first* build — `add_hashes_to_site` runs in `build_proj`, and
-the incremental rebuild path (`watch::runner`) never calls it. So every edit
-after startup rebuilds the server binary while `hash.txt` and the hashed
-`pkg/*.wasm` stay at build #1: the page serves fresh SSR HTML that points the
-browser at a stale client bundle.
-
-The failure is nastier than it sounds. A structural edit panics hydration
-(`tachys … hydration.rs: unreachable`) and the whole page goes dead — no
-handlers, no reactivity — while a text-only edit just silently runs old client
-code. Both look like bugs in your change.
-
-The env var is read at build time (it overrides the manifest) and is forwarded
-to the server, so both sides agree on unhashed names. Upstream:
-[cargo-leptos#271](https://github.com/leptos-rs/cargo-leptos/issues/271), open
-since 2024, still unfixed as of 0.3.11.
-
-## Configuration (`config.toml`)
-
-Settings live in `config.toml` (see `config.toml.example`). The path is
-overridable with `CONFIG_PATH`, and any setting can be overridden by the
-matching env var shown below — handy for `DEMO=1 cargo leptos watch` or
-container `-e` flags.
-
-| `config.toml` key | env override | Default | Purpose |
-|---|---|---|---|
-| `pandascore_token` | `PANDASCORE_TOKEN` | _(none)_ | API token; unset = demo data |
-| `ocblacktop_token` | `OCBLACKTOP_TOKEN` | _(none)_ | [ocblacktop.com](https://ocblacktop.com/api) key for WRC + WEC; unset = those series skipped |
-| `demo` | `DEMO` | `false` | `true` forces fixture data even with a token/DB |
-| `display_tz` | `DISPLAY_TZ` | `America/Los_Angeles` | Fallback tz (viewers' own is auto-detected) |
-| `idle_poll_secs` | `POLL_INTERVAL_SECS` | `1200` | Idle poll interval (min 60) |
-| `active_poll_secs` | `POLL_ACTIVE_SECS` | `60` | Poll interval while live/imminent (min 30) |
-| `upcoming_days` | `UPCOMING_DAYS` | `30` | Days ahead on the homepage (1–60) |
-| `db_path` | `DB_PATH` | `data/cache.db` | SQLite cache path; empty = memory-only |
-| `resolve_links` | `ENABLE_LIQUIPEDIA` | `true` | Resolve exact event pages via Liquipedia |
-| `competetft_enabled` | `COMPETETFT_ENABLED` | `false` | The TFT source: Riot's competetft.com + official sheet (schedule, standings, prizes, player streams, broadcasts, lobbies) |
-| `competetft_autodiscover` | `COMPETETFT_AUTODISCOVER` | `true` | Auto-discover TFT tournaments from competetft's schedule feed |
-| `competetft_pins` / `competetft_exclude` | _(TOML only)_ | _(none)_ | Tournament ids to always include / never include |
-| `[vapid] public/private/subject` | `VAPID_*` | _(none)_ | Web Push reminder keys; all three enable reminders |
-
-## Reminders (Web Push)
-
-Star (★) any upcoming match to get a browser notification ~10 minutes before it
-starts — delivered even if the site is closed, via a service worker + Web Push.
-
-Enable it by generating a VAPID keypair once and putting it in the `[vapid]`
-table of `config.toml`. Use the built-in generator (no extra tooling), or `npx`:
-
-```sh
-cargo run --example gen_vapid --features ssr   # prints keys for config.toml
-# or: npx web-push generate-vapid-keys
-```
-
-How it works: the browser subscribes via `pushManager`; the subscription +
-chosen matches are stored in SQLite (`DB_PATH` required); a background sender
-delivers each reminder at its time (encrypted with `web-push-native`, pure Rust,
-no OpenSSL) and prunes dead subscriptions. The ★ buttons only appear when push
-is configured.
-
-Requirements: **HTTPS in production** (Web Push needs a secure context), a
-writable `DB_PATH`, and on **iOS** the site must be installed to the home screen
-as a PWA before notifications work.
-
-## Deploy (Docker)
-
-```sh
-docker build -t plaintextesports .
-docker run -p 8080:8080 -v /path/to/plaintextesports:/data plaintextesports
-```
-
-Serves on `:8080`.
-
-Mount a single host directory at `/data` containing your `config.toml`,
-and (optionally) an `icons/` subdirectory. The `data/` subdirectory (for
-the SQLite cache) is created automatically. Without a token the app
-serves demo fixture data.
-
-## Performance
-
-Benchmarks and profiling tooling live in [`scripts/perf/`](scripts/perf/README.md):
-criterion benches for the per-request view pipeline (`cargo bench --features ssr`),
-a dhat allocation profile, a WASM bundle-size budget check, an SSR load test, and
-a CPU-profiling recipe.
-
-## Contributing
-
-`main` is **linear** — no merge commits — and every commit on it is an **atomic unit**: it
-builds and passes the gate on its own. Work happens on a feature branch, which lands as
-**one squashed commit**.
-
-```sh
-scripts/check-all.sh                # the local mirror of CI
-```
-
-Pull requests are the only route to `main` — there is no local landing script. Push the
-branch, open a PR, and squash-merge it in the Forgejo web UI once CI is green:
-
-```sh
-git push -u origin my-branch
-# open a PR at forge.daveynet.xyz, squash-merge once CI is green
-```
-
-CI runs against the PR head on every push, so its result describes the commit you are about
-to merge: `rust` (fmt, clippy and tests under `ssr`), `hydrate` (the same tests recompiled
-under the client feature set) and `wasm` (the release build plus the bundle-size budget).
-
-What a web-UI merge does **not** do, the way the retired `scripts/land.sh` did, is check the
-**merged tree**. `land.sh` ran the gate on the merged tree *before the commit existed* and
-refused to commit on failure — that ordering is what made "every commit on `main` passes the
-gate" a property rather than a hope. A squash-merge inverts it: the commit is built from the
-PR head, and merging is a decision a person makes by reading CI's result, not a check the
-merge itself re-runs.
-
-**`main` is branch-protected** (enabled 2026-08-04), which is what stands in for that
-ordering:
-
-- direct pushes are off — a PR is the only way in
-- `ci / rust`, `ci / hydrate` and `ci / wasm`, in their `(pull_request)` form, are required
-  status checks
-- `ci / docker` is deliberately **not** required. It is skipped on pull requests, and Forgejo
-  reports a skipped job as `success` on the commit-status API — so requiring it would gate on
-  nothing at all. The three jobs above carry no `if:` condition, which is what makes requiring
-  them directly safe here.
-- `advisories / cargo-deny` is not required either: `.forgejo/workflows/advisories.yml`'s header says
-  how to accept a finding, including the `ADVISORIES_MODE` switch for all of them at once
-- `block_on_outdated_branch` is on, so a PR green against a `main` that has since moved cannot
-  merge
-- `apply_to_admins` is on, so the rule binds the repository owner too — without it the whole
-  rule is advisory for the only account that merges
-
-That is not identical to gating the merged tree — the merge commit itself is still never
-tested before it exists — but it removes the two ways the gap actually bites: a red head, and
-a stale base.
-
-A plain `git merge --squash` discards every commit message on the branch, so `land.sh` used to
-prefill the squash message with all of them verbatim. A PR's written body does that job now,
-and does it better as prose. What moves is *where* the intermediate messages live: they are no
-longer inside the commit object that lands on `main`. They still exist, on the PR page and
-under `refs/pull/N/head` — but only on `forge.daveynet.xyz`, a dependency the git history
-alone did not previously have.
-
-Once per clone, so a non-fast-forward merge fails rather than quietly creating a merge
-commit:
-
-```sh
-git config merge.ff only && git config pull.ff only
-```
-
-That is convenience — `.git/config` is untracked and binds nobody. The remote is the real
-constraint: it allows only squash and fast-forward merges, and deletes the branch on merge.
-
-## Limitations
-
-The PandaScore free tier has no real-time score feed, so "live" is inferred
-(start time passed, not yet finished) and scores update on the next poll, not
-instantly. Recent results depend on what the free tier returns.
+GNU General Public License v3.0. See [LICENSE](LICENSE).

@@ -37,7 +37,7 @@ data/
 .claude/*
 
 # Ephemeral, feature-building docs (plans/specs/scratch from the dev workflow).
-# Keep these local — don't commit them. Real setup/usage docs live in README.md.
+# Keep these local — don't commit them. Real setup/usage docs live in README.md and docs/.
 # See CLAUDE.md.
 /docs/superpowers/
 

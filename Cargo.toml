@@ -210,7 +210,7 @@ style-file = "style/main.scss"
 # Production only — develop with `LEPTOS_HASH_FILES=false cargo leptos watch`.
 # cargo-leptos hashes the site only on its first build, so under `watch` every
 # later edit serves fresh HTML against build #1's wasm, which kills hydration.
-# See the Develop section in README.md.
+# See docs/development.md.
 hash-files = true
 site-addr = "127.0.0.1:4000"
 reload-port = 4001
