@@ -486,8 +486,15 @@ a {
     border: none;
     color: inherit;
     font: inherit;
-    padding: 0.2rem 0.25rem 0.2rem 0.6rem;
+    padding: 0.2rem 0.6rem;
     cursor: pointer;
+  }
+
+  // A shown ★ supplies the box's right edge, so the label gives up most of its
+  // own. With push off the ★ is hidden, and the label keeps both sides, or it
+  // would sit off-centre in the box.
+  .tab-label:has(+ .sub-star:not(.event-hidden)) {
+    padding-right: 0.25rem;
   }
 
   .sub-star {
@@ -551,8 +558,14 @@ a {
     border: none;
     color: inherit;
     font: inherit;
-    padding: 0.1rem 0.15rem 0.1rem 0.55rem;
+    padding: 0.1rem 0.55rem;
     cursor: pointer;
+  }
+
+  // As in .tab-with-star. A chip can also have no ★ at all (a remembered
+  // selection whose league has left the view), which centres the same way.
+  .chip-label:has(+ .sub-star:not(.event-hidden)) {
+    padding-right: 0.15rem;
   }
 
   .sub-star {
