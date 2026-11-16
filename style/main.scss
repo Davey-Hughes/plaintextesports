@@ -878,10 +878,11 @@ a {
   transform: translateX(-4px);
 }
 
-// A wholly-finished league group has no ★. Its header keeps a blank slot the
-// width of the ★ so the title stays aligned with the starred groups. The slot is
-// a real `.sub-star` <button> (identical box to the actual ★, so the width — and
-// thus the title position — matches across browsers), just made invisible.
+// A league header with no ★ (a wholly-finished group, or any group with push
+// off) keeps a blank slot the width of the ★ so the title stays aligned with the
+// starred groups and the row times. The slot is a real `.sub-star` <button>
+// (identical box to the actual ★, so the width — and thus the title position —
+// matches across browsers), just made invisible.
 .league-head .league-head-spacer {
   visibility: hidden;
 }

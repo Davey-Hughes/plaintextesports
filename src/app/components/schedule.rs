@@ -1557,17 +1557,20 @@ pub(crate) fn render_day(
                 // For a single-edition league like MLB/NHL/NBA/NFL this is the
                 // same match set — and the same key — as its filter chip's ★,
                 // so the two stay in lock-step; for F1/WEC it spans every round.
-                // When the edition is wholly over the ★ is suppressed and the
-                // header just keeps a blank slot the width of the ★ (a
-                // transparent ☆), so the title stays aligned with the starred
-                // groups without drawing anything. The slot is only reserved
-                // when push is on (the ★ is hidden entirely otherwise).
-                let star = if lg_has_upcoming {
+                // With nothing to subscribe to (the edition is wholly over) or
+                // no push to deliver it, the header shows a blank slot the
+                // width of the ★ (a transparent ☆) instead. The slot is always
+                // reserved, as the rows reserve their ★/bar column whatever
+                // `push` is (see `MatchRow`): without it the title sits ~22px
+                // left of the row times, on the group's rail. That is also why
+                // push off gets the spacer, not the ★: a ★ with no VAPID key
+                // hides itself with `display: none`, slot and all.
+                let star = if lg_has_upcoming && push {
                     view! {
                         <SubscribeStar kind="league" sport=sport value=league_name.clone() />
                     }
                     .into_any()
-                } else if push {
+                } else {
                     // Invisible stand-in with the IDENTICAL box to a real ★
                     // (same <button class="sub-star">), so the title lines up
                     // exactly as in starred groups on every browser. A plain
@@ -1584,8 +1587,6 @@ pub(crate) fn render_day(
                         </button>
                     }
                     .into_any()
-                } else {
-                    ().into_any()
                 };
                 view! {
                     <div class="league-head">
@@ -2402,6 +2403,110 @@ mod tests {
         assert_ne!(
             twelve, twenty_four,
             "the formatted time must affect the day content hash"
+        );
+    }
+
+    /// Server-renders `d` through `render_day` the way the home and day pages
+    /// do (not event mode), with Web Push on or off. Provides the contexts the
+    /// head and row ★s read, and the `<Router>` the title link needs.
+    #[cfg(feature = "ssr")]
+    fn day_html(d: DayGroup, editions: HashSet<(Sport, String, String)>, push: bool) -> String {
+        use leptos_router::{components::Router, location::RequestUrl};
+        use std::collections::BTreeMap;
+        Owner::new().with(|| {
+            provide_context(RequestUrl::new("/"));
+            provide_context(RwSignal::new(push.then(|| "test-vapid-key".to_string())));
+            provide_context(Subscribed(RwSignal::new(HashSet::new())));
+            // The per-match ★s' starred set.
+            provide_context(RwSignal::new(HashSet::<String>::new()));
+            provide_context(Excluded(RwSignal::new(HashSet::new())));
+            provide_context(GlobalTimers(RwSignal::new(Vec::new())));
+            provide_context(Overrides(RwSignal::new(BTreeMap::new())));
+            let today = StoredValue::new(String::new());
+            view! { <Router>{render_day(d, false, today, &editions, false, false, push)}</Router> }
+                .to_html()
+        })
+    }
+
+    /// The opening tag of the element ahead of each league head's title (its ★
+    /// slot), or `None` for a head with nothing there.
+    #[cfg(feature = "ssr")]
+    fn head_slots(html: &str) -> Vec<Option<&str>> {
+        html.split(r#"<div class="league-head">"#)
+            .skip(1)
+            .map(|head| {
+                let title = head.find("<h3").expect("every league head has a title");
+                first_element_tag(&head[..title])
+            })
+            .collect()
+    }
+
+    /// The first element's opening tag in `html`, skipping the comments and
+    /// `<!>` markers the renderer leaves for hydration (they take no space).
+    #[cfg(feature = "ssr")]
+    fn first_element_tag(mut html: &str) -> Option<&str> {
+        loop {
+            let tag = &html[html.find('<')?..];
+            if let Some(comment) = tag.strip_prefix("<!--") {
+                html = &comment[comment.find("-->")? + 3..];
+            } else if let Some(marker) = tag.strip_prefix("<!") {
+                html = marker;
+            } else {
+                return Some(&tag[..=tag.find('>')?]);
+            }
+        }
+    }
+
+    /// The rows always reserve their leading ★/bar column (see `MatchRow`), so a
+    /// league title only lines up with the row times below it when its head
+    /// keeps the ★'s slot too. With push off a head used to have no slot at all:
+    /// the title sat ~22px left of the times, on top of the group's grey rail.
+    #[cfg(feature = "ssr")]
+    #[test]
+    fn league_heads_keep_the_star_slot_with_push_on_or_off() {
+        // A wholly finished edition, then one with a session still to come.
+        let mut over = group(Sport::Cs2, "IEM", "Cologne", 1);
+        for m in &mut over.matches {
+            m.status = MatchStatus::Finished;
+        }
+        let upcoming = group(Sport::Lol, "MSI", "2026", 2);
+        let editions: HashSet<_> = [(Sport::Lol, "MSI".to_string(), "2026".to_string())].into();
+        let d = DayGroup {
+            day_key: "2026-07-03".into(),
+            day_label: "Friday, July 3".into(),
+            leagues: vec![over, upcoming],
+        };
+        let spacer = |t: &&str| {
+            t.starts_with("<button") && t.contains(r#"class="sub-star league-head-spacer""#)
+        };
+
+        // Push on: the finished edition keeps the spacer and the upcoming one
+        // shows the live ★.
+        let on = day_html(d.clone(), editions.clone(), true);
+        let slots = head_slots(&on);
+        assert_eq!(slots.len(), 2, "two league heads in:\n{on}");
+        assert!(
+            slots[0].as_ref().is_some_and(spacer),
+            "push on: the finished head keeps the spacer, got {:?}",
+            slots[0],
+        );
+        assert!(
+            slots[1].is_some_and(|t| t.starts_with("<button")
+                && t.contains(r#"class="sub-star"#)
+                && !t.contains("league-head-spacer")
+                && !t.contains("event-hidden")),
+            "push on: the upcoming head shows the live ★, got {:?}",
+            slots[1],
+        );
+
+        // Push off: nothing to subscribe with, so both heads hold the invisible
+        // spacer. Leaving the slot empty, or hiding the ★ with `display: none`,
+        // would collapse it.
+        let off = day_html(d, editions, false);
+        let slots = head_slots(&off);
+        assert!(
+            slots.len() == 2 && slots.iter().all(|s| s.as_ref().is_some_and(spacer)),
+            "push off: every head must keep the ★ slot as the spacer, got {slots:?}",
         );
     }
 }
