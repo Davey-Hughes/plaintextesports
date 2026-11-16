@@ -49,7 +49,7 @@ jobs:
           # entry: two workflows racing to save the same key means whichever loses
           # keeps rebuilding anyway, and this one runs weekly against a target dir
           # the ci workflow would otherwise have to re-warm.
-          key: cargo-live-smoke-${{ hashFiles('**/Cargo.lock') }}
+          key: cargo-live-smoke-${{ hashFiles('**/Cargo.lock', 'rust-toolchain.toml') }}
           restore-keys: cargo-live-smoke-
       # --nocapture so the printed tournament/session counts land in the log --
       # when this does fail, that output is the first thing worth reading.

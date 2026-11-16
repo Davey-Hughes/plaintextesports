@@ -273,14 +273,11 @@ mod tests {
         let left = keys_vec(&recs);
         // Everything this page announced is gone…
         for gone in ["cs2-1", "st:77", "boxscore:cs2-1", "bn:77:0:0", "bs:77:1:2"] {
-            assert!(
-                !left.contains(&gone.to_string()),
-                "{gone} should be cleared"
-            );
+            assert!(!left.iter().any(|i| i == gone), "{gone} should be cleared");
         }
         // …and nothing else is.
         for kept in ["cs2-2", "st:99", "bn:99:0:0"] {
-            assert!(left.contains(&kept.to_string()), "{kept} should survive");
+            assert!(left.iter().any(|i| i == kept), "{kept} should survive");
         }
     }
 

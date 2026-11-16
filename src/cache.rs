@@ -6815,7 +6815,7 @@ mod tests {
         cap_and_group_streamers(&mut v);
         assert_eq!(v.len(), TFT_STREAMER_CAP, "fills up to the cap");
         let l = logins(&v);
-        assert!(l.contains(&"live1".to_string()) && l.contains(&"live2".to_string()));
+        assert!(l.iter().any(|i| i == "live1") && l.iter().any(|i| i == "live2"));
         assert_eq!(v.iter().filter(|s| !s.live).count(), 6, "rest are offline");
     }
 
@@ -6829,8 +6829,8 @@ mod tests {
         assert_eq!(v.len(), TFT_STREAMER_CAP, "overflow respects the cap");
         assert!(v.iter().all(|s| s.live));
         let l = logins(&v);
-        assert!(l.contains(&"live11".to_string()), "keeps the most-watched");
-        assert!(!l.contains(&"live0".to_string()), "drops the least-watched");
+        assert!(l.iter().any(|i| i == "live11"), "keeps the most-watched");
+        assert!(!l.iter().any(|i| i == "live0"), "drops the least-watched");
     }
 
     #[test]
@@ -6843,7 +6843,7 @@ mod tests {
         cap_and_group_streamers(&mut v);
         assert_eq!(v.len(), TFT_STREAMER_CAP);
         assert!(
-            logins(&v).contains(&"zz_live".to_string()),
+            logins(&v).iter().any(|i| i == "zz_live"),
             "the live channel survives the cap"
         );
     }
@@ -6860,7 +6860,7 @@ mod tests {
         cap_and_group_streamers(&mut v);
         assert_eq!(v.len(), TFT_STREAMER_CAP);
         assert!(
-            logins(&v).contains(&"quiet_live".to_string()),
+            logins(&v).iter().any(|i| i == "quiet_live"),
             "a live channel with no viewers still makes the cut"
         );
     }
@@ -9556,8 +9556,8 @@ mod tests {
             vec!["MSI".to_string()],
         );
         let k = league_keywords("Mid-Season Invitational", &al);
-        assert!(k.contains(&"msi".to_string()));
-        assert!(k.contains(&"mid-season invitational".to_string()));
+        assert!(k.iter().any(|i| i == "msi"));
+        assert!(k.iter().any(|i| i == "mid-season invitational"));
         // No alias → raw league token only (lowercased).
         assert_eq!(
             league_keywords("LEC", &std::collections::HashMap::new()),
@@ -9671,7 +9671,7 @@ mod tests {
             "top esports",
             "tes",
         ] {
-            assert!(kw.contains(&t.to_string()), "missing keyword {t}");
+            assert!(kw.iter().any(|i| i == t), "missing keyword {t}");
         }
         // Out-of-window, other edition, and other sport are all excluded.
         for t in [
@@ -9682,7 +9682,7 @@ mod tests {
             "natus vincere",
             "faze",
         ] {
-            assert!(!kw.contains(&t.to_string()), "should not include {t}");
+            assert!(!kw.iter().any(|i| i == t), "should not include {t}");
         }
     }
 
@@ -9708,11 +9708,11 @@ mod tests {
         present.insert("official".to_string());
         let out = attribute_costreams(&scan, &keywords, &present, 300, 6);
         let logins: Vec<String> = out.iter().filter_map(|s| login_of(&s.url)).collect();
-        assert!(logins.contains(&"caedrel".to_string()));
-        assert!(logins.contains(&"tagonly".to_string()));
-        assert!(!logins.contains(&"tiny".to_string())); // viewer floor
-        assert!(!logins.contains(&"unrelated".to_string())); // no keyword
-        assert!(!logins.contains(&"official".to_string())); // dedup
+        assert!(logins.iter().any(|i| i == "caedrel"));
+        assert!(logins.iter().any(|i| i == "tagonly"));
+        assert!(!logins.iter().any(|i| i == "tiny")); // viewer floor
+        assert!(!logins.iter().any(|i| i == "unrelated")); // no keyword
+        assert!(!logins.iter().any(|i| i == "official")); // dedup
         assert!(
             out.iter()
                 .all(|s| s.group == "costream" && s.live && !s.official)

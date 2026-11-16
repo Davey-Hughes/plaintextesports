@@ -6,9 +6,12 @@
 #    ubuntu-latest had it preinstalled and `rustup show` was enough)
 #  - Swatinem/rust-cache is a GitHub-marketplace action; caching is done with
 #    actions/cache and explicit paths instead. Consequence: an entry is written
-#    once per Cargo.lock hash and never refreshed, so the dep artifacts stay
-#    cached but this crate's own artifacts rebuild each run. The dep tree is the
-#    expensive part, so that is the bulk of the win either way.
+#    once per Cargo.lock + rust-toolchain.toml hash and never refreshed, so the
+#    dep artifacts stay cached but this crate's own artifacts rebuild each run.
+#    The dep tree is the expensive part, so that is the bulk of the win either
+#    way. The toolchain file is in the key because nothing refreshes an entry:
+#    keyed on Cargo.lock alone, a toolchain bump restores artifacts the new
+#    rustc cannot reuse, and every run rebuilds the tree until the lock changes.
 #  - the image is built with `docker buildx build --push` against the host Docker
 #    daemon (the runner mounts its socket in), not docker/build-push-action
 #  - the registry is forge.daveynet.xyz, authed with the REGISTRY_USER /
@@ -59,7 +62,7 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: cargo-ssr-${{ hashFiles('**/Cargo.lock') }}
+          key: cargo-ssr-${{ hashFiles('**/Cargo.lock', 'rust-toolchain.toml') }}
           restore-keys: cargo-ssr-
       - name: Format
         run: cargo fmt --all --check
@@ -123,7 +126,7 @@ jobs:
             target
           # Its own key namespace: the whole dep tree compiles under a different
           # feature set here, so these artifacts share nothing with the `rust` job's.
-          key: cargo-hydrate-${{ hashFiles('**/Cargo.lock') }}
+          key: cargo-hydrate-${{ hashFiles('**/Cargo.lock', 'rust-toolchain.toml') }}
           restore-keys: cargo-hydrate-
       # The `rust` job's clippy runs `--features ssr`, which never compiles the
       # client-only modules — src/app/storage.rs is behind #[cfg(feature =
@@ -188,7 +191,7 @@ jobs:
             ~/.cargo/bin/cargo-leptos
           # Its own key namespace: this job compiles the wasm32 target under the
           # wasm-release profile, which the `rust` job above never builds.
-          key: cargo-wasm-${{ hashFiles('**/Cargo.lock') }}
+          key: cargo-wasm-${{ hashFiles('**/Cargo.lock', 'rust-toolchain.toml') }}
           restore-keys: cargo-wasm-
       # Same installer the Dockerfile uses, so CI and the image agree on version.
       # Pinned, not `latest`. The Dockerfile pins the same version, which is what

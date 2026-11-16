@@ -379,7 +379,7 @@ mod tests {
         // The schedule page embeds the full 20-tournament season.
         assert_eq!(ids.len(), 20);
         // Tactician's Crown is in the list.
-        assert!(ids.contains(&"116323184504995859".to_string()));
+        assert!(ids.iter().any(|i| i == "116323184504995859"));
         // Ids are unique (dedup held).
         let mut uniq = ids.clone();
         uniq.sort();

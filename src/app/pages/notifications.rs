@@ -1379,11 +1379,7 @@ mod tests {
         let decoded = decode_backup(&encode_backup(&b)).expect("decodes");
         assert_eq!(decoded, b);
         // Tab/space-bearing keys (team names) survive the framing.
-        assert!(
-            decoded
-                .subs
-                .contains(&"team|mlb|Detroit Tigers".to_string())
-        );
+        assert!(decoded.subs.iter().any(|i| i == "team|mlb|Detroit Tigers"));
         // A bad prefix is rejected.
         assert!(decode_backup("nope").is_none());
         assert!(decode_backup("pte1:!!!notbase64").is_none());
