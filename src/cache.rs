@@ -1436,7 +1436,7 @@ fn session_result_plan(rows: &[NormalizedMatch]) -> Vec<(String, crate::types::M
                     .is_some_and(|r| !r.session_id.is_empty())
         })
         .collect();
-    sessions.sort_by_key(|m| m.begin_at);
+    sessions.sort_by(|a, b| by_schedule_order(*a, *b));
     sessions
         .into_iter()
         .map(|m| (m.team_a.label.clone(), m.motor_result_ref.clone().unwrap()))
@@ -2042,6 +2042,8 @@ pub fn spawn_poller() {
             // Re-filter against the current tier config so a since-narrowed config
             // (or a new allow/deny entry) is honored on already-stored rows.
             retain_configured_tiers(&mut stored, cfg);
+            // The DB sorts by start alone; match the order every poll leaves.
+            stored.sort_by(by_schedule_order);
             if !stored.is_empty() {
                 let fetched = crate::store::load_fetched_at(conn)
                     .and_then(DateTime::from_timestamp_millis)
@@ -2948,7 +2950,7 @@ fn apply_poll(
         }
         match crate::store::load_all(conn) {
             Ok(mut all) => {
-                all.sort_by_key(|m| m.begin_at);
+                all.sort_by(by_schedule_order);
                 // Re-filter against the current tier config (catches rows stored
                 // under a wider prior config, and new allow/deny entries).
                 retain_configured_tiers(&mut all, config());
@@ -3044,7 +3046,7 @@ fn merge_matches(
     }
     // Mirror the DB prune so memory-only mode doesn't accumulate stale matches.
     fresh.retain(|m| m.begin_at.timestamp_millis() >= cutoff_ms);
-    fresh.sort_by_key(|m| m.begin_at);
+    fresh.sort_by(by_schedule_order);
     fresh
 }
 
@@ -3110,7 +3112,7 @@ fn apply_past(
             .into_iter()
             .filter(|m| m.begin_at.timestamp_millis() >= cutoff_ms),
     );
-    snap.matches.sort_by_key(|m| m.begin_at);
+    snap.matches.sort_by(by_schedule_order);
 }
 
 /// How often to re-fetch a past day's scores, by age in whole days vs today
@@ -3672,13 +3674,77 @@ fn day_span_label(first: DateTime<Tz>, last: DateTime<Tz>) -> String {
     }
 }
 
-/// Group already-time-sorted views into per-day buckets, and within each day into
-/// per-league groups (leagues ordered by their earliest match). A league group's
-/// `bo` is set only when every match in it shares the same best-of. When `chain`
-/// is set, a run of matches that crosses local midnight without a [`CHAIN_GAP_MS`]
-/// break stays in one group (a late-night slate reads as one night); otherwise a
-/// new group starts on every calendar-date change.
-fn group_by(views: Vec<MatchView>, tz: Tz, chain: bool) -> Vec<DayGroup> {
+/// Where a sport's events sit within a day: CS2, LoL, the traditional sports,
+/// then TFT. Also the sport step of [`by_schedule_order`], so a flat list breaks
+/// a same-start tie across sports the way the day groups are laid out.
+fn sport_rank(sport: Sport) -> u8 {
+    match sport {
+        Sport::Cs2 => 0,
+        Sport::Lol => 1,
+        Sport::Mlb => 2,
+        Sport::Nhl => 3,
+        Sport::Nba => 4,
+        Sport::Nfl => 5,
+        Sport::Soccer => 6,
+        Sport::Motorsport => 7,
+        // TFT is esports; it only co-occurs with CS2/LoL (the esports/
+        // traditional split keeps the two modes apart), so it sorts after
+        // them here without disturbing the traditional order.
+        Sport::Tft => 8,
+    }
+}
+
+/// A match row, keyed for [`by_schedule_order`].
+trait ScheduleRow {
+    /// Start (unix ms), sport rank, league, edition, id.
+    fn schedule_key(&self) -> (i64, u8, &str, &str, i64);
+}
+
+impl ScheduleRow for NormalizedMatch {
+    fn schedule_key(&self) -> (i64, u8, &str, &str, i64) {
+        (
+            self.begin_at.timestamp_millis(),
+            sport_rank(self.sport),
+            &self.league,
+            &self.series_name,
+            self.id,
+        )
+    }
+}
+
+impl ScheduleRow for MatchView {
+    fn schedule_key(&self) -> (i64, u8, &str, &str, i64) {
+        (
+            self.begin_at_ms,
+            sport_rank(self.sport),
+            &self.league,
+            &self.series_name,
+            self.id,
+        )
+    }
+}
+
+/// The one order for every list of matches sorted by start time: start, then
+/// sport, league, edition and id. Start alone leaves ties (three regional finals
+/// all opening at 05:00) in whatever order the rows arrived, and that order isn't
+/// stable: PandaScore's fetch comes out of a `HashMap`, and the TFT/WRC day
+/// collapse regroups rows through one on every request. `(id, sport)` is unique,
+/// so no two rows tie on this key.
+fn by_schedule_order<T: ScheduleRow>(a: &T, b: &T) -> std::cmp::Ordering {
+    a.schedule_key().cmp(&b.schedule_key())
+}
+
+/// Group views into per-day buckets, and within each day into per-league groups
+/// (leagues ordered by their earliest match). A league group's `bo` is set only
+/// when every match in it shares the same best-of. When `chain` is set, a run of
+/// matches that crosses local midnight without a [`CHAIN_GAP_MS`] break stays in
+/// one group (a late-night slate reads as one night); otherwise a new group
+/// starts on every calendar-date change.
+fn group_by(mut views: Vec<MatchView>, tz: Tz, chain: bool) -> Vec<DayGroup> {
+    // Groups open in the order their first row is met, so sort here rather than
+    // trust the caller: with a start-only sort, events that start together would
+    // be laid out in the order their rows happened to arrive.
+    views.sort_by(by_schedule_order);
     let mut days: Vec<DayGroup> = Vec::new();
     let mut prev: Option<(i64, String)> = None; // (begin_at_ms, day_key) of the last view
     for v in views {
@@ -3763,29 +3829,14 @@ fn group_by(views: Vec<MatchView>, tz: Tz, chain: bool) -> Vec<DayGroup> {
             });
         }
         // Keep each sport's events together within the day (CS2, then LoL).
-        // Stable sort preserves the time order within a sport.
+        // Stable sort preserves the schedule order within a sport.
         day.leagues
-            .sort_by_key(|lg| match lg.matches.first().map(|m| m.sport) {
-                Some(Sport::Cs2) => 0u8,
-                Some(Sport::Lol) => 1,
-                Some(Sport::Mlb) => 2,
-                Some(Sport::Nhl) => 3,
-                Some(Sport::Nba) => 4,
-                Some(Sport::Nfl) => 5,
-                Some(Sport::Soccer) => 6,
-                Some(Sport::Motorsport) => 7,
-                // TFT is esports; it only co-occurs with CS2/LoL (the esports/
-                // traditional split keeps the two modes apart), so it sorts after
-                // them here without disturbing the traditional order.
-                Some(Sport::Tft) => 8,
-                None => 9,
-            });
+            .sort_by_key(|lg| lg.matches.first().map_or(u8::MAX, |m| sport_rank(m.sport)));
     }
     days
 }
 
-/// Group time-sorted views into per-day buckets (one calendar day each). See
-/// [`group_by`].
+/// Group views into per-day buckets (one calendar day each). See [`group_by`].
 #[doc(hidden)]
 #[must_use]
 pub fn group_days(views: Vec<MatchView>, tz: Tz) -> Vec<DayGroup> {
@@ -3871,7 +3922,7 @@ fn collapse_days(
     // rows in window — the common case): just keep the input time-sorted.
     if !views.iter().any(&is_target) {
         let mut views = views;
-        views.sort_by_key(|m| m.begin_at_ms);
+        views.sort_by(by_schedule_order);
         return views;
     }
 
@@ -3891,7 +3942,7 @@ fn collapse_days(
     }
 
     for ((event, day), mut sessions) in groups {
-        sessions.sort_by_key(|m| m.begin_at_ms);
+        sessions.sort_by(by_schedule_order);
         // The group came from a non-empty push, so a first element exists.
         let mut rep = sessions[0].clone();
         rep.team_a.label = label_of(&sessions, &event, &day);
@@ -3909,7 +3960,9 @@ fn collapse_days(
         out.push(rep);
     }
 
-    out.sort_by_key(|m| m.begin_at_ms);
+    // `groups` iterates in a different order on every call, so ties need the
+    // full order, not just the start.
+    out.sort_by(by_schedule_order);
     out
 }
 
@@ -4500,7 +4553,7 @@ pub fn notifications_view(
             stale.push(uid);
         }
     }
-    upcoming.sort_by_key(|v| v.begin_at_ms);
+    upcoming.sort_by(by_schedule_order);
     crate::types::NotificationsView { upcoming, stale }
 }
 
@@ -4922,14 +4975,22 @@ pub fn league_stages(league: &str) -> Vec<(i64, Sport)> {
     stages_matching(|m| m.league == league)
 }
 
-/// Distinct `(tournament id, sport)` of the cached matches passing `pred`, ordered
-/// by when each stage started (its earliest match). Capturing the sport here saves
-/// [`event_info`] a per-stage snapshot scan to look it up.
+/// [`stages_in`] over the cached matches.
 fn stages_matching(pred: impl Fn(&NormalizedMatch) -> bool) -> Vec<(i64, Sport)> {
     let snap = SNAPSHOT.read().unwrap_or_else(PoisonError::into_inner);
+    stages_in(&snap.matches, pred)
+}
+
+/// Distinct `(tournament id, sport)` of the `matches` passing `pred`, ordered by
+/// when each stage started (its earliest match). Capturing the sport here saves
+/// [`event_info`] a per-stage snapshot scan to look it up.
+fn stages_in(
+    matches: &[NormalizedMatch],
+    pred: impl Fn(&NormalizedMatch) -> bool,
+) -> Vec<(i64, Sport)> {
     let mut earliest: std::collections::HashMap<i64, (i64, Sport)> =
         std::collections::HashMap::new();
-    for m in &snap.matches {
+    for m in matches {
         if pred(m)
             && let Some(tid) = m.tournament_id
         {
@@ -4941,7 +5002,9 @@ fn stages_matching(pred: impl Fn(&NormalizedMatch) -> bool) -> Vec<(i64, Sport)>
         }
     }
     let mut stages: Vec<(i64, (i64, Sport))> = earliest.into_iter().collect();
-    stages.sort_by_key(|&(_, (ms, _))| ms);
+    // Stages that open together (two groups of a group stage) are common, and
+    // `earliest` iterates in a different order every call: break the tie on id.
+    stages.sort_by_key(|&(tid, (ms, _))| (ms, tid));
     stages
         .into_iter()
         .map(|(tid, (_, sport))| (tid, sport))
@@ -6584,9 +6647,8 @@ fn demo_matches(now: DateTime<Utc>) -> Vec<NormalizedMatch> {
         ));
         id += 1;
     }
-    // Match the live poll path (which loads DB-sorted), so day grouping — which
-    // relies on time order — produces one group per day.
-    out.sort_by_key(|m| m.begin_at);
+    // Leave the snapshot in the order the live poll path leaves it.
+    out.sort_by(by_schedule_order);
     out
 }
 
@@ -8176,6 +8238,215 @@ mod tests {
             crate::types::full_event_name(&cologne.league, &cologne.series_name),
             "IEM Cologne Major"
         );
+    }
+
+    /// Fisher-Yates driven by a fixed xorshift seed, so the "random" order is the
+    /// same on every run.
+    fn shuffled<T>(mut v: Vec<T>, mut seed: u64) -> Vec<T> {
+        for i in (1..v.len()).rev() {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            let j = seed % u64::try_from(i + 1).unwrap();
+            v.swap(i, usize::try_from(j).unwrap());
+        }
+        v
+    }
+
+    /// Three TFT Regional Finals all open at 05:00, as on 2026-10-23. The day
+    /// grouping opens a group the first time it meets an event, so if it trusted
+    /// its input order, events that start together would come out in whatever
+    /// order the rows arrived in, and that order changes between polls.
+    #[test]
+    fn group_days_orders_events_that_start_together_the_same_whatever_the_input_order() {
+        let ms = |h| {
+            Tz::UTC
+                .with_ymd_and_hms(2026, 10, 23, h, 0, 0)
+                .unwrap()
+                .timestamp_millis()
+        };
+        let mk = |id: i64, at_ms: i64, sport: Sport, league: &str, series: &str| MatchView {
+            id,
+            sport,
+            series_name: series.into(),
+            ..chain_view(at_ms, league)
+        };
+        // Ids deliberately out of name order, so an id-only tiebreak fails too.
+        let listed = vec![
+            mk(103, ms(5), Sport::Tft, "TFT", "Regional Finals AMER 2026"),
+            mk(101, ms(5), Sport::Tft, "TFT", "Regional Finals EMEA 2026"),
+            mk(102, ms(5), Sport::Tft, "TFT", "Regional Finals APAC 2026"),
+            // A tie across sports, and two rows of one event at the same time.
+            mk(203, ms(5), Sport::Cs2, "IEM", "Chengdu 2026"),
+            mk(202, ms(9), Sport::Cs2, "IEM", "Chengdu 2026"),
+            mk(201, ms(9), Sport::Cs2, "IEM", "Chengdu 2026"),
+            // Two events of one sport at the same time.
+            mk(302, ms(10), Sport::Lol, "LEC", "Finals 2026"),
+            mk(301, ms(10), Sport::Lol, "LCK", "Finals 2026"),
+            mk(303, ms(11), Sport::Lol, "LCK", "Finals 2026"),
+        ];
+        let reversed: Vec<MatchView> = listed.iter().rev().cloned().collect();
+        let mixed = shuffled(listed.clone(), 0x5EED_2026_1023);
+        let ids = |v: &[MatchView]| v.iter().map(|m| m.id).collect::<Vec<_>>();
+        assert_ne!(ids(&mixed), ids(&listed), "the seed must actually reorder");
+        assert_ne!(
+            ids(&mixed),
+            ids(&reversed),
+            "the seed must actually reorder"
+        );
+        // What the views used to arrive as: sorted by start alone, so rows that
+        // start together kept the order they came in. Then any order at all.
+        let by_start = |mut v: Vec<MatchView>| {
+            v.sort_by_key(|m| m.begin_at_ms);
+            v
+        };
+        let inputs = [
+            by_start(reversed.clone()),
+            by_start(mixed.clone()),
+            reversed,
+            mixed,
+        ];
+        // Each event as "league/edition" with its row ids, in display order.
+        let layout = |days: &[DayGroup]| -> Vec<(String, Vec<i64>)> {
+            days.iter()
+                .flat_map(|d| &d.leagues)
+                .map(|lg| {
+                    (
+                        format!("{}/{}", lg.league, lg.series_name),
+                        ids(&lg.matches),
+                    )
+                })
+                .collect()
+        };
+
+        for group in [group_days, group_chains] {
+            let want = group(listed.clone(), Tz::UTC);
+            for input in &inputs {
+                let got = group(input.clone(), Tz::UTC);
+                assert_eq!(layout(&got), layout(&want), "input {:?}", ids(input));
+                assert_eq!(got, want);
+            }
+            assert_eq!(want.len(), 1);
+            assert_eq!(
+                layout(&want),
+                [
+                    ("IEM/Chengdu 2026".to_string(), vec![203, 201, 202]),
+                    ("LCK/Finals 2026".to_string(), vec![301, 303]),
+                    ("LEC/Finals 2026".to_string(), vec![302]),
+                    ("TFT/Regional Finals AMER 2026".to_string(), vec![103]),
+                    ("TFT/Regional Finals APAC 2026".to_string(), vec![102]),
+                    ("TFT/Regional Finals EMEA 2026".to_string(), vec![101]),
+                ]
+            );
+        }
+    }
+
+    /// The day page folds each TFT event-day into one row through a `HashMap`,
+    /// which iterates in a different order every time one is built. So the same
+    /// data, collapsed twice, must still list events that start together in
+    /// one order.
+    #[test]
+    fn collapse_tft_days_orders_events_that_start_together_the_same_on_every_call() {
+        let at = "2026-10-23T05:00:00Z";
+        let snap = Snapshot {
+            matches: vec![
+                tft_session(3, "Oct 23 – Nov 2", "Regional Finals AMER 2026", at),
+                tft_session(1, "Oct 23 – Nov 1", "Regional Finals EMEA 2026", at),
+                tft_session(2, "Oct 23 – Nov 2", "Regional Finals APAC 2026", at),
+            ],
+            fetched_at: Utc::now(),
+            stale: false,
+            using_fixture: false,
+        };
+        let now = "2026-10-20T00:00:00Z".parse::<DateTime<Utc>>().unwrap();
+        let views: Vec<MatchView> = snap
+            .matches
+            .iter()
+            .map(|m| to_view(m, Tz::UTC, now, true))
+            .collect();
+        for call in 0..12 {
+            let out = collapse_tft_days(views.clone(), Tz::UTC, &snap);
+            let order: Vec<&str> = out.iter().map(|m| m.series_name.as_str()).collect();
+            assert_eq!(
+                order,
+                [
+                    "Regional Finals AMER 2026",
+                    "Regional Finals APAC 2026",
+                    "Regional Finals EMEA 2026",
+                ],
+                "call {call}"
+            );
+        }
+    }
+
+    /// PandaScore's fetch comes out of a `HashMap`, so the rows reach the
+    /// snapshot in a different order each poll. Sorting them must not keep that
+    /// order for rows that start together.
+    #[test]
+    fn merge_matches_orders_same_start_matches_the_same_whatever_the_fetch_order() {
+        let t = Utc.with_ymd_and_hms(2026, 10, 23, 5, 0, 0).unwrap();
+        let mk = |id: i64, begin: DateTime<Utc>, sport: Sport, league: &str| {
+            let mut m = at(begin, MatchStatus::Upcoming);
+            m.id = id;
+            m.sport = sport;
+            m.league = league.into();
+            m
+        };
+        let fetched = vec![
+            mk(5, t, Sport::Cs2, "IEM"),
+            mk(9, t, Sport::Cs2, "BLAST"),
+            mk(1, t, Sport::Lol, "LCK"),
+            mk(7, t - Duration::hours(1), Sport::Lol, "LEC"),
+            mk(4, t, Sport::Cs2, "IEM"),
+        ];
+        let reversed: Vec<NormalizedMatch> = fetched.iter().rev().cloned().collect();
+        let mixed = shuffled(fetched.clone(), 0x5EED_2026_1023);
+        let cutoff = (t - Duration::days(30)).timestamp_millis();
+        for fresh in [fetched, reversed, mixed] {
+            let merged = merge_matches(&[], fresh, &[], cutoff);
+            let ids: Vec<i64> = merged.iter().map(|m| m.id).collect();
+            // Start, then sport (CS2 before LoL), then league, then id.
+            assert_eq!(ids, [7, 9, 4, 5, 1]);
+        }
+    }
+
+    /// An event page lists its stages in start order. Two stages often open
+    /// together (two groups of a group stage), and they're gathered in a
+    /// `HashMap`, so they need a tiebreak to keep one order between renders.
+    #[test]
+    fn stages_in_orders_stages_that_open_together_by_id() {
+        let t = Utc.with_ymd_and_hms(2026, 10, 23, 5, 0, 0).unwrap();
+        let mk = |tid: i64, begin: DateTime<Utc>| {
+            let mut m = at(begin, MatchStatus::Upcoming);
+            m.id = tid * 10;
+            m.tournament_id = Some(tid);
+            m
+        };
+        let listed = vec![
+            mk(40, t),
+            mk(10, t),
+            mk(50, t - Duration::days(1)),
+            mk(30, t),
+            mk(20, t),
+            mk(20, t + Duration::hours(2)),
+        ];
+        let reversed: Vec<NormalizedMatch> = listed.iter().rev().cloned().collect();
+        let mixed = shuffled(listed.clone(), 0x5EED_2026_1023);
+        for matches in [listed, reversed, mixed] {
+            for call in 0..4 {
+                assert_eq!(
+                    stages_in(&matches, |_| true),
+                    [
+                        (50, Sport::Cs2),
+                        (10, Sport::Cs2),
+                        (20, Sport::Cs2),
+                        (30, Sport::Cs2),
+                        (40, Sport::Cs2),
+                    ],
+                    "call {call}"
+                );
+            }
+        }
     }
 
     #[test]
