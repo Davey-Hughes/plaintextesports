@@ -4,8 +4,10 @@
 //! returns an empty map, so the page never depends on it.
 
 use crate::config::config;
+use crate::feed::utc_date;
 use crate::http::USER_AGENT;
-use chrono::{DateTime, Duration, NaiveDate, Utc};
+use jiff::civil::Date;
+use jiff::{SignedDuration, Timestamp};
 use once_cell::sync::Lazy;
 use serde::Deserialize;
 use std::collections::HashMap;
@@ -31,8 +33,8 @@ static CLIENT: Lazy<reqwest::Client> = Lazy::new(|| {
         .expect("failed to build the YouTube HTTP client")
 });
 /// (`utc_date`, `units_used_today`) — resets on date change.
-static BUDGET: Lazy<RwLock<(NaiveDate, u32)>> =
-    Lazy::new(|| RwLock::new((Utc::now().date_naive(), 0)));
+static BUDGET: Lazy<RwLock<(Date, u32)>> =
+    Lazy::new(|| RwLock::new((utc_date(Timestamp::now()), 0)));
 /// `@handle` → `UC…` channel id, cached forever (a channel id is permanent).
 static ID_CACHE: Lazy<RwLock<HashMap<String, String>>> = Lazy::new(|| RwLock::new(HashMap::new()));
 /// Video id → `UC…` channel id. Bounded, since video ids are ephemeral (one per
@@ -42,7 +44,7 @@ static VIDEO_CACHE: Lazy<RwLock<HashMap<String, String>>> =
 const VIDEO_CACHE_CAP: usize = 512;
 /// Single-channel live-status cache (~90s TTL) for the WEC watch-line badge, so
 /// repeated views during a session don't re-hit the API.
-type LiveEntry = (DateTime<Utc>, Option<LiveInfo>);
+type LiveEntry = (Timestamp, Option<LiveInfo>);
 static LIVE_CACHE: Lazy<RwLock<HashMap<String, LiveEntry>>> =
     Lazy::new(|| RwLock::new(HashMap::new()));
 const LIVE_CACHE_TTL_SECS: i64 = 90;
@@ -204,7 +206,7 @@ pub fn is_channel_url(url: &str) -> bool {
 /// Try to reserve `n` units of today's budget; false (and reserves nothing) if it
 /// would exceed the ceiling. Resets the counter when the UTC date rolls over.
 fn spend(n: u32) -> bool {
-    let today = Utc::now().date_naive();
+    let today = utc_date(Timestamp::now());
     let mut g = BUDGET.write().unwrap_or_else(PoisonError::into_inner);
     if g.0 != today {
         *g = (today, 0);
@@ -218,7 +220,7 @@ fn spend(n: u32) -> bool {
 
 #[cfg(test)]
 fn reset_budget_for_test() {
-    *BUDGET.write().unwrap_or_else(PoisonError::into_inner) = (Utc::now().date_naive(), 0);
+    *BUDGET.write().unwrap_or_else(PoisonError::into_inner) = (utc_date(Timestamp::now()), 0);
 }
 
 #[derive(Deserialize)]
@@ -442,7 +444,7 @@ pub async fn live_one(ident: &str) -> Option<LiveInfo> {
     {
         let g = LIVE_CACHE.read().unwrap_or_else(PoisonError::into_inner);
         if let Some((at, v)) = g.get(ident)
-            && *at + Duration::seconds(LIVE_CACHE_TTL_SECS) > Utc::now()
+            && *at + SignedDuration::from_secs(LIVE_CACHE_TTL_SECS) > Timestamp::now()
         {
             return v.clone();
         }
@@ -452,7 +454,7 @@ pub async fn live_one(ident: &str) -> Option<LiveInfo> {
     LIVE_CACHE
         .write()
         .unwrap_or_else(PoisonError::into_inner)
-        .insert(ident.to_string(), (Utc::now(), v.clone()));
+        .insert(ident.to_string(), (Timestamp::now(), v.clone()));
     v
 }
 

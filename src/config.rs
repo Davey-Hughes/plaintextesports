@@ -2,8 +2,8 @@
 //! (server-only).
 
 use crate::types::{SiteLink, Sport};
-use chrono::{DateTime, Months, Utc};
-use chrono_tz::Tz;
+use jiff::tz::TimeZone;
+use jiff::{Timestamp, ToSpan};
 use once_cell::sync::Lazy;
 use serde::Deserialize;
 use std::collections::HashMap;
@@ -295,7 +295,7 @@ pub struct Config {
     /// free tier's 250/day; the poll intervals normally keep usage well below it).
     pub ocblacktop_daily_cap: u64,
     /// Timezone for formatting times and grouping by day.
-    pub tz: Tz,
+    pub tz: TimeZone,
     /// Poll interval when nothing is live or about to start. Schedules change
     /// slowly, so this can be generous.
     pub idle_poll: Duration,
@@ -360,14 +360,15 @@ impl Config {
     /// The oldest match start to keep/backfill: `now - archive_months` (calendar
     /// months, so month-length differences are handled correctly).
     #[must_use]
-    pub fn archive_cutoff(&self, now: DateTime<Utc>) -> DateTime<Utc> {
+    pub fn archive_cutoff(&self, now: Timestamp) -> Timestamp {
         // `from_env` clamps this to 1..=3, so the conversion cannot fail today.
-        // Falling back to the config default rather than `as` matters if that
-        // ever stops holding: a negative `archive_months` would wrap to a huge
-        // u32, `checked_sub_months` would return None, and the `unwrap_or(now)`
-        // below would silently set the cutoff to *now* — pruning all history.
+        // Falling back to the config default matters if that ever stops
+        // holding: subtracting a negative count would *add* months, putting the
+        // cutoff in the future and pruning all history.
         let months = u32::try_from(self.archive_months).unwrap_or(1);
-        now.checked_sub_months(Months::new(months)).unwrap_or(now)
+        now.to_zoned_datetime(TimeZone::UTC)
+            .checked_sub(i64::from(months).months())
+            .map_or(now, |z| z.timestamp())
     }
 }
 
@@ -600,9 +601,14 @@ impl Config {
             Duration::from_secs(secs("OCBLACKTOP_STANDINGS_POLL_SECS", 259_200, 3600));
         let ocblacktop_daily_cap = secs("OCBLACKTOP_DAILY_CAP", 240, 0);
 
+        // `feed::zone` falls back to the bundled tzdb, so the default zone is
+        // there whatever the image ships in /usr/share/zoneinfo.
         let tz = get("DISPLAY_TZ")
-            .and_then(|s| s.parse::<Tz>().ok())
-            .unwrap_or(chrono_tz::America::Los_Angeles);
+            .and_then(|s| crate::feed::zone(&s))
+            .unwrap_or_else(|| {
+                crate::feed::zone("America/Los_Angeles")
+                    .expect("the bundled tzdb has America/Los_Angeles")
+            });
 
         // Idle base (default 20 min); active burst when live/imminent (1 min).
         let idle_poll = Duration::from_secs(secs("POLL_INTERVAL_SECS", 1200, 60));
@@ -782,7 +788,7 @@ mod tests {
         assert_eq!(c.ocblacktop_idle_poll.as_secs(), 172_800);
         assert_eq!(c.ocblacktop_standings_poll.as_secs(), 259_200);
         assert_eq!(c.ocblacktop_daily_cap, 240);
-        assert_eq!(c.tz, chrono_tz::America::Los_Angeles);
+        assert_eq!(c.tz.iana_name(), Some("America/Los_Angeles"));
         assert_eq!(c.idle_poll.as_secs(), 1200);
         assert_eq!(c.active_poll.as_secs(), 60);
         assert_eq!(c.live_poll.as_secs(), 10);
@@ -928,11 +934,11 @@ mod tests {
 
     #[test]
     fn archive_cutoff_subtracts_calendar_months() {
-        let now = chrono::TimeZone::with_ymd_and_hms(&Utc, 2026, 6, 21, 12, 0, 0).unwrap();
+        let now = "2026-06-21T12:00:00Z".parse::<Timestamp>().unwrap();
         let c = cfg(&[("ARCHIVE_MONTHS", "1")]);
         assert_eq!(
             c.archive_cutoff(now),
-            chrono::TimeZone::with_ymd_and_hms(&Utc, 2026, 5, 21, 12, 0, 0).unwrap()
+            "2026-05-21T12:00:00Z".parse::<Timestamp>().unwrap()
         );
     }
 
@@ -980,7 +986,7 @@ mod tests {
         ]);
         assert_eq!(c.token.as_deref(), Some("abc"));
         assert_eq!(c.ocblacktop_token.as_deref(), Some("ocb-key"));
-        assert_eq!(c.tz, chrono_tz::Europe::London);
+        assert_eq!(c.tz.iana_name(), Some("Europe/London"));
         assert_eq!(c.active_poll.as_secs(), 120);
         assert_eq!(c.db_path, "/tmp/x.db");
     }
@@ -996,7 +1002,7 @@ mod tests {
         ]);
         assert_eq!(c.idle_poll.as_secs(), 1200);
         assert_eq!(c.upcoming_days, 30);
-        assert_eq!(c.tz, chrono_tz::America::Los_Angeles);
+        assert_eq!(c.tz.iana_name(), Some("America/Los_Angeles"));
         assert_eq!(c.active_poll.as_secs(), 60);
         assert_eq!(c.live_poll.as_secs(), 10);
     }
@@ -1161,7 +1167,7 @@ mod tests {
         assert!(c.demo);
         assert_eq!(c.upcoming_days, 14);
         assert_eq!(c.live_poll.as_secs(), 6);
-        assert_eq!(c.tz, chrono_tz::Europe::London);
+        assert_eq!(c.tz.iana_name(), Some("Europe/London"));
         assert_eq!(c.token.as_deref(), Some("tok"));
         assert!(c.push_enabled());
     }

@@ -15,10 +15,13 @@
 //! single date-only placeholder. WRC rallies stay one row per rally (the feed
 //! gives only a date, no per-stage times).
 
+use crate::feed::utc_date;
 use crate::feed::{NormalizedMatch, NormalizedTeam};
 use crate::http::USER_AGENT;
 use crate::types::{MatchStatus, MotorStandingRow, MotorStandingTable, MotorStandings, Sport};
-use chrono::{DateTime, Datelike, Duration, NaiveDate, Utc};
+use jiff::civil::{Date, Time};
+use jiff::tz::TimeZone;
+use jiff::{SignedDuration, Timestamp};
 use serde::Deserialize;
 
 const BASE: &str = "https://api.ocblacktop.com/v1";
@@ -59,12 +62,7 @@ fn flag(two_code: &str) -> String {
 
 /// Map the API's status string to ours; for a vague "scheduled"/unknown, infer
 /// from the event window so an in-progress or just-finished event reads right.
-fn status_of(
-    api: &str,
-    begin: DateTime<Utc>,
-    end: DateTime<Utc>,
-    now: DateTime<Utc>,
-) -> MatchStatus {
+fn status_of(api: &str, begin: Timestamp, end: Timestamp, now: Timestamp) -> MatchStatus {
     match api.to_ascii_lowercase().as_str() {
         "completed" | "finished" | "final" => MatchStatus::Finished,
         "cancelled" | "canceled" | "postponed" => MatchStatus::Canceled,
@@ -75,17 +73,15 @@ fn status_of(
     }
 }
 
-fn parse_date(d: &str) -> Option<DateTime<Utc>> {
-    NaiveDate::parse_from_str(d.get(..10)?, "%Y-%m-%d")
-        .ok()?
-        .and_hms_opt(0, 0, 0)
-        .map(|dt| dt.and_utc())
+fn parse_date(d: &str) -> Option<Timestamp> {
+    let day = Date::strptime("%Y-%m-%d", d.get(..10)?).ok()?;
+    TimeZone::UTC
+        .to_timestamp(day.to_datetime(Time::midnight()))
+        .ok()
 }
 
-fn parse_dt(s: &str) -> Option<DateTime<Utc>> {
-    DateTime::parse_from_rfc3339(s)
-        .ok()
-        .map(|d| d.with_timezone(&Utc))
+fn parse_dt(s: &str) -> Option<Timestamp> {
+    s.parse().ok()
 }
 
 /// Deserialize a field the feed may send as JSON `null` (a DNS/DNF row's
@@ -203,8 +199,8 @@ fn motorsport_match(
     league: &str,
     label: &str,
     event_name: &str,
-    season: i32,
-    begin_at: DateTime<Utc>,
+    season: i16,
+    begin_at: Timestamp,
     status: MatchStatus,
     loc: &Location,
 ) -> NormalizedMatch {
@@ -256,21 +252,21 @@ struct Rally {
     location: Location,
 }
 
-fn rally_to_match(r: &Rally, now: DateTime<Utc>) -> Option<NormalizedMatch> {
+fn rally_to_match(r: &Rally, now: Timestamp) -> Option<NormalizedMatch> {
     // A rally carries only a calendar date (no session time). Anchor it at noon
     // UTC of the start day so converting to the viewer's zone lands on the right
     // date — midnight UTC would slip onto the previous day for anyone west of UTC.
     // The view layer shows no clock for it (there's no real start time).
-    let begin = parse_date(&r.date_start)? + Duration::hours(12);
+    let begin = parse_date(&r.date_start)? + SignedDuration::from_hours(12);
     // A rally runs to the end of dateEnd; default the window to the start day.
-    let end = parse_date(&r.date_end).unwrap_or(begin) + Duration::days(1);
+    let end = parse_date(&r.date_end).unwrap_or(begin) + SignedDuration::from_hours(24);
     let status = status_of(&r.status, begin, end, now);
     let mut m = motorsport_match(
         WRC_ID_BASE + stable_hash(&r.id),
         "WRC",
         &r.name,
         &r.name,
-        begin.year(),
+        utc_date(begin).year(),
         begin,
         status,
         &r.location,
@@ -335,11 +331,7 @@ fn stage_label(s: &Stage) -> String {
 /// with the host country's venue-local time available (like a WEC session). A
 /// stage with no start time is skipped. The id hashes the stage's own UUID, so it
 /// never collides with the rally's date-only placeholder (keyed off the rally id).
-fn rally_stage_matches(
-    r: &Rally,
-    detail: &RallyDetail,
-    now: DateTime<Utc>,
-) -> Vec<NormalizedMatch> {
+fn rally_stage_matches(r: &Rally, detail: &RallyDetail, now: Timestamp) -> Vec<NormalizedMatch> {
     let venue_tz = wrc_venue_tz(&r.location.country.two_code);
     let sch = &detail.schedule;
     sch.shakedown
@@ -350,13 +342,13 @@ fn rally_stage_matches(
             let begin = s.start_time.as_deref().and_then(parse_dt)?;
             // Stages are short (a closed road, run once); give a vague status a
             // one-hour live window before it reads as finished.
-            let status = status_of(&s.status, begin, begin + Duration::hours(1), now);
+            let status = status_of(&s.status, begin, begin + SignedDuration::from_hours(1), now);
             let mut m = motorsport_match(
                 WRC_ID_BASE + stable_hash(&s.id),
                 "WRC",
                 &stage_label(s),
                 &r.name,
-                begin.year(),
+                utc_date(begin).year(),
                 begin,
                 status,
                 &r.location,
@@ -380,19 +372,20 @@ fn rally_stage_matches(
 /// within the window the detailed schedule is typically published (~2 weeks out).
 /// `None` off-week, so no detail request is spent. Picking just one keeps WRC at
 /// one extra request per cycle.
-fn active_rally(rallies: &[Rally], now: DateTime<Utc>) -> Option<&Rally> {
-    let publish_lead = Duration::days(14);
+fn active_rally(rallies: &[Rally], now: Timestamp) -> Option<&Rally> {
+    let publish_lead = SignedDuration::from_hours(14 * 24);
     // A finished rally's stages need fetching only once more to persist them;
     // stay eligible a few days so a cold start (or the idle poll cadence) still
     // catches it, then stop re-spending the request.
-    let recent_window = Duration::days(3);
-    let mut recent: Option<(&Rally, DateTime<Utc>)> = None; // most-recently ended
-    let mut soonest: Option<(&Rally, DateTime<Utc>)> = None; // soonest to start
+    let recent_window = SignedDuration::from_hours(3 * 24);
+    let mut recent: Option<(&Rally, Timestamp)> = None; // most-recently ended
+    let mut soonest: Option<(&Rally, Timestamp)> = None; // soonest to start
     for r in rallies {
-        let Some(begin) = parse_date(&r.date_start).map(|d| d + Duration::hours(12)) else {
+        let Some(begin) = parse_date(&r.date_start).map(|d| d + SignedDuration::from_hours(12))
+        else {
             continue;
         };
-        let end = parse_date(&r.date_end).unwrap_or(begin) + Duration::days(1);
+        let end = parse_date(&r.date_end).unwrap_or(begin) + SignedDuration::from_hours(24);
         match status_of(&r.status, begin, end, now) {
             MatchStatus::Live => return Some(r),
             MatchStatus::Finished
@@ -427,7 +420,7 @@ pub async fn fetch_wrc(
     client: &reqwest::Client,
     key: &str,
     year: i32,
-    now: DateTime<Utc>,
+    now: Timestamp,
 ) -> Result<(Vec<NormalizedMatch>, u64), reqwest::Error> {
     let url = format!("{BASE}/wrc/rallies?year={year}&limit=100");
     let resp: RalliesResp = get(client, key, &url).await?;
@@ -549,9 +542,9 @@ fn sessions_to_matches(
     league: &str,
     id_base: i64,
     venue_tz: Option<&'static str>,
-    race_window: Duration,
+    race_window: SignedDuration,
     with_results: bool,
-    now: DateTime<Utc>,
+    now: Timestamp,
 ) -> Vec<NormalizedMatch> {
     let mut out: Vec<NormalizedMatch> = e
         .schedule
@@ -561,7 +554,7 @@ fn sessions_to_matches(
             let win = if s.kind.eq_ignore_ascii_case("race") {
                 race_window
             } else {
-                Duration::hours(2)
+                SignedDuration::from_hours(2)
             };
             let status = status_of(&s.status, begin, begin + win, now);
             let mut m = motorsport_match(
@@ -569,7 +562,7 @@ fn sessions_to_matches(
                 league,
                 &session_label(s),
                 &e.name,
-                begin.year(),
+                utc_date(begin).year(),
                 begin,
                 status,
                 &e.location,
@@ -593,16 +586,17 @@ fn sessions_to_matches(
         // viewer's day is right) for the race to come. No venue tz, so the view
         // shows no clock and no venue toggle until the real times land.
         if let Some(day) = parse_date(&e.date_start) {
-            let begin = day + Duration::hours(12);
-            let end = parse_date(&e.date_end)
-                .map_or(begin + Duration::hours(30), |d| d + Duration::days(1));
+            let begin = day + SignedDuration::from_hours(12);
+            let end = parse_date(&e.date_end).map_or(begin + SignedDuration::from_hours(30), |d| {
+                d + SignedDuration::from_hours(24)
+            });
             let status = status_of(&e.status, begin, end, now);
             out.push(motorsport_match(
                 session_match_id(id_base, &e.id, None),
                 league,
                 "Race",
                 &e.name,
-                begin.year(),
+                utc_date(begin).year(),
                 begin,
                 status,
                 &e.location,
@@ -615,13 +609,13 @@ fn sessions_to_matches(
 /// Every WEC session of an event as its own row (placeholders for unpublished
 /// rounds). WEC sessions carry results (race / qualifying), so they get result
 /// links — the detail/event pages fetch each session's order on demand.
-fn event_to_matches(e: &Event, now: DateTime<Utc>) -> Vec<NormalizedMatch> {
+fn event_to_matches(e: &Event, now: Timestamp) -> Vec<NormalizedMatch> {
     sessions_to_matches(
         e,
         "WEC",
         WEC_ID_BASE,
         wec_venue_tz(&e.location.country.two_code),
-        Duration::hours(8),
+        SignedDuration::from_hours(8),
         true,
         now,
     )
@@ -641,7 +635,7 @@ pub async fn fetch_wec(
 ) -> Result<Vec<NormalizedMatch>, reqwest::Error> {
     let url = format!("{BASE}/wec/events?year={year}&limit=100");
     let resp: EventsResp = get(client, key, &url).await?;
-    let now = Utc::now();
+    let now = Timestamp::now();
     Ok(resp
         .data
         .iter()
@@ -701,7 +695,7 @@ pub async fn fetch_motogp(
 ) -> Result<Vec<NormalizedMatch>, reqwest::Error> {
     let url = format!("{BASE}/moto-gp/events?year={year}&limit=100");
     let resp: EventsResp = get(client, key, &url).await?;
-    let now = Utc::now();
+    let now = Timestamp::now();
     Ok(resp
         .data
         .iter()
@@ -711,7 +705,7 @@ pub async fn fetch_motogp(
                 "MotoGP",
                 MOTOGP_ID_BASE,
                 motogp_venue_tz(&e.location.country.two_code),
-                Duration::hours(2),
+                SignedDuration::from_hours(2),
                 true,
                 now,
             )
@@ -1162,7 +1156,7 @@ mod tests {
         ]}"#;
         let resp: RalliesResp = serde_json::from_str(json).unwrap();
         // Before the 2026 season: Monte-Carlo (Jan) upcoming, Paraguay (Aug 2025) done.
-        let now = "2026-01-01T00:00:00Z".parse::<DateTime<Utc>>().unwrap();
+        let now = "2026-01-01T00:00:00Z".parse::<Timestamp>().unwrap();
         let ms: Vec<NormalizedMatch> = resp
             .data
             .iter()
@@ -1176,7 +1170,7 @@ mod tests {
         assert_eq!(mc.series_name, "Rallye Monte-Carlo 2026");
         // Date-only: anchored at noon UTC so the viewer's day stays Jan 22, and
         // no venue tz (there's no session time to localise).
-        assert_eq!(mc.begin_at.to_rfc3339(), "2026-01-22T12:00:00+00:00");
+        assert_eq!(mc.begin_at.to_string(), "2026-01-22T12:00:00Z");
         assert_eq!(mc.venue_tz, None);
         assert_eq!(mc.status, MatchStatus::Upcoming);
         assert_eq!(mc.team_a_logo, "https://flagcdn.com/mc.svg");
@@ -1211,7 +1205,7 @@ mod tests {
         )
         .unwrap();
         // Mid-rally: SS1 has run, SS2 is on, the power stage is days away.
-        let now = "2026-06-26T05:50:00Z".parse::<DateTime<Utc>>().unwrap();
+        let now = "2026-06-26T05:50:00Z".parse::<Timestamp>().unwrap();
         let ms = rally_stage_matches(&r, &detail, now);
         // One row per timed stage (2 special + the power stage), all WRC under the
         // season-qualified series, each carrying Greece's tz for a venue-local clock.
@@ -1225,7 +1219,7 @@ mod tests {
                 .all(|m| m.venue_tz.as_deref() == Some("Europe/Athens"))
         );
         let ss1 = ms.iter().find(|m| m.team_a.label == "SS1 EKO SSS").unwrap();
-        assert_eq!(ss1.begin_at.to_rfc3339(), "2026-06-25T16:02:00+00:00");
+        assert_eq!(ss1.begin_at.to_string(), "2026-06-25T16:02:00Z");
         assert_eq!(ss1.status, MatchStatus::Finished);
         // A vague "scheduled" status is read off the window — SS2 is in progress.
         let ss2 = ms
@@ -1239,7 +1233,7 @@ mod tests {
             .iter()
             .find(|m| m.team_a.label.contains("Power Stage"))
             .unwrap();
-        assert_eq!(ps.begin_at.to_rfc3339(), "2026-06-28T11:12:00+00:00");
+        assert_eq!(ps.begin_at.to_string(), "2026-06-28T11:12:00Z");
         assert_eq!(ps.status, MatchStatus::Upcoming);
         // Stage ids hash the stage UUID, so none collides with the rally's date-only
         // placeholder (keyed off the rally id) and all stay in the WRC id band.
@@ -1263,7 +1257,7 @@ mod tests {
             ]}"#,
         )
         .unwrap();
-        let now = "2026-06-26T00:00:00Z".parse::<DateTime<Utc>>().unwrap();
+        let now = "2026-06-26T00:00:00Z".parse::<Timestamp>().unwrap();
         // A live rally wins outright, even over an earlier-listed finished one.
         assert_eq!(active_rally(&resp.data, now).unwrap().id, "live");
         // With none live, the soonest within the ~2-week publish lead is taken; the
@@ -1286,11 +1280,11 @@ mod tests {
         // A day after the rally ended its final stages are still worth fetching —
         // and take precedence over the upcoming round's schedule pre-fetch, so a
         // finished rally's per-stage results get captured and kept.
-        let now = "2026-06-29T12:00:00Z".parse::<DateTime<Utc>>().unwrap();
+        let now = "2026-06-29T12:00:00Z".parse::<Timestamp>().unwrap();
         assert_eq!(active_rally(&resp.data, now).unwrap().id, "justdone");
         // Well after it ended (its stages are already persisted) fall back to the
         // soonest upcoming, so no request is wasted re-fetching the old rally.
-        let later = "2026-07-05T00:00:00Z".parse::<DateTime<Utc>>().unwrap();
+        let later = "2026-07-05T00:00:00Z".parse::<Timestamp>().unwrap();
         assert_eq!(active_rally(&resp.data, later).unwrap().id, "soon");
     }
 
@@ -1319,7 +1313,7 @@ mod tests {
            ]}
         ]}"#;
         let resp: EventsResp = serde_json::from_str(json).unwrap();
-        let now = "2026-06-26T00:00:00Z".parse::<DateTime<Utc>>().unwrap();
+        let now = "2026-06-26T00:00:00Z".parse::<Timestamp>().unwrap();
         let ms: Vec<NormalizedMatch> = resp
             .data
             .iter()
@@ -1338,7 +1332,7 @@ mod tests {
                 .all(|m| m.venue_tz.as_deref() == Some("Europe/Paris"))
         );
         let race = ms.iter().find(|m| m.team_a.label == "Race").unwrap();
-        assert_eq!(race.begin_at.to_rfc3339(), "2025-06-14T14:00:00+00:00");
+        assert_eq!(race.begin_at.to_string(), "2025-06-14T14:00:00Z");
         assert_eq!(race.status, MatchStatus::Finished);
         // The race keeps the event's base id (so a placeholder upserts into it);
         // a support session is labelled by name and gets a distinct id.
@@ -1359,7 +1353,7 @@ mod tests {
            "schedule":[]}
         ]}"#;
         let resp: EventsResp = serde_json::from_str(json).unwrap();
-        let now = "2026-06-26T00:00:00Z".parse::<DateTime<Utc>>().unwrap();
+        let now = "2026-06-26T00:00:00Z".parse::<Timestamp>().unwrap();
         let ms: Vec<NormalizedMatch> = resp
             .data
             .iter()
@@ -1369,7 +1363,7 @@ mod tests {
         // labelled as the race-to-come, with no venue tz → the view shows no clock.
         assert_eq!(ms.len(), 1);
         let m = &ms[0];
-        assert_eq!(m.begin_at.to_rfc3339(), "2026-11-07T12:00:00+00:00");
+        assert_eq!(m.begin_at.to_string(), "2026-11-07T12:00:00Z");
         assert_eq!(m.venue_tz, None);
         assert_eq!(m.team_a.label, "Race");
         // Same id the real race will take, so it upserts in place once published.
@@ -1476,7 +1470,7 @@ mod tests {
            ]}
         ]}"#;
         let resp: EventsResp = serde_json::from_str(json).unwrap();
-        let now = "2026-12-01T00:00:00Z".parse::<DateTime<Utc>>().unwrap();
+        let now = "2026-12-01T00:00:00Z".parse::<Timestamp>().unwrap();
         let ms: Vec<NormalizedMatch> = resp
             .data
             .iter()
@@ -1486,7 +1480,7 @@ mod tests {
                     "MotoGP",
                     MOTOGP_ID_BASE,
                     motogp_venue_tz("ES"),
-                    Duration::hours(2),
+                    SignedDuration::from_hours(2),
                     true,
                     now,
                 )

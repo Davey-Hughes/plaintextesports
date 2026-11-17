@@ -7,12 +7,14 @@
 use std::fmt::Write as _;
 
 use crate::bracket_build::{self, RawSeries};
+use crate::feed::utc_date;
 use crate::feed::{LiveUpdate, NormalizedMatch, NormalizedTeam};
 use crate::types::{
     BoxScore, BracketRound, EventInfo, LeaderCard, LineRow, LineScore, MatchStatus, PlayerRow,
     PlayerTable, ScoreEvent, Sport, StandingRow, StatPair, StreamView, stat_share,
 };
-use chrono::{DateTime, Duration, NaiveDate, Utc};
+use jiff::civil::Date;
+use jiff::{Timestamp, ToSpan};
 use serde::Deserialize;
 use std::collections::HashSet;
 
@@ -221,9 +223,7 @@ fn broadcasts(raw: &[RawBroadcast]) -> Vec<StreamView> {
 }
 
 fn to_match(g: RawGame) -> Option<NormalizedMatch> {
-    let begin_at = DateTime::parse_from_rfc3339(&g.start_time_utc)
-        .ok()?
-        .with_timezone(&Utc);
+    let begin_at = g.start_time_utc.parse::<Timestamp>().ok()?;
     let mut m = NormalizedMatch::team_sport(
         g.id,
         Sport::Nhl,
@@ -268,14 +268,14 @@ fn to_match(g: RawGame) -> Option<NormalizedMatch> {
 /// does not deserialize into the expected shape.
 pub async fn fetch_schedule(
     client: &reqwest::Client,
-    start: NaiveDate,
-    end: NaiveDate,
+    start: Date,
+    end: Date,
 ) -> Result<Vec<NormalizedMatch>, reqwest::Error> {
     // Fetch the first week up front — its error propagates, so a real outage
     // keeps the old data. The remaining weeks are independent best-effort requests
     // (a flaky later week mustn't drop the weeks we have), so fetch them
     // concurrently rather than walking week-by-week and paying a round-trip each.
-    let week_url = |d: NaiveDate| format!("{BASE}/schedule/{}", d.format("%Y-%m-%d"));
+    let week_url = |d: Date| format!("{BASE}/schedule/{d}");
 
     let first: ScheduleResp = client
         .get(week_url(start))
@@ -286,10 +286,10 @@ pub async fn fetch_schedule(
         .await?;
 
     let mut anchors = Vec::new();
-    let mut anchor = start + Duration::days(7);
+    let mut anchor = start + 7.days();
     while anchor <= end {
         anchors.push(anchor);
-        anchor += Duration::days(7);
+        anchor += 7.days();
     }
     let rest = futures::future::join_all(anchors.into_iter().map(|a| {
         let url = week_url(a);
@@ -323,7 +323,7 @@ pub async fn fetch_schedule(
                     continue;
                 }
                 if let Some(m) = to_match(g) {
-                    let d = m.begin_at.date_naive();
+                    let d = utc_date(m.begin_at);
                     if d >= start && d <= end {
                         out.push(m);
                     }
@@ -420,9 +420,9 @@ fn parse_live(r: &ScoreResp) -> Vec<LiveUpdate> {
 /// deserialize into the expected shape.
 pub async fn fetch_live(
     client: &reqwest::Client,
-    day: NaiveDate,
+    day: Date,
 ) -> Result<Vec<LiveUpdate>, reqwest::Error> {
-    let url = format!("{BASE}/score/{}", day.format("%Y-%m-%d"));
+    let url = format!("{BASE}/score/{day}");
     let r: ScoreResp = client
         .get(&url)
         .send()
@@ -1358,7 +1358,7 @@ mod tests {
     #[tokio::test]
     #[ignore = "hits the live NHL API"]
     async fn nhl_live_scores() {
-        let day = crate::live::et_day(Utc::now());
+        let day = crate::live::et_day(Timestamp::now());
         let ups = fetch_live(&reqwest::Client::new(), day).await.unwrap();
         for u in &ups {
             println!(

@@ -8,7 +8,8 @@
 use crate::feed::{NormalizedMatch, NormalizedTeam};
 use crate::http::USER_AGENT;
 use crate::types::{F1Result, F1ResultRow, F1StandingRow, F1Standings, MatchStatus, Sport};
-use chrono::{DateTime, Duration, NaiveDate, Utc};
+use jiff::civil::Date;
+use jiff::{SignedDuration, Timestamp};
 use serde::Deserialize;
 
 const BASE: &str = "https://api.jolpi.ca/ergast/f1";
@@ -227,11 +228,9 @@ struct Session {
 
 /// Parse Ergast's split date ("2026-06-28") + time ("13:00:00Z") into UTC.
 /// A session with no time (rare) is anchored to the start of its day.
-fn parse_dt(date: &str, time: Option<&str>) -> Option<DateTime<Utc>> {
+fn parse_dt(date: &str, time: Option<&str>) -> Option<Timestamp> {
     let t = time.unwrap_or("00:00:00Z");
-    DateTime::parse_from_rfc3339(&format!("{date}T{t}"))
-        .ok()
-        .map(|d| d.with_timezone(&Utc))
+    format!("{date}T{t}").parse::<Timestamp>().ok()
 }
 
 /// Every session of a weekend, in chronological/order sequence. Sprint weekends
@@ -264,7 +263,7 @@ fn sessions(r: &RawRace) -> Vec<Session> {
     out
 }
 
-fn to_matches(r: &RawRace, now: DateTime<Utc>) -> Vec<NormalizedMatch> {
+fn to_matches(r: &RawRace, now: Timestamp) -> Vec<NormalizedMatch> {
     let season: i64 = r.season.parse().unwrap_or(0);
     let round: i64 = r.round.parse().unwrap_or(0);
     // The circuit's local timezone, so the row's time is clickable to show the
@@ -276,7 +275,7 @@ fn to_matches(r: &RawRace, now: DateTime<Utc>) -> Vec<NormalizedMatch> {
             let begin_at = parse_dt(&s.date, s.time.as_deref())?;
             // No live feed; a session is "done" a few hours after it starts
             // (race ~2h, others ~1h). The view layer shows it as live in between.
-            let status = if begin_at + Duration::hours(3) < now {
+            let status = if begin_at + SignedDuration::from_hours(3) < now {
                 MatchStatus::Finished
             } else {
                 MatchStatus::Upcoming
@@ -337,7 +336,7 @@ pub async fn fetch_schedule(
         .error_for_status()?
         .json()
         .await?;
-    let now = Utc::now();
+    let now = Timestamp::now();
     Ok(resp
         .data
         .race_table
@@ -556,7 +555,7 @@ fn quali_rows(rs: &[RawQuali]) -> Vec<F1ResultRow> {
 
 /// The Grand Prix's race date, used to match the OpenF1 weekend that carries the
 /// practice timing (OpenF1 has no round number and a different meeting order).
-async fn round_date(client: &reqwest::Client, season: i64, round: i64) -> Option<NaiveDate> {
+async fn round_date(client: &reqwest::Client, season: i64, round: i64) -> Option<Date> {
     let url = format!("{BASE}/{season}/{round}.json");
     let resp: Resp = client
         .get(&url)
@@ -570,7 +569,7 @@ async fn round_date(client: &reqwest::Client, season: i64, round: i64) -> Option
         .await
         .ok()?;
     let race = resp.data.race_table.races.into_iter().next()?;
-    NaiveDate::parse_from_str(race.date.get(..10)?, "%Y-%m-%d").ok()
+    Date::strptime("%Y-%m-%d", race.date.get(..10)?).ok()
 }
 
 async fn get_results(client: &reqwest::Client, url: &str) -> Option<ResultsRace> {
@@ -608,7 +607,7 @@ pub async fn fetch_results(client: &reqwest::Client, season: i64, round: i64) ->
     let date_from_results = [&race, &sprint, &quali]
         .into_iter()
         .flatten()
-        .find_map(|r| NaiveDate::parse_from_str(r.date.get(..10)?, "%Y-%m-%d").ok());
+        .find_map(|r| Date::strptime("%Y-%m-%d", r.date.get(..10)?).ok());
     let mut out = Vec::new();
     let mut push = |session: &str, rows: Vec<F1ResultRow>| {
         if !rows.is_empty() {
@@ -788,7 +787,7 @@ mod tests {
           "Qualifying":{"date":"2026-06-27","time":"14:00:00Z"}
         }]}}}"#;
         let resp: Resp = serde_json::from_str(json).unwrap();
-        let now = "2026-01-01T00:00:00Z".parse::<DateTime<Utc>>().unwrap();
+        let now = "2026-01-01T00:00:00Z".parse::<Timestamp>().unwrap();
         let ms: Vec<NormalizedMatch> = resp
             .data
             .race_table
@@ -822,7 +821,7 @@ mod tests {
         assert!(ms.iter().all(|m| m.status == MatchStatus::Upcoming));
         // The race session carries the race object's own time (13:00Z on the 28th).
         let race = ms.iter().find(|m| m.team_a.label == "Race").unwrap();
-        assert_eq!(race.begin_at.to_rfc3339(), "2026-06-28T13:00:00+00:00");
+        assert_eq!(race.begin_at.to_string(), "2026-06-28T13:00:00Z");
         // Ids are stable and distinct per session.
         assert_eq!(race.id, 2026 * 100_000 + 11 * 100 + 7);
     }
@@ -839,7 +838,7 @@ mod tests {
           "Qualifying":{"date":"2026-03-14","time":"07:00:00Z"}
         }]}}}"#;
         let resp: Resp = serde_json::from_str(json).unwrap();
-        let now = "2026-01-01T00:00:00Z".parse::<DateTime<Utc>>().unwrap();
+        let now = "2026-01-01T00:00:00Z".parse::<Timestamp>().unwrap();
         let ms: Vec<NormalizedMatch> = resp
             .data
             .race_table

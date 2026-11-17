@@ -3,7 +3,7 @@
 //! concatenate the decoded chunk strings and pull the typed objects we need out
 //! of the resulting blob.
 
-use chrono::{DateTime, Utc};
+use jiff::Timestamp;
 
 /// Concatenate the decoded `self.__next_f.push([n,"…"])` payload chunks into one
 /// blob. Each chunk's payload is a JSON string literal (escaped); we decode it
@@ -50,7 +50,7 @@ pub fn rsc_blob(html: &str) -> String {
 pub struct CompeteEvent {
     pub tournament_id: String,
     pub stage_id: String,
-    pub date: DateTime<Utc>,
+    pub date: Timestamp,
     pub event_type: String,
 }
 
@@ -102,13 +102,13 @@ pub fn parse_schedule_blob(blob: &str) -> Vec<CompeteEvent> {
         if !BROADCAST_TYPES.contains(&event_type.as_str()) {
             continue;
         }
-        let Ok(date) = DateTime::parse_from_rfc3339(&date) else {
+        let Ok(date) = date.parse::<Timestamp>() else {
             continue;
         };
         out.push(CompeteEvent {
             tournament_id,
             stage_id,
-            date: date.with_timezone(&Utc),
+            date,
             event_type,
         });
     }

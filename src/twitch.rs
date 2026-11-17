@@ -4,7 +4,7 @@
 
 use crate::config::config;
 use crate::http::USER_AGENT;
-use chrono::{DateTime, Duration, Utc};
+use jiff::{SignedDuration, Timestamp};
 use once_cell::sync::Lazy;
 use serde::Deserialize;
 use std::collections::HashMap;
@@ -25,7 +25,7 @@ static CLIENT: Lazy<reqwest::Client> = Lazy::new(|| {
 
 struct AppToken {
     token: String,
-    expires_at: DateTime<Utc>,
+    expires_at: Timestamp,
 }
 
 /// Cached client-credentials app token (valid ~57 days; refreshed on expiry/401).
@@ -36,7 +36,7 @@ static TOKEN: Lazy<RwLock<Option<AppToken>>> = Lazy::new(|| RwLock::new(None));
 /// every poll.
 struct CachedLang {
     lang: String,
-    fetched_at: DateTime<Utc>,
+    fetched_at: Timestamp,
 }
 
 /// `login → its declared language`, see [`channel_languages`].
@@ -122,7 +122,7 @@ async fn token() -> Option<String> {
     {
         let g = TOKEN.read().unwrap_or_else(PoisonError::into_inner);
         if let Some(t) = g.as_ref()
-            && t.expires_at > Utc::now() + Duration::minutes(5)
+            && t.expires_at > Timestamp::now() + SignedDuration::from_mins(5)
         {
             return Some(t.token.clone());
         }
@@ -138,7 +138,12 @@ async fn token() -> Option<String> {
         .await
         .ok()?;
     let tok: Tok = resp.json().await.ok()?;
-    let expires_at = Utc::now() + Duration::seconds(tok.expires_in.max(0));
+    // `checked_add`, not `+`: the lifetime comes from Twitch, and one past
+    // jiff's year-9999 range would panic. Saturate instead — a token that
+    // outlives the calendar is a token that doesn't expire.
+    let expires_at = Timestamp::now()
+        .checked_add(SignedDuration::from_secs(tok.expires_in.max(0)))
+        .unwrap_or(Timestamp::MAX);
     let token = tok.access_token.clone();
     *TOKEN.write().unwrap_or_else(PoisonError::into_inner) = Some(AppToken {
         token: token.clone(),
@@ -285,7 +290,7 @@ pub async fn channel_languages(logins: &[String]) -> HashMap<String, String> {
     if uniq.is_empty() {
         return HashMap::new();
     }
-    let fresh_after = Utc::now() - Duration::hours(CHANNEL_LANG_TTL_HOURS);
+    let fresh_after = Timestamp::now() - SignedDuration::from_hours(CHANNEL_LANG_TTL_HOURS);
     let mut out = HashMap::new();
     let mut misses = Vec::new();
     {
@@ -330,7 +335,7 @@ pub async fn channel_languages(logins: &[String]) -> HashMap<String, String> {
     }
     // Cache misses as empty too, so a login with no language (or one Twitch doesn't
     // know) isn't re-fetched on every poll.
-    let now = Utc::now();
+    let now = Timestamp::now();
     {
         let mut g = CHANNEL_LANG.write().unwrap_or_else(PoisonError::into_inner);
         for l in &misses {
@@ -385,7 +390,7 @@ mod tests {
         // Every login cached and fresh ⇒ returns before touching config or the
         // network, which is what keeps a 90s stream refresh off Helix. This test
         // makes no request; if the short-circuit regresses it would try to.
-        let now = Utc::now();
+        let now = Timestamp::now();
         {
             let mut g = CHANNEL_LANG.write().unwrap_or_else(PoisonError::into_inner);
             g.insert(

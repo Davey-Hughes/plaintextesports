@@ -5,7 +5,7 @@
 
 use crate::config::config;
 use crate::types::Sport;
-use chrono::{DateTime, Duration, Utc};
+use jiff::{SignedDuration, Timestamp};
 use once_cell::sync::Lazy;
 use serde::Deserialize;
 use std::collections::HashMap;
@@ -96,7 +96,7 @@ pub fn parse_discover_page(json: &str) -> (Vec<DiscoveredStream>, Option<String>
 /// Per-game cache of the last category scan, keyed by `game_id`. One scan per game
 /// per TTL serves every live match of that game.
 /// A cached scan: when it was taken, and the streams it found.
-type DiscoverEntry = (DateTime<Utc>, Vec<DiscoveredStream>);
+type DiscoverEntry = (Timestamp, Vec<DiscoveredStream>);
 static DISCOVER_CACHE: Lazy<RwLock<HashMap<String, DiscoverEntry>>> =
     Lazy::new(|| RwLock::new(HashMap::new()));
 const DISCOVER_TTL_SECS: i64 = 120;
@@ -112,7 +112,7 @@ pub async fn discover(game_id: &str, langs: &[String]) -> Vec<DiscoveredStream> 
             .read()
             .unwrap_or_else(PoisonError::into_inner);
         if let Some((at, v)) = g.get(game_id)
-            && *at + Duration::seconds(DISCOVER_TTL_SECS) > Utc::now()
+            && *at + SignedDuration::from_secs(DISCOVER_TTL_SECS) > Timestamp::now()
         {
             return v.clone();
         }
@@ -163,7 +163,7 @@ pub async fn discover(game_id: &str, langs: &[String]) -> Vec<DiscoveredStream> 
     DISCOVER_CACHE
         .write()
         .unwrap_or_else(PoisonError::into_inner)
-        .insert(game_id.to_string(), (Utc::now(), out.clone()));
+        .insert(game_id.to_string(), (Timestamp::now(), out.clone()));
     out
 }
 

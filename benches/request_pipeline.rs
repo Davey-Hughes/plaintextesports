@@ -9,26 +9,26 @@
 //!
 //! Run: `cargo bench --features ssr`
 
-use chrono::{DateTime, Utc};
-use chrono_tz::Tz;
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
+use jiff::tz::TimeZone;
+use jiff::{SignedDuration, Timestamp};
 use plaintextesports::cache;
 use plaintextesports::config::config;
 use std::hint::black_box;
 
-fn fixed_now() -> DateTime<Utc> {
+fn fixed_now() -> Timestamp {
     "2026-06-30T18:00:00Z".parse().unwrap()
 }
 
-fn tz() -> Tz {
-    "America/New_York".parse().unwrap()
+fn tz() -> TimeZone {
+    TimeZone::get("America/New_York").unwrap()
 }
 
 /// End-to-end homepage render, scaled by snapshot size.
 fn bench_homepage(c: &mut Criterion) {
     let cfg = config();
     let now = fixed_now();
-    let tz = tz();
+    let tz = &tz();
     let mut g = c.benchmark_group("homepage_render");
     for &n in &[100usize, 500, 1500, 3000] {
         let snap = cache::synthetic_snapshot(n, now);
@@ -48,7 +48,7 @@ fn bench_homepage(c: &mut Criterion) {
 /// Individual building blocks at a representative snapshot size.
 fn bench_building_blocks(c: &mut Criterion) {
     let now = fixed_now();
-    let tz = tz();
+    let tz = &tz();
     let n = 1500usize;
     let matches = cache::synthetic_matches(n, now);
     let snap = cache::snapshot_from(matches.clone(), now);
@@ -61,8 +61,8 @@ fn bench_building_blocks(c: &mut Criterion) {
     });
 
     g.bench_function("matches_in_window_esports", |b| {
-        let start = now - chrono::Duration::days(5);
-        let end = now + chrono::Duration::days(15);
+        let start = now - SignedDuration::from_hours(5 * 24);
+        let end = now + SignedDuration::from_hours(15 * 24);
         b.iter(|| {
             cache::matches_in_window(
                 black_box(&snap),
@@ -80,8 +80,8 @@ fn bench_building_blocks(c: &mut Criterion) {
 
     g.bench_function("collapse_wrc_days", |b| {
         // Pre-build the views once; measure only the collapse pass.
-        let start = now - chrono::Duration::days(5);
-        let end = now + chrono::Duration::days(15);
+        let start = now - SignedDuration::from_hours(5 * 24);
+        let end = now + SignedDuration::from_hours(15 * 24);
         let views = cache::matches_in_window(&snap, true, None, start, end, tz, now, false, None);
         b.iter_batched(
             || views.clone(),
@@ -91,8 +91,8 @@ fn bench_building_blocks(c: &mut Criterion) {
     });
 
     g.bench_function("group_days", |b| {
-        let start = now - chrono::Duration::days(5);
-        let end = now + chrono::Duration::days(15);
+        let start = now - SignedDuration::from_hours(5 * 24);
+        let end = now + SignedDuration::from_hours(15 * 24);
         let views = cache::matches_in_window(&snap, false, None, start, end, tz, now, false, None);
         b.iter_batched(
             || views.clone(),
@@ -112,7 +112,7 @@ fn bench_building_blocks(c: &mut Criterion) {
 fn bench_serialize(c: &mut Criterion) {
     let cfg = config();
     let now = fixed_now();
-    let tz = tz();
+    let tz = &tz();
     let view = cache::homepage_render(
         &cache::synthetic_snapshot(1500, now),
         cfg,

@@ -567,10 +567,9 @@ pub async fn get_motor_results(event: String) -> Result<Vec<MotorResult>, Server
 pub async fn get_site() -> Result<SiteInfo, ServerFnError> {
     #[cfg(feature = "ssr")]
     {
-        use chrono::Datelike;
         let cfg = crate::config::Config::from_env();
         // The config holds just the holder name; prepend "© <current year>".
-        let year = chrono::Utc::now().year();
+        let year = crate::feed::utc_date(jiff::Timestamp::now()).year();
         Ok(SiteInfo {
             copyright: cfg.copyright.map(|name| format!("© {year} {name}")),
             copyright_url: cfg.copyright_url,
@@ -630,7 +629,7 @@ pub async fn add_reminder(req: ReminderReq) -> Result<(), ServerFnError> {
         // Only arm timers whose lead window is still ahead — a timer added after
         // its notify time passed (e.g. a 1-hour timer on a match starting in 20
         // minutes) must not fire retroactively the moment it's set.
-        let now = chrono::Utc::now().timestamp_millis();
+        let now = jiff::Timestamp::now().as_millisecond();
         let reminders: Vec<_> = seeds
             .into_iter()
             .filter(|s| s.is_armable(now))

@@ -10,7 +10,8 @@
 
 use crate::http::USER_AGENT;
 use crate::types::{F1Result, F1ResultRow};
-use chrono::{Duration, NaiveDate};
+use jiff::ToSpan;
+use jiff::civil::Date;
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
 
@@ -100,9 +101,9 @@ async fn get_json<T: DeserializeOwned>(client: &reqwest::Client, url: &str) -> O
 }
 
 /// The date part of an OpenF1 "2026-06-12T11:30:00+00:00" timestamp.
-fn date_of(ts: &str) -> Option<NaiveDate> {
+fn date_of(ts: &str) -> Option<Date> {
     ts.get(..10)
-        .and_then(|d| NaiveDate::parse_from_str(d, "%Y-%m-%d").ok())
+        .and_then(|d| Date::strptime("%Y-%m-%d", d).ok())
 }
 
 /// Format a lap time given in seconds, e.g. 76.363 → "1:16.363".
@@ -157,14 +158,10 @@ fn driver_display(d: &Driver) -> String {
 
 /// The OpenF1 meeting (GP weekend) for a Jolpica race date: a non-testing meeting
 /// whose start falls within the few days before the race (FP1 is ~2 days before).
-async fn meeting_for_date(
-    client: &reqwest::Client,
-    season: i64,
-    race_date: NaiveDate,
-) -> Option<i64> {
+async fn meeting_for_date(client: &reqwest::Client, season: i64, race_date: Date) -> Option<i64> {
     let url = format!("{BASE}/meetings?year={season}");
     let meetings: Vec<Meeting> = get_json(client, &url).await?;
-    let lo = race_date - Duration::days(4);
+    let lo = race_date - 4.days();
     meetings
         .into_iter()
         .filter(|m| !m.meeting_name.to_lowercase().contains("testing"))
@@ -227,7 +224,7 @@ fn session_rows(
 pub async fn fetch_practice(
     client: &reqwest::Client,
     season: i64,
-    race_date: NaiveDate,
+    race_date: Date,
 ) -> Vec<F1Result> {
     let Some(meeting_key) = meeting_for_date(client, season, race_date).await else {
         return Vec::new();
@@ -276,7 +273,7 @@ mod tests {
     fn parses_meeting_date() {
         assert_eq!(
             date_of("2026-06-12T11:30:00+00:00"),
-            Some(NaiveDate::from_ymd_opt(2026, 6, 12).unwrap())
+            Some(jiff::civil::date(2026, 6, 12))
         );
     }
 }

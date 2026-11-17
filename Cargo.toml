@@ -65,8 +65,12 @@ reqwest = { version = "0.13", default-features = false, features = [
   "rustls",
   "gzip",
 ], optional = true }
-chrono = { version = "0.4", features = ["serde"], optional = true }
-chrono-tz = { version = "0.10", optional = true }
+# Server-only. `tzdb-bundle-always` compiles the IANA tz database in: the
+# runtime image is plain Alpine with no /usr/share/zoneinfo, so without the
+# bundle every zone lookup there would fail. Where system tzdata exists jiff
+# prefers it, so updates still land; `feed::zone` falls back to the bundle for
+# any zone a trimmed system copy leaves out.
+jiff = { version = "1.0", features = ["serde", "tzdb-bundle-always"], optional = true }
 once_cell = { version = "1.21", optional = true }
 dotenvy = { version = "0.15", optional = true }
 rusqlite = { version = "0.43.0", features = ["bundled"], optional = true }
@@ -103,8 +107,7 @@ ssr = [
   "dep:once_cell",
   "dep:reqwest",
   "dep:serde_json",
-  "dep:chrono",
-  "dep:chrono-tz",
+  "dep:jiff",
   "dep:rusqlite",
   "dep:web-push-native",
   "dep:base64ct",

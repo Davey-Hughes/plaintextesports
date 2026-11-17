@@ -6,20 +6,20 @@
 //!
 //! Reads the key from config.toml / `OCBLACKTOP_TOKEN`, exactly like the server.
 
-use chrono::{DateTime, Datelike, Duration, Utc};
+use jiff::{SignedDuration, Timestamp};
 use plaintextesports::feed::NormalizedMatch;
 use plaintextesports::types::MatchStatus;
 
 /// Mirrors `cache.rs::series_cadence`'s tiering — for reporting only (the real
 /// poller's copy is what runs; this just shows what it would pick right now).
-fn tier(rows: &[NormalizedMatch], now: DateTime<Utc>) -> &'static str {
-    let mut soonest: Option<Duration> = None;
+fn tier(rows: &[NormalizedMatch], now: Timestamp) -> &'static str {
+    let mut soonest: Option<SignedDuration> = None;
     for m in rows {
         match m.status {
             MatchStatus::Live => return "LIVE (fast)",
             MatchStatus::Upcoming => {
                 let d = m.begin_at - now;
-                if d >= Duration::zero() && soonest.is_none_or(|s| d < s) {
+                if d >= SignedDuration::ZERO && soonest.is_none_or(|s| d < s) {
                     soonest = Some(d);
                 }
             }
@@ -27,13 +27,13 @@ fn tier(rows: &[NormalizedMatch], now: DateTime<Utc>) -> &'static str {
         }
     }
     match soonest {
-        Some(d) if d <= Duration::minutes(60) => "LIVE (fast)",
-        Some(d) if d <= Duration::days(14) => "NEAR (medium)",
+        Some(d) if d <= SignedDuration::from_mins(60) => "LIVE (fast)",
+        Some(d) if d <= SignedDuration::from_hours(14 * 24) => "NEAR (medium)",
         _ => "IDLE (slow)",
     }
 }
 
-fn summarize(name: &str, rows: &[NormalizedMatch], now: DateTime<Utc>) {
+fn summarize(name: &str, rows: &[NormalizedMatch], now: Timestamp) {
     let live = rows
         .iter()
         .filter(|m| matches!(m.status, MatchStatus::Live))
@@ -57,12 +57,10 @@ fn summarize(name: &str, rows: &[NormalizedMatch], now: DateTime<Utc>) {
         } else {
             m.series_name.as_str()
         };
-        let days = (m.begin_at - now).num_days();
+        let days = (m.begin_at - now).as_hours() / 24;
         println!(
             "          next: {} \"{}\" in {days}d @ {}",
-            m.league,
-            label,
-            m.begin_at.to_rfc3339()
+            m.league, label, m.begin_at
         );
     }
 }
@@ -82,8 +80,8 @@ async fn run() {
         .user_agent(plaintextesports::http::USER_AGENT)
         .build()
         .expect("http client");
-    let now = Utc::now();
-    let year = now.year();
+    let now = Timestamp::now();
+    let year = i32::from(plaintextesports::feed::utc_date(now).year());
 
     println!("Orange Cat Blacktop live probe — {now}\n");
     println!("Calendars:");

@@ -3,23 +3,40 @@
 //! Every feed — PandaScore (esports), ESPN, the MLB/NHL stats APIs, F1, and the
 //! WRC/MotoGP motorsport sources — deserializes its own wire format and produces
 //! a [`NormalizedMatch`]; the store and cache consume only this shape, never a
-//! source's raw types. Uses `chrono`, so it lives here rather than in the
+//! source's raw types. Uses `jiff`, so it lives here rather than in the
 //! WASM-safe [`crate::types`] module.
 
 use crate::http::DynError;
 use crate::types::{MatchStatus, Sport, StreamView};
-use chrono::{DateTime, NaiveTime, Utc};
+use jiff::Timestamp;
+use jiff::civil::{Date, Time};
+use jiff::tz::{TimeZone, TimeZoneDatabase};
 
 /// 12:00:00, for anchoring a date-only value to the middle of its day so the
 /// calendar date survives a shift into any viewer's timezone.
 ///
-/// A const rather than `and_hms_opt(12, 0, 0).unwrap()` at each use: the
+/// A const rather than `Time::new(12, 0, 0, 0).unwrap()` at each use: the
 /// argument check happens during const evaluation, so an invalid time is a
 /// compile error instead of a panic the callers have to document.
-pub const NOON: NaiveTime = match NaiveTime::from_hms_opt(12, 0, 0) {
-    Some(t) => t,
-    None => unreachable!(),
-};
+pub const NOON: Time = Time::constant(12, 0, 0, 0);
+
+/// The IANA zone `name`, from the system tzdata if it has it, else from the copy
+/// compiled in by `tzdb-bundle-always`. jiff settles on one database at startup
+/// and prefers any non-empty system directory, so without the second lookup a
+/// trimmed /usr/share/zoneinfo would hide every zone it leaves out.
+#[must_use]
+pub fn zone(name: &str) -> Option<TimeZone> {
+    TimeZone::get(name)
+        .or_else(|_| TimeZoneDatabase::bundled().get(name))
+        .ok()
+}
+
+/// The UTC calendar date of `ts`. The sources and the poller count days in
+/// UTC; a viewer's day goes through their own timezone instead.
+#[must_use]
+pub fn utc_date(ts: Timestamp) -> Date {
+    TimeZone::UTC.to_datetime(ts).date()
+}
 
 /// Result of fetching one sport's tier-1 matches.
 pub type FetchResult = Result<Vec<NormalizedMatch>, DynError>;
@@ -36,7 +53,7 @@ pub struct NormalizedMatch {
     /// when absent or the league already names the event. Persisted.
     pub series_name: String,
     pub tier: String,
-    pub begin_at: DateTime<Utc>,
+    pub begin_at: Timestamp,
     pub status: MatchStatus,
     pub best_of: Option<i64>,
     pub team_a: NormalizedTeam,
@@ -124,7 +141,7 @@ impl NormalizedMatch {
         id: i64,
         sport: Sport,
         league: impl Into<String>,
-        begin_at: DateTime<Utc>,
+        begin_at: Timestamp,
         status: MatchStatus,
         team_a: NormalizedTeam,
         team_b: NormalizedTeam,
@@ -164,6 +181,18 @@ mod tests {
     use super::*;
 
     #[test]
+    fn zone_finds_iana_names_and_rejects_others() {
+        let name = |s: &str| zone(s).and_then(|tz| tz.iana_name().map(str::to_string));
+        assert_eq!(
+            name("America/Los_Angeles").as_deref(),
+            Some("America/Los_Angeles")
+        );
+        assert_eq!(name("Pacific/Chatham").as_deref(), Some("Pacific/Chatham"));
+        assert!(zone("Not/AZone").is_none());
+        assert!(zone("").is_none());
+    }
+
+    #[test]
     fn team_sport_constructor_defaults_the_common_fields() {
         let t = |label: &str| NormalizedTeam {
             label: label.into(),
@@ -171,7 +200,7 @@ mod tests {
             score: Some(3),
             abbrev: String::new(),
         };
-        let when = "2026-06-24T18:00:00Z".parse::<DateTime<Utc>>().unwrap();
+        let when = "2026-06-24T18:00:00Z".parse::<Timestamp>().unwrap();
         let m = NormalizedMatch::team_sport(
             7,
             Sport::Nhl,

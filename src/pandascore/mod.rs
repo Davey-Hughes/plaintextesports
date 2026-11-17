@@ -12,7 +12,8 @@ use crate::feed::{FetchResult, NormalizedMatch, NormalizedTeam};
 use crate::http::DynError;
 use crate::tiering::{TierInput, TierPolicy, is_tier_one};
 use crate::types::{MatchStatus, Sport, StreamView};
-use chrono::{DateTime, Duration, Utc};
+use jiff::tz::Offset;
+use jiff::{SignedDuration, Timestamp};
 use serde::Deserialize;
 
 mod brackets;
@@ -190,11 +191,9 @@ fn score_for(results: &[RawResult], team_id: Option<i64>) -> Option<i64> {
         .and_then(|r| r.score)
 }
 
-fn parse_time(raw: &RawMatch) -> Option<DateTime<Utc>> {
+fn parse_time(raw: &RawMatch) -> Option<Timestamp> {
     let s = raw.begin_at.as_deref().or(raw.scheduled_at.as_deref())?;
-    DateTime::parse_from_rfc3339(s)
-        .ok()
-        .map(|dt| dt.with_timezone(&Utc))
+    s.parse::<Timestamp>().ok()
 }
 
 /// Normalize a single raw match. Returns `None` when essential fields (time,
@@ -389,11 +388,11 @@ const DEEP_MAX_PAGES: u32 = 30;
 /// exceeds the display's ~5h live grace so a match that just ended — anywhere in
 /// its live window — is re-fetched and flips out of the "started but never marked
 /// finished" heuristic the same cycle.
-const RECENT_PAST_WINDOW: Duration = Duration::hours(6);
+const RECENT_PAST_WINDOW: SignedDuration = SignedDuration::from_hours(6);
 
 /// The recent-past range `[now - RECENT_PAST_WINDOW, now]` that [`fetch_game`]
 /// re-fetches each poll to catch just-finished matches.
-fn recent_past_window(now: DateTime<Utc>) -> (DateTime<Utc>, DateTime<Utc>) {
+fn recent_past_window(now: Timestamp) -> (Timestamp, Timestamp) {
     (now - RECENT_PAST_WINDOW, now)
 }
 
@@ -442,7 +441,7 @@ pub async fn fetch_game(
     client: &reqwest::Client,
     token: &str,
     sport: Sport,
-    window_end: DateTime<Utc>,
+    window_end: Timestamp,
     deep: bool,
 ) -> FetchResult {
     use std::collections::HashMap;
@@ -507,7 +506,7 @@ pub async fn fetch_game(
     // a match that just finished and updates its status/score the same cycle —
     // instead of leaving it stuck in the started-but-never-finished live heuristic
     // until the idle past-day refresh catches it.
-    let (from, to) = recent_past_window(Utc::now());
+    let (from, to) = recent_past_window(Timestamp::now());
     let (running, past) = tokio::join!(
         get_segment(client, token, sport, "running", &[("per_page", "50")]),
         fetch_past_range(client, token, sport, from, to, 1, PER_PAGE as u32),
@@ -546,8 +545,12 @@ pub struct RangeFetch {
 }
 
 /// The `range[begin_at]` filter value: "<`from_rfc3339`>,<`to_rfc3339`>".
-fn begin_at_range(from: DateTime<Utc>, to: DateTime<Utc>) -> String {
-    format!("{},{}", from.to_rfc3339(), to.to_rfc3339())
+fn begin_at_range(from: Timestamp, to: Timestamp) -> String {
+    format!(
+        "{},{}",
+        from.display_with_offset(Offset::UTC),
+        to.display_with_offset(Offset::UTC)
+    )
 }
 
 /// All tier-1 past matches in `[from, to]`, paging through results so a busy
@@ -562,8 +565,8 @@ pub async fn fetch_past_range_all(
     client: &reqwest::Client,
     token: &str,
     sport: Sport,
-    from: DateTime<Utc>,
-    to: DateTime<Utc>,
+    from: Timestamp,
+    to: Timestamp,
 ) -> Result<(Vec<NormalizedMatch>, Option<u64>), DynError> {
     const PER_PAGE: u32 = 100;
     let mut out = Vec::new();
@@ -592,8 +595,8 @@ pub async fn fetch_past_range(
     client: &reqwest::Client,
     token: &str,
     sport: Sport,
-    from: DateTime<Utc>,
-    to: DateTime<Utc>,
+    from: Timestamp,
+    to: Timestamp,
     page: u32,
     per_page: u32,
 ) -> Result<RangeFetch, DynError> {
@@ -656,8 +659,8 @@ mod tests {
 
     #[test]
     fn begin_at_range_formats_iso_pair() {
-        let from = chrono::TimeZone::with_ymd_and_hms(&Utc, 2026, 5, 1, 0, 0, 0).unwrap();
-        let to = chrono::TimeZone::with_ymd_and_hms(&Utc, 2026, 5, 8, 0, 0, 0).unwrap();
+        let from = "2026-05-01T00:00:00Z".parse::<Timestamp>().unwrap();
+        let to = "2026-05-08T00:00:00Z".parse::<Timestamp>().unwrap();
         assert_eq!(
             begin_at_range(from, to),
             "2026-05-01T00:00:00+00:00,2026-05-08T00:00:00+00:00"
@@ -666,14 +669,14 @@ mod tests {
 
     #[test]
     fn recent_past_window_covers_the_live_grace() {
-        let now = "2026-06-28T21:00:00Z".parse::<DateTime<Utc>>().unwrap();
+        let now = "2026-06-28T21:00:00Z".parse::<Timestamp>().unwrap();
         let (from, to) = recent_past_window(now);
         assert_eq!(to, now, "window ends at now");
         // Must reach back at least as far as a live match can have started (the
         // display's ~5h live grace) so the active poll's range /past still sees a
         // match that just finished at the edge of that window.
         assert!(
-            from <= now - Duration::hours(5),
+            from <= now - SignedDuration::from_hours(5),
             "recent-past window must cover the live grace"
         );
     }
@@ -759,6 +762,6 @@ mod tests {
         // id1 kept via scheduled_at fallback; id2 dropped (no time); id3 dropped (no league).
         assert_eq!(ms.len(), 1);
         assert_eq!(ms[0].id, 1);
-        assert_eq!(ms[0].begin_at.to_rfc3339(), "2026-07-01T10:00:00+00:00");
+        assert_eq!(ms[0].begin_at.to_string(), "2026-07-01T10:00:00Z");
     }
 }

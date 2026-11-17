@@ -3,12 +3,14 @@
 //! feeds so it flows through the existing schedule UI unchanged.
 
 use crate::bracket_build::{self, RawSeries as BracketSeries};
+use crate::feed::utc_date;
 use crate::feed::{LiveUpdate, NormalizedMatch, NormalizedTeam};
 use crate::types::{
     BoxScore, BracketRound, EventInfo, LeaderCard, LineRow, LineScore, MatchStatus, PlayerRow,
     PlayerTable, Sport, StandingRow, StatPair, StreamView, stat_share,
 };
-use chrono::{DateTime, NaiveDate, Utc};
+use jiff::civil::Date;
+use jiff::{Timestamp, ToSpan};
 use serde::Deserialize;
 use std::collections::HashSet;
 
@@ -296,9 +298,7 @@ fn broadcasts(raw: &[RawBroadcast]) -> Vec<StreamView> {
 }
 
 fn to_match(g: RawGame) -> Option<NormalizedMatch> {
-    let begin_at = DateTime::parse_from_rfc3339(&g.game_date)
-        .ok()?
-        .with_timezone(&Utc);
+    let begin_at = g.game_date.parse::<Timestamp>().ok()?;
     let mut m = NormalizedMatch::team_sport(
         g.game_pk,
         Sport::Mlb,
@@ -359,13 +359,13 @@ fn to_match(g: RawGame) -> Option<NormalizedMatch> {
 /// does not deserialize into the expected shape.
 pub async fn fetch_schedule(
     client: &reqwest::Client,
-    start: NaiveDate,
-    end: NaiveDate,
+    start: Date,
+    end: Date,
 ) -> Result<Vec<NormalizedMatch>, reqwest::Error> {
     let url = format!(
         "{BASE}/schedule?sportId=1&startDate={}&endDate={}&hydrate=team,broadcasts(all),venue(timezone,location)",
-        start.format("%Y-%m-%d"),
-        end.format("%Y-%m-%d"),
+        start.strftime("%Y-%m-%d"),
+        end.strftime("%Y-%m-%d"),
     );
     let resp: ScheduleResp = client
         .get(&url)
@@ -474,7 +474,7 @@ pub struct RawSeries {
 #[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct RawSeriesGame {
     pub match_id: i64,
-    pub begin_at: Option<DateTime<Utc>>,
+    pub begin_at: Option<Timestamp>,
     pub venue_tz: Option<String>,
     pub team_a: String,
     pub team_b: String,
@@ -548,9 +548,7 @@ fn build_raw_series(
             }
         }
         let venue_tz = Some(g.venue.time_zone.id.clone()).filter(|s| !s.is_empty());
-        let begin_at = DateTime::parse_from_rfc3339(&g.game_date)
-            .ok()
-            .map(|d| d.with_timezone(&Utc));
+        let begin_at = g.game_date.parse::<Timestamp>().ok();
         games_out.push(RawSeriesGame {
             match_id: g.game_pk,
             begin_at,
@@ -587,7 +585,7 @@ fn build_raw_series(
 /// re-formatted per request.
 pub fn format_series(
     raw: &RawSeries,
-    fmt_labels: impl Fn(DateTime<Utc>, Option<&str>) -> SeriesLabels,
+    fmt_labels: impl Fn(Timestamp, Option<&str>) -> SeriesLabels,
 ) -> crate::types::Series {
     use crate::types::SeriesGame;
     let games = raw
@@ -661,25 +659,25 @@ fn series_record_label(
 pub async fn fetch_series(
     client: &reqwest::Client,
     game_pk: i64,
-    begin_at: DateTime<Utc>,
+    begin_at: Timestamp,
     team_a_label: &str,
     team_b_label: &str,
     series: crate::types::MlbSeriesRef,
 ) -> Result<RawSeries, reqwest::Error> {
-    let date = begin_at.date_naive();
+    let date = utc_date(begin_at);
     // The series spans from (this game - (n-1)) to (this game + (total-n)) days.
     // Pad ±1 day for late-night/cross-midnight starts; build_raw_series then
     // filters to the contiguous series of the right length.
     let before = i64::from((series.game_number - 1).max(0)) + 1;
     let after = i64::from((series.games_in_series - series.game_number).max(0)) + 1;
-    let start = date - chrono::Duration::days(before);
-    let end = date + chrono::Duration::days(after);
+    let start = date - before.days();
+    let end = date + after.days();
     let url = format!(
         "{BASE}/schedule?sportId=1&teamId={}&opponentId={}&startDate={}&endDate={}&hydrate=team,venue(timezone)",
         series.team_id_a,
         series.team_id_b,
-        start.format("%Y-%m-%d"),
-        end.format("%Y-%m-%d"),
+        start.strftime("%Y-%m-%d"),
+        end.strftime("%Y-%m-%d"),
     );
     let resp: ScheduleResp = client
         .get(&url)
@@ -1754,10 +1752,10 @@ mod tests {
 
     /// Test label formatter: UTC date + "HH:MM" (no tz dependency), echoing any
     /// venue tz id into the venue label so we can assert it's threaded through.
-    fn utc_labels(d: DateTime<Utc>, venue_tz: Option<&str>) -> SeriesLabels {
+    fn utc_labels(d: Timestamp, venue_tz: Option<&str>) -> SeriesLabels {
         SeriesLabels {
-            day: d.format("%a, %b %-d").to_string(),
-            clock: d.format("%H:%M").to_string(),
+            day: d.strftime("%a, %b %-d").to_string(),
+            clock: d.strftime("%H:%M").to_string(),
             venue: venue_tz.map_or_default(|tz| format!("@{tz}")),
         }
     }
@@ -1911,7 +1909,7 @@ mod tests {
             record_label: String::new(),
             games: vec![RawSeriesGame {
                 match_id: 42,
-                begin_at: "2026-06-23T23:10:00Z".parse::<DateTime<Utc>>().ok(),
+                begin_at: "2026-06-23T23:10:00Z".parse::<Timestamp>().ok(),
                 venue_tz: Some("America/New_York".to_string()),
                 team_a: "NYY".to_string(),
                 team_b: "BOS".to_string(),
@@ -1925,8 +1923,8 @@ mod tests {
         // A trivial formatter: prove the closure receives the UTC start + venue tz,
         // and its output lands in the SeriesGame labels.
         let series = format_series(&raw, |utc, tz| SeriesLabels {
-            day: utc.format("%Y-%m-%d").to_string(),
-            clock: utc.format("%H:%M").to_string(),
+            day: utc.strftime("%Y-%m-%d").to_string(),
+            clock: utc.strftime("%H:%M").to_string(),
             venue: tz.unwrap_or("").to_string(),
         });
         assert_eq!(series.game_label, "Game 1 of 3");

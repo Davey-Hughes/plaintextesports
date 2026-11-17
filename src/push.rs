@@ -9,7 +9,7 @@ use crate::config::Config;
 use crate::http::DynError;
 use crate::store::{self, Reminder};
 use base64ct::{Base64UrlUnpadded, Encoding};
-use chrono::Utc;
+use jiff::Timestamp;
 use std::time::Duration;
 use web_push_native::jwt_simple::algorithms::ES256KeyPair;
 use web_push_native::p256::PublicKey;
@@ -152,7 +152,7 @@ pub fn spawn_sender() {
             // Expand sport/event subscriptions into per-match reminders first.
             expand_subscriptions(&conn);
 
-            let now = Utc::now().timestamp_millis();
+            let now = Timestamp::now().as_millisecond();
 
             // Bring armed reminders back in line with the latest start times:
             // rewrite shifted notify times/bodies and latch canceled matches (sync),
@@ -357,7 +357,7 @@ fn expand_subscriptions(conn: &rusqlite::Connection) {
             return;
         }
     };
-    let now = Utc::now().timestamp_millis();
+    let now = Timestamp::now().as_millisecond();
     for s in subs {
         for &lead_ms in &s.lead_list {
             for seed in crate::cache::scope_reminder_seeds(

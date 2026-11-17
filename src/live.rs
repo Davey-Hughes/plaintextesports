@@ -5,7 +5,10 @@
 
 use crate::feed::{LiveUpdate, NormalizedMatch};
 use crate::types::{MatchStatus, Sport};
-use chrono::{DateTime, Duration, NaiveDate, Utc};
+use jiff::civil::Date;
+use jiff::tz::TimeZone;
+use jiff::{SignedDuration, Timestamp};
+use once_cell::sync::Lazy;
 use std::collections::{BTreeSet, HashMap};
 
 /// The sports with a live scoreboard the fast lane polls.
@@ -13,18 +16,18 @@ pub const LIVE_SPORTS: [Sport; 4] = [Sport::Nfl, Sport::Nba, Sport::Nhl, Sport::
 
 /// Start polling a game this long before it starts, so the opening minutes are
 /// caught by the fast lane rather than the next main cycle.
-pub const LIVE_LEAD: Duration = Duration::minutes(5);
+pub const LIVE_LEAD: SignedDuration = SignedDuration::from_mins(5);
 
 /// How long a recorded update survives without a refresh. A targeted game is
 /// refreshed every tick, so only a finished game (or a source that keeps
 /// failing) ages out — after which the main poller's data stands.
-pub const LIVE_KEEP: Duration = Duration::minutes(3);
+pub const LIVE_KEEP: SignedDuration = SignedDuration::from_mins(3);
 
 /// One recorded update and when it was fetched.
 #[derive(Debug, Clone)]
 pub struct LiveEntry {
     pub update: LiveUpdate,
-    pub fetched_at: DateTime<Utc>,
+    pub fetched_at: Timestamp,
 }
 
 /// The latest update per game.
@@ -34,16 +37,21 @@ pub type LiveMap = HashMap<(Sport, i64), LiveEntry>;
 /// one MLB lookup by game id.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LiveRequest {
-    Espn(Sport, NaiveDate),
-    Nhl(NaiveDate),
+    Espn(Sport, Date),
+    Nhl(Date),
     Mlb(Vec<i64>),
 }
+
+/// US Eastern time, looked up once.
+static EASTERN: Lazy<TimeZone> = Lazy::new(|| {
+    crate::feed::zone("America/New_York").expect("the bundled tzdb has America/New_York")
+});
 
 /// The US-Eastern calendar day of `t` — how ESPN and the NHL file a game: the
 /// 8:20 PM ET Sunday night game is Sunday's, though it starts Monday UTC.
 #[must_use]
-pub fn et_day(t: DateTime<Utc>) -> NaiveDate {
-    t.with_timezone(&chrono_tz::America::New_York).date_naive()
+pub fn et_day(t: Timestamp) -> Date {
+    EASTERN.to_datetime(t).date()
 }
 
 /// The rows worth a fast poll: a live-lane sport that is live, or has started
@@ -52,8 +60,8 @@ pub fn et_day(t: DateTime<Utc>) -> NaiveDate {
 #[must_use]
 pub fn live_targets(
     matches: &[NormalizedMatch],
-    now: DateTime<Utc>,
-    grace: Duration,
+    now: Timestamp,
+    grace: SignedDuration,
 ) -> Vec<&NormalizedMatch> {
     matches
         .iter()
@@ -71,7 +79,7 @@ pub fn live_targets(
 /// then MLB.
 #[must_use]
 pub fn plan_requests(targets: &[&NormalizedMatch]) -> Vec<LiveRequest> {
-    let mut espn: Vec<(Sport, NaiveDate)> = Vec::new();
+    let mut espn: Vec<(Sport, Date)> = Vec::new();
     let mut nhl = BTreeSet::new();
     let mut mlb = BTreeSet::new();
     for m in targets {
@@ -119,7 +127,7 @@ pub fn patch(m: &mut NormalizedMatch, u: &LiveUpdate) {
 }
 
 /// Remember a poll's updates, stamped with when they were fetched.
-pub fn record(live: &mut LiveMap, updates: &[LiveUpdate], fetched_at: DateTime<Utc>) {
+pub fn record(live: &mut LiveMap, updates: &[LiveUpdate], fetched_at: Timestamp) {
     for u in updates {
         live.insert(
             (u.sport, u.id),
@@ -132,7 +140,7 @@ pub fn record(live: &mut LiveMap, updates: &[LiveUpdate], fetched_at: DateTime<U
 }
 
 /// Forget updates not refreshed within [`LIVE_KEEP`].
-pub fn prune(live: &mut LiveMap, now: DateTime<Utc>) {
+pub fn prune(live: &mut LiveMap, now: Timestamp) {
     live.retain(|_, e| now - e.fetched_at < LIVE_KEEP);
 }
 
@@ -140,7 +148,7 @@ pub fn prune(live: &mut LiveMap, now: DateTime<Utc>) {
 /// start — onto freshly reloaded rows, so the newest data wins either way: a live
 /// score the fast lane saw after the main fetch survives the reload, and a Final
 /// the main fetch saw after the last fast poll isn't overwritten by it.
-pub fn apply_live(matches: &mut [NormalizedMatch], live: &LiveMap, since: DateTime<Utc>) {
+pub fn apply_live(matches: &mut [NormalizedMatch], live: &LiveMap, since: Timestamp) {
     for m in matches {
         if let Some(e) = live.get(&(m.sport, m.id))
             && e.fetched_at >= since
@@ -155,9 +163,9 @@ mod tests {
     use super::*;
     use crate::feed::NormalizedTeam;
 
-    const GRACE: Duration = Duration::hours(5);
+    const GRACE: SignedDuration = SignedDuration::from_hours(5);
 
-    fn row(sport: Sport, id: i64, begin: DateTime<Utc>, status: MatchStatus) -> NormalizedMatch {
+    fn row(sport: Sport, id: i64, begin: Timestamp, status: MatchStatus) -> NormalizedMatch {
         let t = |s: &str| NormalizedTeam {
             label: s.into(),
             name: s.into(),
@@ -178,56 +186,61 @@ mod tests {
         }
     }
 
-    fn at(s: &str) -> DateTime<Utc> {
+    fn at(s: &str) -> Timestamp {
         s.parse().unwrap()
     }
 
     #[test]
     fn targets_live_started_and_imminent_rows_of_live_sports_only() {
-        let now = Utc::now();
+        let now = Timestamp::now();
         let rows = [
-            row(Sport::Nfl, 1, now - Duration::hours(1), MatchStatus::Live),
+            row(
+                Sport::Nfl,
+                1,
+                now - SignedDuration::from_hours(1),
+                MatchStatus::Live,
+            ),
             // Started, but the main poller hasn't flipped it to Live yet.
             row(
                 Sport::Nhl,
                 2,
-                now - Duration::minutes(5),
+                now - SignedDuration::from_mins(5),
                 MatchStatus::Upcoming,
             ),
             row(
                 Sport::Mlb,
                 3,
-                now + Duration::minutes(4),
+                now + SignedDuration::from_mins(4),
                 MatchStatus::Upcoming,
             ),
             row(
                 Sport::Nba,
                 4,
-                now + Duration::minutes(30),
+                now + SignedDuration::from_mins(30),
                 MatchStatus::Upcoming,
             ),
             row(
                 Sport::Nfl,
                 5,
-                now - Duration::hours(1),
+                now - SignedDuration::from_hours(1),
                 MatchStatus::Finished,
             ),
             row(
                 Sport::Soccer,
                 6,
-                now - Duration::minutes(20),
+                now - SignedDuration::from_mins(20),
                 MatchStatus::Live,
             ),
             row(
                 Sport::Nhl,
                 7,
-                now - Duration::hours(6),
+                now - SignedDuration::from_hours(6),
                 MatchStatus::Upcoming,
             ),
             row(
                 Sport::Mlb,
                 8,
-                now - Duration::hours(1),
+                now - SignedDuration::from_hours(1),
                 MatchStatus::Canceled,
             ),
         ];
@@ -240,7 +253,7 @@ mod tests {
 
     #[test]
     fn et_day_files_a_late_game_under_its_eastern_date() {
-        let oct4 = NaiveDate::from_ymd_opt(2026, 10, 4).unwrap();
+        let oct4 = jiff::civil::date(2026, 10, 4);
         // SNF: 8:20 PM EDT on Sunday is 00:20Z Monday.
         assert_eq!(et_day(at("2026-10-05T00:20:00Z")), oct4);
         assert_eq!(et_day(at("2026-10-04T17:00:00Z")), oct4);
@@ -263,8 +276,8 @@ mod tests {
             row(Sport::Mlb, 8, early, MatchStatus::Live),
         ];
         let refs: Vec<&NormalizedMatch> = rows.iter().collect();
-        let oct4 = NaiveDate::from_ymd_opt(2026, 10, 4).unwrap();
-        let oct5 = NaiveDate::from_ymd_opt(2026, 10, 5).unwrap();
+        let oct4 = jiff::civil::date(2026, 10, 4);
+        let oct5 = jiff::civil::date(2026, 10, 5);
         assert_eq!(
             plan_requests(&refs),
             [
@@ -279,7 +292,7 @@ mod tests {
 
     #[test]
     fn patch_sets_scores_status_and_detail_then_clears_detail_once_final() {
-        let mut m = row(Sport::Nfl, 1, Utc::now(), MatchStatus::Upcoming);
+        let mut m = row(Sport::Nfl, 1, Timestamp::now(), MatchStatus::Upcoming);
         patch(
             &mut m,
             &up(Sport::Nfl, 1, MatchStatus::Live, 7, 3, "Q2 4:08"),
@@ -305,7 +318,7 @@ mod tests {
 
     #[test]
     fn patch_keeps_scores_when_the_update_has_none() {
-        let mut m = row(Sport::Nhl, 1, Utc::now(), MatchStatus::Live);
+        let mut m = row(Sport::Nhl, 1, Timestamp::now(), MatchStatus::Live);
         m.team_a.score = Some(2);
         let mut u = up(Sport::Nhl, 1, MatchStatus::Live, 0, 0, "P2 INT");
         u.score_a = None;
@@ -318,12 +331,12 @@ mod tests {
 
     #[test]
     fn apply_live_applies_only_entries_fetched_since_the_cycle_began() {
-        let t0 = Utc::now();
+        let t0 = Timestamp::now();
         let mut live = LiveMap::new();
         let fresh = up(Sport::Nhl, 1, MatchStatus::Live, 2, 1, "P2 9:14");
         let stale = up(Sport::Nhl, 2, MatchStatus::Live, 0, 0, "P3 1:00");
-        record(&mut live, &[fresh], t0 + Duration::seconds(2));
-        record(&mut live, &[stale], t0 - Duration::seconds(5));
+        record(&mut live, &[fresh], t0 + SignedDuration::from_secs(2));
+        record(&mut live, &[stale], t0 - SignedDuration::from_secs(5));
         let mut rows = [
             row(Sport::Nhl, 1, t0, MatchStatus::Live),
             // The main fetch saw the final after the fast lane's last poll.
@@ -345,10 +358,14 @@ mod tests {
 
     #[test]
     fn prune_drops_entries_older_than_live_keep() {
-        let now = Utc::now();
+        let now = Timestamp::now();
         let mut live = LiveMap::new();
         let u = |id| up(Sport::Mlb, id, MatchStatus::Live, 1, 1, "Top 4th");
-        record(&mut live, &[u(1)], now - LIVE_KEEP - Duration::seconds(1));
+        record(
+            &mut live,
+            &[u(1)],
+            now - LIVE_KEEP - SignedDuration::from_secs(1),
+        );
         record(&mut live, &[u(2)], now);
         prune(&mut live, now);
         assert_eq!(live.keys().map(|k| k.1).collect::<Vec<_>>(), [2]);

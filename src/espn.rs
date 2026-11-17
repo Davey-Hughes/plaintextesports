@@ -8,12 +8,14 @@
 //! toggle (like esports); the start time still shows in the viewer's zone.
 
 use crate::bracket_build::{self, RawSeries};
+use crate::feed::utc_date;
 use crate::feed::{LiveUpdate, NormalizedMatch, NormalizedTeam};
 use crate::types::{
     BoxScore, BracketRound, EventInfo, LeaderCard, LineRow, LineScore, MatchStatus, PlayerRow,
     PlayerTable, ScoreEvent, Sport, StandingRow, StatPair, StreamView, stat_share,
 };
-use chrono::{DateTime, Datelike, NaiveDate, NaiveDateTime, Utc};
+use jiff::Timestamp;
+use jiff::civil::Date;
 use serde::Deserialize;
 use std::time::Duration;
 
@@ -87,19 +89,18 @@ pub const WORLD_CUP: EspnLeague = EspnLeague {
 
 /// ESPN's season year for a European league (Aug–May; labelled by start year).
 #[must_use]
-pub fn european_season(now: DateTime<Utc>) -> i32 {
-    if now.month() >= 7 {
-        now.year()
-    } else {
-        now.year() - 1
-    }
+pub fn european_season(now: Timestamp) -> i32 {
+    let d = utc_date(now);
+    let y = i32::from(d.year());
+    if d.month() >= 7 { y } else { y - 1 }
 }
 
 /// ESPN's season year for a league at `now`. NFL labels a season by its start
 /// year (Sept–Feb); NBA by its end year (Oct–June).
 #[must_use]
-pub fn season_year(sport: Sport, now: DateTime<Utc>) -> i32 {
-    let (y, m) = (now.year(), now.month());
+pub fn season_year(sport: Sport, now: Timestamp) -> i32 {
+    let d = utc_date(now);
+    let (y, m) = (i32::from(d.year()), d.month());
     match sport {
         Sport::Nfl => {
             if m >= 9 {
@@ -389,16 +390,10 @@ fn venue_tz(city: &str, country: &str) -> Option<&'static str> {
     }
 }
 
-/// Parse an ESPN timestamp, which omits seconds ("2026-01-15T19:00Z").
-fn parse_date(s: &str) -> Option<DateTime<Utc>> {
-    DateTime::parse_from_rfc3339(s)
-        .map(|d| d.with_timezone(&Utc))
-        .ok()
-        .or_else(|| {
-            NaiveDateTime::parse_from_str(s, "%Y-%m-%dT%H:%MZ")
-                .ok()
-                .map(|n| n.and_utc())
-        })
+/// Parse an ESPN timestamp, which omits seconds ("2026-01-15T19:00Z"). jiff
+/// takes that form as well as full RFC 3339.
+fn parse_date(s: &str) -> Option<Timestamp> {
+    s.parse().ok()
 }
 
 fn status_of(state: &str, name: &str) -> MatchStatus {
@@ -544,7 +539,7 @@ fn to_match(e: Event, lg: &EspnLeague) -> Option<NormalizedMatch> {
     // A dated tournament (the World Cup) carries its year as the series, so each
     // edition is a distinct event; the seasonal leagues keep an empty series.
     if lg.dated_event {
-        m.series_name = begin_at.year().to_string();
+        m.series_name = utc_date(begin_at).year().to_string();
     }
     m.streams = broadcasts(&comp.geo_broadcasts);
     append_tnf_twitch(&mut m.streams, lg.sport);
@@ -562,8 +557,8 @@ fn to_match(e: Event, lg: &EspnLeague) -> Option<NormalizedMatch> {
 pub async fn fetch_schedule(
     client: &reqwest::Client,
     lg: &EspnLeague,
-    start: NaiveDate,
-    end: NaiveDate,
+    start: Date,
+    end: Date,
 ) -> Result<Vec<NormalizedMatch>, reqwest::Error> {
     let events = fetch_scoreboard_events(client, lg.espn_sport, lg.league, start, end).await?;
     Ok(events.into_iter().filter_map(|e| to_match(e, lg)).collect())
@@ -622,9 +617,9 @@ fn live_update(e: &Event, sport: Sport) -> Option<LiveUpdate> {
 pub async fn fetch_live(
     client: &reqwest::Client,
     lg: &EspnLeague,
-    day: NaiveDate,
+    day: Date,
 ) -> Result<Vec<LiveUpdate>, reqwest::Error> {
-    let dates = day.format("%Y%m%d").to_string();
+    let dates = day.strftime("%Y%m%d").to_string();
     let events = fetch_scoreboard_page(client, lg.espn_sport, lg.league, &dates).await?;
     Ok(events
         .iter()
@@ -1116,8 +1111,13 @@ pub fn to_box_score(s: &RawSummary) -> BoxScore {
 // `winner`, and — for the series sports — an embedded `series` games-won summary.
 // These builders turn that into the shared `Vec<BracketRound>` the renderer draws.
 
+/// The date `year`-`month`-`day`, if `year` is in jiff's range.
+fn ymd(year: i32, month: i8, day: i8) -> Option<Date> {
+    Date::new(i16::try_from(year).ok()?, month, day).ok()
+}
+
 /// The `YYYYMM` scoreboard `dates` values that cover the inclusive range, in order.
-fn scoreboard_months(start: NaiveDate, end: NaiveDate) -> Vec<String> {
+fn scoreboard_months(start: Date, end: Date) -> Vec<String> {
     let mut out = Vec::new();
     if start > end {
         return out;
@@ -1164,8 +1164,8 @@ async fn fetch_scoreboard_events(
     client: &reqwest::Client,
     espn_sport: &str,
     league: &str,
-    start: NaiveDate,
-    end: NaiveDate,
+    start: Date,
+    end: Date,
 ) -> Result<Vec<Event>, reqwest::Error> {
     let months = scoreboard_months(start, end);
     let pages = futures::future::try_join_all(
@@ -1177,7 +1177,7 @@ async fn fetch_scoreboard_events(
     Ok(pages
         .into_iter()
         .flatten()
-        .filter(|e| parse_date(&e.date).is_some_and(|d| (start..=end).contains(&d.date_naive())))
+        .filter(|e| parse_date(&e.date).is_some_and(|d| (start..=end).contains(&utc_date(d))))
         .collect())
 }
 
@@ -1463,8 +1463,12 @@ pub async fn fetch_nfl_bracket(
     lg: &EspnLeague,
     season_start_year: i32,
 ) -> Result<Vec<BracketRound>, reqwest::Error> {
-    let start = NaiveDate::from_ymd_opt(season_start_year, 12, 1).unwrap_or_default();
-    let end = NaiveDate::from_ymd_opt(season_start_year + 1, 3, 1).unwrap_or_default();
+    let (Some(start), Some(end)) = (
+        ymd(season_start_year, 12, 1),
+        ymd(season_start_year + 1, 3, 1),
+    ) else {
+        return Ok(Vec::new());
+    };
     let events = fetch_scoreboard_events(client, lg.espn_sport, lg.league, start, end).await?;
     Ok(nfl_bracket(events))
 }
@@ -1564,8 +1568,9 @@ pub async fn fetch_nba_bracket(
     lg: &EspnLeague,
     end_year: i32,
 ) -> Result<Vec<BracketRound>, reqwest::Error> {
-    let start = NaiveDate::from_ymd_opt(end_year, 4, 1).unwrap_or_default();
-    let end = NaiveDate::from_ymd_opt(end_year, 7, 15).unwrap_or_default();
+    let (Some(start), Some(end)) = (ymd(end_year, 4, 1), ymd(end_year, 7, 15)) else {
+        return Ok(Vec::new());
+    };
     let events = fetch_scoreboard_events(client, lg.espn_sport, lg.league, start, end).await?;
     Ok(nba_bracket(events))
 }
@@ -1928,24 +1933,31 @@ mod tests {
     #[tokio::test]
     #[ignore = "hits the live ESPN API"]
     async fn espn_live_nfl_schedule() {
+        use jiff::ToSpan;
         let client = reqwest::Client::new();
-        let today = Utc::now().date_naive();
-        let (start, end) = (
-            today - chrono::Duration::days(8),
-            today + chrono::Duration::days(30),
-        );
+        let today = utc_date(Timestamp::now());
+        let (start, end) = (today - 8.days(), today + 30.days());
         let games = fetch_schedule(&client, &NFL, start, end).await.unwrap();
         println!("{} NFL games {start} … {end}", games.len());
         assert!(!games.is_empty());
         assert!(games.iter().all(|m| {
-            let d = m.begin_at.date_naive();
+            let d = utc_date(m.begin_at);
             d >= start && d <= end
         }));
     }
 
     #[test]
+    fn parse_date_takes_espn_minutes_and_full_rfc3339() {
+        let want = "2026-01-15T19:00:00Z".parse::<Timestamp>().unwrap();
+        assert_eq!(parse_date("2026-01-15T19:00Z"), Some(want));
+        assert_eq!(parse_date("2026-01-15T19:00:00Z"), Some(want));
+        assert_eq!(parse_date("2026-01-15T14:00:00-05:00"), Some(want));
+        assert_eq!(parse_date("not a date"), None);
+    }
+
+    #[test]
     fn scoreboard_months_spans_a_year_boundary() {
-        let d = |y, m, day| NaiveDate::from_ymd_opt(y, m, day).unwrap();
+        let d = jiff::civil::date;
         assert_eq!(
             scoreboard_months(d(2026, 12, 1), d(2027, 3, 1)),
             ["202612", "202701", "202702", "202703"]
@@ -2027,7 +2039,7 @@ mod tests {
     #[tokio::test]
     #[ignore = "hits the live ESPN API"]
     async fn espn_live_scores() {
-        let day = crate::live::et_day(Utc::now());
+        let day = crate::live::et_day(Timestamp::now());
         let ups = fetch_live(&reqwest::Client::new(), &NFL, day)
             .await
             .unwrap();
@@ -2093,10 +2105,10 @@ mod tests {
 
     #[test]
     fn nfl_and_nba_use_different_season_conventions() {
-        let jun_2026 = "2026-06-24T00:00:00Z".parse::<DateTime<Utc>>().unwrap();
+        let jun_2026 = "2026-06-24T00:00:00Z".parse::<Timestamp>().unwrap();
         assert_eq!(season_year(Sport::Nfl, jun_2026), 2025);
         assert_eq!(season_year(Sport::Nba, jun_2026), 2026);
-        let nov_2026 = "2026-11-15T00:00:00Z".parse::<DateTime<Utc>>().unwrap();
+        let nov_2026 = "2026-11-15T00:00:00Z".parse::<Timestamp>().unwrap();
         assert_eq!(season_year(Sport::Nfl, nov_2026), 2026);
         assert_eq!(season_year(Sport::Nba, nov_2026), 2027);
     }
@@ -2106,9 +2118,9 @@ mod tests {
         // MLB plays its postseason (Oct–early Nov) in the same calendar year that
         // names the season, so — unlike the NBA end-year convention — October must
         // NOT roll forward, or the World Series bracket fetches an empty next season.
-        let oct_2025 = "2025-10-25T00:00:00Z".parse::<DateTime<Utc>>().unwrap();
+        let oct_2025 = "2025-10-25T00:00:00Z".parse::<Timestamp>().unwrap();
         assert_eq!(season_year(Sport::Mlb, oct_2025), 2025);
-        let apr_2026 = "2026-04-01T00:00:00Z".parse::<DateTime<Utc>>().unwrap();
+        let apr_2026 = "2026-04-01T00:00:00Z".parse::<Timestamp>().unwrap();
         assert_eq!(season_year(Sport::Mlb, apr_2026), 2026);
         // Contrast: the NBA convention rolls October forward (the old bug source).
         assert_eq!(season_year(Sport::Nba, oct_2025), 2026);

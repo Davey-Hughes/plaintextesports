@@ -5,10 +5,12 @@
 pub mod rsc;
 pub mod sheet;
 
-use crate::feed::NOON;
+use crate::feed::{NOON, utc_date};
 use crate::tft::ParsedSession;
 use crate::types::{TftBroadcast, TftDayPanel, TftLobbyRound, TftPlacement, TftStreamer};
-use chrono::{DateTime, Datelike, NaiveTime, Utc};
+use jiff::civil::{Date, Time};
+use jiff::tz::TimeZone;
+use jiff::{SignedDuration, Timestamp};
 use std::collections::HashMap;
 
 const HOST: &str = "https://competetft.com";
@@ -19,21 +21,33 @@ fn tournament_url(id: &str) -> String {
     format!("{HOST}/en-US/tournament/{id}/overview")
 }
 
+/// The calendar date for a scraped year/month/day, if it exists.
+fn ymd(year: i32, month: u32, day: u32) -> Option<Date> {
+    Date::new(
+        year.try_into().ok()?,
+        month.try_into().ok()?,
+        day.try_into().ok()?,
+    )
+    .ok()
+}
+
 /// Infer the calendar year for a month/day that the overview omits: choose the
 /// occurrence nearest to `now` among {year-1, year, year+1}, biased by status —
 /// UPCOMING should not resolve to the past, and a non-upcoming (completed/live)
 /// event should not resolve to the far future.
 #[must_use]
-pub fn infer_year(month: u32, day: u32, status: &str, now: DateTime<Utc>) -> i32 {
+pub fn infer_year(month: u32, day: u32, status: &str, now: Timestamp) -> i32 {
     let upcoming = status.eq_ignore_ascii_case("upcoming");
-    let mut best = now.year();
+    let this_year = i32::from(utc_date(now).year());
+    let mut best = this_year;
     let mut best_score = i64::MAX;
-    for y in [now.year() - 1, now.year(), now.year() + 1] {
-        let Some(d) = chrono::NaiveDate::from_ymd_opt(y, month, day) else {
+    for y in [this_year - 1, this_year, this_year + 1] {
+        let Some(Ok(dt)) =
+            ymd(y, month, day).map(|d| TimeZone::UTC.to_timestamp(d.to_datetime(Time::midnight())))
+        else {
             continue;
         };
-        let dt = d.and_time(NaiveTime::MIN).and_utc();
-        let delta = (dt - now).num_days();
+        let delta = (dt - now).as_hours() / 24;
         let mut score = delta.abs();
         if upcoming && delta < 0 {
             score += 400; // an upcoming event in the past is wrong
@@ -59,7 +73,7 @@ pub fn infer_year(month: u32, day: u32, status: &str, now: DateTime<Utc>) -> i32
 pub fn tournament_event_name(
     t: &rsc::CompeteTournament,
     events: &[rsc::CompeteEvent],
-    now: DateTime<Utc>,
+    now: Timestamp,
 ) -> String {
     let year = t
         .date_range
@@ -68,7 +82,7 @@ pub fn tournament_event_name(
             events
                 .iter()
                 .find(|e| e.tournament_id == t.id)
-                .map(|e| e.date.year())
+                .map(|e| i32::from(utc_date(e.date).year()))
         });
     match year {
         Some(y) => format!("{} {y}", t.name),
@@ -299,11 +313,11 @@ pub fn split_day_panels(
 pub fn derive_sessions(
     t: &rsc::CompeteTournament,
     events: &[rsc::CompeteEvent],
-    now: DateTime<Utc>,
+    now: Timestamp,
 ) -> Vec<crate::tft::ParsedSession> {
     let name = tournament_event_name(t, events, now);
     let url = tournament_url(&t.id);
-    let mk = |label: String, begin_at: DateTime<Utc>| crate::tft::ParsedSession {
+    let mk = |label: String, begin_at: Timestamp| crate::tft::ParsedSession {
         tournament: name.clone(),
         session_label: label,
         begin_at,
@@ -339,14 +353,16 @@ pub fn derive_sessions(
         year
     };
     let (Some(start_d), Some(end_d)) = (
-        chrono::NaiveDate::from_ymd_opt(year, dr.start.0, dr.start.1),
-        chrono::NaiveDate::from_ymd_opt(end_year, dr.end.0, dr.end.1),
+        ymd(year, dr.start.0, dr.start.1),
+        ymd(end_year, dr.end.0, dr.end.1),
     ) else {
         return Vec::new();
     };
     // Nominal noon UTC keeps the calendar day stable for most viewer timezones.
-    let start = start_d.and_time(NOON).and_utc();
-    let span = (end_d - start_d).num_days() + 1;
+    let Ok(start) = TimeZone::UTC.to_timestamp(start_d.to_datetime(NOON)) else {
+        return Vec::new();
+    };
+    let span = i64::from((end_d - start_d).get_days()) + 1;
 
     let distinct = {
         let mut titles: Vec<&str> = t.stages.iter().map(|s| s.title.as_str()).collect();
@@ -362,7 +378,12 @@ pub fn derive_sessions(
             .stages
             .iter()
             .enumerate()
-            .map(|(i, s)| mk(s.title.clone(), start + chrono::Duration::days(i as i64)))
+            .map(|(i, s)| {
+                mk(
+                    s.title.clone(),
+                    start + SignedDuration::from_hours((i as i64) * 24),
+                )
+            })
             .collect();
     }
 
@@ -400,7 +421,7 @@ pub fn assemble(
     t: &rsc::CompeteTournament,
     events: &[rsc::CompeteEvent],
     tabs: &[(Option<String>, String)],
-    now: DateTime<Utc>,
+    now: Timestamp,
 ) -> CompeteTournamentData {
     use sheet::{
         TabKind, classify_tab, parse_broadcasts, parse_leaderboard, parse_lobbies, parse_streamers,
@@ -655,7 +676,7 @@ pub async fn refresh_from_overview(
     client: &reqwest::Client,
     t: &rsc::CompeteTournament,
     events: &[rsc::CompeteEvent],
-    now: DateTime<Utc>,
+    now: Timestamp,
 ) -> Option<CompeteTournamentData> {
     let key = t
         .stages
@@ -676,7 +697,7 @@ pub async fn refresh_competetft_tournament(
     client: &reqwest::Client,
     id: &str,
     events: &[rsc::CompeteEvent],
-    now: DateTime<Utc>,
+    now: Timestamp,
 ) -> Option<CompeteTournamentData> {
     let t = fetch_tournament(client, id).await?;
     refresh_from_overview(client, &t, events, now).await
@@ -876,7 +897,7 @@ mod tests {
 
     #[test]
     fn derive_sessions_tier2_clean_cup_maps_stages_to_consecutive_days() {
-        let now = "2026-07-13T00:00:00Z".parse::<DateTime<Utc>>().unwrap();
+        let now = "2026-07-13T00:00:00Z".parse::<Timestamp>().unwrap();
         let t = tourn(
             "1",
             "Stargazer Cup AMER",
@@ -891,17 +912,17 @@ mod tests {
         let labels: Vec<&str> = s.iter().map(|x| x.session_label.as_str()).collect();
         assert_eq!(labels, ["Day 1", "Day 2", "Finals"]);
         // Consecutive days May 8, 9, 10 (year inferred 2026).
-        let days: Vec<u32> = s.iter().map(|x| x.begin_at.day()).collect();
+        let days: Vec<i8> = s.iter().map(|x| utc_date(x.begin_at).day()).collect();
         assert_eq!(days, [8, 9, 10]);
-        assert!(
-            s.iter()
-                .all(|x| x.begin_at.month() == 5 && x.begin_at.year() == 2026)
-        );
+        assert!(s.iter().all(|x| {
+            let d = utc_date(x.begin_at);
+            d.month() == 5 && d.year() == 2026
+        }));
     }
 
     #[test]
     fn derive_sessions_tier3_falls_back_to_one_row_when_stages_ne_days() {
-        let now = "2026-07-13T00:00:00Z".parse::<DateTime<Utc>>().unwrap();
+        let now = "2026-07-13T00:00:00Z".parse::<Timestamp>().unwrap();
         // Trials: 5 stages over a 9-day range → not a clean map.
         let t = tourn(
             "2",
@@ -916,7 +937,8 @@ mod tests {
         assert_eq!(s.len(), 1, "one tournament-level row");
         // en-dash (U+2013), matching range_display.
         assert_eq!(s[0].session_label, "May 2 \u{2013} 10");
-        assert_eq!((s[0].begin_at.month(), s[0].begin_at.day()), (5, 2));
+        let d = utc_date(s[0].begin_at);
+        assert_eq!((d.month(), d.day()), (5, 2));
     }
 
     #[test]
@@ -924,7 +946,7 @@ mod tests {
         use crate::types::MatchStatus;
         // A LIVE multi-day Trials, "now" several days after the range start — the
         // clock alone (status_at) would say Finished; the scraped status must win.
-        let now = "2026-05-06T00:00:00Z".parse::<DateTime<Utc>>().unwrap();
+        let now = "2026-05-06T00:00:00Z".parse::<Timestamp>().unwrap();
         let mut t = tourn(
             "9",
             "Tactician's Trials 1 AMER",
@@ -942,7 +964,7 @@ mod tests {
 
     #[test]
     fn derive_sessions_tier1_uses_broadcast_feed_times() {
-        let now = "2026-07-13T00:00:00Z".parse::<DateTime<Utc>>().unwrap();
+        let now = "2026-07-13T00:00:00Z".parse::<Timestamp>().unwrap();
         let t = tourn(
             "3",
             "Live Cup",
@@ -955,7 +977,7 @@ mod tests {
         let events = vec![rsc::CompeteEvent {
             tournament_id: "3".into(),
             stage_id: "3-0".into(),
-            date: "2026-07-10T18:30:00Z".parse::<DateTime<Utc>>().unwrap(),
+            date: "2026-07-10T18:30:00Z".parse::<Timestamp>().unwrap(),
             event_type: "TACTICIANS_CROWN".into(),
         }];
         let s = derive_sessions(&t, &events, now);
@@ -964,7 +986,7 @@ mod tests {
         // Real broadcast time preserved (not the noon nominal).
         assert_eq!(
             s[0].begin_at,
-            "2026-07-10T18:30:00Z".parse::<DateTime<Utc>>().unwrap()
+            "2026-07-10T18:30:00Z".parse::<Timestamp>().unwrap()
         );
     }
 
@@ -1006,7 +1028,7 @@ mod tests {
 
     #[test]
     fn infer_year_picks_nearest_occurrence_with_status_bias() {
-        let now = "2026-07-13T00:00:00Z".parse::<DateTime<Utc>>().unwrap();
+        let now = "2026-07-13T00:00:00Z".parse::<Timestamp>().unwrap();
         // A completed July event is this year.
         assert_eq!(infer_year(7, 10, "COMPLETED", now), 2026);
         // A completed January event (already passed) is this year, not next.
@@ -1019,7 +1041,7 @@ mod tests {
 
     #[test]
     fn tournament_event_name_appends_the_inferred_year() {
-        let now = "2026-07-13T00:00:00Z".parse::<DateTime<Utc>>().unwrap();
+        let now = "2026-07-13T00:00:00Z".parse::<Timestamp>().unwrap();
         let t = tourn(
             "1",
             "Tactician's Crown",
@@ -1039,7 +1061,7 @@ mod tests {
     fn derive_sessions_year_qualifies_the_tournament_name() {
         // Sessions must carry the year-qualified name so event URLs and session ids
         // don't collide with the next set's identically-named tournament.
-        let now = "2026-07-13T00:00:00Z".parse::<DateTime<Utc>>().unwrap();
+        let now = "2026-07-13T00:00:00Z".parse::<Timestamp>().unwrap();
         let t = tourn(
             "1",
             "Tactician's Crown",
@@ -1140,7 +1162,7 @@ mod tests {
                 include_str!("../fixtures/competetft_info.csv").to_string(),
             ),
         ];
-        let now = "2026-07-13T00:00:00Z".parse::<DateTime<Utc>>().unwrap();
+        let now = "2026-07-13T00:00:00Z".parse::<Timestamp>().unwrap();
         let d = assemble(&t, &events, &tabs, now);
         assert!(!d.standings.is_empty(), "{:?}", d.standings);
         // The fixture carries lobby data, so the combined panel splits: Day 1
@@ -1197,7 +1219,7 @@ mod tests {
         let rt = tokio::runtime::Runtime::new().unwrap();
         let client = reqwest::Client::new();
         let sched = rt.block_on(fetch_schedule(&client));
-        let now = Utc::now();
+        let now = Timestamp::now();
         let mut checked = 0;
         for id in &sched.tournaments {
             let Some(d) = rt.block_on(refresh_competetft_tournament(
@@ -1267,7 +1289,7 @@ mod tests {
             .map(|e| e.tournament_id.clone())
             .or_else(|| sched.tournaments.first().cloned())
             .unwrap_or_else(|| "116323184504995859".to_string());
-        let now = Utc::now();
+        let now = Timestamp::now();
         match rt.block_on(refresh_competetft_tournament(
             &client,
             &id,

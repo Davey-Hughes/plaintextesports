@@ -9,7 +9,7 @@
 
 use crate::feed::{NormalizedMatch, NormalizedTeam};
 use crate::types::{MatchStatus, Sport, StreamView};
-use chrono::{DateTime, Duration, Utc};
+use jiff::{SignedDuration, Timestamp};
 
 /// TFT ids sit in their own high range so they never collide with another
 /// source's ids (identity is `(sport, id)`, but a distinct base keeps them
@@ -19,7 +19,7 @@ const TFT_ID_BASE: i64 = 40_000_000_000;
 /// How long after its start a session still reads as "live" when the feed gives
 /// no end time. TFT tournament days run long; a few hours is a safe window for a
 /// schedule site (we favor a correct schedule over live-score precision).
-const LIVE_WINDOW: Duration = Duration::hours(3);
+const LIVE_WINDOW: SignedDuration = SignedDuration::from_hours(3);
 
 /// One broadcast session of a TFT tournament.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -28,7 +28,7 @@ pub struct ParsedSession {
     pub tournament: String,
     /// The session/day label, e.g. "Day 1 - Swiss", "Grand Finals".
     pub session_label: String,
-    pub begin_at: DateTime<Utc>,
+    pub begin_at: Timestamp,
     /// Absolute URL of the tournament's page (source-link attribution).
     pub tournament_url: String,
     /// Official broadcast streams, ready to enrich with live viewers like a
@@ -65,7 +65,7 @@ pub fn session_id(tournament: &str, session_label: &str) -> i64 {
 
 /// Derive display status from the clock: upcoming until start, live for
 /// `LIVE_WINDOW` after, finished thereafter.
-fn status_at(begin_at: DateTime<Utc>, now: DateTime<Utc>) -> MatchStatus {
+fn status_at(begin_at: Timestamp, now: Timestamp) -> MatchStatus {
     if now < begin_at {
         MatchStatus::Upcoming
     } else if now - begin_at <= LIVE_WINDOW {
@@ -78,7 +78,7 @@ fn status_at(begin_at: DateTime<Utc>, now: DateTime<Utc>) -> MatchStatus {
 /// Map a parsed session to the source-agnostic row. Single-entity: `team_a`
 /// carries the session label; `team_b` is empty.
 #[must_use]
-pub fn session_to_match(s: &ParsedSession, now: DateTime<Utc>) -> NormalizedMatch {
+pub fn session_to_match(s: &ParsedSession, now: Timestamp) -> NormalizedMatch {
     let entity = NormalizedTeam {
         label: s.session_label.clone(),
         name: s.session_label.clone(),
@@ -113,8 +113,8 @@ pub fn session_to_match(s: &ParsedSession, now: DateTime<Utc>) -> NormalizedMatc
 mod tests {
     use super::*;
 
-    fn at(s: &str) -> DateTime<Utc> {
-        s.parse::<DateTime<Utc>>().unwrap()
+    fn at(s: &str) -> Timestamp {
+        s.parse::<Timestamp>().unwrap()
     }
 
     #[test]

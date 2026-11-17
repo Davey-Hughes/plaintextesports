@@ -22,8 +22,8 @@
 //! Run: `cargo run --release --example alloc_profile --features ssr`
 //!      `cargo run --release --example alloc_profile --features ssr 3000`
 
-use chrono::{DateTime, Utc};
-use chrono_tz::Tz;
+use jiff::Timestamp;
+use jiff::tz::TimeZone;
 use plaintextesports::app::schedule_render_work;
 use plaintextesports::cache;
 use plaintextesports::config::config;
@@ -64,8 +64,8 @@ fn print_stats(label: &str, s: &Stats) {
 }
 
 fn main() {
-    let now: DateTime<Utc> = "2026-06-30T18:00:00Z".parse().unwrap();
-    let tz: Tz = "America/New_York".parse().unwrap();
+    let now: Timestamp = "2026-06-30T18:00:00Z".parse().unwrap();
+    let tz = TimeZone::get("America/New_York").unwrap();
     let cfg = config();
     let n: usize = std::env::args()
         .nth(1)
@@ -75,7 +75,7 @@ fn main() {
 
     // 1) Build the view + serialize it — the half that was always measured here.
     let ((view, json_len), build) = measure(|| {
-        let view = cache::homepage_render(&snap, cfg, now, "all", tz, false);
+        let view = cache::homepage_render(&snap, cfg, now, "all", &tz, false);
         let json = serde_json::to_string(&view).unwrap();
         let len = json.len();
         std::hint::black_box(&json);

@@ -1,7 +1,7 @@
 //! Wire/view types shared between the server and the browser (WASM).
 //!
 //! These are plain `serde` structs with no server-only dependencies (no
-//! `chrono`, no `reqwest`) so they compile cheaply into the WASM bundle. All
+//! `jiff`, no `reqwest`) so they compile cheaply into the WASM bundle. All
 //! display formatting (times, day labels) is done server-side, so the client
 //! only ever renders ready-to-display strings.
 

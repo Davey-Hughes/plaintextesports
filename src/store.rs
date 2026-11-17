@@ -8,7 +8,7 @@
 
 use crate::feed::{NormalizedMatch, NormalizedTeam};
 use crate::types::{MatchStatus, MotorResultRef, Sport};
-use chrono::{DateTime, Utc};
+use jiff::Timestamp;
 use once_cell::sync::OnceCell;
 use rusqlite::{Connection, OptionalExtension, params};
 use std::collections::HashSet;
@@ -451,7 +451,7 @@ fn row_to_match(row: &rusqlite::Row) -> rusqlite::Result<Option<NormalizedMatch>
             .get::<_, Option<String>>("series_name")?
             .unwrap_or_default(),
         tier: row.get("tier")?,
-        begin_at: DateTime::from_timestamp_millis(begin_ms).unwrap_or_else(Utc::now),
+        begin_at: Timestamp::from_millisecond(begin_ms).unwrap_or_else(|_| Timestamp::now()),
         status: MatchStatus::from_db(&status),
         best_of: row.get("best_of")?,
         team_a: NormalizedTeam {
@@ -592,7 +592,7 @@ pub fn upsert_and_prune(
                 m.sport.slug(),
                 m.league,
                 m.tier,
-                m.begin_at.timestamp_millis(),
+                m.begin_at.as_millisecond(),
                 m.status.as_str(),
                 m.best_of,
                 m.team_a.label,
@@ -1460,8 +1460,9 @@ pub fn clear_endpoint(conn: &Connection, endpoint: &str) -> rusqlite::Result<()>
 #[cfg(test)]
 mod tests {
     use super::*;
+    use jiff::SignedDuration;
 
-    fn sample(id: i64, begin_at: DateTime<Utc>) -> NormalizedMatch {
+    fn sample(id: i64, begin_at: Timestamp) -> NormalizedMatch {
         NormalizedMatch {
             id,
             sport: Sport::Lol,
@@ -1504,19 +1505,12 @@ mod tests {
     #[test]
     fn roundtrip_upsert_and_prune() {
         let mut conn = open(":memory:").unwrap();
-        let now = Utc::now();
+        let now = Timestamp::now();
         let recent = sample(1, now);
-        let old = sample(2, now - chrono::Duration::days(10));
-        let cutoff = (now - chrono::Duration::days(2)).timestamp_millis();
+        let old = sample(2, now - SignedDuration::from_hours(10 * 24));
+        let cutoff = (now - SignedDuration::from_hours(2 * 24)).as_millisecond();
 
-        upsert_and_prune(
-            &mut conn,
-            &[recent, old],
-            now.timestamp_millis(),
-            cutoff,
-            &[],
-        )
-        .unwrap();
+        upsert_and_prune(&mut conn, &[recent, old], now.as_millisecond(), cutoff, &[]).unwrap();
 
         // The old match is pruned; the recent one survives and round-trips.
         let all = load_all(&conn).unwrap();
@@ -1533,13 +1527,13 @@ mod tests {
         assert_eq!(all[0].league_slug.as_deref(), Some("league-of-legends-lck"));
         assert_eq!(all[0].series_slug, None);
         assert_eq!(all[0].tournament_slug.as_deref(), Some("lck-spring"));
-        assert_eq!(load_fetched_at(&conn), Some(now.timestamp_millis()));
+        assert_eq!(load_fetched_at(&conn), Some(now.as_millisecond()));
 
         // Upserting the same id updates in place (no duplicate row).
         let mut updated = sample(1, now);
         updated.status = MatchStatus::Finished;
         updated.team_a.score = Some(2);
-        upsert_and_prune(&mut conn, &[updated], now.timestamp_millis(), cutoff, &[]).unwrap();
+        upsert_and_prune(&mut conn, &[updated], now.as_millisecond(), cutoff, &[]).unwrap();
         let all = load_all(&conn).unwrap();
         assert_eq!(all.len(), 1);
         assert_eq!(all[0].status, MatchStatus::Finished);
@@ -1549,9 +1543,9 @@ mod tests {
     #[test]
     fn purge_liquipedia_tft_removes_only_liquipedia_tft_rows() {
         let mut conn = open(":memory:").unwrap();
-        let now = Utc::now();
-        let ms = now.timestamp_millis();
-        let cutoff = (now - chrono::Duration::days(30)).timestamp_millis();
+        let now = Timestamp::now();
+        let ms = now.as_millisecond();
+        let cutoff = (now - SignedDuration::from_hours(30 * 24)).as_millisecond();
         let row = |id: i64, sport: Sport, url: &str| {
             let mut m = sample(id, now);
             m.sport = sport;
@@ -1587,9 +1581,9 @@ mod tests {
         // Reuse the existing `sample(id, begin_at)` helper (builds a LoL match),
         // overriding it into a TFT tournament row.
         let mut conn = open(":memory:").unwrap();
-        let now = Utc::now();
-        let ms = now.timestamp_millis();
-        let cutoff = (now - chrono::Duration::days(30)).timestamp_millis();
+        let now = Timestamp::now();
+        let ms = now.as_millisecond();
+        let cutoff = (now - SignedDuration::from_hours(30 * 24)).as_millisecond();
         let tft = |id: i64, tourn: &str| {
             let mut m = sample(id, now);
             m.sport = Sport::Tft;
@@ -1625,9 +1619,9 @@ mod tests {
     #[test]
     fn league_replace_drops_superseded_rows_but_spares_other_leagues() {
         let mut conn = open(":memory:").unwrap();
-        let now = Utc::now();
-        let cutoff = (now - chrono::Duration::days(30)).timestamp_millis();
-        let ms = now.timestamp_millis();
+        let now = Timestamp::now();
+        let cutoff = (now - SignedDuration::from_hours(30 * 24)).as_millisecond();
+        let ms = now.as_millisecond();
         let motor = |id: i64, league: &str| {
             let mut m = sample(id, now);
             m.sport = Sport::Motorsport;
@@ -1668,9 +1662,9 @@ mod tests {
     fn motor_result_ref_round_trips() {
         use crate::types::MotorResultRef;
         let mut conn = open(":memory:").unwrap();
-        let now = Utc::now();
-        let ms = now.timestamp_millis();
-        let cutoff = (now - chrono::Duration::days(30)).timestamp_millis();
+        let now = Timestamp::now();
+        let ms = now.as_millisecond();
+        let cutoff = (now - SignedDuration::from_hours(30 * 24)).as_millisecond();
 
         // A WRC stage row (per-stage result) and a rally placeholder (overall
         // classification, empty session id).
