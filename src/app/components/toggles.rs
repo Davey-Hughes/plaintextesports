@@ -259,6 +259,8 @@ pub(crate) fn SportToggle() -> impl IntoView {
         let next = !traditional.get_untracked();
         traditional.set(next);
         // Start each mode from its default window (the forward cap differs).
+        // `home_key_after_toggle` mirrors these resets, so the schedule the home
+        // page prefetched for the other mode is the one this lands on.
         earlier.set(0);
         later.set(0);
         // The sport/sport tabs share the `games` set, so clear it (and the esports

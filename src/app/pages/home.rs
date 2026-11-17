@@ -20,9 +20,10 @@ pub(crate) fn HomePage() -> impl IntoView {
     let traditional = use_context::<SportMode>().expect("sport mode context").0;
     // Default = today + future (get_schedule). A calendar range, else an
     // earlier/later expansion, switches to the range view. The sport mode picks
-    // esports ("all") vs MLB and re-fetches when toggled. Traditional sports cap
-    // the forward window and reveal more days with "show later days".
-    let schedule = Resource::new(
+    // esports ("all") vs the traditional sports ("trad"), with the other mode's
+    // schedule prefetched so the toggle swaps without a round trip. Traditional
+    // sports cap the forward window and reveal more days with "show later days".
+    let schedule = schedule_with_prefetch(
         move || {
             (
                 range.get(),
@@ -33,7 +34,7 @@ pub(crate) fn HomePage() -> impl IntoView {
                 traditional.get(),
             )
         },
-        |(r, e, l, z, h, trad)| async move {
+        |(r, e, l, z, h, trad): HomeKey| async move {
             // "trad" = all traditional sports; the sport tabs narrow it client-side.
             let f = if trad { "trad" } else { "all" }.to_string();
             match r {
@@ -49,6 +50,7 @@ pub(crate) fn HomePage() -> impl IntoView {
                 None => get_schedule(f, z, h).await,
             }
         },
+        home_key_after_toggle,
     );
     setup_autorefresh(schedule, view_has_live, true);
 
@@ -57,6 +59,155 @@ pub(crate) fn HomePage() -> impl IntoView {
         <FilterTabs games leagues traditional_row=true />
         <ScheduleSection resource=schedule games leagues show_nav=false />
     }
+}
+
+/// What the home schedule is keyed on: the calendar range, the earlier and later
+/// expansions, the timezone, the 24h clock, and the sport mode.
+type HomeKey = (Option<(String, String)>, i64, i64, String, bool, bool);
+
+/// What the single-day schedule is keyed on: the date, the timezone, the 24h
+/// clock, and the sport mode.
+type DayKey = (String, String, bool, bool);
+
+/// The home key the sport toggle switches to. `SportToggle` flips the mode and
+/// resets the earlier/later expansions; the calendar range stays.
+fn home_key_after_toggle(k: &HomeKey) -> HomeKey {
+    let (range, _, _, tz, hour24, trad) = k;
+    (range.clone(), 0, 0, tz.clone(), *hour24, !*trad)
+}
+
+/// The day key the sport toggle switches to: the same day in the other mode.
+fn day_key_after_toggle(k: &DayKey) -> DayKey {
+    let (date, tz, hour24, trad) = k;
+    (date.clone(), tz.clone(), *hour24, !*trad)
+}
+
+/// A schedule fetched ahead for the sport mode the viewer is not in.
+///
+/// Each mode's schedule is a separate server fetch, and the sport toggle flips
+/// the mode at once. Without this the page waited a round trip for the new
+/// schedule, drawing the new mode's tabs over the old mode's matches meanwhile:
+/// the chip row dropped out in sports mode and showed the sports leagues in
+/// esports mode, then everything changed again when the data landed. That was a
+/// visible delay and two layout shifts per toggle. A view taken from here
+/// resolves the resource before the next paint, so the page changes once.
+struct Prefetched<K> {
+    /// The resource key the view was fetched for.
+    key: K,
+    /// When it was fetched, in ms since the epoch.
+    at_ms: i64,
+    view: ScheduleView,
+}
+
+/// How old a prefetched schedule gets before the next load renews it. The
+/// page's own schedule refreshes every 60 s, or every 15 s while a game is live
+/// (`setup_autorefresh`). Renewing after a load once the prefetch is this old
+/// catches every 60 s refresh but only every fourth live one, so the prefetch is
+/// never much older than the schedule on screen. That is why the toggle shows
+/// it whatever its age: refetching it at once would redraw the page a second
+/// time for data no staler than what the viewer was just reading.
+const PREFETCH_RENEW_MS: i64 = 45_000;
+
+/// Takes the prefetched view if it was fetched for `key`. It is taken rather
+/// than read so that a refetch of the same key, the 60 s refresh or the header's
+/// button, finds the slot empty and goes to the server.
+fn take_prefetched<K: PartialEq>(
+    slot: &mut Option<Prefetched<K>>,
+    key: &K,
+) -> Option<Prefetched<K>> {
+    slot.take_if(|p| p.key == *key)
+}
+
+/// Whether `key` needs prefetching: the slot is empty, holds another key, or
+/// is `PREFETCH_RENEW_MS` old.
+#[cfg_attr(not(feature = "hydrate"), allow(dead_code))]
+fn prefetch_due<K: PartialEq>(slot: Option<&Prefetched<K>>, key: &K, now_ms: i64) -> bool {
+    !slot.is_some_and(|p| p.key == *key && now_ms - p.at_ms < PREFETCH_RENEW_MS)
+}
+
+/// Whether a prefetch for `fetched` is still worth keeping once it returns: the
+/// key the page last loaded must still toggle to it. That is false once a toggle
+/// has made `fetched` the page's own key, which would hand the page's next
+/// refresh an older copy instead of a server fetch, and false once the key has
+/// moved on (a timezone or clock change), where an older fetch landing late
+/// would replace the newer prefetch.
+#[cfg_attr(not(feature = "hydrate"), allow(dead_code))]
+fn prefetch_still_wanted<K: PartialEq>(latest: &K, fetched: &K, after_toggle: fn(&K) -> K) -> bool {
+    after_toggle(latest) == *fetched
+}
+
+/// A schedule resource that keeps the same schedule in the other sport mode
+/// prefetched, so the sport toggle swaps to it without a round trip. See
+/// [`Prefetched`].
+///
+/// `after_toggle` maps the resource's key to the key the toggle switches it to.
+/// The slot is matched on that exact key, so if the two ever disagree the toggle
+/// misses and fetches as it did before; it cannot show the wrong schedule.
+fn schedule_with_prefetch<K, Fut>(
+    key: impl Fn() -> K + Copy + Send + Sync + 'static,
+    fetch: impl Fn(K) -> Fut + Copy + Send + Sync + 'static,
+    after_toggle: fn(&K) -> K,
+) -> Resource<Result<ScheduleView, ServerFnError>>
+where
+    K: Clone + PartialEq + Send + Sync + 'static,
+    Fut: Future<Output = Result<ScheduleView, ServerFnError>> + Send + 'static,
+{
+    // Only the client effect below fills the slot, so on the server every fetch
+    // misses and goes through `fetch` as before.
+    let slot = StoredValue::new(None::<Prefetched<K>>);
+    // The key a prefetch is in flight for. A load that lands meanwhile, such as
+    // the refetch a corrected timezone causes right after hydration, would
+    // otherwise start a second fetch for the same key.
+    let pending = StoredValue::new(None::<K>);
+    // The key the resource last fetched for. The prefetch task checks this
+    // rather than calling `key`, whose signals may be disposed by the time the
+    // fetch returns if the viewer has left the page.
+    let latest = StoredValue::new(untrack(key));
+    let resource = Resource::new(key, move |k| async move {
+        latest.set_value(k.clone());
+        if let Some(p) = slot.try_update_value(|s| take_prefetched(s, &k)).flatten() {
+            return Ok(p.view);
+        }
+        fetch(k).await
+    });
+    // After each load, fetch the other mode's schedule for the slot, unless the
+    // slot already holds a recent one.
+    #[cfg(feature = "hydrate")]
+    Effect::new(move |_| {
+        if !resource.with(|r| matches!(r, Some(Ok(_)))) {
+            return;
+        }
+        let now = now_ms();
+        let next = after_toggle(&untrack(key));
+        if pending.with_value(|p| p.as_ref() == Some(&next))
+            || !slot.with_value(|s| prefetch_due(s.as_ref(), &next, now))
+        {
+            return;
+        }
+        pending.set_value(Some(next.clone()));
+        leptos::task::spawn_local(async move {
+            let res = fetch(next.clone()).await;
+            pending.update_value(|p| {
+                if p.as_ref() == Some(&next) {
+                    *p = None;
+                }
+            });
+            if let Ok(view) = res
+                && latest
+                    .try_with_value(|l| prefetch_still_wanted(l, &next, after_toggle))
+                    .unwrap_or(false)
+            {
+                slot.set_value(Some(Prefetched {
+                    key: next,
+                    at_ms: now_ms(),
+                    view,
+                }));
+            }
+        });
+    });
+    #[cfg(not(feature = "hydrate"))]
+    let _ = (after_toggle, pending);
+    resource
 }
 
 /// The start/end date window for the "earlier days" view: `days_back` days ago
@@ -236,11 +387,12 @@ pub(crate) fn DayPage() -> impl IntoView {
     let hour24 = use_context::<RwSignal<bool>>().expect("hour24 context");
     let tz = use_context::<RwSignal<String>>().expect("tz context");
     let traditional = use_context::<SportMode>().expect("sport mode context").0;
-    let schedule = Resource::new(
+    let schedule = schedule_with_prefetch(
         move || (date(), tz.get(), hour24.get(), traditional.get()),
-        |(d, z, h, trad)| async move {
+        |(d, z, h, trad): DayKey| async move {
             get_day(d, if trad { "trad" } else { "all" }.into(), z, h).await
         },
+        day_key_after_toggle,
     );
     setup_autorefresh(schedule, view_has_live, true);
 
@@ -248,5 +400,69 @@ pub(crate) fn DayPage() -> impl IntoView {
         <FilterTabs games leagues traditional_row=false />
         <FilterTabs games leagues traditional_row=true />
         <ScheduleSection resource=schedule games leagues show_nav=true />
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn prefetched(key: u8, at_ms: i64) -> Prefetched<u8> {
+        Prefetched {
+            key,
+            at_ms,
+            view: ScheduleView::default(),
+        }
+    }
+
+    #[test]
+    fn a_prefetched_view_is_taken_only_for_its_own_key() {
+        // Another key (the page's own refetch) leaves the slot alone.
+        let mut s = Some(prefetched(1, 0));
+        assert!(take_prefetched(&mut s, &2).is_none());
+        assert!(s.is_some());
+        // Its key takes it, and a second take (a refetch of that key) finds the
+        // slot empty, so the refetch goes to the server.
+        assert_eq!(take_prefetched(&mut s, &1).map(|p| p.key), Some(1));
+        assert!(s.is_none());
+        assert!(take_prefetched(&mut s, &1).is_none());
+    }
+
+    #[test]
+    fn the_prefetch_is_due_when_missing_for_another_key_or_old() {
+        let age = PREFETCH_RENEW_MS;
+        assert!(prefetch_due::<u8>(None, &1, 0));
+        assert!(prefetch_due(Some(&prefetched(2, 0)), &1, 0));
+        let p = prefetched(1, 1_000);
+        assert!(!prefetch_due(Some(&p), &1, 1_000 + age - 1));
+        assert!(prefetch_due(Some(&p), &1, 1_000 + age));
+    }
+
+    #[test]
+    fn a_returning_prefetch_is_kept_only_while_the_page_still_toggles_to_it() {
+        let flip: fn(&(u8, bool)) -> (u8, bool) = |&(k, m)| (k, !m);
+        // Nothing changed while it was in flight: keep it.
+        assert!(prefetch_still_wanted(&(1, false), &(1, true), flip));
+        // A toggle beat it, so it is now the page's own key.
+        assert!(!prefetch_still_wanted(&(1, true), &(1, true), flip));
+        // The key moved on (say, a corrected timezone): a newer prefetch is
+        // due, and this older one must not replace it.
+        assert!(!prefetch_still_wanted(&(2, false), &(1, true), flip));
+    }
+
+    #[test]
+    fn the_toggled_home_key_flips_the_mode_and_keeps_the_range() {
+        let range = Some(("2026-11-01".to_string(), "2026-11-07".to_string()));
+        let k = (range.clone(), 3, 2, "UTC".to_string(), true, false);
+        // The toggle resets the earlier/later expansions (see `SportToggle`).
+        assert_eq!(
+            home_key_after_toggle(&k),
+            (range, 0, 0, "UTC".to_string(), true, true)
+        );
+        let d = ("2026-11-17".to_string(), "UTC".to_string(), false, true);
+        assert_eq!(
+            day_key_after_toggle(&d),
+            ("2026-11-17".to_string(), "UTC".to_string(), false, false)
+        );
     }
 }
