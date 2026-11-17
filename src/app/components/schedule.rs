@@ -513,6 +513,30 @@ fn span_from_date_labels(first: &str, last: &str) -> String {
     }
 }
 
+/// Glue a day label for display so a narrow screen wraps it after a comma or a
+/// spaced dash, never inside a date: a word joiner follows each en dash between
+/// two words ("Friday–Saturday", "3–4"), and a no-break space replaces the space
+/// before any number (the day in "July 3") and before a spaced dash ("June 30 –").
+/// A label in any other shape passes through and wraps as plain text.
+fn glue_day_label(label: &str) -> String {
+    let mut out = String::with_capacity(label.len() + 8);
+    let mut prev = None;
+    let mut chars = label.chars().peekable();
+    while let Some(c) = chars.next() {
+        let next = chars.peek().copied();
+        match c {
+            ' ' if next.is_some_and(|n| n == '–' || n.is_ascii_digit()) => out.push('\u{a0}'),
+            '–' if prev.is_some_and(|p| p != ' ') && next.is_some_and(|n| n != ' ') => {
+                out.push('–');
+                out.push('\u{2060}');
+            }
+            _ => out.push(c),
+        }
+        prev = Some(c);
+    }
+    out
+}
+
 /// Merge a single event's day groups into broadcast "nights": consecutive matches
 /// closer than [`crate::types::CHAIN_GAP_MS`] share a group even across midnight,
 /// so a late slate that spills past 12 in the viewer's zone reads as one night —
@@ -902,7 +926,7 @@ pub(crate) fn ScheduleSection(
                         let nav = show_nav.then(|| {
                             let prev = s.prev_date.clone().unwrap_or_default();
                             let next = s.next_date.clone().unwrap_or_default();
-                            let label = s.date_label.clone().unwrap_or_default();
+                            let label = glue_day_label(s.date_label.as_deref().unwrap_or_default());
                             view! {
                                 <nav class="day-nav">
                                     <A href=format!("/day/{prev}")>"‹ prev"</A>
@@ -1214,7 +1238,7 @@ pub(crate) fn UpNextBar(day: DayGroup) -> impl IntoView {
         } else {
             "▸ Latest"
         },
-        day.day_label
+        glue_day_label(&day.day_label)
     );
     let more = all.len().saturating_sub(UPNEXT_CAP);
     let rows = all
@@ -1667,6 +1691,7 @@ pub(crate) fn render_day(
     // times below are venue-local (the dates can differ from this heading).
     let show_venue = use_context::<ShowVenue>().map(|s| s.0);
     let venue_shown = move || show_venue.is_some_and(|sv| sv.get());
+    let label = glue_day_label(&d.day_label);
     let heading = view! {
         <h2
             class=day_cls
@@ -1686,7 +1711,7 @@ pub(crate) fn render_day(
                 let _ = &key;
             }
         >
-            {d.day_label}
+            {label}
             {move || {
                 venue_shown()
                     .then(|| view! { <span class="day-venue-note">"venue time"</span> })
@@ -2311,6 +2336,44 @@ mod tests {
         assert_eq!(
             span_from_date_labels("Friday, June 30", "Saturday, July 1"),
             "Friday, June 30 – Saturday, July 1"
+        );
+    }
+
+    #[test]
+    fn glue_day_label_leaves_breaks_only_at_commas_and_spaced_dashes() {
+        const WJ: char = '\u{2060}';
+        const NBSP: char = '\u{a0}';
+        assert_eq!(
+            glue_day_label("Wednesday, June 24"),
+            format!("Wednesday, June{NBSP}24")
+        );
+        assert_eq!(
+            glue_day_label("Friday–Saturday, July 3–4"),
+            format!("Friday–{WJ}Saturday, July{NBSP}3–{WJ}4")
+        );
+        assert_eq!(
+            glue_day_label("Friday, June 30 – Saturday, July 1"),
+            format!("Friday, June{NBSP}30{NBSP}– Saturday, July{NBSP}1")
+        );
+        // A label in another shape passes through and wraps as plain text, and
+        // a dash with no word after it gets no joiner.
+        assert_eq!(glue_day_label("Grand Finals"), "Grand Finals");
+        assert_eq!(glue_day_label("July 3–"), format!("July{NBSP}3–"));
+        assert_eq!(glue_day_label(""), "");
+    }
+
+    #[cfg(feature = "ssr")]
+    #[test]
+    fn day_heading_renders_its_label_glued() {
+        let d = DayGroup {
+            day_key: "2026-07-03".into(),
+            day_label: "Friday–Saturday, July 3–4".into(),
+            leagues: vec![group(Sport::Cs2, "IEM", "Cologne", 1)],
+        };
+        let html = day_html(d, HashSet::new(), false);
+        assert!(
+            html.contains("Friday–\u{2060}Saturday, July\u{a0}3–\u{2060}4"),
+            "heading label not glued in:\n{html}"
         );
     }
 

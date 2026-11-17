@@ -813,6 +813,12 @@ a {
   padding-bottom: 0.2rem;
   border-bottom: 1px solid var(--border);
 
+  // The row draws the underline in place of the title, so it takes over
+  // today's accent colour too.
+  &:has(> .day-today) {
+    border-bottom-color: var(--accent);
+  }
+
   .day-title {
     margin: 0;
     padding: 0;
