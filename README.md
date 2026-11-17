@@ -90,7 +90,7 @@ test against the TFT source.
 - [Development](docs/development.md): running locally, the tests and live smoke tests,
   why the watch loop needs `LEPTOS_HASH_FILES=false`, and the performance tooling.
 - [Conventions](docs/conventions.md): how changes reach `main`, from linear history to
-  branch protection.
+  branch protection, and how code comments refer to UI controls.
 
 ## License
 

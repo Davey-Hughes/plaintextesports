@@ -396,11 +396,11 @@ struct Overrides(RwSignal<BTreeMap<String, Vec<i64>>>);
 #[derive(Clone, Copy)]
 struct DateRange(RwSignal<Option<(String, String)>>);
 
-/// How many extra past days the "‹ show earlier days" control has revealed.
+/// How many extra past days [`EarlierControl`] has revealed.
 #[derive(Clone, Copy)]
 struct EarlierDays(RwSignal<i64>);
 
-/// Extra future days the "show later days ›" control has revealed beyond the
+/// Extra future days [`LaterControl`] has revealed beyond the
 /// default window, for traditional sports (capped at `TRAD_FORWARD_MAX`).
 #[derive(Clone, Copy)]
 struct LaterDays(RwSignal<i64>);
@@ -806,10 +806,10 @@ mod tests {
             trad_day_bounds("2026-06-24", 0, 0),
             ("2026-06-24".into(), "2026-06-26".into())
         );
-        // "show later days" extends the forward end, capped at TRAD_FORWARD_MAX.
+        // `LaterControl` extends the forward end, capped at TRAD_FORWARD_MAX.
         assert_eq!(trad_day_bounds("2026-06-24", 0, 4).1, "2026-06-30"); // +6
         assert_eq!(trad_day_bounds("2026-06-24", 0, 100).1, "2026-07-01"); // capped +7
-        // "show earlier days" pushes the start back.
+        // `EarlierControl` pushes the start back.
         assert_eq!(trad_day_bounds("2026-06-24", 3, 0).0, "2026-06-21");
     }
 

@@ -590,7 +590,8 @@ a {
   margin: 0.2rem 0 1rem;
 }
 
-// "Show earlier days" / active-range bar — sits just above the first day.
+// EarlierControl's bar (the expander, or the active range) — sits just above
+// the first day.
 .history-bar {
   display: flex;
   align-items: baseline;
@@ -614,7 +615,7 @@ a {
   margin-top: 0.3rem;
 }
 
-// The "show later days" control sits at the foot of the schedule.
+// LaterControl's bar sits at the foot of the schedule.
 .history-bar-later {
   margin-top: 0.8rem;
 }
@@ -798,13 +799,16 @@ a {
   letter-spacing: 0;
 }
 
-// The first day shares its title line with the "show earlier days" control; the
-// date underline then spans the whole row beneath both.
+// The first day shares its title line with EarlierControl; the
+// date underline then spans the whole row beneath both. When the two don't fit
+// on one line (a long date on a phone), the control wraps *above* the date,
+// right-aligned like the standalone bar, instead of both squeezing and breaking
+// mid-text.
 .day-head {
   display: flex;
+  flex-wrap: wrap-reverse;
   align-items: baseline;
-  justify-content: space-between;
-  gap: 1rem;
+  gap: 0.3rem 1rem;
   margin-bottom: 0.6rem;
   padding-bottom: 0.2rem;
   border-bottom: 1px solid var(--border);
@@ -815,8 +819,10 @@ a {
     border-bottom: none;
   }
 
+  // The auto margin right-aligns the control both beside the date and on its
+  // own line once wrapped.
   .history-bar {
-    margin: 0;
+    margin: 0 0 0 auto;
   }
 }
 

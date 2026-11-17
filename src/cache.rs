@@ -2186,7 +2186,7 @@ pub fn spawn_poller() {
             // Fetch (network) first, then apply synchronously so we never hold
             // the (non-Sync) DB connection across an await point. MLB comes from
             // its own (keyless) API and joins the same apply path.
-            // Keep about a week of past MLB days so "show earlier days" has
+            // Keep about a week of past MLB days so `EarlierControl` has
             // something to reveal; the display still defaults to today onward.
             let mlb_window = (
                 utc_date(now - SignedDuration::from_hours(8 * 24)),
@@ -4190,7 +4190,7 @@ fn homepage_rows(
     let today = tz.to_datetime(now).date();
     let start = local_day_start(tz, today);
     // Traditional sports play daily, so cap the default forward window (the
-    // client's "show later days" extends it up to TRAD_FORWARD_MAX). Esports
+    // client's `LaterControl` extends it up to TRAD_FORWARD_MAX). Esports
     // show the full upcoming horizon.
     let end = if traditional {
         local_day_start(tz, today + (crate::types::TRAD_FORWARD_DAYS + 1).days())
@@ -4382,7 +4382,9 @@ pub fn day_view(date: &str, game_filter: &str, tz_name: &str, hour24: bool) -> S
 }
 
 /// Schedule for an inclusive date range `[start_date, end_date]` (ISO dates in
-/// the display tz). Backs the "show earlier days" view and the calendar picker.
+/// the display tz). Backs
+/// [`EarlierControl`](crate::app::components::EarlierControl)'s lookback and the
+/// calendar picker.
 #[must_use]
 pub fn range_view(
     start_date: &str,
@@ -6636,7 +6638,7 @@ fn demo_matches(now: Timestamp) -> Vec<NormalizedMatch> {
         ),
     ];
 
-    // Finished results across the prior ~2 weeks so "show earlier days" and the
+    // Finished results across the prior ~2 weeks so `EarlierControl` and the
     // calendar have history to render in demo mode. Reuse the same leagues so
     // their seeded standings/brackets apply to the detail pages.
     let cs_events = ["IEM", "BLAST", "ESL Pro League"];

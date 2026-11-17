@@ -59,7 +59,7 @@ pub(crate) fn AboutPage() -> impl IntoView {
             <p>
                 "You start with every match in the current mode. Click the sport tabs and "
                 "event chips to narrow it; the address bar updates so a filtered view is "
-                "shareable. Use " <span class="kbd">"‹ show earlier days"</span>
+                "shareable. Use " <span class="kbd">"‹ earlier"</span>
                 " or the calendar to look back, and click an event's name for its full "
                 "schedule, standings, and bracket. A match's own page adds where to watch "
                 "(official streams, co-streams, and TV), plus the box score once a game is "

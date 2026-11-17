@@ -1,6 +1,7 @@
 # Conventions
 
-How changes reach `main`: linear history, pull requests and branch protection.
+How changes reach `main`: linear history, pull requests and branch protection. Also how
+code comments refer to UI controls.
 Back to the [README](../README.md).
 
 `main` is **linear** — no merge commits — and every commit on it is an **atomic unit**: it
@@ -67,3 +68,15 @@ git config merge.ff only && git config pull.ff only
 
 That is convenience — `.git/config` is untracked and binds nobody. The remote is the real
 constraint: it allows only squash and fast-forward merges, and deletes the branch on merge.
+
+## Code comments
+
+A comment about a UI control names its component, not the text on it: write
+``[`EarlierControl`]`` (or describe what it does, such as "the lookback"), not "‹ earlier".
+Labels get shortened and reworded. When the date controls became "‹ earlier" and
+"later ›", 25 comment lines across nine files quoted the old labels and had to change
+too. A component name changes less often, and in a `///` doc comment it is a link that
+`check-all.sh`'s rustdoc step fails on once it dangles.
+
+Text written for users has to quote the label, so a label change still reaches the About
+page (`src/app/pages/about.rs`) and `config.toml.example`.

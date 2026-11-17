@@ -42,7 +42,8 @@ pub async fn get_schedule(
 }
 
 /// Schedule for an inclusive date range ("YYYY-MM-DD" .. "YYYY-MM-DD"). Backs the
-/// "show earlier days" view and the calendar range picker.
+/// [`EarlierControl`](crate::app::components::EarlierControl)'s lookback and the
+/// calendar range picker.
 #[server(GetRange, "/api")]
 pub async fn get_range(
     start: String,

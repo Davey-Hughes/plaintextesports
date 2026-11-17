@@ -160,8 +160,8 @@ pub(crate) fn EventSection(leagues: RwSignal<HashSet<String>>) -> impl IntoView 
     }
 }
 
-/// Bottom-of-schedule control for traditional sports: a "show later days ›"
-/// expander that reveals more future days, hidden once the forward window hits
+/// Bottom-of-schedule control for traditional sports: an expander that reveals
+/// more future days, hidden once the forward window hits
 /// `TRAD_FORWARD_MAX`. Renders nothing in esports mode.
 #[component]
 pub(crate) fn LaterControl() -> impl IntoView {
@@ -174,15 +174,17 @@ pub(crate) fn LaterControl() -> impl IntoView {
         (traditional.get() && !at_cap).then(|| {
             view! {
                 <div class="history-bar history-bar-later">
-                    <button class="linkish" on:click=on_later>"show later days ›"</button>
+                    <button class="linkish" aria-label="show later days" on:click=on_later>
+                        "later ›"
+                    </button>
                 </div>
             }
         })
     }
 }
 
-/// Top-of-schedule control: a "‹ show earlier days" expander by default, or the
-/// active calendar range with a "clear" when one is selected.
+/// Top-of-schedule control: an expander that reveals earlier days by default, or
+/// the active calendar range with a "clear" when one is selected.
 #[component]
 pub(crate) fn EarlierControl() -> impl IntoView {
     let range = use_context::<DateRange>().expect("range context").0;
@@ -210,13 +212,25 @@ pub(crate) fn EarlierControl() -> impl IntoView {
                         .into_any()
                 } else if earlier.get() > 0 {
                     view! {
-                        <button class="linkish" on:click=on_earlier>"‹ show earlier days"</button>
+                        <button
+                            class="linkish"
+                            aria-label="show earlier days"
+                            on:click=on_earlier
+                        >
+                            "‹ earlier"
+                        </button>
                         <button class="linkish" on:click=on_reset>"reset"</button>
                     }
                         .into_any()
                 } else {
                     view! {
-                        <button class="linkish" on:click=on_earlier>"‹ show earlier days"</button>
+                        <button
+                            class="linkish"
+                            aria-label="show earlier days"
+                            on:click=on_earlier
+                        >
+                            "‹ earlier"
+                        </button>
                     }
                         .into_any()
                 }
@@ -857,8 +871,8 @@ pub(crate) fn ScheduleSection(
     let push =
         use_context::<RwSignal<Option<String>>>().is_some_and(|v| v.get_untracked().is_some());
     view! {
-        // Transition (not Suspense) so re-keying the resource — e.g. "show
-        // earlier days" extends the range — keeps the current schedule on screen
+        // Transition (not Suspense) so re-keying the resource — e.g. when
+        // `EarlierControl` extends the range — keeps the current schedule on screen
         // while the next loads, instead of blanking the page (which flashed the
         // footer up to the top).
         <Transition fallback=|| view! { <p class="loading">"loading…"</p> }>
@@ -1374,7 +1388,7 @@ pub(crate) fn render_schedule(s: ScheduleView, push: bool, windowed: bool) -> im
     let today_key = StoredValue::new(today_key);
 
     let empty = days.iter().all(|d| d.leagues.is_empty());
-    // The "‹ show earlier days" / "show later days ›" controls ride the schedule
+    // `EarlierControl` and `LaterControl` ride the schedule
     // on a windowed event page — a traditional sport, which caps its forward
     // horizon the way the homepage does.
     let show_earlier = windowed;
@@ -1472,7 +1486,7 @@ pub(crate) fn render_schedule(s: ScheduleView, push: bool, windowed: bool) -> im
 }
 
 /// Render one day's `<section>`: its heading (a share link on the homepage, with
-/// the "show earlier" control on the first day), then its league groups, each a
+/// [`EarlierControl`] on the first day), then its league groups, each a
 /// titled header (with the edition ★) over status-grouped row runs. Extracted from
 /// [`render_schedule`] so the live homepage can drive the day list with a keyed
 /// `<For>` (diffing across filter toggles and the 60s refresh) while the static
@@ -1679,7 +1693,7 @@ pub(crate) fn render_day(
             }}
         </h2>
     };
-    // The first day carries the "show earlier days" control beside its date.
+    // The first day carries `EarlierControl` beside its date.
     let head = if is_first && show_earlier {
         view! { <div class="day-head">{heading}<EarlierControl /></div> }.into_any()
     } else {

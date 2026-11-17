@@ -22,7 +22,7 @@ pub(crate) fn HomePage() -> impl IntoView {
     // earlier/later expansion, switches to the range view. The sport mode picks
     // esports ("all") vs the traditional sports ("trad"), with the other mode's
     // schedule prefetched so the toggle swaps without a round trip. Traditional
-    // sports cap the forward window and reveal more days with "show later days".
+    // sports cap the forward window and reveal more days with `LaterControl`.
     let schedule = schedule_with_prefetch(
         move || {
             (

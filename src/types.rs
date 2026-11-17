@@ -8,8 +8,9 @@
 use serde::{Deserialize, Serialize};
 
 /// Default forward window (days from today) for a traditional-sports schedule.
-/// They play daily, so the homepage shows a short window by default and a
-/// "show later days" control extends it up to [`TRAD_FORWARD_MAX`].
+/// They play daily, so the homepage shows a short window by default and
+/// [`LaterControl`](crate::app::components::LaterControl) extends it up to
+/// [`TRAD_FORWARD_MAX`].
 pub const TRAD_FORWARD_DAYS: i64 = 2;
 /// Never show traditional-sports games more than this many days ahead.
 pub const TRAD_FORWARD_MAX: i64 = 7;

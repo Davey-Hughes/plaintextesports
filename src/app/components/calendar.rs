@@ -75,7 +75,7 @@ pub(crate) fn CalendarPicker() -> impl IntoView {
     let range = use_context::<DateRange>().expect("range context").0;
     let earlier = use_context::<EarlierDays>().expect("earlier context").0;
     // The forward expansion + sport mode let the calendar mirror the traditional
-    // window: "show later days" visibly extends the highlighted span forward.
+    // window: `LaterControl` visibly extends the highlighted span forward.
     let later = use_context::<LaterDays>().expect("later context").0;
     let sport_mode = use_context::<SportMode>().expect("sport mode context").0;
     let open = RwSignal::new(false);
@@ -153,8 +153,8 @@ pub(crate) fn CalendarPicker() -> impl IntoView {
         let start = sel_start.get();
         let end = sel_end.get();
         // With no explicit selection, mirror the active schedule window: the
-        // "‹ show earlier days" lookback, plus (for traditional sports) the
-        // capped forward span that "show later days ›" extends — so the calendar
+        // `EarlierControl` lookback, plus (for traditional sports) the
+        // capped forward span that `LaterControl` extends — so the calendar
         // tracks what the schedule is showing.
         let window_span: Option<(String, String)> = {
             #[cfg(feature = "hydrate")]
