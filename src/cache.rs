@@ -16,7 +16,7 @@ use crate::types::{
     ScheduleView, SourceLink, Sport, StandingRow, StreamView, TeamView, event_is, event_name_eq,
     full_event_name,
 };
-use chrono::{DateTime, Datelike, Duration, NaiveDate, TimeZone, Timelike, Utc};
+use chrono::{DateTime, Datelike, Duration, NaiveDate, Offset, TimeZone, Timelike, Utc};
 use chrono_tz::Tz;
 use futures::StreamExt;
 use once_cell::sync::Lazy;
@@ -3273,7 +3273,16 @@ fn apply_resolutions(
 fn local_day_start(tz: Tz, date: NaiveDate) -> DateTime<Utc> {
     let naive = date.and_hms_opt(0, 0, 0).expect("valid midnight");
     tz.from_local_datetime(&naive).earliest().map_or_else(
-        || Utc.from_utc_datetime(&naive),
+        || {
+            // Midnight falls in a DST gap: clocks jump from 24:00 straight to
+            // 01:00 (Chile, Egypt, Cuba). The day starts at that jump, which is
+            // midnight read at the offset in force before it. A day earlier is
+            // safely before the jump whatever the zone's offset.
+            let before = tz
+                .offset_from_utc_datetime(&(naive - Duration::days(1)))
+                .fix();
+            Utc.from_utc_datetime(&(naive - before))
+        },
         |dt| dt.with_timezone(&Utc),
     )
 }
@@ -8457,6 +8466,35 @@ mod tests {
         );
         assert_eq!(resolve_tz("", Tz::UTC), Tz::UTC);
         assert_eq!(resolve_tz("Not/AZone", Tz::UTC), Tz::UTC);
+    }
+
+    #[test]
+    fn local_day_start_is_the_first_instant_of_the_local_day() {
+        // Expected instants are worked out by hand from each zone's tz rules.
+        let cases = [
+            // An ordinary day: midnight EST (-05).
+            ("America/New_York", "2026-11-17", "2026-11-17T05:00:00Z"),
+            // London springs forward at 01:00, so its midnight still exists.
+            ("Europe/London", "2026-03-29", "2026-03-29T00:00:00Z"),
+            // Chile springs forward at Saturday 24:00, so Sunday has no 00:00. It
+            // starts at 01:00 -03, the jump itself: Saturday 24:00 -04.
+            ("America/Santiago", "2026-09-06", "2026-09-06T04:00:00Z"),
+            // Egypt springs forward at 00:00, so the day starts at 01:00 +03: the
+            // jump from Thursday 24:00 EET (+02).
+            ("Africa/Cairo", "2026-04-24", "2026-04-23T22:00:00Z"),
+            // Cuba springs forward at 00:00 too: the day starts at 01:00 -04, the
+            // jump from Saturday 24:00 CST (-05).
+            ("America/Havana", "2027-03-14", "2027-03-14T05:00:00Z"),
+            // Cuba falls back from 01:00 to 00:00, so midnight happens twice. The
+            // day starts at the first one, still on daylight time (-04).
+            ("America/Havana", "2026-11-01", "2026-11-01T04:00:00Z"),
+        ];
+        for (zone, day, want) in cases {
+            let tz: Tz = zone.parse().unwrap();
+            let date: NaiveDate = day.parse().unwrap();
+            let want: DateTime<Utc> = want.parse().unwrap();
+            assert_eq!(local_day_start(tz, date), want, "{zone} {date}");
+        }
     }
 
     #[test]
